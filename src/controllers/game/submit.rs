@@ -41,46 +41,6 @@ const FINALIZE_SUBMISSION_SQL: &str = r#"
        AND variant_mode = $11
 "#;
 
-async fn grade_variant_answer(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    game_id: i32,
-    challenge_id: i32,
-    participation_id: i32,
-    answer: &str,
-) -> AppResult<(AnswerResult, Option<i32>)> {
-    super::submit_flag_policy::ensure_variants(transaction, game_id, challenge_id).await?;
-    let variants = sqlx::query_as::<_, (i32, String)>(
-        r#"SELECT participation_id, manifest->>'flag'
-             FROM "ChallengeVariants"
-            WHERE game_id = $1 AND challenge_id = $2
-              AND frozen_at_utc IS NOT NULL
-            ORDER BY participation_id"#,
-    )
-    .bind(game_id)
-    .bind(challenge_id)
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if !variants
-        .iter()
-        .any(|(candidate, _)| *candidate == participation_id)
-    {
-        return Err(AppError::unavailable(
-            "This participation's deterministic challenge variant is not ready",
-        ));
-    }
-    for (owner, flag) in variants {
-        if ct_eq(&flag, answer) {
-            return if owner == participation_id {
-                Ok((AnswerResult::Accepted, None))
-            } else {
-                Ok((AnswerResult::CheatDetected, Some(owner)))
-            };
-        }
-    }
-    Ok((AnswerResult::WrongAnswer, None))
-}
-
 fn normal_flag_submit_type_allowed(
     challenge_type: i16,
     practice_mode: bool,
@@ -630,7 +590,7 @@ pub async fn submit(
         .await?;
     let (mut result, cheat_source_participation_id) =
         if variant_mode == ChallengeVariantMode::PerParticipation as i16 {
-            grade_variant_answer(
+            super::submit_flag_policy::grade_variant_answer(
                 &mut transaction,
                 id,
                 challenge_id,

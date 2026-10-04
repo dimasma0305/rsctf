@@ -7,6 +7,7 @@ import {
   focusHorizonNode,
   interpolateGlobeRotation,
   isAcceptedSolve,
+  matchesChallengeSearch,
   normalizeGlobeAngle,
   projectHorizonNode,
   projectSpherePoint,
@@ -25,11 +26,32 @@ const challenge = (id: number, type = ChallengeType.StaticAttachment): Challenge
   disableBloodBonus: true,
 })
 
-test('competition view defaults to the list on compact screens and rejects corrupt stored preferences', () => {
-  assert.equal(resolveChallengeView(null, true), 'list')
-  assert.equal(resolveChallengeView(null, false), 'globe')
-  assert.equal(resolveChallengeView('unexpected', false), 'globe')
-  assert.equal(resolveChallengeView('cards', true), 'cards')
+test('competition view defaults to cards and preserves valid saved views', () => {
+  assert.equal(resolveChallengeView(null), 'cards')
+  assert.equal(resolveChallengeView(undefined), 'cards')
+  assert.equal(resolveChallengeView('unexpected'), 'cards')
+  assert.equal(resolveChallengeView('cards'), 'cards')
+  assert.equal(resolveChallengeView('list'), 'list')
+  assert.equal(resolveChallengeView('globe'), 'globe')
+})
+
+test('challenge search matches every word across title, ID and translated category', () => {
+  const item = { ...challenge(27), title: 'Café Cookie Jar' }
+  assert.equal(matchesChallengeSearch(item, '  WEB café  '), true)
+  assert.equal(matchesChallengeSearch(item, '27 cookie'), true)
+  assert.equal(matchesChallengeSearch(item, 'cafe'), true)
+  assert.equal(matchesChallengeSearch(item, 'jaringan cookie', 'Jaringan'), true)
+  assert.equal(matchesChallengeSearch(item, 'cookie crypto'), false)
+  assert.equal(matchesChallengeSearch(item, ' '), true)
+})
+
+test('challenge filters only hide accepted solves and share one sort across views', () => {
+  const panel = readFileSync('src/components/ChallengePanel.tsx', 'utf8')
+  const list = readFileSync('src/components/competition/ChallengeList.tsx', 'utf8')
+  assert.match(panel, /solvedChallenges \?\? \[\]\)\.filter\(isAcceptedSolve\)/)
+  assert.match(panel, /!hideSolved \|\| !solvedIds\.has\(chal.id\)/)
+  assert.match(panel, /return sortChallenges\(/)
+  assert.doesNotMatch(list, /sortChallenges\(/)
 })
 
 test('competition pages bound one hundred nodes and retain every challenge exactly once', () => {
@@ -118,7 +140,9 @@ test('vertical globe rotation moves pins with the surface and hides pins beyond 
   }
   const globe = readFileSync('src/components/competition/ChallengeGlobe.tsx', 'utf8')
   assert.match(globe, /projectHorizonNode\(index, yaw, pitch\)/)
-  assert.equal((globe.match(/projectSpherePoint\(x, y, z, yaw, pitch\)/g) ?? []).length, 2)
+  const surface = readFileSync('src/components/competition/globeSurface.ts', 'utf8')
+  assert.match(globe, /drawGlobeSurface\(element, yaw, pitch, scheme === 'dark'\)/)
+  assert.equal((surface.match(/projectSpherePoint\(x, y, z, yaw, pitch\)/g) ?? []).length, 2)
 })
 
 test('every globe page target can be centered in front of the visible horizon', () => {
@@ -186,23 +210,48 @@ test('globe dominates its panel without changing the shared event shell or addin
   assert.match(css, /@container \(max-width: 48rem\)/)
   assert.doesNotMatch(css, /animation:|backdrop-filter:/)
   assert.match(globe, /data-globe-stage/)
-  assert.match(globe, /element.width = size \* 1.5/)
-  assert.match(globe, /element.height = size \* 1.5/)
+  assert.match(globe, /drawGlobeSurface\(element, yaw, pitch, scheme === 'dark'\)/)
+  const surface = readFileSync('src/components/competition/globeSurface.ts', 'utf8')
+  assert.match(surface, /Math.min\(1200,/)
+  assert.match(surface, /element.width !== bitmap/)
+  assert.match(surface, /element.height !== bitmap/)
 })
 
 test('competition header groups event, team and navigation without an ended countdown', () => {
   const tabs = readFileSync('src/components/WithGameTab.tsx', 'utf8')
-  assert.match(tabs, /data-event-workspace-header/)
-  assert.match(tabs, /if \(compact && finished\) return null/)
+  const header = readFileSync('src/components/GameWorkspaceHeader.tsx', 'utf8')
+  assert.match(header, /data-event-workspace-header/)
+  assert.match(header, /if \(finished \|\| \(started && game.practiceMode\)\) return null/)
+  assert.match(header, /game.arena.practice/)
   assert.doesNotMatch(
     tabs,
     /summary \? classes.masthead|summary \? 'underline'/,
     'the event header does not change between sections'
   )
   assert.ok(
-    tabs.indexOf('{summary &&') > tabs.indexOf('<IconTabs'),
+    tabs.indexOf('{summary &&') > tabs.indexOf('<GameWorkspaceHeader'),
     'route-specific team data stays below the stable navigation frame'
   )
+})
+
+test('live arena shares event navigation without inheriting player access checks or adding reads', () => {
+  const header = readFileSync('src/components/GameWorkspaceHeader.tsx', 'utf8')
+  const arena = readFileSync('src/pages/games/[id]/Attack.tsx', 'utf8')
+  assert.match(header, /path: 'scoreboard',[\s\S]*path: 'attack',[\s\S]*path: 'submit'/)
+  assert.match(header, /mode="navigation"/)
+  assert.match(header, /pathname.split\('\/'\)\[3\] === page.path/)
+  assert.match(header, /game\?\.status === ParticipationStatus.Accepted/)
+  assert.doesNotMatch(header, /useGameAccess\(|useGame\(|fetch\(|navigate\(/)
+  assert.match(arena, /<GameWorkspaceHeader gameId=\{Number\(id\)\} game=\{currentGame\}/)
+  assert.match(arena, /runArena\(shadow, id, preview, setGame\)/)
+  assert.match(arena, /!killed && game\?\.id === Number\(gameId\)/)
+  assert.match(arena, /game\?\.id === Number\(id\) \? game : undefined/)
+  assert.doesNotMatch(arena, /<WithGameTab|useGameAccess\(|useGame\(|scoreboardLink|eventLink|<PageHeader/)
+})
+
+test('scoreboard category headings use semantic foreground on both surface schemes', () => {
+  const scoreboard = readFileSync('src/components/ScoreboardTable.tsx', 'utf8')
+  assert.match(scoreboard, /c="var\(--app-text-primary\)"/)
 })
 
 test('competition panels reuse owned challenge reads and keep archives and mobile dialogs', () => {

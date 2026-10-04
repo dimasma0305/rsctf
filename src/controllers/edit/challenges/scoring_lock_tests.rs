@@ -14,6 +14,7 @@ fn challenge() -> game_challenge::Model {
         category: ChallengeCategory::Web,
         challenge_type: ChallengeType::DynamicContainer,
         hints: None,
+        released_hint_count: 0,
         is_enabled: true,
         revision: 1,
         ad_control_revision: 1,

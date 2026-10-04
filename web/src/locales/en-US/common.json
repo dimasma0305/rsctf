@@ -24,6 +24,9 @@
     "jump": "Go to…",
     "quick_navigation": "Go to a page",
     "search_label": "Search pages",
+    "clear_search": "Clear search",
+    "navigate": "Navigate",
+    "open_page": "Open page",
     "search_placeholder": "Events, teams, settings…",
     "result_count": "{{count}} pages",
     "no_results": "No matching pages. Try a different name.",
@@ -147,7 +150,9 @@
       "eyebrow": "Player workspace",
       "title": "Overview",
       "description": "Find your event, get your team ready, and catch up on announcements.",
-      "recent_games": "Recent Games"
+      "recent_games": "Recent events",
+      "news_unavailable": "Announcements could not be refreshed",
+      "retry_hint": "Check your connection and try again."
     },
     "donations": {
       "description": "Celebrate everyone who supports the platform and read their public messages.",

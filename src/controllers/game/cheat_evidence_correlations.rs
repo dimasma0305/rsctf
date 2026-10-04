@@ -68,8 +68,12 @@ pub(in crate::controllers::game) async fn add_identity_source(
     let sample_limit = i64::try_from(MAX_IDENTITY_SAMPLE_ROWS)
         .map_err(|_| AppError::internal("identity sample limit exceeds i64"))?
         .saturating_add(1);
+    // CrossTeamIp also groups the address each user submitted from, so its
+    // evidence includes those submissions (by time and team, no raw address).
+    let include_submissions = ty == SuspicionType::CrossTeamIp;
     let mut rows = sqlx::query_as::<_, IdentitySourceRow>(
-        r#"SELECT observation.user_id, account.user_name, team.name AS team_name,
+        r#"SELECT * FROM (
+           SELECT observation.user_id, account.user_name, team.name AS team_name,
                   observation.kind, observation.value_hint, observation.source,
                   observation.observed_at_utc AS observed_at
              FROM "IdentityObservations" observation
@@ -92,7 +96,24 @@ pub(in crate::controllers::game) async fn add_identity_source(
                    OR ($5 = 'subnet_group_hash' AND observation.subnet_group_hash = $2))
               AND ($3::UUID IS NULL OR observation.user_id = $3)
               AND (NOT $6 OR observation.team_id = $7)
-            ORDER BY observation.observed_at_utc DESC, observation.id DESC
+           UNION ALL
+           SELECT submission.user_id, account.user_name, team.name,
+                  'Ip', '', 'Submission', submission.submit_time_utc
+             FROM "Submissions" submission
+             JOIN "Games" game ON game.id = submission.game_id
+             JOIN "Participations" participation
+               ON participation.id = submission.participation_id
+              AND participation.game_id = submission.game_id
+             JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "AspNetUsers" account ON account.id = submission.user_id
+            WHERE $10 AND submission.game_id = $1
+              AND submission.submit_remote_ip_hash = $2
+              AND submission.submit_time_utc >= game.start_time_utc
+              AND submission.submit_time_utc < game.end_time_utc
+              AND submission.submit_time_utc <= $8
+              AND participation.competitive_admitted_at_utc IS NOT NULL
+           ) identity
+            ORDER BY identity.observed_at DESC, identity.user_id
             LIMIT $9"#,
     )
     .bind(event.game_id)
@@ -104,6 +125,7 @@ pub(in crate::controllers::game) async fn add_identity_source(
     .bind(event.team_id)
     .bind(event.created_at)
     .bind(sample_limit)
+    .bind(include_submissions)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -126,8 +148,10 @@ pub(in crate::controllers::game) async fn add_identity_source(
         .iter()
         .map(|row| format!("{} ({})", row.user_name, row.user_id))
         .collect::<BTreeSet<_>>();
+    // Submissions store only the address hash, never a masked hint.
     let hints = rows
         .iter()
+        .filter(|row| !row.value_hint.is_empty())
         .map(|row| row.value_hint.clone())
         .collect::<BTreeSet<_>>();
     let sources = rows
@@ -153,8 +177,22 @@ pub(in crate::controllers::game) async fn add_identity_source(
         facts: vec![
             fact("Observations through event", count),
             fact("Observation kinds", kinds.into_iter().collect::<Vec<_>>().join(", ")),
-            fact("Distinct identities in bounded sample", hints.len().to_string()),
-            fact("Masked identity hints", hints.into_iter().take(12).collect::<Vec<_>>().join(", ")),
+            fact(
+                "Distinct identities in bounded sample",
+                if hints.is_empty() && include_submissions {
+                    "1 (one submission address)".to_string()
+                } else {
+                    hints.len().to_string()
+                },
+            ),
+            fact(
+                "Masked identity hints",
+                if hints.is_empty() {
+                    "not stored for submission addresses".to_string()
+                } else {
+                    hints.into_iter().take(12).collect::<Vec<_>>().join(", ")
+                },
+            ),
             fact("Teams", teams.into_iter().take(12).collect::<Vec<_>>().join(", ")),
             fact("Users", users.into_iter().take(12).collect::<Vec<_>>().join(", ")),
             fact("Admission sources", sources.into_iter().collect::<Vec<_>>().join(", ")),

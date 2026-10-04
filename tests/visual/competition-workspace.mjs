@@ -6,31 +6,18 @@ import { launchBrowser } from './cdp.mjs'
 import { auditChallengeCategoryScroller } from './audit.mjs'
 import { auditGlobeRotation } from './globe-rotation.mjs'
 import { auditGlobeFocus } from './globe-focus.mjs'
+import { createCompetitionFixture } from './competition-fixtures.mjs'
+import { arenaBrowserSetup, createArenaFixture } from './attack-arena-fixtures.mjs'
 
 const target = process.env.RSCTF_WORKSPACE_PREVIEW || 'http://127.0.0.1:63017'
-assert.equal(new URL(target).hostname, '127.0.0.1')
+const targetUrl = new URL(target)
+assert.ok(targetUrl.origin === target && (targetUrl.hostname === '127.0.0.1' || target === 'https://tcp.1pc.tf'))
 const output = resolve(process.env.RSCTF_WORKSPACE_OUTPUT || '../visual-audit-output/competition')
 mkdirSync(output, { recursive: true })
-const now = Date.now()
-const profile = { userId: '11111111-1111-4111-8111-111111111111', role: 'User', userName: 'Dimas', email: 'player@example.invalid' }
-const game = { id: 901, title: 'Intechfest 2026', start: now - 3600000, end: now + 8000000, serverTime: now, status: 'Accepted', joined: true, teamCount: 50, userCount: 150, practiceMode: false, divisions: [], writeupRequired: false }
-const names = ['Ret2win', 'Cookie Jar', 'Cipher Garden', 'Minions in 32K', 'Signal Lost']
-const challenges = Array.from({ length: 100 }, (_, i) => ({ id: 9001 + i, title: i < 5 ? names[i] : `Challenge ${String(i + 1).padStart(3, '0')}`, category: ['Pwn', 'Web', 'Crypto', 'Reverse', 'Misc'][i % 5], type: 'StaticAttachment', score: 500 - (i % 5) * 50, solved: i % 13, bloods: [], disableBloodBonus: true }))
-const rank = { id: 7, name: 'TCP1P', rank: 7, score: 3250, solvedCount: 12, lastSubmissionTime: now - 30000, solvedChallenges: challenges.slice(1, 13).map((challenge) => ({ id: challenge.id, type: 'Normal', score: challenge.score, time: now - 30000 })) }
-const config = { title: 'RSCTF', slogan: 'Capture the flag', portMapping: 'Default', allowRegister: true, allowPasswordRegistration: true, allowTeamCreation: true, emailConfirmationRequired: false, enableBrowserFingerprint: false }
-const responses = {
-  '/api/account/profile': profile, '/api/config': config, '/api/captcha': { type: 'None' },
-  '/api/game/901': game,
-  '/api/game/902': { ...game, id: 902 },
-  '/api/game/902/notices': [],
-  '/api/game/901/details': { challenges: Object.groupBy(challenges, (item) => item.category), challengeCount: 100, rank, teamToken: 'fixture-only-not-a-credential' },
-  '/api/game/901/details/participant': { rank },
-  '/api/game/901/notices': [{ id: 1, type: 'FirstBlood', time: now - 30000, publishTimeUtc: now - 30000, values: ['TCP1P', 'Cipher Garden'] }],
-}
-for (const challenge of challenges) {
-  responses[`/api/game/901/challenges/${challenge.id}`] = { ...challenge, content: `Challenge files: ${challenge.title}. Download the challenge files and submit your flag.`, context: { url: `/assets/${'a'.repeat(64)}/ret2win.zip`, fileSize: 2048 }, attempts: 0, hints: [] }
-  responses[`/api/game/901/challenges/${challenge.id}/solvers/page`] = { data: [], total: challenge.solved }
-}
+const { now, profile, game, challenges, rank, config, responses } = createCompetitionFixture()
+const arena = createArenaFixture()
+arena.scoreboard.items = arena.scoreboard.items.map((team, index) => ({ ...team, rank: index + 1, solvedChallenges: [] }))
+for (const path of ['/api/game/901/ad/scoreboard', '/api/game/901/ad/koth/scoreboard', '/api/game/901/scoreboard']) responses[path] = arena.responses[path]
 const browser = await launchBrowser()
 const { cdp } = browser
 const reports = [], unknown = new Set(), requests = []
@@ -45,7 +32,8 @@ const waitFor = async (expression) => {
     if (await evaluate(`Boolean(${expression})`)) return
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
-  throw new Error(`Timed out: ${expression}; ${await evaluate('document.body.innerText.slice(-2500)')}`)
+  const state = await evaluate(`({url:location.href,width:innerWidth,workspaceWidth:document.querySelector('[data-competition-workspace]')?.getBoundingClientRect().width,detail:!!document.querySelector('[data-challenge-detail]'),dialog:!!document.querySelector('[role="dialog"]'),active:document.activeElement?.outerHTML,selected:[...document.querySelectorAll('[data-challenge-row][aria-current="true"]')].map(e=>e.getAttribute('href'))})`)
+  throw new Error(`Timed out: ${expression}; ${JSON.stringify(state)}; ${await evaluate('document.body.innerText.slice(-2500)')}`)
 }
 const press = async (key) => {
   const vk = { Enter: 13, ' ': 32, Escape: 27, Tab: 9 }[key]
@@ -58,6 +46,8 @@ const screenshot = async (name) => {
 const inspect = async (name) => {
   // Audit the settled popup, not a partially transparent opening frame.
   // Keep perpetual activity indicators running; navigation motion is tested separately.
+  await evaluate(`document.fonts.ready`)
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
   await evaluate(`Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().endTime !== Infinity).map(a => a.finished.catch(() => {})))`)
   await evaluate(readFileSync('node_modules/axe-core/axe.min.js', 'utf8'))
   const issues = await evaluate(`(async () => ({ overflow: document.documentElement.scrollWidth > innerWidth + 1, violations: (await axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } })).violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => ({ target: n.target, summary: n.failureSummary })) })) }))()`)
@@ -66,11 +56,18 @@ const inspect = async (name) => {
   console.log(name, JSON.stringify(issues))
 }
 const selectView = async (view) => {
+  // Closing details updates the hash before React Router publishes its new
+  // location. Let that commit finish before another hash-owning control runs.
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
   await evaluate(`document.querySelector('input[value="${view}"]').click()`)
   await waitFor(view === 'globe' ? `document.querySelector('[data-challenge-globe]')` : view === 'list' ? `document.querySelector('[data-challenge-list]')` : `document.querySelector('[data-guide="challenge-card"]')`)
+  // Let hash-driven detail cleanup and its deferred focus restoration settle
+  // before sending keyboard input into the newly selected presentation.
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
 }
 try {
   await cdp.send('Page.enable'); await cdp.send('Runtime.enable')
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: arenaBrowserSetup })
   cdp.on('Runtime.exceptionThrown', ({ exceptionDetails }) => errors.push(exceptionDetails.exception?.description ?? exceptionDetails.text))
   await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (location.origin === ${JSON.stringify(new URL(target).origin)}) { localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark'); localStorage.setItem('rsctf-player-guide:${profile.userId}', JSON.stringify({ interactiveEnabled:false, completedVersion:1, seenFeatures:[] })); }` })
   await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `${target}/api/*` }, { urlPattern: `${target}/hub*` }] })
@@ -85,6 +82,59 @@ try {
   })
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1200, deviceScaleFactor: 1, mobile: false })
   await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
+  assert.equal(await evaluate(`document.querySelector('input[value="cards"]').checked`), true)
+  await inspect('desktop-default-cards')
+  const eventTabs = '[data-event-tabs]'
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('${eventTabs} a')].slice(0,3).map(a=>a.getAttribute('href'))`), ['/games/901/challenges', '/games/901/scoreboard', '/games/901/attack'])
+  await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/attack"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('[data-arena-theme]')?.shadowRoot?.querySelector('#connectionStatus')?.textContent === 'Connected'`)
+  assert.equal(await evaluate(`document.querySelector('${eventTabs} [aria-current="page"]').getAttribute('href')`), '/games/901/attack')
+  assert.equal(await evaluate('document.querySelector("h1").textContent'), game.title)
+  await inspect('desktop-arena-tab')
+  await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/scoreboard"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('${eventTabs} [aria-current="page"]')?.getAttribute('href') === '/games/901/scoreboard'`)
+  await waitFor(`document.querySelector('table tbody tr')`)
+  assert.equal(await evaluate('arenaSockets.filter(s=>s.readyState===1).length'), 0, 'leaving the arena closes its socket')
+  await inspect('desktop-scoreboard-tab')
+  // Persist and reload so Mantine's hooks and the shared theme agree.
+  await evaluate(`localStorage.setItem('mantine-color-scheme-value','light')`)
+  const lightSetup = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('mantine-color-scheme-value','light')` })
+  await cdp.send('Page.reload')
+  await waitFor(`document.querySelector('table tbody tr')`)
+  await inspect('light-scoreboard-tab')
+  await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: lightSetup.identifier })
+  await cdp.send('Page.reload')
+  await waitFor(`document.querySelector('table tbody tr')`)
+  await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/challenges"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
+  await evaluate(`document.querySelector('#challenge-search').focus()`)
+  await cdp.send('Input.insertText', { text: 'pwn ret2win' })
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 1`)
+  assert.ok(await evaluate(`document.querySelector('article[data-guide="challenge-card"]').textContent.includes('Ret2win')`))
+  await inspect('cards-multiword-search')
+  await evaluate(`document.querySelector('button[aria-label="Clear search"]').click()`)
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
+  assert.equal(await evaluate(`document.activeElement.id`), 'challenge-search')
+  await evaluate(`document.querySelector('[data-challenge-toolbar] input[role="switch"]').click()`)
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 88`)
+  assert.ok(await evaluate(`Array.from(document.querySelectorAll('article[data-guide="challenge-card"]')).some(card => card.textContent.includes('Ret2win'))`), 'rejected attempts remain available in the unsolved filter')
+  await inspect('cards-unsolved')
+  await evaluate(`document.querySelector('[data-challenge-toolbar] input[role="switch"]').click()`)
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
+  await evaluate(`document.querySelector('[data-challenge-toolbar] input[role="combobox"]').click()`)
+  await waitFor(`document.querySelector('[role="option"]')`)
+  await evaluate(`[...document.querySelectorAll('[role="option"]')].find(option => option.textContent === 'Highest points').click()`)
+  const pointOrder = [...challenges].sort((a, b) => b.score - a.score || a.title.localeCompare(b.title) || a.id - b.id).map(item => item.title)
+  await waitFor(`document.querySelector('[data-challenge-toolbar] input[role="combobox"]').value === 'Highest points'`)
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('article[data-guide="challenge-card"] a')).map(link => link.textContent)`), pointOrder)
+  await inspect('cards-points-sorted')
+  await selectView('list')
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('[data-challenge-row] > span')).map(span => span.textContent)`), pointOrder.slice(0, 10))
+  await selectView('globe')
   await waitFor(`document.querySelectorAll('[data-globe-node]').length === 5`)
   assert.equal(await evaluate(`!!document.querySelector('#primary-navigation-rail') && !document.querySelector('header[data-guide-boundary="top-shell"]')`), true)
   assert.equal(await evaluate(`document.querySelector('[data-competition-workspace]').getBoundingClientRect().left >= document.querySelector('#primary-navigation-rail').getBoundingClientRect().right`), true)
@@ -132,7 +182,7 @@ try {
   await auditGlobeFocus(cdp, evaluate, waitFor, inspect, 'desktop-page-two')
   await evaluate(`[...document.querySelectorAll('.mantine-Pagination-root button')].find(button => button.textContent.trim() === '1').click()`)
   await waitFor(`!document.querySelector('[data-challenge-globe]').dataset.globeFocus`)
-  await evaluate(`document.querySelector('input[placeholder="Name or ID"]').focus()`)
+  await evaluate(`document.querySelector('#challenge-search').focus()`)
   await cdp.send('Input.insertText', { text: 'Ret2win' })
   await waitFor(`document.querySelectorAll('[data-globe-node]').length === 1`)
   await evaluate(`document.querySelector('[data-globe-choice="9001"]').focus()`)
@@ -154,7 +204,7 @@ try {
   await evaluate(`document.querySelector('[data-challenge-detail] button[aria-label="Close"]').click()`)
   await waitFor(`!document.querySelector('[data-challenge-detail]')`)
   await selectView('list')
-  await evaluate(`document.querySelector('input[placeholder="Name or ID"]').focus()`)
+  await evaluate(`document.querySelector('#challenge-search').focus()`)
   await cdp.send('Input.insertText', { text: 'does-not-exist' })
   await waitFor(`document.body.innerText.includes('No matching challenges')`)
   await inspect('empty-search')
@@ -236,6 +286,31 @@ try {
     await inspect(name)
     await selectView('cards')
     await inspect(`${name}-cards`)
+  }
+  game.title = 'INTECHFEST CTF 2023'
+  game.practiceMode = true
+  game.end = now + 300 * 86400000
+  game.writeupRequired = false
+  challenges[3].type = 'StaticAttachment'
+  challenges[4].type = 'StaticAttachment'
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.removeItem('challenge-explorer-view'); localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark');` })
+  for (const [name, width, height] of [['practice-desktop', 1440, 1100], ['practice-mobile', 390, 844], ['practice-compact', 320, 568]]) {
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
+    await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
+    await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
+    assert.equal(await evaluate(`document.querySelector('input[value="cards"]').checked`), true)
+    assert.ok(await evaluate(`document.querySelector('[data-event-workspace-header]').textContent.includes('Practice')`))
+    assert.equal(await evaluate(`!!document.querySelector('[data-event-workspace-header] [role="timer"]')`), false)
+    await inspect(name)
+    if (width < 400) {
+      await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/attack"]').focus()`)
+      await press('Enter')
+      await waitFor(`document.querySelector('[data-arena-theme]')?.shadowRoot?.querySelector('#connectionStatus')?.textContent === 'Connected'`)
+      assert.equal(await evaluate(`document.querySelector('${eventTabs} [aria-current="page"]').getAttribute('href')`), '/games/901/attack')
+      assert.equal(await evaluate(`!!document.querySelector('${eventTabs} a[href="/games/901/challenges"]')`), true)
+      assert.ok(await evaluate(`(() => { const r=document.querySelector('${eventTabs} [aria-current="page"]').getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth; })()`), 'active arena tab stays visible on narrow screens')
+      await inspect(`${name}-arena-navigation`)
+    }
   }
   forbidden = true
   await cdp.send('Page.navigate', { url: `${target}/games/902/challenges#999999-hidden` })

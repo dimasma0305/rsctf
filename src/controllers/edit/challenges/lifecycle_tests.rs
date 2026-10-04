@@ -75,7 +75,8 @@ impl Harness {
               container_image TEXT,
               build_status SMALLINT NOT NULL DEFAULT 0,
               title TEXT NOT NULL DEFAULT 'original',
-              hints JSONB
+              hints JSONB,
+              released_hint_count INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE "FlagContexts" (
               id SERIAL PRIMARY KEY,

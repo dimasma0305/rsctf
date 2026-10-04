@@ -207,6 +207,12 @@ mod m0350_event_history_purge_outbox_delete;
 mod m0351_ai_chat_links;
 mod m0352_ai_chat_disclosure;
 mod m0353_solver_uploads;
+mod m0354_agent_artifacts;
+mod m0355_sealed_late_evidence;
+mod m0356_telemetry_global_usage_repair;
+mod m0357_variant_flag_uniqueness;
+mod m0358_hint_publication;
+pub(crate) mod m0359_game_schedule_changes;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -440,6 +446,12 @@ impl MigratorTrait for Migrator {
             Box::new(m0351_ai_chat_links::Migration),
             Box::new(m0352_ai_chat_disclosure::Migration),
             Box::new(m0353_solver_uploads::Migration),
+            Box::new(m0354_agent_artifacts::Migration),
+            Box::new(m0355_sealed_late_evidence::Migration),
+            Box::new(m0356_telemetry_global_usage_repair::Migration),
+            Box::new(m0357_variant_flag_uniqueness::Migration),
+            Box::new(m0358_hint_publication::Migration),
+            Box::new(m0359_game_schedule_changes::Migration),
         ]
     }
 }
@@ -584,15 +596,11 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 183);
+        assert_eq!(names.len(), 189);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 80..],
+            &names[names.len() - 82..],
             [
-                "m0104_post_feed_order",
-                "m0105_manager_autocomplete_indexes",
-                "m0106_submission_idempotency",
-                "m0107_monitor_history_indexes",
                 "m0108_koth_observer_rotation_operations",
                 "m0109_operator_console_latest_rows",
                 "m0110_participation_review_indexes",
@@ -669,6 +677,12 @@ mod tests {
                 "m0351_ai_chat_links",
                 "m0352_ai_chat_disclosure",
                 "m0353_solver_uploads",
+                "m0354_agent_artifacts",
+                "m0355_sealed_late_evidence",
+                "m0356_telemetry_global_usage_repair",
+                "m0357_variant_flag_uniqueness",
+                "m0358_hint_publication",
+                "m0359_game_schedule_changes",
             ]
         );
     }

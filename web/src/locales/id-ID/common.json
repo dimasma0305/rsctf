@@ -24,6 +24,9 @@
     "jump": "Buka…",
     "quick_navigation": "Buka halaman",
     "search_label": "Cari halaman",
+    "clear_search": "Hapus pencarian",
+    "navigate": "Navigasi",
+    "open_page": "Buka halaman",
     "search_placeholder": "Event, tim, pengaturan…",
     "result_count": "{{count}} halaman",
     "no_results": "Halaman tidak ditemukan. Coba nama lain.",
@@ -146,7 +149,9 @@
       "eyebrow": "Area pemain",
       "title": "Ringkasan",
       "description": "Temukan event, siapkan tim, dan baca pengumuman terbaru.",
-      "recent_games": "Game Terbaru"
+      "recent_games": "Event terbaru",
+      "news_unavailable": "Pengumuman gagal diperbarui",
+      "retry_hint": "Periksa koneksi lalu coba lagi."
     },
     "donations": {
       "description": "Rayakan semua orang yang mendukung platform dan baca pesan publik mereka.",

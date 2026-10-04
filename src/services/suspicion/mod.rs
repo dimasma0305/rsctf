@@ -93,6 +93,12 @@ pub enum SuspicionType {
     InstantSubmitAfterAccess = 35,
     SubmitterNeverAccessedContainer = 36,
     AccessIpMismatchAtSubmission = 37,
+    /// An uploaded solver or writeup contains a trace only AI agent tooling
+    /// leaves behind (for example a coding agent's session scratchpad path).
+    AgentArtifact = 38,
+    /// The team declared "No AI used" for a challenge whose own solver upload
+    /// carries an agent artifact.
+    AiDeclarationContradiction = 39,
 }
 
 impl SuspicionType {
@@ -138,6 +144,8 @@ impl SuspicionType {
             InstantSubmitAfterAccess => "InstantSubmitAfterAccess",
             SubmitterNeverAccessedContainer => "SubmitterNeverAccessedContainer",
             AccessIpMismatchAtSubmission => "AccessIpMismatchAtSubmission",
+            AgentArtifact => "AgentArtifact",
+            AiDeclarationContradiction => "AiDeclarationContradiction",
         }
     }
 
@@ -199,6 +207,8 @@ impl SuspicionType {
             35 => InstantSubmitAfterAccess,
             36 => SubmitterNeverAccessedContainer,
             37 => AccessIpMismatchAtSubmission,
+            38 => AgentArtifact,
+            39 => AiDeclarationContradiction,
             _ => return None,
         })
     }
@@ -225,7 +235,7 @@ impl SuspicionType {
             | TokenAbuse
             | HoneypotCanaryFlag => Hard,
             // Strong — automation / scanner behaviour
-            AutomatedPattern | HighWrongRate | SolutionRelay => Strong,
+            AutomatedPattern | HighWrongRate | SolutionRelay | AiDeclarationContradiction => Strong,
             // Context — non-actionable context/telemetry (never scores directly).
             // FlagEgress and absence-derived telemetry remain visible for audit,
             // with zero corroboration as well.
@@ -277,6 +287,7 @@ impl SuspicionType {
             SubmitterNeverAccessedContainer => 3,
             HoneypotHit => 5,
             NoDownload | NoContainer => 3,
+            AgentArtifact | AiDeclarationContradiction => 3,
             _ => 3,
         }
     }
@@ -358,6 +369,8 @@ pub static DEFAULTS: &[(SuspicionType, i32, &str)] = &[
     (SuspicionType::InstantSubmitAfterAccess, 50, "Submission within seconds of the submitter's first proxy access — automated solver pipeline"),
     (SuspicionType::SubmitterNeverAccessedContainer, 30, "Submitter never personally opened the container; a teammate did"),
     (SuspicionType::AccessIpMismatchAtSubmission, 30, "Submitter's IP at submission time does not match any IP they used to access the container"),
+    (SuspicionType::AgentArtifact, 40, "Uploaded solver or writeup contains a trace left by AI agent tooling"),
+    (SuspicionType::AiDeclarationContradiction, 60, "Declared \"No AI used\" for a challenge whose solver upload contains an AI agent trace"),
 ];
 
 /// Default compiled-in weight for a rule code (`SuspicionService.GetDefaultWeight`).
@@ -456,7 +469,7 @@ mod rule_identity_tests {
     }
 
     #[test]
-    fn all_38_historical_kinds_round_trip_through_stable_discriminants() {
+    fn all_40_historical_kinds_round_trip_through_stable_discriminants() {
         let expected = [
             SuspicionType::StolenFlag,
             SuspicionType::SharedIp,
@@ -496,9 +509,11 @@ mod rule_identity_tests {
             SuspicionType::InstantSubmitAfterAccess,
             SuspicionType::SubmitterNeverAccessedContainer,
             SuspicionType::AccessIpMismatchAtSubmission,
+            SuspicionType::AgentArtifact,
+            SuspicionType::AiDeclarationContradiction,
         ];
 
-        assert_eq!(expected.len(), 38);
+        assert_eq!(expected.len(), 40);
         assert_eq!(DEFAULTS.len(), expected.len());
         for (kind, ty) in expected.into_iter().enumerate() {
             let kind = i16::try_from(kind).expect("historical kind fits i16");
@@ -508,7 +523,7 @@ mod rule_identity_tests {
             assert_eq!(DEFAULTS[usize::try_from(kind).unwrap()].0, ty);
         }
         assert_eq!(SuspicionType::from_kind(-1), None);
-        assert_eq!(SuspicionType::from_kind(38), None);
+        assert_eq!(SuspicionType::from_kind(40), None);
     }
 }
 
@@ -531,4 +546,6 @@ pub use honeypot::*;
 pub(crate) use outbox::seal_reconciled_game_for_test;
 pub use outbox::*;
 pub(crate) use reconciliation::{execute_game_reconciliation, SourceCursor, SOURCE_BATCH};
+mod schedule;
+pub(crate) use schedule::record_schedule_change;
 pub use scoring::*;

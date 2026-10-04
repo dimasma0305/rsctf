@@ -3,6 +3,7 @@ import {
   Badge,
   Button,
   Group,
+  Modal,
   Pagination,
   SegmentedControl,
   Select,
@@ -16,14 +17,15 @@ import {
 import { useDebouncedValue } from '@mantine/hooks'
 import { mdiClose, mdiMagnify, mdiRefresh } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useRef, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Navigate } from 'react-router'
+import { Navigate, useLocation, useNavigate } from 'react-router'
 import { ChallengeCard } from '@Components/ChallengeCard'
 import { Empty } from '@Components/Empty'
 import { GameChallengeModal } from '@Components/GameChallengeModal'
 import { PageHeader } from '@Components/PageHeader'
 import { WithNavBar } from '@Components/WithNavbar'
+import { catalogChallengeHash, catalogChallengeIdFromHash, eventChallengeHash } from '@Utils/ChallengeLinks'
 import { ChallengeCategoryList, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useGame, useGameStatus } from '@Hooks/useGame'
@@ -41,7 +43,15 @@ const CHALLENGE_MODES: { value: ChallengeCatalogMode; label: string }[] = [
   { value: 'attackDefense', label: 'A&D' },
 ]
 
-const challengeHash = (id: number, title: string) => `#${id}-${encodeURIComponent(title.replace(/ /g, '-'))}`
+// Both catalog reads are one-shot and retain the same viewer-scoped SWR owner.
+const catalogReadOptions = {
+  refreshInterval: 0,
+  refreshWhenHidden: false,
+  refreshWhenOffline: false,
+  revalidateOnFocus: false,
+  revalidateOnReconnect: false,
+  shouldRetryOnError: false,
+}
 
 const catalogChallengeInfo = (challenge: ChallengeCatalogItem): ChallengeInfo => ({
   id: challenge.id,
@@ -66,7 +76,7 @@ const CatalogChallengeModal: FC<CatalogChallengeModalProps> = ({ challenge, onCl
     end: game?.end ?? challenge.gameEnd,
   })
   const categoryMap = useChallengeCategoryLabelMap()
-  const eventHref = `/games/${challenge.gameId}/challenges${challengeHash(challenge.id, challenge.title)}`
+  const eventHref = `/games/${challenge.gameId}/challenges${eventChallengeHash(challenge.id, challenge.title)}`
 
   return (
     <GameChallengeModal
@@ -90,16 +100,32 @@ const CatalogChallengeModal: FC<CatalogChallengeModalProps> = ({ challenge, onCl
 const ChallengeCatalog: FC = () => {
   const { t } = useTranslation()
   const { user, error: userError } = useUser()
+  const location = useLocation()
+  const navigate = useNavigate()
   const categoryMap = useChallengeCategoryLabelMap()
   const isMobile = useIsMobile()
   const searchInput = useRef<HTMLInputElement>(null)
+  const openerRef = useRef<HTMLAnchorElement | null>(null)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [debouncedSearch] = useDebouncedValue(search.trim(), 300)
   const [category, setCategory] = useState<ChallengeCategory | null>(null)
   const [challengeMode, setChallengeMode] = useState<ChallengeCatalogMode | null>(null)
   const [solveFilter, setSolveFilter] = useState<SolveFilter>('all')
-  const [selectedChallenge, setSelectedChallenge] = useState<ChallengeCatalogItem | null>(null)
+  const selectedId = catalogChallengeIdFromHash(location.hash)
+  useEffect(() => {
+    if (selectedId !== null || !openerRef.current) return
+    const frame = requestAnimationFrame(() => {
+      if (openerRef.current?.isConnected) openerRef.current.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [selectedId])
+  const closeChallenge = () => {
+    void navigate(
+      { pathname: location.pathname, search: location.search, hash: catalogChallengeHash(location.hash, null) },
+      { preventScrollReset: true, state: location.state }
+    )
+  }
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
 
   const {
@@ -117,21 +143,28 @@ const ChallengeCatalog: FC = () => {
       mode: challengeMode ?? undefined,
       solved: solveFilter === 'all' ? undefined : solveFilter === 'solved',
     },
-    {
-      refreshInterval: 0,
-      refreshWhenHidden: false,
-      refreshWhenOffline: false,
-      revalidateOnFocus: false,
-      revalidateOnReconnect: false,
-      shouldRetryOnError: false,
-    },
+    catalogReadOptions,
     Boolean(user)
   )
+
+  const visibleChallenge = catalog?.data.find((challenge) => challenge.id === selectedId)
+  const {
+    data: linkedCatalog,
+    error: linkedError,
+    mutate: retryLink,
+  } = api.game.useGameChallengeCatalog(
+    { challengeId: selectedId ?? undefined, count: 1 },
+    catalogReadOptions,
+    Boolean(user && selectedId !== null && !visibleChallenge)
+  )
+  // Never trust a hash, stale result, or a search match as proof of ownership.
+  const selectedChallenge = visibleChallenge ?? linkedCatalog?.data.find((challenge) => challenge.id === selectedId)
 
   usePageTitle(t('challenge.catalog.title', 'My challenges'))
 
   if (userError?.status === 401) {
-    return <Navigate to="/account/login?from=%2Fchallenges" replace />
+    const from = encodeURIComponent(location.pathname + location.search + location.hash)
+    return <Navigate to={`/account/login?from=${from}`} replace />
   }
 
   const resetPage = () => setPage(1)
@@ -317,7 +350,13 @@ const ChallengeCatalog: FC = () => {
               }
             />
           ) : (
-            <div className={classes.challengeGrid}>
+            <div
+              className={classes.challengeGrid}
+              onClickCapture={(event) => {
+                const link = event.target instanceof Element ? event.target.closest('a') : null
+                if (link instanceof HTMLAnchorElement) openerRef.current = link
+              }}
+            >
               {catalog.data.map((challenge) => {
                 return (
                   <ChallengeCard
@@ -327,7 +366,7 @@ const ChallengeCatalog: FC = () => {
                     iconMap={iconMap}
                     colorMap={colorMap}
                     solved={challenge.solved}
-                    onClick={() => setSelectedChallenge(challenge)}
+                    href={location.pathname + location.search + catalogChallengeHash(location.hash, challenge.id)}
                   />
                 )
               })}
@@ -348,7 +387,27 @@ const ChallengeCatalog: FC = () => {
         )}
       </Stack>
       {selectedChallenge && (
-        <CatalogChallengeModal challenge={selectedChallenge} onClose={() => setSelectedChallenge(null)} />
+        <CatalogChallengeModal key={selectedChallenge.id} challenge={selectedChallenge} onClose={closeChallenge} />
+      )}
+      {user && selectedId !== null && !selectedChallenge && (
+        <Modal
+          opened
+          onClose={closeChallenge}
+          title={t('challenge.catalog.link_title', 'Challenge link')}
+          closeButtonProps={{ 'aria-label': t('common.button.close', 'Close') }}
+          centered
+        >
+          <Stack>
+            <Text role={linkedError || linkedCatalog ? 'alert' : 'status'}>
+              {linkedError
+                ? t('challenge.catalog.link_failed', 'This challenge could not be loaded. Please try again.')
+                : linkedCatalog
+                  ? t('challenge.catalog.link_unavailable', 'This challenge is unavailable or you do not have access.')
+                  : t('challenge.catalog.link_loading', 'Loading challenge…')}
+            </Text>
+            {linkedError && <Button onClick={() => void retryLink()}>{t('common.button.retry', 'Retry')}</Button>}
+          </Stack>
+        </Modal>
       )}
     </WithNavBar>
   )

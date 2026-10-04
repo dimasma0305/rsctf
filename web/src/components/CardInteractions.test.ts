@@ -5,12 +5,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { act, createElement, type ReactElement } from 'react'
 import { I18nextProvider } from 'react-i18next'
+import { MemoryRouter, useLocation } from 'react-router'
 import { ChallengeCategory, ChallengeType, type ChallengeInfo } from '../Api'
 import { installTestDom } from '../test/installDom'
 import { LanguageProvider } from '../utils/I18n'
 import { ChallengeCard } from './ChallengeCard'
 
 const mountCards = async () => {
+  const LocationProbe = () => createElement('output', { id: 'location' }, useLocation().hash)
   const browser = new Window({ url: 'https://rsctf.test/' })
   const restoreDom = installTestDom(browser)
   const i18n = i18next.createInstance()
@@ -31,7 +33,15 @@ const mountCards = async () => {
           createElement(
             HeadlessMantineProvider,
             null,
-            createElement(I18nextProvider, { i18n }, createElement(LanguageProvider, null, card))
+            createElement(
+              I18nextProvider,
+              { i18n },
+              createElement(
+                LanguageProvider,
+                null,
+                createElement(MemoryRouter, null, card, createElement(LocationProbe))
+              )
+            )
           )
         )
       })
@@ -57,14 +67,13 @@ test('challenge cards show real metrics and use one named native action for ever
     bloods: [],
     disableBloodBonus: true,
   }
-  let opened = 0
   const card = (value = challenge, solved = false) =>
     createElement(ChallengeCard, {
       challenge: value,
       solved,
       iconMap: new Map(),
       colorMap: new Map(),
-      onClick: () => opened++,
+      href: '/challenges#challenge=17',
     })
   try {
     await view.render(card())
@@ -76,15 +85,24 @@ test('challenge cards show real metrics and use one named native action for ever
       Array.from(view.container.querySelectorAll('dd'), (value) => value.textContent),
       ['1,500', '0']
     )
-    const button = view.container.querySelector('button')!
-    assert.equal(view.container.querySelectorAll('button').length, 1)
-    assert.equal(button.textContent, challenge.title)
-    assert.equal(button.getAttribute('aria-label'), `Open challenge: ${challenge.title}`)
-    assert.equal(button.getAttribute('aria-haspopup'), 'dialog')
+    const link = view.container.querySelector('a')!
+    assert.equal(view.container.querySelectorAll('a').length, 1)
+    assert.equal(link.textContent, challenge.title)
+    assert.equal(link.href, 'https://rsctf.test/challenges#challenge=17')
+    assert.equal(link.getAttribute('aria-label'), `Open challenge: ${challenge.title}`)
+    assert.equal(link.getAttribute('aria-haspopup'), 'dialog')
     assert.equal(view.container.querySelector('article > svg')?.getAttribute('aria-hidden'), 'true')
     assert.doesNotMatch(view.container.textContent, /Open challenge →/)
-    await act(async () => button.click())
-    assert.equal(opened, 1)
+    for (const modifier of ['ctrlKey', 'metaKey', 'shiftKey', 'altKey']) {
+      await act(async () => {
+        const event = new view.browser.MouseEvent('click', { bubbles: true, cancelable: true, [modifier]: true })
+        link.dispatchEvent(event)
+        assert.equal(event.defaultPrevented, false, `${modifier} retains native link behavior`)
+      })
+      assert.equal(view.container.querySelector('#location')?.textContent, '')
+    }
+    await act(async () => link.click())
+    assert.equal(view.container.querySelector('#location')?.textContent, '#challenge=17')
 
     await view.render(card(challenge, true))
     assert.equal(view.container.querySelector('article')?.getAttribute('data-state'), 'solved')
@@ -108,7 +126,7 @@ test('challenge cards show real metrics and use one named native action for ever
       assert.match(view.container.textContent, /Live scoring/)
       assert.match(view.container.textContent, /Scored during play/)
       assert.doesNotMatch(view.container.textContent, /1,500/)
-      assert.equal(view.container.querySelectorAll('button').length, 1)
+      assert.equal(view.container.querySelectorAll('a').length, 1)
     }
   } finally {
     await view.close()

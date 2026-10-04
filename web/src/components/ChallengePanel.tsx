@@ -16,15 +16,18 @@ import { ChallengeList } from '@Components/competition/ChallengeList'
 import { ChallengeToolbar } from '@Components/competition/ChallengeToolbar'
 import {
   isAcceptedSolve,
+  matchesChallengeSearch,
   resolveChallengeView,
+  sortChallenges,
   type ChallengeView,
-  type ChallengeSort,
 } from '@Components/competition/model'
+import { closeEventChallengeHash, eventChallengeHash } from '@Utils/ChallengeLinks'
 import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
 import { allowEventVpnReconnectRetry, isEventVpnAccessError } from '@Utils/EventVpnProof'
 import { showErrorMsg, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import { ChallengeInfo, ChallengeCategory, ChallengeType, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengePanel.module.css'
 
@@ -35,7 +38,9 @@ type ChallengePanelProps = {
 }
 
 export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwner, activity }) => {
-  const { hash } = useLocation()
+  const { pathname, search: locationSearch, hash } = useLocation()
+  const challengeHref = (chal: ChallengeInfo) =>
+    pathname + locationSearch + eventChallengeHash(chal.id, chal.title, hash)
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
 
@@ -47,24 +52,25 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
   // Measure the space left by the navigation rail, not the viewport. Keep a
   // useful results column beside the 26rem inspector even on expanded sidebars.
   const inlineDetail = workspaceWidth >= 1200
-  const [sort, setSort] = useState<ChallengeSort>('name')
+  const [sort, setSort] = useUrlTab('sort', ['name', 'score', 'solves'], 'name')
   const [viewPreference, setViewPreference] = useLocalStorage<ChallengeView | null>({
     key: 'challenge-explorer-view',
     defaultValue: null,
     getInitialValueInEffect: false,
   })
-  const view = resolveChallengeView(viewPreference, isCompact)
+  // Retain the initial preference for Back navigation to the URL without a view.
+  const defaultView = useRef(resolveChallengeView(viewPreference)).current
+  const [view, setUrlView] = useUrlTab('view', ['cards', 'list', 'globe'], defaultView)
+  const setView = (next: ChallengeView) => {
+    setUrlView(next)
+    setViewPreference(next)
+  }
+  const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
 
   const categories = useMemo(() => Object.keys(challenges ?? {}).sort(), [challenges])
-  const [activeTab, setActiveTab] = useState<ChallengeCategory | 'All'>('All')
+  const [selectedCategory, setActiveTab] = useUrlTab('category', ['All', ...Object.values(ChallengeCategory)], 'All')
+  const activeTab = selectedCategory === 'All' || categories.includes(selectedCategory) ? selectedCategory : 'All'
   const [search, setSearch] = useState('')
-
-  // Sync state if activeTab becomes invalid (e.g. after data load updates categories)
-  useEffect(() => {
-    if (activeTab !== 'All' && !categories.includes(activeTab)) {
-      setActiveTab('All')
-    }
-  }, [categories, activeTab])
 
   const [hideSolved, setHideSolved] = useLocalStorage({
     key: 'hide-solved',
@@ -99,6 +105,11 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     return all.sort((a, b) => a.id - b.id)
   }, [challenges])
 
+  const solvedIds = useMemo(
+    () => new Set((teamInfo?.rank?.solvedChallenges ?? []).filter(isAcceptedSolve).map((item) => item.id)),
+    [teamInfo?.rank?.solvedChallenges]
+  )
+
   // Switcher visibility — show only when there's more than one bucket to choose between.
   const { hasJeopardy, hasAd, hasKoth, kindsPresent } = useMemo(() => {
     let j = false,
@@ -123,57 +134,27 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
   }, [challengeKind, hasJeopardy, hasAd, hasKoth, setChallengeKind])
 
   const currentChallenges = useMemo(() => {
-    if (!challenges) return []
-
-    // Seeded RNG (Linear Congruential Generator)
-    const seed = teamInfo?.rank?.id ?? 0
-    const seededRandom = (s: number) => {
-      let t = s + 0x6d2b79f5
-      t = Math.imul(t ^ (t >>> 15), t | 1)
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-    }
-
-    // Create a deterministic shuffle for this team
-    const shuffle = (array: ChallengeInfo[]) => {
-      const shuffled = [...array] // Copy to match original array length
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        // Generate a random index based on seed + current index + challenge ID to vary variance
-        // using a combination of teamID and index ensures order is fixed for this team
-        const r = seededRandom(seed + i * 997 + shuffled[i].id * 13)
-        const j = Math.floor(r * (i + 1))
-        const temp = shuffled[i]
-        shuffled[i] = shuffled[j]
-        shuffled[j] = temp
-      }
-      return shuffled
-    }
-
-    const processList = (list: ChallengeInfo[]) => {
-      const filtered = list.filter(
+    const candidates = activeTab === 'All' ? allChallenges : (challenges?.[activeTab] ?? [])
+    return sortChallenges(
+      candidates.filter(
         (chal) =>
           matchesKind(chal) &&
-          `${chal.title ?? ''} ${chal.id}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()) &&
-          (!hideSolved || (teamInfo && teamInfo.rank?.solvedChallenges?.find((c) => c.id === chal.id)) === undefined)
-      )
-      // Ensure base order is stable (by ID) before shuffling
-      filtered.sort((a, b) => a.id - b.id)
-      return shuffle(filtered)
-    }
-
-    if (activeTab !== 'All') {
-      return processList(challenges[activeTab] ?? [])
-    }
-
-    // Iterate over sorted categories and process each list separately
-    const result: ChallengeInfo[] = []
-    categories.forEach((cat) => {
-      if (challenges[cat]) {
-        result.push(...processList(challenges[cat]))
-      }
-    })
-    return result
-  }, [challenges, activeTab, allChallenges, hideSolved, teamInfo, categories, challengeKind, search])
+          matchesChallengeSearch(chal, search, challengeCategoryLabelMap.get(chal.category)?.name) &&
+          (!hideSolved || !solvedIds.has(chal.id))
+      ),
+      sort
+    )
+  }, [
+    challenges,
+    activeTab,
+    allChallenges,
+    hideSolved,
+    solvedIds,
+    challengeKind,
+    search,
+    sort,
+    challengeCategoryLabelMap,
+  ])
 
   // When the user is viewing "All" on a mixed game, split the rendered list
   // into kind-segregated sections (Jeopardy / A&D / KotH) with a visual
@@ -210,20 +191,15 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
       openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
       setSelection({ gameId: numId, challengeId: chal.id })
       setDetailOpened(true)
-      window.location.hash = `#${chal.id}-${encodeURIComponent(chal.title?.replace(/ /g, '-') ?? '')}`
+      window.location.hash = eventChallengeHash(chal.id, chal.title, hash)
     },
-    [numId]
-  )
-  const solvedIds = useMemo(
-    () => new Set((teamInfo?.rank?.solvedChallenges ?? []).filter(isAcceptedSolve).map((item) => item.id)),
-    [teamInfo?.rank?.solvedChallenges]
+    [numId, hash]
   )
   // Not polled: one read per page, refreshed by solves and disclosure saves.
   const aiChatPending = useAiChatPendingChallenges(numId, game?.aiChatLinksRequired === true, allChallenges)
   const aiChatPendingIds = useMemo(() => new Set(aiChatPending.map((item) => item.id)), [aiChatPending])
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
   const [writeupSubmitOpened, setWriteupSubmitOpened] = useState(false)
-  const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
   const { t } = useTranslation()
   const [eventVpnDownloading, setEventVpnDownloading] = useState(false)
   const eventVpnDisconnected = Boolean(
@@ -295,7 +271,6 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
   ])
 
   useEffect(() => {
-    setActiveTab('All')
     setSearch('')
     setSelection(null)
     setDetailOpened(false)
@@ -307,11 +282,18 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     if (challengeId === null) {
       setSelection(null)
       setDetailOpened(false)
+      if (openerRef.current?.isConnected) openerRef.current.focus({ preventScroll: true })
       return
     }
 
     // A hash is only a request to open a challenge. It becomes authoritative
     // after this game's current team response proves ownership.
+    if (
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement.closest('[data-guide="challenge-card"]')
+    ) {
+      openerRef.current = document.activeElement
+    }
     setSelection({ gameId: numId, challengeId })
     setDetailOpened(true)
   }, [numId, ownedHashChallengeId])
@@ -428,7 +410,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
         search={search}
         onSearch={setSearch}
         view={view}
-        onView={setViewPreference}
+        onView={setView}
         sort={sort}
         onSort={setSort}
         category={activeTab}
@@ -480,7 +462,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
               <ChallengeGlobe
                 nodes={globeNodes}
                 scope={`${numId}:${activeTab}:${challengeKind}:${search}:${hideSolved}`}
-                onList={() => setViewPreference('list')}
+                onList={() => setView('list')}
               />
             ) : currentChallenges.length && view === 'list' ? (
               <ChallengeList
@@ -488,7 +470,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
                 solvedIds={solvedIds}
                 disclosurePendingIds={aiChatPendingIds}
                 selectedId={challenge?.id}
-                onSelect={openChallenge}
+                challengeHref={challengeHref}
                 sort={sort}
               />
             ) : currentChallenges && currentChallenges.length ? (
@@ -545,7 +527,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
                               challenge={chal}
                               iconMap={iconMap}
                               colorMap={colorMap}
-                              onClick={() => openChallenge(chal)}
+                              href={challengeHref(chal)}
                               solved={solved}
                               disclosurePending={aiChatPendingIds.has(chal.id)}
                               teamId={teamInfo?.rank?.id}
@@ -595,7 +577,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
             challengeOwned={selection?.gameId === numId && selection.challengeId === challenge.id}
             withCloseButton
             onClose={() => {
-              window.location.hash = ''
+              window.location.hash = closeEventChallengeHash(hash)
               setDetailOpened(false)
               setSelection(null)
               requestAnimationFrame(() => {
@@ -623,7 +605,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
 }
 
 export const challengeIdFromHash = (hash: string): number | null => {
-  const match = /^#([1-9]\d*)(?:-|$)/.exec(hash)
+  const match = /^#([1-9]\d*)(?:-|&|$)/.exec(hash)
   if (!match) return null
   const id = Number(match[1])
   return Number.isSafeInteger(id) ? id : null

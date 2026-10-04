@@ -4,6 +4,7 @@ import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router'
 import { DisclosureNeededBadge } from '@Components/DisclosureNeededBadge'
 import { useLanguage } from '@Utils/I18n'
 import { useServerNow } from '@Utils/ServerClock'
@@ -15,7 +16,7 @@ import classes from '@Styles/ChallengeCard.module.css'
 interface ChallengeCardProps {
   challenge: ChallengeInfo
   solved?: boolean
-  onClick?: () => void
+  href: string
   contextLabel?: string
   iconMap: Map<SubmissionType, PartialIconProps | undefined>
   colorMap: Map<SubmissionType, string | undefined>
@@ -28,7 +29,7 @@ interface ChallengeCardProps {
 const ChallengeCardContent: FC<ChallengeCardProps & { deadlinePassed: boolean }> = ({
   challenge,
   solved,
-  onClick,
+  href,
   contextLabel,
   iconMap,
   teamId,
@@ -67,15 +68,15 @@ const ChallengeCardContent: FC<ChallengeCardProps & { deadlinePassed: boolean }>
       <Icon path={categoryIcon} className={classes.watermark} aria-hidden="true" />
       <div className={classes.header}>
         <Icon path={categoryIcon} size={1.2} className={classes.categoryIcon} aria-hidden="true" />
-        <button
-          type="button"
-          onClick={onClick}
+        <Link
+          to={href}
+          preventScrollReset
           className={classes.openButton}
           aria-label={t('challenge.button.open', 'Open challenge: {{title}}', { title: challenge.title })}
           aria-haspopup="dialog"
         >
           {challenge.title}
-        </button>
+        </Link>
       </div>
       <div className={classes.metadata}>
         <div className={classes.kind}>

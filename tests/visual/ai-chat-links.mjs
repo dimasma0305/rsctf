@@ -189,6 +189,16 @@ try {
       await capture('ai-chat-links-providers.png')
     }
 
+    // Agent-artifact signature registry under Settings.
+    await cdp.send('Page.navigate', { url: `${target}/admin/settings?section=agent_signatures` })
+    await waitFor(`document.querySelector('[data-agent-signatures]') && document.body.innerText.includes('Claude Code scratchpad path') && document.body.innerText.includes('Team agent runner')`)
+    assert.equal(await evaluate(`document.querySelectorAll('[data-agent-signature]').length`), fixture.agentSignatureCount)
+    await audit(`${name}-agent-signatures`)
+    if (publish && name === 'desktop') {
+      await evaluate('window.scrollTo(0, 0)')
+      await capture('agent-signatures-settings.png')
+    }
+
     // Monitor review list.
     await cdp.send('Page.navigate', { url: `${target}/games/901/monitor/ai-chats` })
     await waitFor(`document.body.innerText.includes('Provider now blocked') && document.body.innerText.includes('Byte Bandits')`)

@@ -50,6 +50,7 @@
   color: var(--card-category);
 }
 .openButton {
+  text-decoration: none;
   padding: 0;
   border: 0;
   background: none;

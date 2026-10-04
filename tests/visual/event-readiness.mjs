@@ -73,6 +73,14 @@ try {
     assert.equal(await evaluate('document.querySelectorAll("[data-readiness-check]").length'), 5)
     assert.ok(await evaluate(`Array.from(document.querySelectorAll('[data-readiness-check]')).every(check => getComputedStyle(check).borderRadius === '0px')`),'checks are compact rows, not separate cards')
     assert.equal(await evaluate('document.querySelector("[data-readiness-check]").dataset.readinessCheck'), 'challenges')
+    // Overview counts and state-marked rows; the state is text, never color alone.
+    assert.deepEqual(
+      await evaluate(`Array.from(document.querySelectorAll('[data-readiness-counts] li')).map(item => [item.dataset.state, item.querySelector('span:nth-of-type(2)').textContent])`),
+      [['attention', '2'], ['unverified', '0'], ['checked', '3'], ['info', '0']]
+    )
+    assert.ok(await evaluate(`Array.from(document.querySelectorAll('[data-readiness-check]')).every(row => row.dataset.state && row.innerText.length > 20)`))
+    assert.ok(await evaluate(`!!document.querySelector('[data-readiness-window]')`), 'the saved schedule is shown for confirmation')
+    if (language === 'en-US') assert.match(await evaluate(`document.querySelector('[data-readiness-verdict]').textContent`), /^2 of 5 checks need attention$/)
     if (name === 'compact') {
       await evaluate(`document.querySelector('[data-readiness-check="builds"]').scrollIntoView({block:'center'})`)
       await audit('compact-checks')
@@ -111,6 +119,19 @@ try {
     assert.equal(await evaluate(`!!document.querySelector('[data-readiness-snapshot]')`), false)
     await audit(state)
   }
+  // Manual runtime checklist: keyboard toggle, live progress, and per-browser persistence.
+  scenario = 'normal'
+  await evaluate(`localStorage.removeItem('rsctf-readiness-manual:19')`)
+  await visit('[data-readiness-manual]')
+  assert.equal(await evaluate(`document.querySelectorAll('[data-readiness-manual-item]').length`), 4)
+  assert.match(await evaluate(`document.querySelector('[data-readiness-manual-progress]').textContent`), /0 of 4 confirmed/)
+  await evaluate(`document.querySelector('[data-readiness-manual-item="teams"] input[type=checkbox]').focus()`)
+  for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', { type, key: ' ', code: 'Space', windowsVirtualKeyCode: 32, ...(type === 'keyDown' ? { text: ' ' } : {}) })
+  await wait(`document.querySelector('[data-readiness-manual-progress]').textContent.includes('1 of 4 confirmed')`)
+  await audit('manual-checklist')
+  await visit('[data-readiness-manual]')
+  assert.equal(await evaluate(`document.querySelector('[data-readiness-manual-item="teams"] input').checked`), true, 'ticks survive a reload')
+  assert.equal(await evaluate(`document.querySelector('[data-readiness-manual-item="vpn"] input').checked`), false)
   scenario = 'empty'
   await visit()
   await wait(`document.body.innerText.includes('No enabled, approved challenges')`)

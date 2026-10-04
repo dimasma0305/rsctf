@@ -14,6 +14,318 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Detailed terrain and coordinated settlements — 4 October 2026
+
+Compared v0.1.134 (`9fb2f739`) with the v0.1.135 candidate using the same
+unchanged animation harness, loopback production build, software Chromium,
+150% CPU cap, 49 teams, 12 countries, four categories and 12-second phases.
+Focus received 24 selections at 2/second. One baseline and two final trials
+were retained. No Cargo build ran during measurement. Final acceptance was
+a phase-average frame interval below 22ms, p95 at most 33.5ms, unchanged
+rosters and zero runtime errors or event writes; both final trials passed.
+These bounded trials do not establish universal FPS or a speed improvement.
+
+Frame intervals (milliseconds):
+
+| Viewport / phase | Build | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1600 / rotation | Before | 17.83 | 16.70 | 16.80 | 33.30 | 49.90 | 50.10 |
+| 1600 / rotation | Final 1 | 18.07 | 16.70 | 16.80 | 33.30 | 50.00 | 83.40 |
+| 1600 / rotation | Final 2 | 17.98 | 16.70 | 16.80 | 33.30 | 50.00 | 83.30 |
+| 1600 / focus | Before | 18.29 | 16.70 | 16.80 | 33.30 | 49.90 | 116.70 |
+| 1600 / focus | Final 1 | 19.02 | 16.70 | 16.80 | 33.30 | 66.60 | 166.70 |
+| 1600 / focus | Final 2 | 19.39 | 16.70 | 33.30 | 33.40 | 50.00 | 83.30 |
+| 390 / rotation | Before | 16.80 | 16.70 | 16.70 | 16.80 | 16.80 | 50.00 |
+| 390 / rotation | Final 1 | 17.00 | 16.70 | 16.70 | 16.80 | 33.30 | 66.70 |
+| 390 / rotation | Final 2 | 17.14 | 16.70 | 16.70 | 16.80 | 33.40 | 50.10 |
+| 390 / focus | Before | 17.50 | 16.70 | 16.70 | 16.80 | 33.40 | 99.90 |
+| 390 / focus | Final 1 | 17.54 | 16.70 | 16.70 | 16.80 | 33.40 | 66.60 |
+| 390 / focus | Final 2 | 17.32 | 16.70 | 16.70 | 16.80 | 33.40 | 66.70 |
+
+Resource measurements list **before / final 1 / final 2**:
+
+| Viewport / phase | Renderer task seconds | End-of-phase JS heap MiB | Long tasks ≥50ms |
+| --- | ---: | ---: | ---: |
+| 1600 / rotation | 8.37 / 9.17 / 9.23 | 17.79 / 20.93 / 18.20 | 3 / 4 / 3 |
+| 1600 / focus | 7.38 / 8.23 / 8.59 | 19.09 / 27.26 / 18.31 | 5 / 8 / 4 |
+| 390 / rotation | 6.58 / 6.77 / 7.49 | 24.89 / 19.89 / 20.21 | 0 / 1 / 0 |
+| 390 / focus | 6.01 / 6.53 / 6.54 | 18.84 / 30.27 / 34.65 | 2 / 2 / 2 |
+
+This is a detail/quality tradeoff, not a performance win over v0.1.134.
+The added landcover, shore clipping, roads, water and meshes increase renderer
+work. Mobile frame p95 stayed 16.8ms; desktop p95 stayed near 33.3ms. Final 1's
+desktop-focus maximum worsened from 116.7 to 166.7ms, and final 2 focus p95 was
+33.4ms. Heap samples vary with garbage collection, not peak memory. Focus
+paint intervals also include the intentional rest between camera transitions;
+their distributions are retained in the raw reports.
+
+The renderer still owns one 400–1200px bitmap and no additional animation
+clock or IO. Detail is capped at 24 scenic countries / 744 objects, with
+sub-two-pixel meshes and unreadable field/window details omitted. Palette
+ramps are shared across meshes; back-facing polygons are culled by normals
+before projecting their vertices. An independent projected-winding regression
+checks that optimization through a full orbit. Geometry tests check all
+foundations against their own spherical countries at 1, 3, 12 and 150 countries
+per category. The surface proof checked 313,776 rays with zero disagreements;
+the old straight-chord negative control still disagreed 1,727 times.
+
+Earlier attempts remain distinguishable: the first broad landcover reached
+outside tiny coastal cells and was rejected by the containment test. Short
+inland borders now have eight shared samples minimum, and landcover has a
+conservative inset. A pre-culling animation repeat failed the target
+(desktop rotation average 23.96ms, p95 50ms, max 166.8ms); it was not discarded.
+Sharing lighting palettes and early face culling preceded the two accepted
+final trials. Host variation remains a limitation, not grounds for excluding
+a measured slow frame.
+
+Evidence (gitignored, retained on the deployment host):
+
+- `visual-audit-output/detailed-animation-before-v135/report.json`
+- `visual-audit-output/detailed-animation-final-v135/report.json` and
+  `detailed-animation-repeat-v135/report.json` (pre-culling development trials)
+- `visual-audit-output/detailed-animation-culling-v135/report.json` and
+  `detailed-animation-culling-repeat-v135/report.json` (final trials)
+- `visual-audit-output/detailed-surface-v135/report.json`
+- `visual-audit-output/detailed-verified-v135/` and `detailed-audit-v135/`
+- Public read baseline: `/tmp/rsctf-detailed-read-before.json`, 61 reads at
+  2/second, p95 13.91ms, zero 5xx/invalid/dropped reads and unchanged roster.
+  This UI-only change does not alter server read paths.
+
+## Immersive world scenery and bounded rendering — 4 October 2026
+
+Compared v0.1.133 (`a7f80fd4`) with the v0.1.134 candidate on the same
+loopback production-build host, software-rendered Chromium, 150% CPU bound,
+49 teams, 12 countries, four categories and 12-second phases. Country centers,
+input ordering and camera behavior are unchanged. Each focus phase received
+24 selections at 2/second. One baseline and two final-candidate trials are
+retained; these are bounded acceptance measurements, not a population estimate
+or a promise of 60 FPS on other hardware. No Cargo build ran during measurement.
+
+Frame intervals in milliseconds:
+
+| Viewport / phase | Build | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1600 / rotation | Before | 18.08 | 16.70 | 16.80 | 33.30 | 50.00 | 66.70 |
+| 1600 / rotation | Final 1 | 17.58 | 16.70 | 16.70 | 16.80 | 33.40 | 83.30 |
+| 1600 / rotation | Final 2 | 17.50 | 16.70 | 16.70 | 16.80 | 50.00 | 83.30 |
+| 1600 / focus | Before | 18.11 | 16.70 | 16.80 | 33.30 | 49.90 | 50.00 |
+| 1600 / focus | Final 1 | 17.68 | 16.70 | 16.80 | 33.30 | 33.40 | 66.70 |
+| 1600 / focus | Final 2 | 17.60 | 16.70 | 16.80 | 16.80 | 33.40 | 50.10 |
+| 390 / rotation | Before | 16.85 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+| 390 / rotation | Final 1 | 16.76 | 16.70 | 16.70 | 16.80 | 16.80 | 33.30 |
+| 390 / rotation | Final 2 | 17.00 | 16.70 | 16.70 | 16.80 | 33.40 | 33.40 |
+| 390 / focus | Before | 16.99 | 16.70 | 16.70 | 16.80 | 33.30 | 50.00 |
+| 390 / focus | Final 1 | 16.83 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+| 390 / focus | Final 2 | 17.06 | 16.70 | 16.70 | 16.80 | 33.30 | 50.00 |
+
+Resource measurements below list **before / final 1 / final 2**:
+
+| Viewport / phase | Renderer task seconds | End-of-phase JS heap MiB | Long tasks ≥50ms |
+| --- | ---: | ---: | ---: |
+| 1600 / rotation | 9.81 / 8.05 / 8.10 | 16.56 / 20.17 / 16.07 | 5 / 3 / 5 |
+| 1600 / focus | 8.46 / 6.82 / 6.64 | 25.51 / 16.03 / 14.60 | 3 / 2 / 4 |
+| 390 / rotation | 7.37 / 6.56 / 6.51 | 14.10 / 16.93 / 17.04 | 0 / 0 / 0 |
+| 390 / focus | 6.38 / 5.55 / 5.71 | 16.38 / 14.30 / 16.51 | 1 / 0 / 1 |
+
+The static ocean is cached by size/theme; the old rotating grid and particle
+field are removed from this arena only. One bounded 400–1200px canvas replaces
+480 per-building SVG paths. World-space meshes are cached per country, with
+at most 24 scenic countries / 528 objects. Sub-two-pixel objects and unreadable
+window bands are culled; the map, labels, borders, directory and ground patches
+remain available. The new layer has no timers, IO, event listeners or scoring
+authority. Reduced motion preserves its static rendering. First-solver flags
+require a real accepted solver; selecting an unsolved country cannot invent one.
+
+Renderer task time decreased in all four phases in both final trials. Frame
+tails remain variable: desktop rotation's worst frame was 83.3ms in final 1,
+versus 66.7ms in the baseline, and final 1 desktop focus p95 remained 33.3ms.
+Mobile focus p95 was 16.8ms in both final trials; its averages bracketed the
+baseline. Heap samples fluctuate with collection and are not peak-memory
+measurements. Do not infer a backend throughput or memory improvement.
+
+An earlier, pre-detail-limit candidate had a 133.3ms mobile-focus worst frame
+and 33.4ms p95; it is retained in
+`visual-audit-output/immersive-animation-after/report.json`, not presented as
+the final result. One subsequent start attempt used stale development-server
+HTML and never loaded the arena; it produced no timing samples and is excluded
+(`visual-audit-output/immersive-animation-final/report.json`). Restarting the
+local asset server resolved that setup failure before the final two runs.
+
+Authoritative distributions, frame/paint/camera samples, integrity and request
+evidence: `visual-audit-output/immersive-animation-before/report.json`,
+`visual-audit-output/immersive-animation-final-v134/report.json` and
+`visual-audit-output/immersive-animation-repeat-v134/report.json`. All measured
+runs retained 49 teams and 12 countries, with zero runtime errors, event writes
+or route-node replacements. The independent spherical surface proof retained
+313,776 checked samples, zero mismatches and 1,727 negative-control mismatches.
+Unit tests check scenery foundations inside their country through 150-country
+cases, finite outward relief, fixed render bounds and static ocean caching.
+
+## Surface clipping, country borders and settlements — 4 October 2026
+
+Compared v0.1.132 (`250e3415`) with the v0.1.133 candidate using the same
+loopback production-build host, software-rendered Chromium, 150% CPU bound,
+49 teams, 12 challenges, four categories and 12-second phases. Each focus
+phase received 24 selections at 2/second. Category order and IDs are unchanged;
+new coastlines move country centers slightly, so camera distances are not an
+identical-distance comparison. Cargo did not run during either measurement.
+
+Frame intervals in milliseconds:
+
+| Viewport / phase | Build | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1600 / rotation | Before | 17.16 | 16.70 | 16.70 | 16.80 | 33.40 | 50.00 |
+| 1600 / rotation | After | 17.93 | 16.70 | 16.70 | 33.30 | 50.00 | 116.60 |
+| 1600 / focus | Before | 17.47 | 16.70 | 16.70 | 16.80 | 33.40 | 66.70 |
+| 1600 / focus | After | 17.52 | 16.70 | 16.70 | 16.80 | 33.40 | 66.70 |
+| 390 / rotation | Before | 16.72 | 16.70 | 16.70 | 16.70 | 16.80 | 33.40 |
+| 390 / rotation | After | 16.93 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+| 390 / focus | Before | 16.81 | 16.70 | 16.70 | 16.80 | 16.80 | 33.50 |
+| 390 / focus | After | 17.42 | 16.70 | 16.70 | 16.80 | 33.40 | 100.00 |
+
+| Viewport / phase | Renderer task seconds | End-of-phase JS heap MiB | Long tasks ≥50ms |
+| --- | ---: | ---: | ---: |
+| 1600 / rotation | 8.24 → 9.51 | 19.83 → 13.33 | 0 → 7 |
+| 1600 / focus | 7.42 → 8.01 | 16.32 → 15.21 | 2 → 1 |
+| 390 / rotation | 6.32 → 7.56 | 20.09 → 17.68 | 0 → 0 |
+| 390 / focus | 5.42 → 6.94 | 22.11 → 23.40 | 0 → 2 |
+
+This is visual-detail acceptance, **not a performance improvement claim**.
+The extra border layers and radially extruded buildings cost renderer time.
+Desktop rotation p95 increased to 33.3ms; mobile focus had a 100ms worst frame.
+Medians remained 16.7ms, but this does not guarantee 60 FPS on other devices.
+Heap snapshots fluctuate with collection, and are not peak-memory measurements.
+Rendering is bounded to 24 visible settlements / 120 buildings, with small or
+back-facing settlements omitted. There are no new timers, API reads or scores.
+Both runs retained 49 teams and 12 countries with zero runtime errors, event
+writes or route-node replacements. Raw frame/paint/camera distributions are in
+`visual-audit-output/settlement-animation-before/report.json` and
+`visual-audit-output/settlement-animation-after/report.json`.
+
+The independent `tests/visual/arena-surface.mjs` browser proof compares SVG fill
+hit-testing with inverse camera rays and a gnomonic spherical-polygon oracle.
+Across 313,776 checked samples it found zero candidate mismatches; the old
+straight-chord clipping negative control disagreed on 1,727 samples. It excludes
+720 samples within 0.75 SVG units of the true edge to avoid tessellation/rounding
+ambiguity; horizon gaps remain in scope. The control isolates clipping, without
+the old extra elevation. Evidence: `visual-audit-output/settlement-surface-proof/report.json`.
+Geometry tests also check shared country area, disjoint continents, determinism,
+unit-sphere foundations and buildings staying inside their country. The separate
+read-only production `arena-read` guardrail is required after deployment.
+
+## Procedural continents and challenge countries — 4 October 2026
+
+Compared the v0.1.131 production frontend (`fe0911c2`) with the v0.1.132
+candidate using the same loopback build host, software-rendered Chromium,
+150% CPU bounded runner, 49 teams, 12 challenges, four categories, and
+12-second phases. Focus input remained 24 selections at 2/second per phase.
+The same challenge roster now belongs to category continents, so list ordering,
+geographic positions and camera travel distances intentionally differ. This is
+held-rate UI acceptance, not an identical-distance camera comparison. No Cargo build ran
+concurrently, and all API data came from the same read-only fixture.
+
+Frame interval distributions (milliseconds):
+
+| Viewport / phase | Build | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1600 / rotation | Before | 17.09 | 16.70 | 16.70 | 16.80 | 33.30 | 50.00 |
+| 1600 / rotation | After | 17.01 | 16.70 | 16.70 | 16.80 | 33.30 | 66.70 |
+| 1600 / focus | Before | 17.25 | 16.70 | 16.70 | 16.80 | 33.40 | 66.70 |
+| 1600 / focus | After | 17.68 | 16.70 | 16.80 | 33.30 | 33.40 | 50.10 |
+| 390 / rotation | Before | 16.90 | 16.70 | 16.70 | 16.80 | 33.30 | 50.00 |
+| 390 / rotation | After | 16.75 | 16.70 | 16.70 | 16.80 | 16.80 | 50.00 |
+| 390 / focus | Before | 16.88 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+| 390 / focus | After | 16.86 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+
+| Viewport / phase | Renderer task seconds | End-of-phase JS heap MiB | Long tasks ≥50ms |
+| --- | ---: | ---: | ---: |
+| 1600 / rotation | 8.02 → 8.45 | 12.74 → 17.99 | 3 → 1 |
+| 1600 / focus | 6.96 → 7.09 | 14.92 → 17.80 | 2 → 0 |
+| 390 / rotation | 6.21 → 6.51 | 13.26 → 15.45 | 1 → 1 |
+| 390 / focus | 5.16 → 5.26 | 17.96 → 15.87 | 0 → 0 |
+
+This is a visual-detail acceptance comparison, not a speed or memory improvement
+claim. Rotation and mobile-focus frame p95 remained at 16.8 ms. Desktop-focus
+p95 increased from 16.8 to 33.3 ms, while its median stayed at 16.7 ms and mean
+changed from 17.25 to 17.68 ms. Added coastline projection and country labels
+cost more renderer task time; the worse tail is retained rather than hidden.
+Heap samples fluctuate with collection and do not measure peak memory. Geography
+is generated only when category/challenge membership changes; score-only polls
+retain the geometry and interactive nodes. All runs retained 49 teams and
+12 challenges with zero runtime errors, event writes or route-node replacements.
+Raw frame/paint/camera distributions are in
+`visual-audit-output/country-animation-before/report.json` and
+`visual-audit-output/country-animation-ship/report.json`. An earlier measurement
+aborted when Chromium retired an old-document intercepted read during navigation.
+The harness now handles only that specific cancellation and still rejects all
+other interception errors; the complete rerun reported zero errors.
+
+Geometry regressions cover up to 500 countries, unit-sphere coordinates,
+determinism, shared boundaries, area coverage and non-overlapping continents.
+Browser cases also cover a 48-country continent, country-surface clicks,
+continent/challenge bookmarks, keyboard navigation and 320px layouts. The
+separate production `arena-read` guardrail must pass after immutable deployment;
+it does not establish a backend performance improvement.
+
+## Smooth arena camera and bounded rendering — 3 October 2026
+
+Compared the v0.1.129 source (`b13d1534`) and v0.1.130 candidate production
+frontend builds on the same host, software-rendered Chromium and bounded runner
+(150% CPU). Both used 49 teams, 12 islands, 1600px and 390px viewports, device
+scale 1, and 12 seconds per phase. The focus phase delivered exactly 24 island
+selections at 2/second on each side. All APIs were intercepted by the same
+read-only fixture; no real solves, participation or scores were changed.
+No Cargo build ran concurrently with a browser measurement.
+
+Frame interval distributions (milliseconds; all requestAnimationFrame callbacks,
+not just changed globe frames):
+
+| Viewport / phase | Build | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1600 / rotation | Before | 28.19 | 33.30 | 49.90 | 50.10 | 83.40 | 100.00 |
+| 1600 / rotation | After | 17.41 | 16.70 | 16.70 | 16.80 | 33.40 | 50.10 |
+| 1600 / focus | Before | 20.44 | 16.70 | 33.30 | 33.40 | 66.70 | 100.00 |
+| 1600 / focus | After | 17.99 | 16.70 | 16.80 | 33.30 | 50.00 | 116.60 |
+| 390 / rotation | Before | 17.16 | 16.70 | 16.70 | 16.80 | 33.40 | 66.60 |
+| 390 / rotation | After | 16.82 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+| 390 / focus | Before | 16.70 | 16.70 | 16.70 | 16.80 | 16.80 | 33.40 |
+| 390 / focus | After | 16.90 | 16.70 | 16.70 | 16.70 | 33.30 | 33.40 |
+
+| Viewport / phase | Renderer task seconds | End-of-phase JS heap MiB | Long tasks ≥50ms | Maximum camera step, radians |
+| --- | ---: | ---: | ---: | ---: |
+| 1600 / rotation | 7.81 → 7.93 | 20.58 → 17.39 | 15 → 0 | 0.00375 → 0.00375 |
+| 1600 / focus | 1.97 → 6.88 | 18.78 → 23.62 | 8 → 6 | 2.05 → 0.49 |
+| 390 / rotation | 6.69 → 5.87 | 17.16 → 31.87 | 2 → 0 | 0.00375 → 0.00251 |
+| 390 / focus | 1.46 → 5.08 | 17.41 → 20.13 | 0 → 0 | 2.05 → 0.23 |
+
+During steady rotation, actual globe updates increased from
+24.73 to 57.45/second on desktop and
+29.89 to 59.47/second at 390px.
+The improvement comes from replacing the 33ms gate with display-cadence updates,
+using one interruptible 420ms shortest-path camera transition, coalescing pointer
+moves, retaining bounded geometry/route nodes, and avoiding canvas reallocation
+and a dynamic blur every frame. The animated bitmap follows viewport density
+within 400–1200px; the shared static globe retains its 1200px default.
+
+These are shared-host observations, not a universal 60 FPS guarantee. Desktop
+rotation task time increased slightly and focus task time increased on both
+viewports because the new camera draws intermediate frames instead of snapping.
+End-of-phase heap samples fluctuate with collection and are not peak-memory
+measurements; no general CPU or heap reduction is claimed. All four runs retained
+49 unique ranking entries and 12 islands, without browser errors or event writes.
+Detailed frame/paint/camera/long-task distributions remain in
+`visual-audit-output/arena-animation-before/report.json` and
+`visual-audit-output/arena-animation-release/report.json`.
+
+The independent pre-release public-read guardrail against production event 27
+completed 60/60 k6 arrivals at 2 requests/s for 30 seconds: HTTP p95 16.25ms,
+zero dropped arrivals, invalid responses or 5xx, exact health body `ok`, and
+unchanged duplicate-free rosters. Twelve application/PostgreSQL CPU/RAM samples
+were retained in `/tmp/rsctf-arena-read-before.json.resources.json`; the full
+HTTP distribution is in `/tmp/rsctf-arena-read-before.json`. This low-rate check
+is health/integrity acceptance, not a backend performance claim. Repeat it after
+the immutable rollout before declaring deployment complete.
+
 ## Bounded route-module prefetch benchmark — 3 September 2026
 
 The anonymous home-to-games transition was measured against the exact parent

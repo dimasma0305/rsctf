@@ -11,4 +11,6 @@ test('readiness fixtures isolate writes and model independent read failures', ()
     assert.ok(fixture(path, 'GET', 'normal', 'Manager').body)
   }
   assert.deepEqual(fixture('/api/edit/games/19/challenges', 'GET', 'empty').body, [])
+  assert.deepEqual(fixture('/api/edit/games/19/preflight').body, { job: null, summary: null, results: [] })
+  assert.equal(fixture('/api/edit/games/19/preflight', 'GET', 'normal', 'User').status, 403)
 })

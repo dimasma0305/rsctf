@@ -14,20 +14,21 @@ import {
   Title,
   VisuallyHidden,
 } from '@mantine/core'
-import { mdiAlertCircle, mdiChartBox, mdiFlagVariant, mdiRefresh, mdiShieldSearch } from '@mdi/js'
+import { mdiAlertCircle, mdiChartBox, mdiFileSearchOutline, mdiFlagVariant, mdiRefresh, mdiShieldSearch } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC } from 'react'
+import { FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useParams, useSearchParams } from 'react-router'
+import { useParams } from 'react-router'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { CheatInfo } from '@Components/monitor/CheatInfo'
 import { CheatSubmissionLog } from '@Components/monitor/CheatSubmissionLog'
-import { isCheatReportStale, normalizeCheatViewTab } from '@Utils/AntiCheat'
-import { tryGetErrorMsg } from '@Utils/Shared'
+import { isCheatReportStale } from '@Utils/AntiCheat'
+import { showErrorMsg, showSuccessMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useAntiCheatReport } from '@Hooks/useAntiCheatReport'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import { useUser } from '@Hooks/useUser'
-import { DetectorCapability, Role } from '@Api'
+import api, { DetectorCapability, Role } from '@Api'
 
 const DETECTOR_STATUS_COLORS: Record<DetectorCapability['status'], string> = {
   active: 'green',
@@ -56,19 +57,35 @@ const CheatCheck: FC = () => {
   const { t, i18n } = useTranslation()
   const { user } = useUser()
   const isMobile = useIsMobile()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const activeTab = normalizeCheatViewTab(searchParams.get('tab'))
+  const [activeTab, handleTabChange] = useUrlTab('tab', ['analysis', 'submissions'], 'analysis')
+  const [rescanning, setRescanning] = useState(false)
 
-  const handleTabChange = (value: string | null) => {
-    const next = new URLSearchParams(searchParams)
-    next.set('tab', normalizeCheatViewTab(value))
-    setSearchParams(next)
+  // Admin-only: rescan every solver upload and writeup for agent traces with
+  // the current signature list. Runs in the background on the server.
+  const rescanUploads = async () => {
+    if (rescanning) return
+    setRescanning(true)
+    try {
+      const { data } = await api.admin.adminRescanAgentArtifacts(numId)
+      showSuccessMsg(
+        data.started
+          ? t(
+              'game.content.cheat.rescan_started',
+              'Rescan started. New agent-trace findings appear here as files are scanned; refresh in a moment.'
+            )
+          : t('game.content.cheat.rescan_running', 'A rescan of this event is already running.')
+      )
+    } catch (rescanError) {
+      showErrorMsg(rescanError, t)
+    } finally {
+      setRescanning(false)
+    }
   }
 
   const { data: report, isLoading, isValidating, error, mutate } = useAntiCheatReport(numId, activeTab === 'analysis')
   const refresh = () => void mutate()
   const lastReconciledAt = report?.lastReconciledAt
-  const reportIsStale = isCheatReportStale(lastReconciledAt)
+  const reportIsStale = isCheatReportStale(report)
   const formatReportTime = (value: number | null | undefined) =>
     value != null && Number.isFinite(value)
       ? new Intl.DateTimeFormat(i18n.resolvedLanguage, {
@@ -160,6 +177,22 @@ const CheatCheck: FC = () => {
             >
               {t('common.button.refresh', 'Refresh')}
             </Button>
+            {user?.role === Role.Admin && (
+              <Button
+                size="xs"
+                variant="default"
+                leftSection={<Icon path={mdiFileSearchOutline} size={0.7} aria-hidden />}
+                onClick={() => void rescanUploads()}
+                loading={rescanning}
+                title={t(
+                  'game.content.cheat.rescan_hint',
+                  'Scan every solver upload and writeup of this event for AI agent traces with the current signatures'
+                )}
+                data-agent-rescan
+              >
+                {t('game.content.cheat.rescan', 'Rescan uploads')}
+              </Button>
+            )}
           </Group>
         </Group>
 

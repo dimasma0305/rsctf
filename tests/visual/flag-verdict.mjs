@@ -94,7 +94,7 @@ try {
       const previousSubmissions = submissions
       const previousReads = statusReads
       await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
-      await waitFor(`document.querySelector('[data-challenge-row="9001"], [data-guide="challenge-card"] button')`)
+      await waitFor(`document.querySelector('[data-challenge-row="9001"], [data-guide="challenge-card"] a')`)
       const entrance = await evaluate(`new Promise(resolve => {
         const frames = [], deadline = performance.now() + 5000;
         let firstPanelAt;
@@ -107,7 +107,7 @@ try {
           if (performance.now() < deadline && (firstPanelAt === undefined || performance.now() - firstPanelAt < 500)) requestAnimationFrame(sample); else resolve(frames);
         };
         requestAnimationFrame(sample);
-        document.querySelector('[data-challenge-row="9001"], [data-guide="challenge-card"] button').click();
+        document.querySelector('[data-challenge-row="9001"], [data-guide="challenge-card"] a').click();
       })`)
       assert.ok(entrance.length > 0 && entrance.at(-1).opacity === 1, 'new challenge becomes fully visible')
       if (reduced) assert.ok(entrance.every(f => f.animations === 0), 'reduced motion skips the challenge entrance')

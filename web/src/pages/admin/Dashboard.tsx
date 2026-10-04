@@ -37,6 +37,7 @@ import { AdminPage } from '@Components/admin/AdminPage'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
 import { startAdminDashboardRefresh } from '@Utils/AdminDashboardRefresh'
 import { showErrorMsg } from '@Utils/Shared'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import api, {
   AdminDashboardModel,
   ChallengeReviewDetailModel,
@@ -52,7 +53,6 @@ const DASHBOARD_SWR_CONFIG = {
   revalidateOnFocus: false,
   revalidateOnReconnect: false,
 } as const
-type ActivityTab = 'reviews' | 'writeups' | 'cheats'
 
 const StatLink: FC<{
   title: string
@@ -87,8 +87,8 @@ const Dashboard: FC = () => {
   const { t } = useTranslation()
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
-  const [trendRange, setTrendRange] = useState<string>('Day')
-  const [activityTab, setActivityTab] = useState<ActivityTab>('reviews')
+  const [trendRange, setTrendRange] = useUrlTab('range', ['Day', 'Week', 'Month', 'Year'], 'Day')
+  const [activityTab, setActivityTab] = useUrlTab('activity', ['reviews', 'writeups', 'cheats'], 'reviews')
 
   const {
     data: dashboard,
@@ -491,7 +491,7 @@ const Dashboard: FC = () => {
 
         {/* Recent Activity Tabs */}
         <section className={classes.activity}>
-          <Tabs value={activityTab} onChange={(value) => value && setActivityTab(value as ActivityTab)}>
+          <Tabs value={activityTab} onChange={setActivityTab}>
             <Tabs.List>
               <Tabs.Tab value="reviews">{t('admin.dashboard.recent_reviews', 'Recent Reviews')}</Tabs.Tab>
               <Tabs.Tab value="writeups">{t('admin.dashboard.recent_writeups', 'Recent Writeups')}</Tabs.Tab>

@@ -42,6 +42,11 @@
     "solve_count": "{{count}} solves",
     "solves": "Solves",
     "sort": "Sort by",
+    "sort_name": "Name A–Z",
+    "sort_points": "Highest points",
+    "sort_solves": "Most solves",
+    "search_placeholder": "Name, ID or category",
+    "practice": "Practice",
     "status": "Status",
     "unsolved": "Unsolved",
     "upcoming": "Upcoming",
@@ -91,6 +96,9 @@
     "find_my_team": "Find My Team"
   },
   "content": {
+    "starts_compact": "Starts {{time}}",
+    "ends_compact": "Ends {{time}}",
+    "ended_compact": "Ended {{time}}",
     "events_empty_title": "No matching events",
     "events_empty_description": "There are no events on this page with the current filters. Try another search, filter, or page.",
     "load_failed": "Events could not be loaded",
@@ -586,6 +594,7 @@
   },
   "tab": {
     "challenge": "Challenges",
+    "live_arena": "Live arena",
     "monitor": {
       "cheat": "Cheat Detection",
       "cheatinfo": "Cheats",

@@ -623,6 +623,8 @@ pub async fn update_participation(
     crate::controllers::game::ad::hard_invalidate_ad_scoreboard(&st, identity.game_id).await;
     crate::controllers::game::ad::flush_participation_cache(&st, identity.game_id, identity.id)
         .await;
+    // Monitors suspend or accept teams from the cheat report and read it back.
+    crate::controllers::game::invalidate_cheat_report(&st, identity.game_id).await;
 
     Ok(MessageResponse::ok(""))
 }

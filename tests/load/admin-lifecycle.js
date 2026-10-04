@@ -101,6 +101,45 @@ export const ADMIN_OPERATIONS = Object.freeze([
       params: { key: "aiChatProviderKey" },
     },
   ),
+  operation(
+    "admin_agent_signatures_get",
+    "GET",
+    "/api/admin/agent-signatures",
+    {
+      responseKind: "agent-signatures",
+    },
+  ),
+  operation(
+    "admin_agent_signature_put",
+    "PUT",
+    "/api/admin/agent-signatures/{key}",
+    {
+      mutation: true,
+      responseKind: "agent-signature",
+      params: { key: "agentSignatureKey" },
+    },
+  ),
+  operation(
+    "admin_agent_signature_delete",
+    "DELETE",
+    "/api/admin/agent-signatures/{key}",
+    {
+      mutation: true,
+      responseKind: "agent-signature-deleted",
+      params: { key: "agentSignatureKey" },
+    },
+  ),
+  operation(
+    "admin_agent_artifact_rescan",
+    "POST",
+    "/api/admin/games/{id}/agent-artifacts/rescan",
+    {
+      mutation: true,
+      responseKind: "agent-artifact-rescan",
+      expectedStatuses: [202],
+      params: { id: "gameId" },
+    },
+  ),
   operation("admin_dashboard_get", "GET", "/api/admin/dashboard", {
     poll: true,
     responseKind: "dashboard",
@@ -1492,6 +1531,28 @@ function validAiChatProvider(provider) {
   );
 }
 
+// Agent-artifact signatures are Rust byte regexes evaluated only on the
+// server, so the contract checks shape rather than JavaScript compilation.
+const AGENT_SIGNATURE_KEY = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+function validAgentSignature(signature) {
+  return (
+    object(signature) &&
+    typeof signature.key === "string" &&
+    AGENT_SIGNATURE_KEY.test(signature.key) &&
+    typeof signature.label === "string" &&
+    signature.label.length > 0 &&
+    typeof signature.pattern === "string" &&
+    signature.pattern.length > 0 &&
+    typeof signature.builtin === "boolean" &&
+    typeof signature.enabled === "boolean" &&
+    Array.isArray(signature.examples) &&
+    signature.examples.every((example) => typeof example === "string") &&
+    (signature.builtin || signature.examples.length === 0) &&
+    (signature.updatedAt === null || Number.isSafeInteger(signature.updatedAt))
+  );
+}
+
 export function validateAdminResponse(operationId, response) {
   const item = operationById.get(operationId);
   if (!item) throw new Error(`unknown admin operation ${operationId}`);
@@ -1575,6 +1636,31 @@ export function validateAdminResponse(operationId, response) {
         hasExactKeys(body, ["key"]) &&
         typeof body.key === "string" &&
         AI_CHAT_PROVIDER_KEY.test(body.key)
+      );
+    case "agent-signatures":
+      return (
+        object(body) &&
+        Array.isArray(body.signatures) &&
+        body.signatures.every(validAgentSignature) &&
+        new Set(body.signatures.map(({ key }) => key)).size ===
+          body.signatures.length &&
+        Number.isSafeInteger(body.maxCustomSignatures) &&
+        body.maxCustomSignatures >= 0
+      );
+    case "agent-signature":
+      return validAgentSignature(body);
+    case "agent-signature-deleted":
+      return (
+        hasExactKeys(body, ["key"]) &&
+        typeof body.key === "string" &&
+        AGENT_SIGNATURE_KEY.test(body.key)
+      );
+    case "agent-artifact-rescan":
+      return (
+        hasExactKeys(body, ["gameId", "started"]) &&
+        Number.isSafeInteger(body.gameId) &&
+        body.gameId > 0 &&
+        typeof body.started === "boolean"
       );
     case "game-writeups":
       return (

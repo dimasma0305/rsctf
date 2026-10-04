@@ -1393,6 +1393,8 @@ export interface CheatReport {
   pendingJobs?: number;
   /** @format uint64 */
   oldestPendingAt?: number | null;
+  /** Captured evidence the detector reconciler has not applied yet. */
+  reconciliationPending?: boolean;
   /** Last detector reconciliation failure, when present. */
   lastError?: string | null;
   ipAnalysis: IpAnalysisResult[];
@@ -2166,6 +2168,8 @@ export interface ChallengeEditDetailModel {
   type: ChallengeType;
   /** Challenge hints */
   hints?: string[];
+  /** Number of leading hints explicitly released to players. */
+  releasedHintCount: number;
   /**
    * Flag template, used to generate Flag based on Token and challenge, game information
    * @maxLength 120
@@ -2672,6 +2676,13 @@ export interface ChallengeUpdateModel {
   variantGeneratorDigest?: string | null;
   solveReceiptMode?: SolveReceiptMode | null;
   receiptVerifierIdentity?: string | null;
+}
+
+export interface HintReleaseModel {
+  /** Stable opaque identity retained across retry of this publication change. */
+  operationId: string;
+  /** Challenge revision observed by the organizer. */
+  expectedRevision: number;
 }
 
 /**
@@ -3454,6 +3465,8 @@ export interface ChallengeCatalogQuery {
   search?: string;
   /** @format int32 */
   gameId?: number;
+  /** Exact challenge lookup, with the same catalog access checks. @format int32 */
+  challengeId?: number;
   category?: ChallengeCategory;
   mode?: ChallengeCatalogMode;
   type?: ChallengeType;
@@ -3718,6 +3731,47 @@ export interface AiChatProviderUpdateModel {
 /** Deleted provider key */
 export interface AiChatProviderDeleteResult {
   key: string;
+}
+
+/** A trace left by AI agent tooling, matched in uploaded solvers and writeups */
+export interface AgentSignatureModel {
+  key: string;
+  label: string;
+  /** Server-side byte regular expression */
+  pattern: string;
+  builtin: boolean;
+  enabled: boolean;
+  /** Sample matching text (built-ins only) */
+  examples: string[];
+  /** @format uint64 */
+  updatedAt: number | null;
+}
+
+/** Admin agent-artifact signature registry */
+export interface AgentSignatureListModel {
+  signatures: AgentSignatureModel[];
+  /** @format int32 */
+  maxCustomSignatures: number;
+}
+
+/** Create or update a signature; built-in keys accept only `enabled` */
+export interface AgentSignatureUpdateModel {
+  enabled: boolean;
+  label?: string;
+  pattern?: string;
+}
+
+/** Deleted signature key */
+export interface AgentSignatureDeleteResult {
+  key: string;
+}
+
+/** A background agent-artifact rescan request */
+export interface AgentArtifactRescanModel {
+  /** @format int32 */
+  gameId: number;
+  /** False when a rescan of this event is already running on the server */
+  started: boolean;
 }
 
 /** Player-facing challenge modes used by the joined-event catalog. */
@@ -6053,6 +6107,84 @@ export class Api<
       this.request<AiChatProviderDeleteResult, RequestResponse>({
         path: `/api/admin/ai-chat-providers/${encodeURIComponent(key)}`,
         method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Lists built-in and custom agent-artifact signatures; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminGetAgentSignatures
+     * @summary Get agent signatures
+     * @request GET:/api/admin/agent-signatures
+     */
+    adminGetAgentSignatures: (params: RequestParams = {}) =>
+      this.request<AgentSignatureListModel, RequestResponse>({
+        path: `/api/admin/agent-signatures`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    useAdminGetAgentSignatures: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AgentSignatureListModel, RequestResponse>(
+        doFetch ? `/api/admin/agent-signatures` : null,
+        options,
+      ),
+
+    /**
+     * @description Toggles a signature, or creates/updates a custom signature; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminSaveAgentSignature
+     * @summary Save an agent signature
+     * @request PUT:/api/admin/agent-signatures/{key}
+     */
+    adminSaveAgentSignature: (
+      key: string,
+      data: AgentSignatureUpdateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<AgentSignatureModel, RequestResponse>({
+        path: `/api/admin/agent-signatures/${encodeURIComponent(key)}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Deletes a custom agent signature; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminDeleteAgentSignature
+     * @summary Delete an agent signature
+     * @request DELETE:/api/admin/agent-signatures/{key}
+     */
+    adminDeleteAgentSignature: (key: string, params: RequestParams = {}) =>
+      this.request<AgentSignatureDeleteResult, RequestResponse>({
+        path: `/api/admin/agent-signatures/${encodeURIComponent(key)}`,
+        method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Rescans every solver upload and writeup of an event for agent artifacts in the background; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminRescanAgentArtifacts
+     * @summary Rescan uploads for agent artifacts
+     * @request POST:/api/admin/games/{id}/agent-artifacts/rescan
+     */
+    adminRescanAgentArtifacts: (id: number, params: RequestParams = {}) =>
+      this.request<AgentArtifactRescanModel, RequestResponse>({
+        path: `/api/admin/games/${id}/agent-artifacts/rescan`,
+        method: "POST",
         format: "json",
         ...params,
       }),
@@ -8812,6 +8944,38 @@ export class Api<
       this.request<ChallengeEditDetailModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}`,
         method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /** Release the next saved challenge hint to players. */
+    editReleaseNextChallengeHint: (
+      id: number,
+      cId: number,
+      data: HintReleaseModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeEditDetailModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/hints/release`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /** Return the most recently released challenge hint to draft state. */
+    editUnreleaseLastChallengeHint: (
+      id: number,
+      cId: number,
+      data: HintReleaseModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeEditDetailModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/hints/unrelease`,
+        method: "POST",
         body: data,
         type: ContentType.Json,
         format: "json",

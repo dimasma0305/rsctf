@@ -832,7 +832,13 @@ async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_or
           game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE RESTRICT
         );
         CREATE TEMP TABLE "AntiCheatTelemetryUsage" (
-          game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE RESTRICT
+          game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE RESTRICT,
+          logical_bytes BIGINT NOT NULL DEFAULT 0,
+          row_count BIGINT NOT NULL DEFAULT 0
+        );
+        CREATE TEMP TABLE "AntiCheatTelemetryGlobalUsage" (
+          id SMALLINT PRIMARY KEY, logical_bytes BIGINT NOT NULL,
+          row_count BIGINT NOT NULL, updated_at_utc TIMESTAMPTZ NOT NULL
         );
         CREATE TEMP TABLE "EventVpnGateOverrides" (
           id INTEGER PRIMARY KEY,
@@ -882,7 +888,8 @@ async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_or
         INSERT INTO "Submissions" VALUES (11, 1), (22, 2);
         INSERT INTO "CheatInfo" VALUES (1, 11), (2, 22);
         INSERT INTO "SuspicionEvaluationOutbox" VALUES (1), (2);
-        INSERT INTO "AntiCheatTelemetryUsage" VALUES (1), (2);
+        INSERT INTO "AntiCheatTelemetryUsage" VALUES (1, 4096, 16), (2, 1024, 4);
+        INSERT INTO "AntiCheatTelemetryGlobalUsage" VALUES (1, 5120, 20, now());
         INSERT INTO "EventVpnGateOverrides" VALUES (101, 1), (202, 2);
         INSERT INTO "EventVpnOverrideOperations" VALUES (1, 101), (2, 202);
         INSERT INTO "EventVpnOverrideExpirations" VALUES (1, 101), (2, 202);
@@ -958,5 +965,12 @@ async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_or
             .unwrap();
         assert_eq!(count, 1, "{table} should retain only game 2 data");
     }
+    // The deleted game's telemetry share left the global budget exactly once.
+    let global: (i64, i64) =
+        sqlx::query_as(r#"SELECT logical_bytes, row_count FROM "AntiCheatTelemetryGlobalUsage""#)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(global, (1024, 4));
     tx.rollback().await.unwrap();
 }

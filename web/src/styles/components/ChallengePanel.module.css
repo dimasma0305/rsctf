@@ -28,6 +28,10 @@
 }
 .toolbar {
   min-width: 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--app-border);
+  border-radius: var(--mantine-radius-md);
+  background: var(--app-raised-surface);
 }
 .toolbarMain {
   display: flex;
@@ -40,7 +44,7 @@
   max-width: 28rem;
 }
 .desktopSort {
-  flex: 0 1 8rem;
+  flex: 0 1 10rem;
 }
 .mobileSort {
   display: none;
@@ -69,7 +73,7 @@
   padding: 3px;
 }
 .tab {
-  min-height: 36px;
+  min-height: 40px;
   padding: 0.35rem 0.65rem;
   border: 1px solid transparent;
   color: var(--app-text-secondary);
@@ -85,7 +89,24 @@
   font-variant-numeric: tabular-nums;
 }
 .resultCount {
-  min-height: 28px;
+  min-height: 36px;
+}
+.unsolvedSwitch {
+  margin-inline-end: 0.5rem;
+}
+.unsolvedSwitch :global(.mantine-Switch-body) {
+  min-height: 36px;
+  align-items: center;
+}
+.unsolvedSwitch :global(.mantine-Switch-label) {
+  padding-inline-start: 0.5rem;
+  font-size: 0.8rem;
+}
+.mobileCategory {
+  display: none;
+}
+.compactCount {
+  display: none;
 }
 .scrollArea {
   min-width: 0;
@@ -109,6 +130,11 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.5rem;
   }
+  .toolbar {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
   .search {
     flex-basis: calc(100% - 7rem);
     max-width: none;
@@ -121,7 +147,7 @@
     margin: 0;
   }
   .viewControl :global(.mantine-SegmentedControl-label) {
-    min-height: 36px;
+    min-height: 40px;
     display: flex;
     justify-content: center;
     align-items: center;
@@ -138,10 +164,22 @@
   .mobileSort {
     display: block;
   }
+  .mobileCategory {
+    display: block;
+    color: var(--app-accent-text);
+  }
+  .fullCount {
+    display: none;
+  }
+  .compactCount {
+    display: inline;
+  }
   .toolbarSecondary {
     margin-top: 0.3rem;
   }
   .resultCount {
-    min-height: 20px;
+    width: 100%;
+    justify-content: space-between;
+    min-height: 36px;
   }
 }

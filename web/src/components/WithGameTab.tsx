@@ -1,70 +1,19 @@
-import { Badge, Card, Group, LoadingOverlay, Stack, Text, Title } from '@mantine/core'
+import { LoadingOverlay, Stack } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
-import { mdiChartLine, mdiExclamationThick, mdiFlagOutline, mdiMonitorEye, mdiUpload } from '@mdi/js'
+import { mdiExclamationThick } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import dayjs from 'dayjs'
-import duration from 'dayjs/plugin/duration'
 import React, { FC, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
-import { GameProgress } from '@Components/GameProgress'
-import { IconTabs } from '@Components/IconTabs'
+import { GameWorkspaceHeader } from '@Components/GameWorkspaceHeader'
 import { RequireRole } from '@Components/WithRole'
 import { useServerClockReady } from '@Utils/ServerClock'
 import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
-import { isReadOnlyGameArchive } from '@Utils/gameArchive'
 import { useGameAccess, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUserRole } from '@Hooks/useUser'
-import { DetailedGameInfoModel, ParticipationStatus, Role } from '@Api'
+import { ParticipationStatus, Role } from '@Api'
 import classes from '@Styles/GameWorkspace.module.css'
-import misc from '@Styles/Misc.module.css'
-
-dayjs.extend(duration)
-
-const GameCountdown: FC<{ game?: DetailedGameInfoModel; compact?: boolean }> = ({ game, compact }) => {
-  const { endTime, progress, started, finished, now } = useGameStatus(game)
-
-  const { t } = useTranslation()
-
-  const countdown = dayjs.duration(endTime.diff(now))
-
-  // An ended event already has a status badge. Do not leave a "time remaining"
-  // instrument showing a redundant end message in the competition header.
-  if (compact && finished) return null
-
-  return (
-    <Card
-      miw="9rem"
-      ta="center"
-      p={compact ? 0 : undefined}
-      pt={compact ? 0 : 4}
-      role="timer"
-      aria-live="off"
-      aria-label={t('game.content.time_remaining', 'Game time remaining')}
-      className={compact ? classes.countdown : misc.overflowVisible}
-    >
-      <Text size="xs" c="dimmed">
-        {t('game.content.time_remaining', 'Time remaining')}
-      </Text>
-      <Text fw="bold" lineClamp={1}>
-        {countdown.asHours() > 999
-          ? t('game.content.game_lasts_long')
-          : countdown.asSeconds() > 0
-            ? `${Math.floor(countdown.asHours())} : ${countdown.format('mm : ss')}`
-            : t('game.content.game_ended')}
-      </Text>
-      <Card.Section mt={4}>
-        <GameProgress
-          percentage={progress}
-          active={started && !finished}
-          ariaLabel={t('game.content.event_progress_label', 'Event progress')}
-          py={0}
-        />
-      </Card.Section>
-    </Card>
-  )
-}
 
 export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode }>> = ({ children, summary }) => {
   const { id } = useParams()
@@ -74,62 +23,9 @@ export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode
 
   const { role } = useUserRole()
   const { game, liveReadReady, status } = useGameAccess(numId)
-  const { started, finished, now } = useGameStatus(game)
+  const { started, finished } = useGameStatus(game)
   const clockReady = useServerClockReady()
   const { t } = useTranslation()
-
-  const archived = isReadOnlyGameArchive(game, now.valueOf())
-
-  const pages = [
-    {
-      icon: mdiFlagOutline,
-      title: t('game.tab.challenge'),
-      path: 'challenges',
-      link: 'challenges',
-      requireJoin: true,
-      requireRole: Role.User,
-    },
-    {
-      icon: mdiChartLine,
-      title: t('game.tab.scoreboard'),
-      path: 'scoreboard',
-      link: 'scoreboard',
-      requireJoin: false,
-      requireRole: Role.User,
-    },
-    {
-      icon: mdiUpload,
-      title: t('game.tab.submit', 'Submit'),
-      path: 'submit',
-      link: 'submit',
-      requireJoin: false,
-      requireRole: Role.User,
-      hidden: game?.allowUserSubmissions === false || archived,
-    },
-    {
-      icon: mdiMonitorEye,
-      title: t('game.tab.monitor.index'),
-      path: 'monitor',
-      link: 'monitor/events',
-      requireJoin: false,
-      requireRole: Role.Monitor,
-    },
-  ]
-
-  const filteredPages = pages
-    .filter((p) => !p.hidden)
-    .filter((p) => RequireRole(p.requireRole, role))
-    .filter((p) => !p.requireJoin || game?.status === ParticipationStatus.Accepted)
-
-  const tabs = filteredPages.map((p) => ({
-    tabKey: p.link,
-    to: `/games/${numId}/${p.link}`,
-    label: p.title,
-    icon: <Icon path={p.icon} size={1} />,
-  }))
-  const getTab = (path: string) => filteredPages?.findIndex((page) => path.includes(page.path))
-
-  const activeTab = Math.max(0, getTab(location.pathname))
 
   usePageTitle(game?.title)
 
@@ -204,38 +100,7 @@ export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode
   return (
     <Stack className={classes.competitionStack} pos="relative" mt={0} gap="sm" style={{ containerType: 'inline-size' }}>
       <LoadingOverlay visible={!game} overlayProps={DEFAULT_LOADING_OVERLAY} />
-      <div className={classes.masthead} data-event-workspace-header>
-        {game && (
-          <header className={classes.header}>
-            <Stack gap={4} miw={0}>
-              <Group gap="xs" className={classes.eventIdentity}>
-                <Text size="xs" c="dimmed" className={classes.eventId}>
-                  {t('common.workspace.event_id', 'Event #{{id}}', { id: numId })}
-                </Text>
-                <Badge variant="light" color={finished ? 'gray' : started ? 'green' : 'blue'}>
-                  {finished
-                    ? t('game.arena.ended', 'Ended')
-                    : started
-                      ? t('game.arena.live', 'Live')
-                      : t('game.arena.upcoming', 'Upcoming')}
-                </Badge>
-              </Group>
-              <Title className={classes.title}>{game.title}</Title>
-            </Stack>
-            <GameCountdown game={game} compact />
-          </header>
-        )}
-        <div className={classes.eventNavigation} data-event-tabs>
-          <IconTabs
-            mode="navigation"
-            appearance="underline"
-            position="flex-start"
-            ariaLabel={t('game.tab.navigation', 'Game sections')}
-            active={activeTab}
-            tabs={tabs}
-          />
-        </div>
-      </div>
+      <GameWorkspaceHeader gameId={numId} game={game} />
       {summary && <div className={classes.summary}>{summary}</div>}
       <Stack gap="sm" miw={0} data-motion="page">
         {children}

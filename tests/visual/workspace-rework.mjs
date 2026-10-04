@@ -117,26 +117,24 @@ const visit = async (path, name) => {
   if (cardsOnly) await evaluate(`document.querySelector('[data-guide="challenge-card"]')?.scrollIntoView({ block: 'center', behavior: 'instant' })`)
   await inspect(name)
   if (cardsOnly) {
-    // Native activation and the CSS hit area; mounted tests check the real
-    // callback separately, so this fixture never fetches a challenge or mutates it.
+    // Native link activation and the CSS hit area; intercept navigation so this
+    // fixture never fetches a challenge or mutates it.
     await evaluate(`(() => {
       window.cardClicks = 0;
       window.cardClickController = new AbortController();
-      const button = document.querySelector('[data-guide="challenge-card"] button');
-      button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); window.cardClicks++; }, { signal: window.cardClickController.signal });
-      button.focus();
+      const link = document.querySelector('[data-guide="challenge-card"] a');
+      link.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); window.cardClicks++; }, { signal: window.cardClickController.signal });
+      link.focus();
     })()`)
-    assert.equal(await evaluate(`document.activeElement === document.querySelector('[data-guide="challenge-card"] button')`), true, 'card button must receive focus')
+    assert.equal(await evaluate(`document.activeElement === document.querySelector('[data-guide="challenge-card"] a')`), true, 'card link must receive focus')
     await press('Enter')
-    assert.equal(await evaluate('window.cardClicks'), 1, 'Enter must activate the native card button')
-    await press(' ', 'Space')
-    assert.equal(await evaluate('window.cardClicks'), 2, 'Space must activate the native card button')
+    assert.equal(await evaluate('window.cardClicks'), 1, 'Enter must activate the native card link')
     assert.equal(await evaluate(`document.activeElement.matches(':focus-visible') && parseFloat(getComputedStyle(document.activeElement.closest('article')).outlineWidth) >= 2`), true, 'card focus must remain visible')
     await screenshot(`${name}-keyboard`)
     const point = await evaluate(`(() => { const rect = document.querySelector('[data-guide="challenge-card"] dl').getBoundingClientRect(); return { x: rect.x + 12, y: rect.y + 12 }; })()`)
     await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 })
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 })
-    assert.equal(await evaluate('window.cardClicks'), 3, 'the score area must open the same card action')
+    assert.equal(await evaluate('window.cardClicks'), 2, 'the score area must open the same card action')
     await evaluate('window.cardClickController.abort(); document.activeElement.blur()')
   }
 }
@@ -186,7 +184,7 @@ try {
     await waitFor(`document.activeElement.id === 'settings-tab-platform'`)
 
     await visit('/games/901/challenges', 'compact-challenge-interactions')
-    await evaluate(`document.querySelector('input[placeholder="Name or ID"]').focus()`)
+    await evaluate(`document.querySelector('#challenge-search').focus()`)
     await cdp.send('Input.insertText', { text: '9002' })
     await waitFor(`document.querySelectorAll('[data-guide="challenge-card"]').length === 1`)
     await cdp.send('Input.insertText', { text: '-no-match' })

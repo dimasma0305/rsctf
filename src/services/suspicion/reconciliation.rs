@@ -34,6 +34,10 @@ const PASS_DEADLINE: Duration = Duration::from_secs(45);
 pub(crate) const SOURCE_BATCH: i64 = 256;
 const MAX_ELIGIBLE_GAMES: i64 = 32;
 
+#[cfg(test)]
+#[path = "schedule_tests.rs"]
+mod schedule_tests;
+
 pub(super) const ELIGIBLE_GAMES_SQL: &str = r#"
     WITH observed_clock AS MATERIALIZED (
       SELECT clock_timestamp() AS db_now
@@ -158,6 +162,27 @@ pub(super) async fn request_final_if_ready(
     if super::outbox::incomplete_competitive_jobs(pool, game_id).await? != 0 {
         return Ok(());
     }
+    // The editor can extend/reopen between the close barrier and this request.
+    // Fence the current window before marking a generation final.
+    let mut transaction = pool.begin().await.map_err(database_error)?;
+    let still_final: bool = sqlx::query_scalar(
+        r#"SELECT game.end_time_utc + ($2::bigint * INTERVAL '1 second') <= clock_timestamp()
+                  AND EXISTS (
+                      SELECT 1 FROM "SuspicionReconciliationState" state
+                       WHERE state.game_id = game.id
+                         AND state.evidence_closed_at_utc IS NOT NULL
+                  )
+             FROM "Games" game WHERE game.id = $1 FOR SHARE OF game"#,
+    )
+    .bind(game_id)
+    .bind(i64::try_from(finalize_grace_seconds).expect("validated grace fits i64"))
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if !still_final {
+        transaction.commit().await.map_err(database_error)?;
+        return Ok(());
+    }
     sqlx::query(
         r#"UPDATE "AntiCheatReconciliationQueue"
               SET final_requested_at_utc = COALESCE(
@@ -170,9 +195,10 @@ pub(super) async fn request_final_if_ready(
             WHERE game_id = $1 AND final_applied_at_utc IS NULL"#,
     )
     .bind(game_id)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
     Ok(())
 }
 
@@ -226,6 +252,12 @@ async fn claim_reconciliation(
     game_id: i32,
 ) -> AppResult<Option<ReconciliationClaim>> {
     let lease_token = Uuid::new_v4();
+    let mut transaction = pool.begin().await.map_err(database_error)?;
+    sqlx::query(r#"SELECT id FROM "Games" WHERE id = $1 FOR SHARE"#)
+        .bind(game_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
     let claimed = sqlx::query_as::<_, ClaimRow>(
         r#"UPDATE "AntiCheatReconciliationQueue" queue
               SET lease_token = $2,
@@ -248,9 +280,10 @@ async fn claim_reconciliation(
     .bind(game_id)
     .bind(lease_token)
     .bind(CLAIM_SECONDS)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
     let Some(claimed) = claimed else {
         return Ok(None);
     };
@@ -340,6 +373,16 @@ async fn run_live_pass(
     }
     let submissions = cursor(claim, SOURCE_SUBMISSION);
     if let Some(submissions) = submissions {
+        within_deadline(
+            deadline,
+            "extended-window submissions",
+            super::schedule::replay_newly_competitive_submissions(
+                state,
+                claim.game_id,
+                submissions,
+            ),
+        )
+        .await?;
         // Only monotonic, delta-anchored cadence work runs live. Cheat-stat's
         // population-relative rules persist immutable events and can change as
         // later solves arrive, so the unconditional final sweep owns them.

@@ -299,6 +299,7 @@ pub struct ChallengeEditDetailModel {
     #[serde(rename = "type")]
     pub challenge_type: ChallengeType,
     pub hints: Option<JsonValue>,
+    pub released_hint_count: i32,
     pub flag_template: Option<String>,
     pub is_enabled: bool,
     #[serde(with = "crate::utils::datetime::millis_opt")]
@@ -410,6 +411,7 @@ impl ChallengeEditDetailModel {
             category: c.category,
             challenge_type: c.challenge_type,
             hints: c.hints.clone(),
+            released_hint_count: c.released_hint_count,
             flag_template: c.flag_template.clone(),
             is_enabled: c.is_enabled,
             deadline_utc: c.deadline_utc,
@@ -774,6 +776,14 @@ pub fn router() -> Router<SharedState> {
             get(get_challenge)
                 .put(update_challenge)
                 .delete(delete_challenge),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/{cId}/hints/release",
+            post(release_next_hint),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/{cId}/hints/unrelease",
+            post(unrelease_last_hint),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/approve",

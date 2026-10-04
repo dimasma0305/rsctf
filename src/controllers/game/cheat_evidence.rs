@@ -9,6 +9,8 @@ use super::*;
 
 use crate::services::suspicion::{SuspicionTier, SuspicionType};
 
+#[path = "cheat_evidence_artifacts.rs"]
+mod artifacts;
 #[path = "cheat_evidence_sources.rs"]
 mod sources;
 
@@ -477,6 +479,9 @@ pub async fn suspicion_event_evidence(
         }
         SuspicionType::Burst => {
             sources::add_burst_source(st.pg(), &event, &mut review).await?;
+        }
+        SuspicionType::AgentArtifact | SuspicionType::AiDeclarationContradiction => {
+            artifacts::add_agent_artifact_source(st.pg(), &event, ty, &mut review).await?;
         }
         _ => {
             sources::add_submission_source(st.pg(), &event, &mut review).await?;

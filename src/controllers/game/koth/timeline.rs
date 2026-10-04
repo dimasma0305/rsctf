@@ -69,9 +69,6 @@ pub async fn timeline(
 ) -> AppResult<RequestResponse<KothScoreTimelineModel>> {
     let game = crate::controllers::game::load_game_cached(&st, game_id).await?;
     let is_monitor = maybe.as_ref().is_some_and(|user| user.is_monitor());
-    if !super::can_view_koth_standings(game.hidden, is_monitor) {
-        return Err(AppError::not_found("Game not found"));
-    }
     if Utc::now() < game.start_time_utc && !is_monitor {
         return Err(AppError::game_not_started());
     }

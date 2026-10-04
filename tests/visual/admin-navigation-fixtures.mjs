@@ -19,6 +19,8 @@ export function fixture(path, method = 'GET', role = 'Admin') {
   if (p.startsWith('/api/edit/') && !['Admin', 'Manager'].includes(role)) return { status: 403, body: { title: 'forbidden' } }
   const responses = {
     '/api/admin/config': settings,
+    '/api/admin/ai-chat-providers': { providers: [], maxCustomProviders: 32 },
+    '/api/admin/agent-signatures': { signatures: [], maxCustomSignatures: 32 },
     '/api/admin/users': { data: [], total: 0, length: 0 },
     '/api/admin/teams': [],
     '/api/admin/dashboard': { systemStats: { userCount: 18, teamCount: 6, activeContainerCount: 0 }, topGames: [game] },
@@ -46,7 +48,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         res.writeHead(r.status || 200, { 'Content-Type': 'application/json' })
         return res.end(JSON.stringify(r.body))
       }
-      const response = await fetch('http://127.0.0.1:63017' + req.url)
+      const response = await fetch((process.env.RSCTF_ADMIN_NAV_TARGET || 'http://127.0.0.1:63017') + req.url)
       res.writeHead(response.status, { 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream' })
       res.end(Buffer.from(await response.arrayBuffer()))
     } catch { res.writeHead(502); res.end('Fixture proxy failed') }

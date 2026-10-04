@@ -21,7 +21,7 @@ const event = (kind, id, overrides = {}) => ({
 });
 
 test("pins every persisted suspicion kind to its public rule code", () => {
-  assert.equal(SUSPICION_RULES.length, 38);
+  assert.equal(SUSPICION_RULES.length, 40);
   assert.deepEqual(
     SUSPICION_RULES.map(({ kind, code }) => [kind, code]),
     [
@@ -63,6 +63,8 @@ test("pins every persisted suspicion kind to its public rule code", () => {
       [35, "InstantSubmitAfterAccess"],
       [36, "SubmitterNeverAccessedContainer"],
       [37, "AccessIpMismatchAtSubmission"],
+      [38, "AgentArtifact"],
+      [39, "AiDeclarationContradiction"],
     ],
   );
 });
@@ -78,7 +80,7 @@ test("canonical profile requires every default rule and weight", () => {
 
   assert.throws(
     () => assertCanonicalRuleProfile(rows.slice(1)),
-    /exactly 38 rules/,
+    /exactly 40 rules/,
   );
   assert.throws(
     () => assertCanonicalRuleProfile(
@@ -259,7 +261,7 @@ test("detector capability metadata covers every stable kind exactly once", () =>
     ...capability,
     detail: "Contract fixture.",
   }));
-  assert.equal(validateDetectorCapabilities(rows).size, 38);
+  assert.equal(validateDetectorCapabilities(rows).size, 40);
   assert.deepEqual(
     rows.filter(({ status }) => status === "background").map(({ code }) => code),
     [
@@ -284,6 +286,8 @@ test("detector capability metadata covers every stable kind exactly once", () =>
       "DelayedSolveSubmission",
       "InstantSubmitAfterAccess",
       "AccessIpMismatchAtSubmission",
+      "AgentArtifact",
+      "AiDeclarationContradiction",
     ],
   );
   assert.deepEqual(
@@ -306,7 +310,7 @@ test("detector capability metadata covers every stable kind exactly once", () =>
   );
   assert.throws(
     () => validateDetectorCapabilities(rows.slice(1)),
-    /cover exactly 38 stable kinds.*StolenFlag/,
+    /cover exactly 40 stable kinds.*StolenFlag/,
   );
   assert.throws(
     () => validateDetectorCapabilities([...rows, rows[0]]),

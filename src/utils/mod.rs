@@ -1,4 +1,5 @@
 pub(crate) mod archive;
+pub(crate) mod challenge_hints;
 pub mod codec;
 pub(crate) mod content_disposition;
 pub mod crypto_utils;

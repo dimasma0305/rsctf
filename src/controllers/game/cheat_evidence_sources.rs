@@ -214,7 +214,11 @@ async fn submission_row(
               AND submission.participation_id = $2
               AND ($3::INTEGER IS NULL OR submission.challenge_id = $3)
               AND (($4::INTEGER IS NOT NULL AND submission.id = $4)
-                   OR ($4::INTEGER IS NULL AND first_solve.submission_id IS NOT NULL))
+                   -- Without a submission key, show the canonical solve only
+                   -- if it existed when the event was recorded; a later solve
+                   -- is not what the detector saw.
+                   OR ($4::INTEGER IS NULL AND first_solve.submission_id IS NOT NULL
+                       AND submission.submit_time_utc <= $5))
             ORDER BY submission.submit_time_utc, submission.id
             LIMIT 1"#,
     )
@@ -222,6 +226,7 @@ async fn submission_row(
     .bind(event.participation_id)
     .bind(event.challenge_id)
     .bind(by_id)
+    .bind(event.created_at)
     .fetch_optional(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))

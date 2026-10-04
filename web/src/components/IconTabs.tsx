@@ -1,6 +1,6 @@
 import { Group, GroupProps, MantineColor, useMantineColorScheme, useMantineTheme } from '@mantine/core'
 import { clamp, useReducedMotion } from '@mantine/hooks'
-import React, { FC, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { FC, useLayoutEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { LogoHeader } from '@Components/LogoHeader'
 import classes from '@Styles/IconTabs.module.css'
@@ -126,11 +126,7 @@ export const IconTabs: FC<IconTabsProps> = (props) => {
   const reducedMotion = useReducedMotion()
   const resolveColor = (color?: MantineColor) =>
     color ? theme.colors[theme.primaryColor][colorScheme === 'dark' ? 4 : 7] : undefined
-  const current = tabs.length > 0 ? clamp(activeTab, 0, tabs.length - 1) : -1
-
-  useEffect(() => {
-    setActiveTab(active ?? 0)
-  }, [active])
+  const current = tabs.length > 0 ? clamp(active ?? activeTab, 0, tabs.length - 1) : -1
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current
@@ -158,7 +154,7 @@ export const IconTabs: FC<IconTabsProps> = (props) => {
   const selectTab = (index: number, focus = false) => {
     const tab = tabs[index]
     if (!tab || disabled) return
-    setActiveTab(index)
+    if (active === undefined) setActiveTab(index)
     onTabChange?.(index, tab.tabKey)
     if (focus) window.requestAnimationFrame(() => tabRefs.current[index]?.focus())
   }

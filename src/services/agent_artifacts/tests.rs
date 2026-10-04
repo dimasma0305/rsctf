@@ -1,0 +1,445 @@
+use std::io::Write;
+
+use super::*;
+
+fn builtins() -> Vec<CompiledSignature> {
+    enabled_signatures(&[])
+}
+
+fn keys(hits: &[ArtifactHit]) -> Vec<&str> {
+    hits.iter().map(|hit| hit.signature_key.as_str()).collect()
+}
+
+#[test]
+fn every_builtin_matches_its_examples_and_no_benign_text() {
+    let signatures = builtins();
+    assert_eq!(signatures.len(), BUILTIN_SIGNATURES.len());
+    for builtin in BUILTIN_SIGNATURES {
+        let compiled = signatures
+            .iter()
+            .find(|signature| signature.key == builtin.key)
+            .unwrap();
+        assert!(!builtin.examples.is_empty(), "{}", builtin.key);
+        for example in builtin.examples {
+            assert!(compiled.regex.is_match(example.as_bytes()), "{example}");
+        }
+        for sample in BENIGN_SAMPLES {
+            assert!(
+                !compiled.regex.is_match(sample.as_bytes()),
+                "{} matched {sample:?}",
+                builtin.key
+            );
+        }
+    }
+}
+
+#[test]
+fn builtins_reject_near_misses() {
+    let signatures = builtins();
+    let hit = |text: &str| keys(&scan_file(&signatures, text.as_bytes())).len();
+    for near_miss in [
+        "/tmp/claude/scratchpad/solve.py",
+        "/tmp/claude-0/project/not-a-session/scratchpad",
+        "/tmp/claude-x/p/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0/scratchpad",
+        "Co-Authored-By: Alice <alice@example.com>",
+        "claude.ai/share/abc",
+        "/root/.claude/settings.json",
+        "/root/.codex/config.toml",
+        "/root/.cursor/extensions/",
+    ] {
+        assert_eq!(hit(near_miss), 0, "{near_miss}");
+    }
+}
+
+#[test]
+fn switched_off_builtins_and_custom_signatures_are_honored() {
+    let now = chrono::Utc::now();
+    let rows = vec![
+        SignatureRow {
+            signature_key: "claude-code-scratchpad".into(),
+            builtin: true,
+            label: None,
+            pattern: None,
+            enabled: false,
+            updated_at: now,
+        },
+        SignatureRow {
+            signature_key: "my-agent".into(),
+            builtin: false,
+            label: Some("My agent".into()),
+            pattern: Some(r"/opt/my-agent/runs/[0-9]+".into()),
+            enabled: true,
+            updated_at: now,
+        },
+        SignatureRow {
+            signature_key: "disabled-custom".into(),
+            builtin: false,
+            label: Some("Disabled".into()),
+            pattern: Some(r"never-used-[0-9]+".into()),
+            enabled: false,
+            updated_at: now,
+        },
+    ];
+    let signatures = enabled_signatures(&rows);
+    assert!(!signatures.iter().any(|s| s.key == "claude-code-scratchpad"));
+    assert!(signatures.iter().any(|s| s.key == "my-agent"));
+    assert!(!signatures.iter().any(|s| s.key == "disabled-custom"));
+    let hits = scan_file(&signatures, b"log: /opt/my-agent/runs/42/out.txt");
+    assert_eq!(keys(&hits), ["my-agent"]);
+}
+
+#[test]
+fn custom_patterns_must_compile_and_stay_specific() {
+    assert!(validate_custom_pattern(r"/opt/my-agent/runs/[0-9]+").is_ok());
+    for bad in [
+        "",
+        "(",
+        ".*",
+        r"\w+",
+        "/tmp/",
+        "import",
+        r"[a-z]*",
+        &"a".repeat(600),
+    ] {
+        assert!(validate_custom_pattern(bad).is_err(), "{bad:?}");
+    }
+    assert!(validate_custom_key("my-agent-2").is_ok());
+    for bad in ["", "-x", "Upper", "under_score", &"a".repeat(41)] {
+        assert!(validate_custom_key(bad).is_err(), "{bad:?}");
+    }
+    assert_eq!(validate_custom_label("  Agent  ").unwrap(), "Agent");
+    assert!(validate_custom_label("bad\nlabel").is_err());
+}
+
+#[test]
+fn raw_solver_bytes_report_the_first_hit_with_a_bounded_clean_snippet() {
+    let solver = b"import os\n# key saved at /tmp/claude-0/-home-p-ctf/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0/scratchpad/grind_key.txt\r\n\x07done\n";
+    let hits = scan_file(&builtins(), solver);
+    assert_eq!(keys(&hits), ["claude-code-scratchpad"]);
+    let hit = &hits[0];
+    assert_eq!(hit.location, ArtifactLocation::Raw);
+    assert_eq!(hit.byte_offset, 25);
+    assert!(hit.snippet.contains("/scratchpad"));
+    assert!(!hit.snippet.chars().any(char::is_control));
+    assert!(hit.snippet.chars().count() <= 240);
+}
+
+#[test]
+fn chrome_printed_pdf_text_is_recovered_from_glyph_ids() {
+    let artifact = include_bytes!("fixtures/chrome-writeup-artifact.pdf");
+    let clean = include_bytes!("fixtures/chrome-writeup-clean.pdf");
+    // The path only exists as compressed glyph IDs, not in the raw bytes.
+    assert!(!artifact.windows(10).any(|window| window == b"scratchpad"));
+    let hits = scan_file(&builtins(), artifact);
+    assert_eq!(keys(&hits), ["claude-code-scratchpad"]);
+    assert_eq!(hits[0].location, ArtifactLocation::Text);
+    assert!(
+        hits[0].snippet.contains("grind_key.txt"),
+        "{}",
+        hits[0].snippet
+    );
+    assert!(scan_file(&builtins(), clean).is_empty());
+    let text = String::from_utf8(pdf::extract(clean).text).unwrap();
+    assert!(text.contains("/tmp/grind_key.txt"), "{text}");
+    assert!(text.contains("MEVBot writeup"), "{text}");
+}
+
+#[test]
+fn zipped_and_gzipped_solvers_are_opened_as_data() {
+    let path = b"see /root/.codex/shell_snapshots/01a0.sh\n";
+    let mut zip_bytes = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut zip_bytes);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("solve/notes.txt", options).unwrap();
+        writer.write_all(path).unwrap();
+        writer.finish().unwrap();
+    }
+    let hits = scan_file(&builtins(), zip_bytes.get_ref());
+    assert_eq!(keys(&hits), ["codex-home"]);
+    assert_eq!(hits[0].location, ArtifactLocation::Stream);
+    assert!(
+        hits[0].snippet.starts_with("solve/notes.txt: "),
+        "{}",
+        hits[0].snippet
+    );
+
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gzip.write_all(path).unwrap();
+    let hits = scan_file(&builtins(), &gzip.finish().unwrap());
+    assert_eq!(keys(&hits), ["codex-home"]);
+}
+
+#[test]
+fn decompression_bombs_stay_within_the_caps() {
+    // 256 MiB of zeros compresses to about 250 KiB.
+    let zeros = vec![0u8; 1024 * 1024];
+    let mut deflated = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    for _ in 0..256 {
+        deflated.write_all(&zeros).unwrap();
+    }
+    let stream = deflated.finish().unwrap();
+    let mut bomb = b"%PDF-1.4\n1 0 obj\n<< /Filter /FlateDecode >>\nstream\n".to_vec();
+    bomb.extend_from_slice(&stream);
+    bomb.extend_from_slice(b"\nendstream\nendobj\n");
+    let started = std::time::Instant::now();
+    let content = pdf::extract(&bomb);
+    let inflated: usize = content.streams.iter().map(Vec::len).sum();
+    assert!(inflated <= 8 * 1024 * 1024, "{inflated}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+
+    let mut zip_bytes = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut zip_bytes);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for index in 0..4 {
+            writer
+                .start_file(format!("bomb-{index}.bin"), options)
+                .unwrap();
+            for _ in 0..64 {
+                writer.write_all(&zeros).unwrap();
+            }
+        }
+        writer.finish().unwrap();
+    }
+    let started = std::time::Instant::now();
+    assert!(scan_file(&builtins(), zip_bytes.get_ref()).is_empty());
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}
+
+#[test]
+fn malformed_pdfs_do_not_panic() {
+    for input in [
+        b"%PDF-1.7\n1 0 obj << /Type /Page /Contents 9 0 R".to_vec(),
+        b"%PDF-1.7\n1 0 obj\n<< /Filter /FlateDecode >>\nstream\nnot zlib\nendstream\nendobj"
+            .to_vec(),
+        b"%PDF-1.7\n2 0 obj << /Type /ObjStm /N 99999 /First 999999 >> stream\n\nendstream endobj"
+            .to_vec(),
+        b"%PDF-1.7\n3 0 obj (((((( endobj 4 0 obj <<<<<<<< [[[[ endobj".to_vec(),
+        b"%PDF-".to_vec(),
+    ] {
+        let _ = scan_file(&builtins(), &input);
+    }
+}
+
+fn finishes_quickly(label: &str, input: &[u8]) {
+    let started = std::time::Instant::now();
+    let _ = pdf::extract(input);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "{label} took {elapsed:?}"
+    );
+}
+
+#[test]
+fn crafted_pdfs_cannot_multiply_parser_work() {
+    // Many object headers and no `endobj`: each body must stop at the next header.
+    let mut headers = b"%PDF-1.4\n".to_vec();
+    for _ in 0..200_000 {
+        headers.extend_from_slice(b"1 0 obj ");
+    }
+    finishes_quickly("objects without endobj", &headers);
+
+    // Overlapping ToUnicode ranges rewrite the same 65536 codes forever.
+    let mut ranges = b"30000 beginbfrange\n".to_vec();
+    for _ in 0..30_000 {
+        ranges.extend_from_slice(b"<0000> <FFFF> <0041>\n");
+    }
+    ranges.extend_from_slice(b"endbfrange\n");
+    let mut cmap_pdf = b"%PDF-1.4\n1 0 obj << /Type /Page /Resources << /Font << /F1 2 0 R >> >> /Contents 4 0 R >> endobj\n2 0 obj << /Type /Font /ToUnicode 3 0 R >> endobj\n3 0 obj << >> stream\n".to_vec();
+    cmap_pdf.extend_from_slice(&ranges);
+    cmap_pdf.extend_from_slice(
+        b"endstream endobj\n4 0 obj << >> stream\nBT /F1 12 Tf <0041> Tj ET\nendstream endobj\n",
+    );
+    finishes_quickly("overlapping CMap ranges", &cmap_pdf);
+
+    // Thousands of pages sharing one large content stream without text.
+    let mut shared = b"%PDF-1.4\n".to_vec();
+    for page in 0..2_000 {
+        shared.extend_from_slice(
+            format!(
+                "{} 0 obj << /Type /Page /Contents 9999 0 R >> endobj\n",
+                page + 1
+            )
+            .as_bytes(),
+        );
+    }
+    shared.extend_from_slice(b"9999 0 obj << >> stream\n");
+    for _ in 0..700_000 {
+        shared.extend_from_slice(b"0 0 m\n");
+    }
+    shared.extend_from_slice(b"endstream endobj\n");
+    finishes_quickly("pages sharing one content stream", &shared);
+}
+
+const SCRATCHPAD: &str =
+    "/tmp/claude-0/-home-p-ctf/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0/scratchpad/key.txt";
+
+/// A minimal PDF from `(number, dictionary, stream)` objects.
+fn build_pdf(objects: &[(u32, &str, Option<&[u8]>)]) -> Vec<u8> {
+    let mut out = b"%PDF-1.7\n".to_vec();
+    for (number, dict, stream) in objects {
+        out.extend_from_slice(format!("{number} 0 obj\n{dict}\n").as_bytes());
+        if let Some(stream) = stream {
+            out.extend_from_slice(b"stream\n");
+            out.extend_from_slice(stream);
+            out.extend_from_slice(b"\nendstream\n");
+        }
+        out.extend_from_slice(b"endobj\n");
+    }
+    out
+}
+
+fn deflate(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+#[test]
+fn chained_and_abbreviated_filters_are_decoded() {
+    let content = format!("BT /F1 10 Tf ({SCRATCHPAD}) Tj ET");
+    let hex = hex::encode(deflate(content.as_bytes()));
+    for (filter, stream) in [
+        ("[/ASCIIHexDecode /FlateDecode]", hex.into_bytes()),
+        ("/Fl", deflate(content.as_bytes())),
+    ] {
+        let dict = format!("<< /Filter {filter} >>");
+        let bytes = build_pdf(&[
+            (1, "<< /Type /Page /Contents 2 0 R >>", None),
+            (2, &dict, Some(&stream)),
+        ]);
+        assert!(!bytes.windows(10).any(|window| window == b"scratchpad"));
+        let hits = scan_file(&builtins(), &bytes);
+        assert_eq!(keys(&hits), ["claude-code-scratchpad"], "{filter}");
+    }
+}
+
+#[test]
+fn text_inside_form_xobjects_is_recovered() {
+    // pdfjam wraps each page as a Form XObject whose own font draws glyph IDs.
+    let mut chars = SCRATCHPAD.chars().collect::<Vec<_>>();
+    chars.sort_unstable();
+    chars.dedup();
+    let code = |character: char| chars.iter().position(|c| *c == character).unwrap() + 1;
+    let mut cmap = format!("{} beginbfchar\n", chars.len());
+    for character in &chars {
+        cmap.push_str(&format!(
+            "<{:02X}> <{:04X}>\n",
+            code(*character),
+            *character as u32
+        ));
+    }
+    cmap.push_str("endbfchar\n");
+    let glyphs = SCRATCHPAD
+        .chars()
+        .map(|character| format!("{:02X}", code(character)))
+        .collect::<String>();
+    let form = format!("BT /F1 10 Tf <{glyphs}> Tj ET");
+    let bytes = build_pdf(&[
+        (
+            1,
+            "<< /Type /Page /Resources << /XObject << /Xf1 2 0 R >> >> /Contents 5 0 R >>",
+            None,
+        ),
+        (
+            2,
+            "<< /Type /XObject /Subtype /Form /Resources << /Font << /F1 3 0 R >> >> >>",
+            Some(form.as_bytes()),
+        ),
+        (3, "<< /Type /Font /ToUnicode 4 0 R >>", None),
+        (4, "<< >>", Some(cmap.as_bytes())),
+        (5, "<< >>", Some(b"q 0.5 0 0 0.5 0 0 cm /Xf1 Do Q")),
+    ]);
+    let hits = scan_file(&builtins(), &bytes);
+    assert_eq!(keys(&hits), ["claude-code-scratchpad"]);
+    assert_eq!(hits[0].location, ArtifactLocation::Text);
+}
+
+#[test]
+fn a_path_wrapped_onto_the_next_line_still_matches() {
+    let (head, tail) = SCRATCHPAD.split_at(40);
+    let content = format!("BT /F1 10 Tf ({head}) Tj 0 -12 Td (  {tail}) Tj ET");
+    let bytes = build_pdf(&[
+        (1, "<< /Type /Page /Contents 2 0 R >>", None),
+        (2, "<< >>", Some(content.as_bytes())),
+    ]);
+    let hits = scan_file(&builtins(), &bytes);
+    assert_eq!(keys(&hits), ["claude-code-scratchpad"]);
+    assert_eq!(hits[0].location, ArtifactLocation::Text);
+    assert!(
+        hits[0].snippet.starts_with("line breaks removed: "),
+        "{}",
+        hits[0].snippet
+    );
+}
+
+#[test]
+fn prefixed_archives_and_utf16_files_are_decoded() {
+    let mut archive = std::io::Cursor::new(b"junk".to_vec());
+    archive.set_position(4);
+    {
+        let mut writer = zip::ZipWriter::new(&mut archive);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("notes.txt", options).unwrap();
+        writer.write_all(SCRATCHPAD.as_bytes()).unwrap();
+        writer.finish().unwrap();
+    }
+    let hits = scan_file(&builtins(), archive.get_ref());
+    assert_eq!(keys(&hits), ["claude-code-scratchpad"]);
+    assert_eq!(hits[0].location, ArtifactLocation::Stream);
+
+    // PowerShell 5 redirection writes UTF-16LE with a byte-order mark.
+    let mut utf16 = vec![0xff, 0xfe];
+    for unit in format!("log {SCRATCHPAD}\r\n").encode_utf16() {
+        utf16.extend_from_slice(&unit.to_le_bytes());
+    }
+    assert_eq!(
+        keys(&scan_file(&builtins(), &utf16)),
+        ["claude-code-scratchpad"]
+    );
+}
+
+#[test]
+fn nested_and_cyclic_forms_stay_bounded() {
+    // A form that draws itself, and a chain far deeper than any real document.
+    let cyclic = build_pdf(&[
+        (
+            1,
+            "<< /Type /Page /Resources 3 0 R /Contents 2 0 R >>",
+            None,
+        ),
+        (2, "<< /Subtype /Form /Resources 3 0 R >>", Some(b"/X Do")),
+        (3, "<< /XObject << /X 2 0 R >> >>", None),
+    ]);
+    finishes_quickly("cyclic form", &cyclic);
+    let mut chain = b"%PDF-1.7\n1 0 obj << /Type /Page /Resources << /XObject << /X 2 0 R >> >> /Contents 99999 0 R >> endobj\n99999 0 obj << >> stream\n/X Do\nendstream endobj\n".to_vec();
+    for number in 2..50_000u32 {
+        chain.extend_from_slice(
+            format!(
+                "{number} 0 obj << /Subtype /Form /Resources << /XObject << /X {} 0 R >> >> >> stream\n/X Do\nendstream endobj\n",
+                number + 1
+            )
+            .as_bytes(),
+        );
+    }
+    finishes_quickly("deep form chain", &chain);
+}
+
+#[test]
+fn a_full_writeup_scan_queue_is_refused_instead_of_growing() {
+    // Refusal makes the upload fall back to scanning the stored copy; upload
+    // capacity itself is never held by queued scans.
+    static QUEUE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
+    let large = record::reserve_scan_queue(&QUEUE, 40 * 1024 * 1024).unwrap();
+    assert_eq!(QUEUE.available_permits(), 24);
+    assert!(record::reserve_scan_queue(&QUEUE, 30 * 1024 * 1024).is_none());
+    let small = record::reserve_scan_queue(&QUEUE, 10).unwrap();
+    assert_eq!(QUEUE.available_permits(), 23);
+    drop((large, small));
+    assert_eq!(QUEUE.available_permits(), 64);
+}

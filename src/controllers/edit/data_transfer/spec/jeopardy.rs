@@ -301,4 +301,32 @@ pub(super) const JEOPARDY: &[TableSpec] = &[
             &[PARTICIPATION, CHALLENGE, ("uploaded_by", Map::User)],
         ),
     },
+    TableSpec {
+        name: "agentArtifactMatches",
+        table: "AgentArtifactMatches",
+        from: None,
+        scope: GAME,
+        order: "t.id",
+        // The solver upload row id is not archived; the SHA-256 identifies the file.
+        columns: &[
+            "participation_id",
+            "challenge_id",
+            "source",
+            "file_name",
+            "sha256",
+            "signature_key",
+            "signature_label",
+            "location",
+            "byte_offset",
+            "snippet",
+            "uploaded_by",
+            "uploaded_at",
+            "scanned_at",
+        ],
+        restore: rows(
+            None,
+            true,
+            &[PARTICIPATION, CHALLENGE, ("uploaded_by", Map::User)],
+        ),
+    },
 ];

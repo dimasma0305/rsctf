@@ -67,9 +67,13 @@ export const RecentGame: FC<RecentGameProps> = ({ game, ...others }) => {
               ? t('game.content.starts_compact', 'Starts {{time}}', {
                   time: referenceTime.locale(locale).format('MMM D · LT'),
                 })
-              : t('game.content.ends_compact', 'Ends {{time}}', {
-                  time: referenceTime.locale(locale).format('MMM D · LT'),
-                })}
+              : t(
+                  status === GameStatus.Ended ? 'game.content.ended_compact' : 'game.content.ends_compact',
+                  status === GameStatus.Ended ? 'Ended {{time}}' : 'Ends {{time}}',
+                  {
+                    time: referenceTime.locale(locale).format('MMM D · LT'),
+                  }
+                )}
           </Text>
 
           {status === GameStatus.OnGoing && (

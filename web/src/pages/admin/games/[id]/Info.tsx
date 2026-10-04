@@ -70,12 +70,14 @@ import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { createUuid } from '@Utils/Uuid'
 import { useConfig } from '@Hooks/useConfig'
 import { useAdminGame } from '@Hooks/useGame'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import { useUser } from '@Hooks/useUser'
 import api, { EventVpnOverrideModel, Role } from '@Api'
 import classes from '@Styles/AdminGameInfo.module.css'
 import misc from '@Styles/Misc.module.css'
 import {
   buildGameInfoUpdatePayload,
+  competitionScheduleChange,
   CompatibleGameInfoModel,
   GameInfoSaveOperation,
   gameInfoDraftChanged,
@@ -366,9 +368,41 @@ const GameInfoEdit: FC = () => {
     saveAbort.current?.abort()
     saveAbort.current = controller
     saveOwner.current = true
-    setDisabled(true)
 
     try {
+      const scheduleChange = gameSource && competitionScheduleChange(gameSource, updatePayload, Date.now())
+      if (scheduleChange?.confirm) {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          modals.openConfirmModal({
+            closeButtonProps: { 'aria-label': t('common.close', 'Close') },
+            title: scheduleChange.reopening
+              ? t('admin.schedule.reopen_title', 'Reopen this competition?')
+              : t('admin.schedule.change_title', 'Change the competition schedule?'),
+            children: (
+              <Stack gap="sm">
+                <Text size="sm">
+                  {t(
+                    'admin.schedule.confirm_description',
+                    'Scoring will use the revised time window. Earlier practice submissions inside that window can count. Existing evidence and findings are retained; anti-cheat resumes and finalizes again at the new deadline. Missing telemetry from the closed period cannot be recovered.'
+                  )}
+                </Text>
+                <Text size="sm">
+                  {dayjs(gameSource?.end).format('LLL')} → {end.format('LLL')}
+                </Text>
+              </Stack>
+            ),
+            labels: {
+              confirm: t('admin.schedule.confirm', 'Save schedule'),
+              cancel: t('common.modal.cancel', 'Cancel'),
+            },
+            onConfirm: () => resolve(true),
+            onCancel: () => resolve(false),
+            onClose: () => resolve(false),
+          })
+        })
+        if (!confirmed || controller.signal.aborted) return
+      }
+      setDisabled(true)
       const prepared = prepareGameInfoSave(updatePayload, saveOperation.current)
       saveOperation.current = prepared.operation
       const response = await api.edit.editUpdateGame(game.id!, prepared.payload, { signal: controller.signal })
@@ -770,7 +804,11 @@ const GameInfoEdit: FC = () => {
       label: t('admin.content.games.info.section.content', 'Description & media'),
     },
   ]
-  const [activeSection, setActiveSection] = useState('general')
+  const [activeSection, setActiveSection] = useUrlTab(
+    'section',
+    ['general', 'writeups', 'ad', 'security', 'content'],
+    'general'
+  )
 
   return (
     <WithGameEditTab
@@ -923,6 +961,10 @@ const GameInfoEdit: FC = () => {
                 />
                 <DateTimePicker
                   label={t('admin.content.games.info.end_time')}
+                  description={t(
+                    'admin.schedule.end_description',
+                    'Extend even after the event ends to resume competition. You can also move a live deadline earlier if it stays in the future. Check the freeze time and writeup deadline below.'
+                  )}
                   size="sm"
                   disabled={disabled}
                   minDate={start.toDate()}

@@ -55,3 +55,16 @@ export function prepareGameInfoSave(
 export function gameInfoDraftChanged(current: CompatibleGameInfoModel, saved: CompatibleGameInfoModel): boolean {
   return JSON.stringify(current) !== JSON.stringify(saved)
 }
+
+/** Confirmation is presentation only; the server owns schedule authorization. */
+export function competitionScheduleChange(
+  saved: CompatibleGameInfoModel,
+  requested: CompatibleGameInfoModel,
+  now: number
+): { confirm: boolean; reopening: boolean } {
+  const changed = saved.start !== requested.start || saved.end !== requested.end
+  return {
+    confirm: changed && (saved.start ?? Infinity) <= now,
+    reopening: changed && (saved.end ?? Infinity) <= now && (requested.end ?? -Infinity) > now,
+  }
+}

@@ -428,6 +428,14 @@ function authorizationProbeRequest(operation) {
       type: "StaticAttachment",
     },
     edit_challenge_update: { content: "authorization probe" },
+    edit_challenge_hint_release: {
+      operationId: randomUUID(),
+      expectedRevision: 0,
+    },
+    edit_challenge_hint_unrelease: {
+      operationId: randomUUID(),
+      expectedRevision: 0,
+    },
     edit_challenge_import_github: {
       repoUrl: "https://github.com/dimasma0305/rsctf-challenges.git",
       subpath: "challenges/Jeopardy/Misc/static-handout",
@@ -646,10 +654,11 @@ async function prepareFutureFixture() {
       title: `edit-static-${runKey}`,
       category: "Misc",
       type: "StaticAttachment",
+      hints: ["acceptance hint"],
     },
   });
   context.challengeId = challenge.model.id;
-  await call("edit_challenge_update", {
+  const updatedChallenge = await call("edit_challenge_update", {
     jwt: identities.managerJwt,
     body: {
       content: "Updated by exhaustive edit acceptance",
@@ -657,6 +666,20 @@ async function prepareFutureFixture() {
       minScoreRate: 0.25,
       difficulty: 2,
       submissionLimit: 10,
+    },
+  });
+  const releasedChallenge = await call("edit_challenge_hint_release", {
+    jwt: identities.managerJwt,
+    body: {
+      operationId: randomUUID(),
+      expectedRevision: updatedChallenge.model.revision,
+    },
+  });
+  await call("edit_challenge_hint_unrelease", {
+    jwt: identities.managerJwt,
+    body: {
+      operationId: randomUUID(),
+      expectedRevision: releasedChallenge.model.revision,
     },
   });
 

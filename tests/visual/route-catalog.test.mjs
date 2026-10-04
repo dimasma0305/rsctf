@@ -37,6 +37,7 @@ test('visual routes select the least privileged useful browser identity', () => 
   assert.equal(routes.find((route) => route.path === '/challenges')?.auth, 'player')
   assert.equal(routes.find((route) => route.path === '/guide')?.auth, 'anonymous')
   assert.equal(routes.find((route) => route.path === '/games/67/submit')?.auth, 'player')
+  assert.equal(routes.find((route) => route.path === '/games/67/attack')?.auth, 'anonymous')
   assert.equal(routes.find((route) => route.path === '/games/67/monitor/events')?.auth, 'admin')
   assert.equal(routes.find((route) => route.path === '/account/stats')?.expectedPath, '/account/profile')
 })

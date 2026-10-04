@@ -393,11 +393,6 @@ fn validate_schedule_transition(
     if !start_changed && !end_changed {
         return Ok(());
     }
-    if evidence_closed {
-        return Err(AppError::bad_request(
-            "The event schedule is locked after competitive evidence has closed.",
-        ));
-    }
     // A later deadline adds future rounds without rewriting the frozen roster,
     // hill set, or crown shape. Keep every other schedule edit locked once the
     // official KotH configuration exists.
@@ -406,14 +401,15 @@ fn validate_schedule_transition(
             "The event schedule is locked after KotH crown scoring starts.",
         ));
     }
-    if start_changed && activity_started {
+    if start_changed && (activity_started || evidence_closed) {
         return Err(AppError::bad_request(
             "The event start is locked after competitive activity has been recorded.",
         ));
     }
-    if end_changed && activity_started && requested_end < current_end {
+    if end_changed && activity_started && requested_end < current_end && requested_end <= Utc::now()
+    {
         return Err(AppError::bad_request(
-            "The event end cannot be shortened after competitive activity has been recorded.",
+            "Choose a future end time; a past deadline could exclude recorded competition activity.",
         ));
     }
     Ok(())
@@ -687,6 +683,18 @@ pub async fn update_game(
         evidence_closed,
         config_snapshotted,
     )?;
+    if schedule_changed {
+        crate::services::suspicion::record_schedule_change(
+            &mut *tx,
+            id,
+            user.id,
+            operation_id,
+            current.configuration_revision + 1,
+            (current_start_time, current_end_time),
+            (model.start_time_utc, model.end_time_utc),
+        )
+        .await?;
+    }
     if current_koth_start_round.is_some()
         && (requested_koth_epoch_ticks != current_koth_epoch_ticks
             || requested_koth_cycle_ticks != current_koth_cycle_ticks

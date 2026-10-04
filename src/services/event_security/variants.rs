@@ -580,12 +580,15 @@ pub async fn generate_event_variants_for_job(
             .bind(&target.generator_image)
             .bind(&target.generator_digest)
             .bind(Sha256::digest(seed).as_slice())
-            .bind(sqlx::types::Json(manifest))
+            .bind(sqlx::types::Json(&manifest))
             .bind(artifact_hash.as_slice())
             .bind(first_hash.as_slice())
             .execute(st.pg())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
+            if inserted.rows_affected() == 0 {
+                reject_repeated_flag(st, &target, &manifest).await?;
+            }
             generated += usize::try_from(inserted.rows_affected()).unwrap_or(usize::MAX);
             complete_target_claim(st, &target, job_id).await?;
             examined = examined.saturating_add(1);
@@ -605,6 +608,37 @@ pub async fn generate_event_variants_for_job(
         }
     }
     Ok(generated)
+}
+
+/// The flag index makes a second team's copy of a flag a silent no-op insert.
+/// That team would have no variant at all, so stop generation and tell the
+/// organizer that the generator must derive each flag from its seed.
+async fn reject_repeated_flag(
+    st: &SharedState,
+    target: &VariantTarget,
+    manifest: &serde_json::Value,
+) -> AppResult<()> {
+    let repeated: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS (
+               SELECT 1 FROM "ChallengeVariants"
+                WHERE game_id = $1 AND challenge_id = $2 AND participation_id <> $3
+                  AND frozen_at_utc IS NOT NULL
+                  AND manifest->>'flag' = $4
+           )"#,
+    )
+    .bind(target.game_id)
+    .bind(target.challenge_id)
+    .bind(target.participation_id)
+    .bind(manifest.get("flag").and_then(serde_json::Value::as_str))
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if repeated {
+        return Err(AppError::bad_request(
+            "The variant generator gave two teams the same flag; each flag must be derived from its seed",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn variant_for_participation(

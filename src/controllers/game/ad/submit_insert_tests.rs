@@ -209,7 +209,7 @@ async fn accepted_insert_returns_metadata_and_scopes_sequential_first_blood_to_t
         .await
         .unwrap();
     let hidden = fixture.insert(202, 404).await.unwrap();
-    assert!(!hidden.broadcast_ok);
+    assert!(hidden.broadcast_ok);
     assert!(!hidden.first_blood);
 
     sqlx::query(

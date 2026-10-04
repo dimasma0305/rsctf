@@ -42,6 +42,11 @@
     "solve_count": "{{count}} penyelesaian",
     "solves": "Penyelesaian",
     "sort": "Urutkan berdasarkan",
+    "sort_name": "Nama A–Z",
+    "sort_points": "Poin tertinggi",
+    "sort_solves": "Paling banyak diselesaikan",
+    "search_placeholder": "Nama, ID, atau kategori",
+    "practice": "Latihan",
     "status": "Status",
     "unsolved": "Belum selesai",
     "upcoming": "Akan datang",
@@ -74,6 +79,9 @@
     "find_my_team": "Cari Tim Saya"
   },
   "content": {
+    "starts_compact": "Mulai {{time}}",
+    "ends_compact": "Berakhir {{time}}",
+    "ended_compact": "Selesai {{time}}",
     "events_empty_title": "Tidak ada aktivitas yang cocok",
     "events_empty_description": "Tidak ada aktivitas di halaman ini dengan filter yang dipilih. Coba pencarian, filter, atau halaman lain.",
     "load_failed": "Daftar event tidak dapat dimuat",
@@ -314,6 +322,7 @@
   },
   "tab": {
     "challenge": "Challenges",
+    "live_arena": "Arena langsung",
     "monitor": {
       "cheat": "Deteksi kecurangan",
       "cheatinfo": "Kecurangan",

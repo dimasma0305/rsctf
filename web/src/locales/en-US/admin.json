@@ -1,4 +1,11 @@
 {
+  "schedule": {
+    "reopen_title": "Reopen this competition?",
+    "change_title": "Change the competition schedule?",
+    "confirm": "Save schedule",
+    "confirm_description": "Scoring will use the revised time window. Earlier practice submissions inside that window can count. Existing evidence and findings are retained; anti-cheat resumes and finalizes again at the new deadline. Missing telemetry from the closed period cannot be recovered.",
+    "end_description": "Extend even after the event ends to resume competition. You can also move a live deadline earlier if it stays in the future. Check the freeze time and writeup deadline below."
+  },
   "readiness": {
     "title": "Readiness",
     "intro": "Review saved event configuration and follow the links to resolve issues before players arrive.",
@@ -8,13 +15,31 @@
     "load_failed": "Readiness could not be refreshed",
     "stale": "Showing previous data. Current readiness is unverified.",
     "sign_in": "Sign in again",
-    "hidden": "Hidden event",
+    "hidden": "Unlisted event",
     "public": "Public event",
     "practice": "Practice mode",
     "competition": "Competition mode",
-    "summary_one": "{{count}} configuration check needs attention. Runtime checks are still required.",
-    "summary_other": "{{count}} configuration checks need attention. Runtime checks are still required.",
     "snapshot_note": "This is a manual snapshot of saved settings and challenge metadata, not a launch guarantee. Refresh after making changes. Hidden events are valid for rehearsals.",
+    "schedule_label": "Schedule:",
+    "runtime_reminder": "Configuration only. Work through “Still to verify” below before players arrive.",
+    "verdict": {
+      "attention_one": "{{count}} of {{total}} checks needs attention",
+      "attention_other": "{{count}} of {{total}} checks need attention",
+      "unverified_one": "{{count}} check could not be confirmed yet",
+      "unverified_other": "{{count}} checks could not be confirmed yet",
+      "checked": "All {{total}} configuration checks look good"
+    },
+    "duration": {
+      "days": "{{days}} d {{hours}} h",
+      "hours": "{{hours}} h {{minutes}} min",
+      "days_only": "{{days}} d",
+      "hours_only": "{{hours}} h",
+      "minutes": "{{minutes}} min"
+    },
+    "counts_label": "Check results",
+    "snapshot_time": "Loaded at {{time}}.",
+    "manual_progress": "{{done}} of {{total}} confirmed",
+    "manual_local": "Tick each item once you have checked it yourself; ticks are saved in this browser only.",
     "open_check": "Review {{check}} settings",
     "runtime_title": "Still to verify",
     "runtime_note": "Not tested by this page. No services are started, scores changed, or settings saved by these checks.",
@@ -262,7 +287,10 @@
       },
       "flush_scoreboard": "Refresh Scoreboard",
       "hint": {
-        "add": "Add Hint"
+        "add": "Add Hint",
+        "delete": "Delete hint {{number}}",
+        "release": "Release hint {{number}}",
+        "unrelease": "Unrelease hint {{number}}"
       },
       "import": "Import",
       "new": "New Challenge",
@@ -500,6 +528,10 @@
           }
         },
         "hints": "Hints",
+        "hint_number": "Hint {{number}}",
+        "hint_released": "Released",
+        "hint_draft": "Draft",
+        "hints_release_description": "Release hints in order, or return the latest released hint to draft.",
         "memory_limit": {
           "description": "RAM limitation of containers",
           "label": "Memory Limit (MB)"
@@ -857,6 +889,7 @@
         "build_registry": "Build push",
         "donations": "Donations",
         "ai_links": "AI links",
+        "agent_signatures": "Agent signatures",
         "diagnostics": "Diagnostics"
       },
       "ai_links": {
@@ -908,6 +941,43 @@
         "add": "Add provider",
         "test_label": "Test a link",
         "test_description": "Checked in this browser against the enabled providers, in server match order."
+      },
+      "agent_signatures": {
+        "title": "Agent signatures",
+        "description": "Traces that AI agent tools leave in files, such as a coding agent’s session scratchpad path. Uploaded solvers and writeups are scanned for them (never executed); a match is added to the cheat report for review, and a match on a challenge the team declared “No AI used” is flagged as a contradiction. A match shows which tool touched the file, not that a rule was broken.",
+        "builtin_title": "Built-in signatures",
+        "custom_title": "Custom signatures",
+        "custom_count": "{{count}} of {{max}}",
+        "custom_empty": "No custom signatures yet.",
+        "custom_limit": "The custom signature limit is reached.",
+        "enabled": "Enabled",
+        "enabled_for": "Enabled: {{signature}}",
+        "examples": "Examples",
+        "edit": "Edit",
+        "edit_named": "Edit {{signature}}",
+        "edit_title": "Edit {{key}}",
+        "delete": "Delete",
+        "delete_named": "Delete {{signature}}",
+        "delete_title": "Delete {{signature}}?",
+        "delete_message": "New uploads are no longer checked for this trace. Evidence already recorded stays in the cheat report.",
+        "deleted": "Signature deleted",
+        "updated": "Signature updated",
+        "created": "Signature added",
+        "add_title": "Add signature",
+        "add": "Add signature",
+        "save": "Save signature",
+        "key": "Key",
+        "key_description": "Lowercase, e.g. my-agent",
+        "key_format": "Use 1–40 lowercase letters, digits, or hyphens, starting with a letter or digit.",
+        "key_builtin": "This key belongs to a built-in signature.",
+        "key_duplicate": "A custom signature already uses this key.",
+        "label": "Label",
+        "label_description": "Shown to organizers in the cheat report",
+        "label_invalid": "Enter a label of 1–64 characters.",
+        "pattern": "Pattern",
+        "pattern_description": "Regular expression searched for anywhere in the file, e.g. /opt/my-agent/runs/[0-9]+. It must not match ordinary solver or writeup text.",
+        "pattern_length": "Enter a pattern of 1–512 characters.",
+        "rescan_hint": "Changes apply to new uploads. To check files uploaded earlier, use “Rescan uploads” on an event’s cheat detection page."
       },
       "account": {
         "allow_register": {
@@ -1458,7 +1528,10 @@
   },
   "label": {
     "games": {
-      "hide": "Hide",
+      "hide": "Unlisted",
+      "hidden_state": "Unlisted · accessible by link",
+      "visible_state": "Listed publicly",
+      "toggle_hidden": "Hide {{name}} from the public event list",
       "summary": "Summary",
       "notices": {
         "schedule": "Schedule for later",
@@ -1550,6 +1623,8 @@
           "flag_submitted": "Flag submitted!"
         },
         "updated": "Challenge updated",
+        "hint_released": "Hint released to players.",
+        "hint_unreleased": "Hint returned to draft.",
         "batch_deleted": "Deleted {{count}} challenge(s)",
         "batch_deleted_partial": "Deleted {{ok}}, {{failed}} failed",
         "batch_enabled": "Activated {{count}} challenge(s)",

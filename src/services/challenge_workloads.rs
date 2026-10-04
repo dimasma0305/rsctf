@@ -598,6 +598,7 @@ mod tests {
             category: crate::utils::enums::ChallengeCategory::Pwn,
             challenge_type: ChallengeType::KingOfTheHill,
             hints: None,
+            released_hint_count: 0,
             is_enabled: true,
             revision: 1,
             ad_control_revision: 1,

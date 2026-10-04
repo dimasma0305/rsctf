@@ -4,19 +4,56 @@ import test from 'node:test'
 import { act, createElement, type FC, type PropsWithChildren, useState } from 'react'
 import type { Key, SWRConfiguration } from 'swr'
 import { challengeIdFromHash, ownedChallengeIdFromHash } from '../components/ChallengePanel'
-import {
-  containerOperationScope,
-  operationStorageKey,
-  shouldReadChallenge,
-} from '../components/GameChallengeModal'
+import { containerOperationScope, operationStorageKey, shouldReadChallenge } from '../components/GameChallengeModal'
 import { installTestDom } from '../test/installDom'
 import {
   RouteLifecycleBoundary,
+  routeLifecycleKey,
   viewerIdentityMiddleware,
   ViewerIdentityProvider,
   ViewerIdentityScope,
   viewerScopedKey,
 } from './ViewerIdentity'
+
+test('settings panels preserve drafts but account, role, path, and other query changes reset them', () => {
+  const key = (search: string, scope = 'user:a:Admin', path = '/admin/settings') =>
+    routeLifecycleKey(path, search, scope)
+  assert.equal(key(''), key('?section=platform'))
+  assert.equal(key('?section=platform'), key('?section=email'))
+  assert.equal(key('?other=1&section=platform'), key('?section=email&other=1'))
+  assert.notEqual(key('?other=1&section=email'), key('?other=2&section=email'))
+  for (const scope of ['user:b:Admin', 'user:a:User', 'anonymous', 'session-pending']) {
+    assert.notEqual(key('?section=email'), key('?section=email', scope))
+  }
+  assert.notEqual(key('?section=email'), key('?section=email', 'user:a:Admin', '/admin/users'))
+  for (const path of ['/admin/games/19/info-extra', '/admin/settings-extra', '/account/profile']) {
+    assert.notEqual(key('?section=platform', 'user:a:Admin', path), key('?section=email', 'user:a:Admin', path))
+  }
+})
+
+test('shareable section parameters preserve route state only within their own viewer and exact page', () => {
+  const sections = [
+    ['/admin/dashboard', 'activity=writeups&range=Week'],
+    ['/admin/builds', 'tab=images'],
+    ['/admin/games/19/info', 'section=security'],
+    ['/admin/games/19/writeups', 'tab=ranking'],
+    ['/admin/games/19/adops', 'view=koth&snapshotTab=history'],
+    ['/games/19/monitor/cheatcheck', 'tab=analysis&section=abnormal-solves'],
+    ['/games/19/challenges', 'category=Pwn&view=list&sort=score'],
+  ]
+  for (const [path, query] of sections) {
+    const key = (search: string, scope = 'user:a:Admin', route = path) => routeLifecycleKey(route, search, scope)
+    assert.equal(key(''), key(`?${query}`), path)
+    assert.equal(key('?division=blue'), key(`?${query}&division=blue`), path)
+    assert.notEqual(key(`?${query}&division=blue`), key(`?${query}&division=red`), path)
+    assert.notEqual(key(''), key(`?${query}&unknown=1`), path)
+    for (const scope of ['user:b:Admin', 'user:a:User', 'anonymous', 'session-pending']) {
+      assert.notEqual(key(''), key(`?${query}`, scope), path)
+    }
+    assert.notEqual(key(''), key(`?${query}`, 'user:a:Admin', path.replace('/19/', '/20/') + '/other'))
+    assert.notEqual(key('', 'user:a:Admin', path + '-extra'), key(`?${query}`, 'user:a:Admin', path + '-extra'))
+  }
+})
 
 type Deferred<T> = {
   promise: Promise<T>
@@ -50,6 +87,9 @@ const deferred = <T>(): Deferred<T> => {
 test('challenge hashes require ownership in the current response before any read is eligible', () => {
   assert.equal(challengeIdFromHash('#7-ret2win'), 7)
   assert.equal(challengeIdFromHash('#7'), 7)
+  assert.equal(challengeIdFromHash('#7&view=cards'), 7)
+  assert.equal(ownedChallengeIdFromHash('#7-title&view=cards&category=Pwn', [7]), 7)
+  assert.equal(ownedChallengeIdFromHash('#7-title&view=cards', [8]), null)
   for (const invalid of ['', '#', '#0-zero', '#-7', '#7wrong', '#9007199254740993-too-large']) {
     assert.equal(challengeIdFromHash(invalid), null, invalid)
   }
@@ -153,6 +193,9 @@ test('SPA game, query, and account navigation remounts desktop and mobile route-
     // A hash selects within the same loaded game and must not destroy the
     // current route component before ownership is evaluated.
     await act(async () => navigate?.('/games/1/challenges#8-another'))
+    assertDirty()
+
+    await act(async () => navigate?.('/games/1/challenges?category=Pwn&view=list&sort=score#8-another'))
     assertDirty()
 
     await act(async () => navigate?.('/games/2/challenges'))

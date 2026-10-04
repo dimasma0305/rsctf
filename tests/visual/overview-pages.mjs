@@ -27,7 +27,7 @@ const wait = async expression => {
 }
 const press = async key => {
   for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', {
-    type, key, windowsVirtualKeyCode: { Enter: 13, Escape: 27, Tab: 9, ArrowRight: 39 }[key],
+    type, key, windowsVirtualKeyCode: { Enter: 13, Escape: 27, Tab: 9, ArrowRight: 39, ArrowDown: 40, ArrowUp: 38, Home: 36, End: 35 }[key],
     ...(key === 'Enter' && type === 'keyDown' ? { text: '\r' } : {}),
   })
 }
@@ -77,10 +77,23 @@ try {
     await inspect(name + '-home')
     assert.equal(await evaluate(`document.querySelectorAll('[data-home-overview] [data-post-card][data-layout="feed"] h3').length`), 2)
     assert.equal(await evaluate(`document.querySelectorAll('[data-workspace-links] a').length`), 3)
+    if (language === 'en-US') assert.ok(await evaluate(`document.querySelector('[data-home-recent] a[href="/games/903"]').textContent.includes('Ended ')`), 'Completed events must use past-tense dates')
     if (width >= 1440) assert.ok(await evaluate(`document.querySelector('#news-feed-title').getBoundingClientRect().top < 220`), 'Home must lead with real content')
+    if (width <= 900) {
+      assert.equal(await evaluate(`Array.from(document.querySelectorAll('[data-home-recent] a')).filter(a => a.getClientRects().length && /\\/games\\/\\d+/.test(a.getAttribute('href'))).length`), 2, 'Mobile home shows two compact, static events')
+      assert.ok(await evaluate(`document.querySelector('#news-feed-title').getBoundingClientRect().top < 670`), 'Mobile announcements must follow the compact event list without a large carousel')
+      assert.equal(await evaluate(`document.querySelectorAll('[data-home-overview] [aria-roledescription="carousel"]').length`), 0)
+    }
+    await evaluate(`document.querySelector('[data-workspace-bar] button').focus(); document.querySelector('[data-workspace-bar] button').click()`)
+    await wait(`document.querySelector('[role="dialog"] input') === document.activeElement`)
+    assert.equal(await evaluate(`document.querySelector('#workspace-search-results a').getAttribute('href')`), '/', 'Player pages should lead search from the player workspace')
+    await inspect(name + '-search')
+    await press('Escape')
+    await wait(`!document.querySelector('[role="dialog"]') && document.activeElement === document.querySelector('[data-workspace-bar] button')`)
     await visit('/games', `document.querySelectorAll('#event-catalog-results [data-guide="event-card"]').length === 3`)
     await inspect(name + '-games')
     assert.equal(await evaluate(`document.querySelectorAll('[data-event-catalog] h2').length`), 3)
+    assert.ok(await evaluate(`Array.from(document.querySelectorAll('[data-guide="event-card"] time')).every(time => time.dateTime && time.title && !/\\d{1,2}:\\d{2}:\\d{2}/.test(time.textContent))`), 'Event dates stay precise in machine-readable/hover text and omit seconds in cards')
     assert.ok(await evaluate(`Array.from(document.querySelectorAll('#event-catalog-results [data-status], #event-catalog-results [data-membership]')).every(label => getComputedStyle(label).position !== 'absolute' && label.scrollWidth <= label.clientWidth + 1 && label.scrollHeight <= label.clientHeight + 1)`), 'Event status and membership labels must wrap without clipping in the narrow poster column')
     assert.ok(await evaluate(`(() => { const labels = Array.from(document.querySelectorAll('[data-guide="event-card"] [aria-hidden="true"] > span')).filter(label => label.textContent.startsWith('#')); return labels.length === 3 && labels.every(label => getComputedStyle(label).opacity === '1'); })()`), 'Placeholder IDs must not dilute the theme text contrast')
     assert.ok(await evaluate(`(() => {
@@ -126,6 +139,28 @@ try {
   await wait(`document.querySelectorAll('#event-catalog-results [data-guide="event-card"]').length === 2`)
   await inspect('joined-filter')
 
+  await evaluate(`document.querySelector('[data-workspace-bar] button').click()`)
+  await wait(`document.querySelector('[role="dialog"] input') === document.activeElement`)
+  await cdp.send('Input.insertText', { text: 'teams administration' })
+  await wait(`document.querySelectorAll('#workspace-search-results a').length === 1`)
+  assert.equal(await evaluate(`document.querySelector('#workspace-search-results a').getAttribute('href')`), '/admin/teams')
+  await press('ArrowDown')
+  assert.equal(await evaluate(`document.activeElement.getAttribute('href')`), '/admin/teams')
+  await press('ArrowUp')
+  assert.ok(await evaluate(`document.activeElement.matches('[role="dialog"] input')`), 'Arrow Up from the first result returns to search')
+  await evaluate(`document.querySelector('button[aria-label="Clear search"]').click()`)
+  assert.ok(await evaluate(`document.activeElement.matches('[role="dialog"] input') && document.activeElement.value === ''`))
+  await cdp.send('Input.insertText', { text: 'no-such-page' })
+  await wait(`document.querySelectorAll('#workspace-search-results a').length === 0`)
+  await press('Enter')
+  assert.ok(await evaluate(`!!document.querySelector('[role="dialog"]')`), 'Enter with no results must keep search open')
+  await inspect('search-empty')
+  await evaluate(`document.querySelector('button[aria-label="Clear search"]').click()`)
+  await cdp.send('Input.insertText', { text: 'dashboard' })
+  await wait(`document.querySelectorAll('#workspace-search-results a').length === 1`)
+  await press('Enter')
+  await wait(`location.pathname === '/admin/dashboard' && !document.querySelector('[role="dialog"]')`)
+
   await visit('/admin/dashboard', `document.querySelector('[data-dashboard-stats]')`)
   const beforeRefresh = requests.filter(path => path === '/api/admin/dashboard').length
   await evaluate(`document.querySelector('button[aria-label="Refresh dashboard"]').focus()`)
@@ -148,6 +183,18 @@ try {
       await wait(`document.querySelectorAll('#event-catalog-results [data-guide="event-card"]').length === 3`)
     }
   }
+  scenario = 'error'
+  await visit('/', `document.querySelectorAll('[data-home-overview] [role="alert"]').length === 2`)
+  assert.equal(await evaluate(`document.querySelectorAll('[data-home-overview] .mantine-Skeleton-root').length`), 0, 'Failed home requests must leave loading placeholders')
+  await inspect('home-error')
+  scenario = 'normal'
+  await evaluate(`document.querySelector('[aria-labelledby="news-feed-title"] [role="alert"] button').focus()`)
+  await press('Enter')
+  await wait(`document.querySelectorAll('[data-post-card]').length === 2`)
+  await evaluate(`document.querySelector('[data-home-recent] [role="alert"] button').focus()`)
+  await press('Enter')
+  await wait(`!document.querySelector('[data-home-overview] [role="alert"]')`)
+  await inspect('home-recovered')
   scenario = 'empty'
   await visit('/', `document.querySelector('[data-home-overview]') && !document.querySelector('.mantine-Skeleton-root')`)
   await inspect('home-empty')
@@ -158,6 +205,10 @@ try {
   await visit('/games', `document.querySelectorAll('#event-catalog-results [data-guide="event-card"]').length === 3`)
   assert.equal(await evaluate(`document.querySelectorAll('input[value="joined"]').length`), 0)
   await inspect('guest-games')
+  await evaluate(`document.querySelector('[data-workspace-bar] button').click()`)
+  await wait(`document.querySelector('[role="dialog"] input')`)
+  assert.equal(await evaluate(`document.querySelectorAll('#workspace-search-results a[href^="/admin/"], #workspace-search-results a[href="/challenges"]').length`), 0)
+  await inspect('guest-search')
   assert.equal(mutations.length, 0)
   assert.deepEqual(errors, [])
   assert.ok(reports.every(report => !report.overflow && report.headings === 1 && report.violations.length === 0))

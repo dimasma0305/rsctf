@@ -20,14 +20,21 @@ allowBuilds:
 
 overrides:
   canvas: "npm:dry-uninstall"
+  # Pages 0.33.3 only calls micromatch.isMatch, which delegates to picomatch.
+  # Use that API directly to remove unpatched braces (GHSA-vfj7-8cjw-p6xm).
+  # Keep this version-scoped: pages-dependency.test.mjs checks both entrypoints,
+  # every generated route, and watcher exclusions before changing the plugin.
+  "vite-plugin-pages@0.33.3>micromatch": "npm:picomatch@4.0.5"
   # Force-patch the transitive form-data CRLF-injection advisory (<4.0.6).
   form-data: ">=4.0.6"
   # The formatter's minimatch 9 branch cannot consume the only release that
   # fixes both 2026 brace-expansion denial-of-service advisories.
   "@trivago/prettier-plugin-sort-imports>minimatch": "10.2.5"
-  "minimatch>brace-expansion": "5.0.9"
+  "minimatch>brace-expansion": "5.0.12"
+  # Patch nested-selector parsing against adversarial recursion.
+  "postcss-nested>postcss-selector-parser": "7.1.6"
   # Patch the OpenAPI generator's AJV URI parser against host confusion.
-  fast-uri: "3.1.6"
+  fast-uri: "3.1.8"
   # Patch OpenAPI YAML merge CPU limits (GHSA-2883-xcg3-v3hh).
   "@apidevtools/json-schema-ref-parser>js-yaml": "4.3.2"
   # Keep Pixi's XML parser on its existing patch branch with the security fixes.
@@ -41,8 +48,9 @@ minimumReleaseAgeExclude:
   # Exact security hotfixes may bypass the seven-day cooldown; every unrelated
   # newly published version must still age normally.
   - react-router@8.3.0
-  - brace-expansion@5.0.9
-  - fast-uri@3.1.6
+  - axios@1.20.0
+  - brace-expansion@5.0.12
   - postcss@8.5.23
-  - dompurify@3.4.13
+  - dompurify@3.4.16
+  - postcss-selector-parser@7.1.6
   - nanoid@3.3.18

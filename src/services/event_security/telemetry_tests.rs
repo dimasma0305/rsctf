@@ -12,6 +12,27 @@ fn bounds_are_deliberately_small_and_gameplay_independent() {
 }
 
 #[test]
+fn flag_transports_keep_a_reserve_when_bulk_telemetry_fills_the_quota() {
+    let both = QuotaDecision {
+        keep_bulk: true,
+        keep_flags: true,
+    };
+    assert_eq!(quota_decision(0, 0, false, 192, 176), both);
+    // Bulk rows that would reach into the reserve are dropped; the flag
+    // transport arriving in the same batch is kept.
+    let event_limit = EVENT_LOGICAL_QUOTA_BYTES - FLAG_EVENT_RESERVE_BYTES;
+    let decision = quota_decision(event_limit - 100, 0, false, 192, 176);
+    assert!(!decision.keep_bulk && decision.keep_flags);
+    let global_limit = GLOBAL_LOGICAL_QUOTA_BYTES - FLAG_GLOBAL_RESERVE_BYTES;
+    let decision = quota_decision(0, global_limit, false, 192, 176);
+    assert!(!decision.keep_bulk && decision.keep_flags);
+    // Once bulk stopped, flags continue until the whole quota is used.
+    assert!(!quota_decision(0, 0, true, 192, 0).keep_bulk);
+    assert_eq!(quota_decision(event_limit, 0, true, 0, 176), both);
+    assert!(!quota_decision(EVENT_LOGICAL_QUOTA_BYTES - 100, 0, true, 0, 176).keep_flags);
+}
+
+#[test]
 fn invalid_bucket_and_raw_values_are_rejected_before_database_work() {
     let batch = TelemetryBatch {
         batch_id: Uuid::new_v4(),
@@ -84,7 +105,10 @@ fn internal_bulk_timestamps_are_rfc3339_not_wire_milliseconds() {
 
 #[test]
 fn trigger_stamped_telemetry_prefilters_exact_replays() {
-    let source = include_str!("telemetry.rs");
+    let source = concat!(
+        include_str!("telemetry.rs"),
+        include_str!("telemetry_rows.rs")
+    );
     assert_eq!(source.matches("deduped_input AS MATERIALIZED").count(), 3);
     assert_eq!(
         source
@@ -619,6 +643,163 @@ async fn postgres_exact_batch_replay_leaves_reconciliation_clean() {
     .unwrap();
     assert_eq!(after_sources, before_sources);
     assert_eq!(after_queue, before_queue);
+    transaction.rollback().await.unwrap();
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn postgres_evidence_observed_before_revocation_is_kept() {
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("telemetry_revocation_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            PgConnectOptions::from_str(&database_url)
+                .unwrap()
+                .options([("search_path", schema.as_str())]),
+        )
+        .await
+        .unwrap();
+    // The event runs 00:02-02:00; the member's peer was revoked at 01:00
+    // (they left the team), and the sensor flushes what it saw before that.
+    sqlx::raw_sql(
+        r#"CREATE TABLE "Games" (
+               id INTEGER PRIMARY KEY,
+               vpn_behavior_telemetry_enabled BOOLEAN NOT NULL,
+               vpn_flag_scan_enabled BOOLEAN NOT NULL,
+               start_time_utc TIMESTAMPTZ NOT NULL,
+               end_time_utc TIMESTAMPTZ NOT NULL
+           );
+           CREATE TABLE "EventVpnUserPeers" (
+               id UUID PRIMARY KEY, game_id INTEGER NOT NULL,
+               user_id UUID NOT NULL, participation_id INTEGER NOT NULL,
+               revoked_at_utc TIMESTAMPTZ NULL
+           );
+           CREATE TABLE "Participations" (
+               id INTEGER NOT NULL, game_id INTEGER NOT NULL,
+               PRIMARY KEY (game_id, id)
+           );
+           CREATE TABLE "GameChallenges" (
+               id INTEGER NOT NULL, game_id INTEGER NOT NULL,
+               "Type" SMALLINT NOT NULL, flag_template TEXT NULL,
+               PRIMARY KEY (game_id, id)
+           );
+           CREATE TABLE "ChallengeVariants" (
+               game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
+               participation_id INTEGER NOT NULL, frozen_at_utc TIMESTAMPTZ NULL
+           );
+           CREATE TABLE "VpnFlowTelemetryBuckets" (
+               game_id INTEGER NOT NULL, user_id UUID NOT NULL,
+               participation_id INTEGER NOT NULL, peer_id UUID NOT NULL,
+               challenge_id INTEGER NULL, container_generation INTEGER NULL,
+               bucket_start_utc TIMESTAMPTZ NOT NULL, packets_up BIGINT NOT NULL,
+               packets_down BIGINT NOT NULL, bytes_up BIGINT NOT NULL,
+               bytes_down BIGINT NOT NULL, distinct_destinations INTEGER NOT NULL,
+               connection_count INTEGER NOT NULL, active_seconds INTEGER NOT NULL
+           );
+           CREATE TABLE "VpnFlagTransportEvents" (
+               id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+               challenge_id INTEGER NOT NULL, receiving_user_id UUID NOT NULL,
+               receiving_participation_id INTEGER NOT NULL,
+               owning_participation_id INTEGER NOT NULL, peer_id UUID NOT NULL,
+               flag_value_hash BYTEA NOT NULL, transport SMALLINT NOT NULL,
+               direction SMALLINT NOT NULL, observed_at_utc TIMESTAMPTZ NOT NULL
+           );
+           INSERT INTO "Games" VALUES (
+               7, TRUE, TRUE, '2026-08-20T00:02:00Z', '2026-08-20T02:00:00Z'
+           );
+           INSERT INTO "Participations" VALUES (9, 7), (10, 7);
+           INSERT INTO "GameChallenges" VALUES (11, 7, 0, 'flag-{team}');
+           INSERT INTO "EventVpnUserPeers" VALUES (
+               '10000000-0000-0000-0000-000000000001', 7,
+               '20000000-0000-0000-0000-000000000002', 9, '2026-08-20T01:00:00Z'
+           );"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let at = |text: &str| {
+        DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .with_timezone(&Utc)
+    };
+    let peer_id = Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap();
+    let user_id = Uuid::parse_str("20000000-0000-0000-0000-000000000002").unwrap();
+    let flow = |start: &str| FlowBucketInput {
+        user_id,
+        participation_id: 9,
+        peer_id,
+        challenge_id: Some(11),
+        container_generation: None,
+        bucket_start_utc: at(start),
+        packets_up: 1,
+        packets_down: 1,
+        bytes_up: 1,
+        bytes_down: 1,
+        distinct_destinations: 1,
+        connection_count: 1,
+        active_seconds: 30,
+    };
+    let flag = |observed: &str, hash: &str| FlagTransportInput {
+        challenge_id: 11,
+        receiving_user_id: user_id,
+        receiving_participation_id: 9,
+        owning_participation_id: 10,
+        peer_id,
+        flag_value_hash: hash.repeat(32),
+        transport: 1,
+        direction: 0,
+        observed_at_utc: at(observed),
+    };
+    let mut transaction = pool.begin().await.unwrap();
+    // The first bucket (00:00) holds the event's first three minutes.
+    let flows = [
+        flow("2026-08-19T23:55:00Z"),
+        flow("2026-08-20T00:00:00Z"),
+        flow("2026-08-20T00:55:00Z"),
+        flow("2026-08-20T01:00:00Z"),
+    ];
+    assert_eq!(insert_flows(&mut transaction, 7, &flows).await.unwrap(), 2);
+    let kept: Vec<DateTime<Utc>> =
+        sqlx::query_scalar(r#"SELECT bucket_start_utc FROM "VpnFlowTelemetryBuckets" ORDER BY 1"#)
+            .fetch_all(&mut *transaction)
+            .await
+            .unwrap();
+    assert_eq!(
+        kept,
+        [at("2026-08-20T00:00:00Z"), at("2026-08-20T00:55:00Z")]
+    );
+    let flags = [
+        flag("2026-08-20T00:59:50Z", "22"),
+        flag("2026-08-20T01:00:05Z", "33"),
+    ];
+    assert_eq!(insert_flags(&mut transaction, 7, &flags).await.unwrap(), 1);
+    let observed: DateTime<Utc> =
+        sqlx::query_scalar(r#"SELECT observed_at_utc FROM "VpnFlagTransportEvents""#)
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+    assert_eq!(observed, at("2026-08-20T00:59:50Z"));
     transaction.rollback().await.unwrap();
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

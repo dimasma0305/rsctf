@@ -43,7 +43,7 @@
     "chroma-js": "^3.2.0",
     "clsx": "^2.1.1",
     "dayjs": "^1.11.23",
-    "dompurify": "^3.4.15",
+    "dompurify": "^3.4.16",
     "echarts": "^6.1.0",
     "embla-carousel": "^8.6.0",
     "embla-carousel-autoplay": "^8.6.0",
@@ -92,7 +92,7 @@
     "vite": "^8.3.0",
     "vite-plugin-banner": "^0.8.1",
     "vite-plugin-optimize-css-modules": "^1.4.0",
-    "vite-plugin-pages": "^0.33.3",
+    "vite-plugin-pages": "0.33.3",
     "vite-plugin-webfont-dl": "^3.13.1"
   }
 }

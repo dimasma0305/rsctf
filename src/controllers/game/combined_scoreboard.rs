@@ -618,9 +618,6 @@ pub async fn combined_scoreboard(
 ) -> AppResult<Response> {
     let game = load_game_cached(&st, id).await?;
     let is_monitor = maybe.as_ref().is_some_and(|user| user.is_monitor());
-    if game.hidden && !is_monitor {
-        return Err(AppError::not_found("Game not found"));
-    }
     if Utc::now() < game.start_time_utc {
         return Err(AppError::game_not_started());
     }

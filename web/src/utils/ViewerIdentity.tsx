@@ -133,13 +133,27 @@ export const viewerIdentityMiddleware: Middleware = (useSWRNext) =>
     })
   }
 
+const ROUTE_PANEL_PARAMETERS: ReadonlyArray<readonly [RegExp, readonly string[]]> = [
+  [/^\/account\/profile$/, ['tab']],
+  [/^\/admin\/settings$/, ['section']],
+  [/^\/admin\/dashboard$/, ['activity', 'range']],
+  [/^\/admin\/builds$/, ['tab']],
+  [/^\/admin\/games\/\d+\/info$/, ['section']],
+  [/^\/admin\/games\/\d+\/writeups$/, ['tab']],
+  [/^\/admin\/games\/\d+\/adops$/, ['view', 'snapshotTab']],
+  [/^\/games\/\d+\/monitor\/cheatcheck$/, ['tab', 'section']],
+  [/^\/games\/\d+\/challenges$/, ['category', 'view', 'sort']],
+]
+
 export const routeLifecycleKey = (pathname: string, search: string, scope: string | null) => {
-  // Profile tabs are presentation state, not a different account or data scope.
-  // Keep the form draft when opening stats; all other query/path/viewer changes
-  // retain the hard lifecycle boundary below.
-  if (pathname === '/account/profile') {
+  // Keep legacy query bookmarks compatible while tabs migrate to fragments.
+  // Only the named presentation parameters on these exact routes can retain
+  // drafts and request owners. Viewer, role, path, and data-scope queries still
+  // form hard lifecycle boundaries; never exempt a parameter globally.
+  const panelParameters = ROUTE_PANEL_PARAMETERS.find(([route]) => route.test(pathname))?.[1]
+  if (panelParameters) {
     const query = new URLSearchParams(search)
-    query.delete('tab')
+    for (const parameter of panelParameters) query.delete(parameter)
     search = query.size ? `?${query}` : ''
   }
   return `${scope ?? 'unscoped'}\u0000${pathname}\u0000${search}`

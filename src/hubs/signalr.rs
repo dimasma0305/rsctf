@@ -252,8 +252,8 @@ enum HubAuthorizationKind {
 }
 
 /// Live authorization lease for a hub. Privileged leases revalidate the account;
-/// public-game leases revalidate visibility so hiding a game closes anonymous
-/// sockets instead of leaving a stale event subscription.
+/// public-game leases revalidate existence so deleting a game closes its sockets.
+/// Hidden events remain accessible through their direct game scope.
 pub struct HubAuthorization {
     st: SharedState,
     kind: HubAuthorizationKind,
@@ -282,15 +282,15 @@ impl HubAuthorization {
             HubAuthorizationKind::PublicGame { game_id } => {
                 crate::controllers::game::load_game_cached(&self.st, *game_id)
                     .await
-                    .is_ok_and(|game| !game.hidden)
+                    .is_ok()
             }
         }
     }
 }
 
-/// Require one concrete public-hub game scope and enforce hidden-game visibility
-/// against the live principal. Missing/malformed ids are 400; unknown or hidden
-/// games are 404 so neither case can degrade into an all-game subscription.
+/// Require one existing game scope, including unlisted events. Missing/malformed
+/// ids are 400 and unknown/deleting games are 404; neither can degrade into an
+/// all-game subscription.
 pub struct PublicGameScope {
     pub game_id: i32,
     pub authorization: Option<HubAuthorization>,
@@ -299,7 +299,7 @@ pub struct PublicGameScope {
 pub async fn public_game_scope(
     st: &SharedState,
     params: &HashMap<String, String>,
-    headers: &HeaderMap,
+    _headers: &HeaderMap,
 ) -> Result<PublicGameScope, StatusCode> {
     let game_id = params
         .get("game")
@@ -307,21 +307,10 @@ pub async fn public_game_scope(
         .parse::<i32>()
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     match crate::controllers::game::load_game_cached(st, game_id).await {
-        Ok(game) if !game.hidden => Ok(PublicGameScope {
+        Ok(_) => Ok(PublicGameScope {
             game_id,
             authorization: Some(HubAuthorization::public_game(st.clone(), game_id)),
         }),
-        Ok(_) => {
-            let (user, token) = hub_identity(st, params, headers)
-                .await
-                .filter(|(user, _)| user.is_monitor())
-                .ok_or(StatusCode::NOT_FOUND)?;
-            let _ = user;
-            Ok(PublicGameScope {
-                game_id,
-                authorization: Some(HubAuthorization::new(st.clone(), token, Role::Monitor)),
-            })
-        }
         Err(AppError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }

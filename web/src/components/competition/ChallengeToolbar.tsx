@@ -1,6 +1,28 @@
-import { Button, Group, Popover, SegmentedControl, Select, Stack, Switch, Tabs, Text, TextInput } from '@mantine/core'
-import { mdiEarth, mdiFileUploadOutline, mdiFilterVariant, mdiFormatListBulleted, mdiViewGridOutline } from '@mdi/js'
+import {
+  ActionIcon,
+  Button,
+  Group,
+  Popover,
+  SegmentedControl,
+  Select,
+  Stack,
+  Switch,
+  Tabs,
+  Text,
+  TextInput,
+  VisuallyHidden,
+} from '@mantine/core'
+import {
+  mdiClose,
+  mdiEarth,
+  mdiFileUploadOutline,
+  mdiFilterVariant,
+  mdiFormatListBulleted,
+  mdiMagnify,
+  mdiViewGridOutline,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
+import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useChallengeCategoryLabelMap } from '@Utils/Shared'
 import type { ChallengeCategory } from '@Api'
@@ -31,6 +53,7 @@ export function ChallengeToolbar(props: {
   onWriteup?: () => void
 }) {
   const { t } = useTranslation()
+  const searchRef = useRef<HTMLInputElement>(null)
   const categoryLabels = useChallengeCategoryLabelMap()
   const activeFilters = Number(props.hideSolved) + Number(props.category !== 'All') + Number(props.kind !== 'all')
   const categoryOptions = [
@@ -47,9 +70,9 @@ export function ChallengeToolbar(props: {
         if (value) props.onSort(value as ChallengeSort)
       }}
       data={[
-        { value: 'name', label: t('game.arena.name', 'Name') },
-        { value: 'score', label: t('game.arena.points', 'Points') },
-        { value: 'solves', label: t('game.arena.solves', 'Solves') },
+        { value: 'name', label: t('game.arena.sort_name', 'Name A–Z') },
+        { value: 'score', label: t('game.arena.sort_points', 'Highest points') },
+        { value: 'solves', label: t('game.arena.sort_solves', 'Most solves') },
       ]}
     />
   )
@@ -57,22 +80,39 @@ export function ChallengeToolbar(props: {
     <div className={classes.toolbar} data-challenge-toolbar>
       <div className={classes.toolbarMain}>
         <TextInput
+          id="challenge-search"
+          ref={searchRef}
           className={classes.search}
           label={t('common.workspace.search_challenges', 'Find a challenge')}
-          placeholder={t('common.workspace.challenge_placeholder', 'Name or ID')}
+          placeholder={t('game.arena.search_placeholder', 'Name, ID or category')}
+          leftSection={<Icon path={mdiMagnify} size={0.8} aria-hidden="true" />}
+          rightSection={
+            props.search ? (
+              <ActionIcon
+                variant="subtle"
+                aria-label={t('common.workspace.clear_search', 'Clear search')}
+                onClick={() => {
+                  props.onSearch('')
+                  searchRef.current?.focus()
+                }}
+              >
+                <Icon path={mdiClose} size={0.8} aria-hidden="true" />
+              </ActionIcon>
+            ) : undefined
+          }
           value={props.search}
           onChange={(event) => props.onSearch(event.currentTarget.value)}
         />
-        {props.view === 'list' && <div className={classes.desktopSort}>{sortControl}</div>}
+        <div className={classes.desktopSort}>{sortControl}</div>
         <SegmentedControl
           aria-label={t('game.arena.view', 'Challenge view')}
           value={props.view}
           onChange={(value) => props.onView(value as ChallengeView)}
           className={classes.viewControl}
           data={[
-            ['globe', mdiEarth, t('game.arena.globe_short', 'Globe')],
-            ['list', mdiFormatListBulleted, t('game.arena.list', 'List')],
             ['cards', mdiViewGridOutline, t('game.arena.cards', 'Cards')],
+            ['list', mdiFormatListBulleted, t('game.arena.list', 'List')],
+            ['globe', mdiEarth, t('game.arena.globe_short', 'Globe')],
           ].map(([value, icon, label]) => ({
             value,
             label: (
@@ -132,12 +172,7 @@ export function ChallengeToolbar(props: {
                   }))}
                 />
               )}
-              {props.view === 'list' && <div className={classes.mobileSort}>{sortControl}</div>}
-              <Switch
-                checked={props.hideSolved}
-                onChange={(event) => props.onHideSolved(event.currentTarget.checked)}
-                label={t('game.button.hide_solved')}
-              />
+              <div className={classes.mobileSort}>{sortControl}</div>
               <Button variant="subtle" onClick={props.onReset}>
                 {t('common.workspace.reset_filters', 'Reset filters')}
               </Button>
@@ -174,13 +209,37 @@ export function ChallengeToolbar(props: {
           </Tabs.List>
         </Tabs>
         <Group gap="xs" wrap="wrap" className={classes.resultCount}>
+          <Switch
+            checked={props.hideSolved}
+            onChange={(event) => props.onHideSolved(event.currentTarget.checked)}
+            label={t('game.arena.unsolved', 'Unsolved')}
+            className={classes.unsolvedSwitch}
+          />
+          {props.category !== 'All' && (
+            <Text size="xs" className={classes.mobileCategory}>
+              {categoryLabels.get(props.category)?.name ?? props.category}
+            </Text>
+          )}
           <Text size="xs" c="dimmed" role="status">
-            {t('common.workspace.challenge_count', '{{shown}} of {{total}} challenges', {
-              shown: props.shown,
-              total: props.total,
-            })}
+            <span aria-hidden="true">
+              <span className={classes.fullCount}>
+                {t('common.workspace.challenge_count', '{{shown}} of {{total}} challenges', {
+                  shown: props.shown,
+                  total: props.total,
+                })}
+              </span>
+              <span className={classes.compactCount}>
+                {props.shown} / {props.total}
+              </span>
+            </span>
+            <VisuallyHidden>
+              {t('common.workspace.challenge_count', '{{shown}} of {{total}} challenges', {
+                shown: props.shown,
+                total: props.total,
+              })}
+            </VisuallyHidden>
           </Text>
-          {(props.search || activeFilters > 0) && (
+          {(props.search || props.category !== 'All' || props.kind !== 'all') && (
             <Button variant="subtle" size="compact-xs" onClick={props.onReset}>
               {t('common.workspace.reset_filters', 'Reset filters')}
             </Button>

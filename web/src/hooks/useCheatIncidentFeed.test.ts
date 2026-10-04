@@ -72,6 +72,23 @@ test('the incident feed is silent while inactive and reconciles delta and older 
     await act(async () => root.render(createElement(Scope, { active: false })))
     await act(async () => context.mock.timers.tick(10 * 60_000))
     assert.equal(queries.length, requestCount)
+
+    // Back on the tab, the cached last read is a delta; the feed must start
+    // over from a full page instead of merging that delta into an empty list.
+    await act(async () => root.render(createElement(Scope, { active: true })))
+    assert.deepEqual(queries[requestCount], { limit: 100 })
+    assert.equal(container.textContent, '10')
+
+    // The same holds when the log is unmounted and mounted again.
+    await act(async () => context.mock.timers.tick(10_000))
+    assert.equal(container.textContent, '11,10')
+    await act(async () => root.render(createElement('div')))
+    const remountAt = queries.length
+    await act(async () => root.render(createElement(Scope, { active: true })))
+    assert.deepEqual(queries[remountAt], { limit: 100 })
+    assert.equal(container.textContent, '10')
+    // Ended sessions leave nothing behind in the SWR cache.
+    assert.equal([...cache.keys()].filter((key) => String(key).includes('#feed')).length, 1)
   } finally {
     await act(async () => root.unmount())
     context.mock.timers.reset()

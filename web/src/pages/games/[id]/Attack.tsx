@@ -3,19 +3,22 @@
  *
  * Route: /games/{id}/attack  (no authentication).
  *
- * Arcade / anime "cyber arena" design & animation by lawbyte
+ * Globe presentation follows the competition workspace. Original scene effects
+ * and animation by lawbyte
  * (https://github.com/lawbyte). Ported into the platform here and wired to the
  * live plain-WebSocket attack feed (/hub/attack/ws?game={id}) plus the public
  * A&D / KotH scoreboards under the canonical lowercase `/api/game/{id}` routes.
  *
- * The whole piece is a self-contained imperative SVG + canvas scene with its
- * own full-page CSS, so it is mounted into a Shadow DOM: that isolates its
- * styles and DOM from the React app shell completely (and a ShadowRoot still
- * supports getElementById, which the engine relies on). The engine runs in a
- * useEffect and tears itself down (WebSocket, timers, rAF) on unmount.
+ * Shared navigation and page header surround an isolated SVG/canvas scene.
+ * The Shadow DOM keeps legacy celebration effects scoped while inheriting the
+ * application theme. Public data, sockets and timers remain owned by this engine;
+ * arenaGlobe owns only camera, 3D projection and challenge-country presentation.
  */
-import { FC, useEffect, useRef } from 'react'
+import { Stack, useComputedColorScheme } from '@mantine/core'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router'
+import { GameWorkspaceHeader } from '@Components/GameWorkspaceHeader'
+import { WithNavBar } from '@Components/WithNavbar'
 import {
   ArenaHttpError,
   arenaLiveRoutes,
@@ -26,546 +29,149 @@ import {
 } from '@Utils/ArenaLive'
 import { eventVpnFetch } from '@Utils/EventVpnProof'
 import { epochProgress } from '@Utils/epochProgress'
-import type { AdScoreboardModel } from '@Api'
-import { createJeopardy, type JeopCategory } from './arenaJeopardy'
+import { usePageTitle } from '@Hooks/usePageTitle'
+import type { AdScoreboardModel, DetailedGameInfoModel } from '@Api'
+import workspace from '@Styles/GameWorkspace.module.css'
+import arenaEffects from './arenaEffects.css?inline'
+import { createArenaGlobe } from './arenaGlobe'
+import { acceptedTerritorySolvers } from './arenaGlobeModel'
+import { createArenaInspector } from './arenaInspector'
+import type { JeopCategory } from './arenaJeopardy'
+import { arenaTeamInitials, arenaTeamLabel, arenaTeamPosition, initialArenaRanking } from './arenaPresentation'
+import arenaTheme from './arenaTheme.css?inline'
 import { createSoundEngine } from './audio'
 import { createFbRenderer } from './fbRenderer'
 import { createFxRenderer } from './fxRenderer'
 import { createFzRenderer } from './fzRenderer'
-import { createJeopRenderer } from './jeopRenderer'
 import { KothDirector, statusFromCheck, type CaptureResult } from './kothCapture'
 import { createWinRenderer } from './winRenderer'
 
-const FONTS_HREF =
-  'https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=DotGothic16&display=swap'
-
 /* -------------------------------------------------------------------------- */
-/* Scene CSS (lawbyte). `body` is remapped to `:host` for the shadow root.    */
+/* Inherited workspace theme and isolated legacy celebration effects.         */
 /* -------------------------------------------------------------------------- */
-const ARENA_CSS = `
-  :host{
-    --bg:#06050f; --bg2:#0b0918; --panel:rgba(13,10,28,0.9);
-    --line:rgba(132,98,238,0.16); --line2:rgba(132,98,238,0.32);
-    --text:#e9e6ff; --dim:#7d78ad; --dimmer:#4f4a78;
-    --cyan:#27e3ff; --magenta:#ff39a8; --lime:#b9ff42; --amber:#ffc637;
-    --violet:#9d6bff; --orange:#ff7a3a; --blue:#4d8bff; --red:#ff4d5e;
-    --good:#3dffb0; --warn:#ffd23a; --bad:#ff3b5b;
-    --glow:0 0 18px;
-    display:block; position:absolute; inset:0; overflow:hidden;
-    color:var(--text); font-family:'VT323',monospace; -webkit-font-smoothing:none;
-    background:
-      radial-gradient(1200px 700px at 50% 42%, #15102e 0%, rgba(8,6,18,0) 60%),
-      radial-gradient(900px 600px at 8% 12%, rgba(255,57,168,0.10), transparent 55%),
-      radial-gradient(900px 600px at 92% 16%, rgba(39,227,255,0.10), transparent 55%),
-      var(--bg);
-  }
-  *{box-sizing:border-box;margin:0;padding:0}
-  .circuit{position:absolute;inset:0;z-index:0;opacity:.5;pointer-events:none;
-    background-image:
-      linear-gradient(var(--line) 1px,transparent 1px),
-      linear-gradient(90deg,var(--line) 1px,transparent 1px),
-      linear-gradient(var(--line) 1px,transparent 1px),
-      linear-gradient(90deg,var(--line) 1px,transparent 1px);
-    background-size:96px 96px,96px 96px,24px 24px,24px 24px;
-    background-position:-1px -1px,-1px -1px,-1px -1px,-1px -1px;
-    mask-image:radial-gradient(1100px 700px at 50% 45%,#000 30%,transparent 85%);
-  }
-  .grain{position:absolute;inset:0;z-index:61;pointer-events:none;opacity:.05;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
-
-  .shell{position:relative;z-index:5;height:100vh;display:grid;
-    grid-template-rows:auto 1fr auto;gap:10px;padding:12px}
-  .midrow{display:grid;grid-template-columns:clamp(200px,20vw,300px) minmax(0,1fr) clamp(210px,21vw,320px);gap:12px;min-height:0;min-width:0}
-
-  .topbar{display:flex;align-items:center;justify-content:space-between;
-    padding:8px 16px;border:1px solid var(--line2);background:var(--panel);
-    clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px))}
-  .brand{display:flex;align-items:baseline;gap:14px}
-  .brand .logo{font-family:'Press Start 2P';font-size:15px;letter-spacing:1px;
-    color:#fff;text-shadow:var(--glow) var(--magenta),0 0 4px var(--magenta)}
-  .brand .logo b{color:var(--cyan);text-shadow:var(--glow) var(--cyan)}
-  .brand .mode{font-family:'Press Start 2P';font-size:9px;color:var(--dim);
-    border:1px solid var(--line2);padding:5px 8px}
-  .topright{display:flex;align-items:center;gap:18px;font-size:19px}
-  .roundpill{font-family:'Press Start 2P';font-size:9px;color:var(--amber);
-    border:1px solid rgba(255,198,55,.4);padding:6px 9px;
-    text-shadow:0 0 6px rgba(255,198,55,.6)}
-  .countpill{font-family:'Press Start 2P';font-size:9px;color:var(--cyan);
-    border:1px solid rgba(39,227,255,.4);padding:6px 9px;text-shadow:0 0 6px rgba(39,227,255,.6)}
-
-  .panel{position:relative;border:1px solid var(--line2);background:var(--panel);
-    display:flex;flex-direction:column;min-height:0;min-width:0;
-    clip-path:polygon(0 0,calc(100% - 16px) 0,100% 16px,100% 100%,16px 100%,0 calc(100% - 16px))}
-  .panel::before{content:"";position:absolute;inset:0;pointer-events:none;
-    border-top:1px solid rgba(255,255,255,.04)}
-  .phead{display:flex;align-items:center;justify-content:space-between;
-    padding:7px 12px;border-bottom:1px solid var(--line);
-    background:linear-gradient(90deg,rgba(157,107,255,.10),transparent)}
-  .phead .t{font-family:'Press Start 2P';font-size:9px;letter-spacing:1px;color:#fff}
-  .rank-tabs{display:inline-flex;gap:3px}
-  .rank-tabs button{font-family:'Press Start 2P';font-size:7px;color:var(--dim);background:transparent;
-    border:1px solid var(--line2);padding:4px 5px;border-radius:3px;cursor:pointer;line-height:1}
-  .rank-tabs button:hover{color:#fff;border-color:var(--cyan)}
-  .rank-tabs button.on{color:#06050f;background:var(--cyan);border-color:var(--cyan)}
-  .accent-c{box-shadow:inset 3px 0 0 var(--cyan)}
-  .accent-m{box-shadow:inset 3px 0 0 var(--magenta)}
-  .accent-v{box-shadow:inset 3px 0 0 var(--violet)}
-
-  #log{flex:1;overflow-y:auto;overflow-x:auto;padding:8px 10px;display:flex;flex-direction:column;
-    align-items:flex-start;gap:3px;font-size:15px;line-height:1.25;justify-content:flex-start;scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
-  #log::-webkit-scrollbar{width:6px;height:6px}#log::-webkit-scrollbar-thumb{background:var(--line2);border-radius:3px}
-  /* rows keep their full width (no ellipsis) so long lines stay readable via horizontal scroll */
-  .lg{flex:0 0 auto;white-space:nowrap;opacity:.92;animation:logIn .25s ease-out}
-  @keyframes logIn{from{opacity:0;transform:translateX(-8px)}}
-  .lg .ts{color:var(--dimmer);margin-right:5px}
-  .lg .tag{font-family:'Press Start 2P';font-size:8px;padding:1px 4px;margin-right:6px;
-    vertical-align:middle}
-  .tag.flag{color:#fff;background:rgba(255,77,94,.18);border:1px solid var(--red)}
-  .tag.def{color:#fff;background:rgba(61,255,176,.14);border:1px solid var(--good)}
-  .tag.patch{color:#fff;background:rgba(39,227,255,.16);border:1px solid var(--cyan)}
-  .tag.sla{color:#fff;background:rgba(255,210,58,.14);border:1px solid var(--warn)}
-  .tag.fb{color:#fff;background:rgba(255,57,168,.2);border:1px solid var(--magenta)}
-  .tag.sys{color:var(--dim);border:1px solid var(--line2)}
-  .tag.hill{color:#fff;background:rgba(157,107,255,.2);border:1px solid var(--violet)}
-  .lg .who{color:var(--cyan)}
-  .lg .vic{color:var(--magenta)}
-  .lg .svc{color:var(--amber)}
-  .lg .em{color:#fff}
-
-  .arena-wrap{position:relative;display:flex;align-items:center;justify-content:center;
-    min-height:0;min-width:0;overflow:hidden}
-  /* z-index:5 lifts the wheel (and its edge team-name labels that overflow the square) ABOVE the
-     jeopardy constellation canvas (z-index:4) so the names aren't cropped/covered by the "space". */
-  .arena{position:relative;aspect-ratio:1/1;height:100%;max-height:100%;max-width:100%;z-index:5}
-  #fxbg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-  /* overflow:visible so the outer team-name labels (offset past the 1000 viewBox edge) aren't clipped */
-  #svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
-  #fx{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-  .arena-note{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-    text-align:center;font-family:'Press Start 2P';font-size:11px;color:var(--dim);
-    line-height:2;padding:20px;z-index:8}
-  /* ---- jeopardy constellation overlay (side bands beside the square wheel) ---- */
-  #jeop{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:4}
-  #jeopSpace{display:none}
-  @keyframes jtwk{0%,100%{opacity:var(--o,1)}50%{opacity:var(--o2,.6)}}
-  #jeop .twk{animation:jtwk var(--d,3s) ease-in-out infinite;animation-delay:var(--dl,0s)}
-  #jeop .chhit{pointer-events:all;cursor:pointer}
-  .jtip{position:absolute;z-index:9;pointer-events:none;opacity:0;transform:translateY(4px);
-    transition:opacity .12s ease,transform .12s ease;min-width:140px;max-width:230px;padding:8px 10px;border-radius:7px;
-    background:rgba(8,10,22,.96);border:1px solid rgba(120,140,200,.35);box-shadow:0 8px 28px rgba(0,0,0,.6);font-family:'VT323',monospace}
-  .jtip.show{opacity:1;transform:translateY(0)}
-  .jtip .jt-name{font-size:17px;color:#e7ebf7;line-height:1.1}
-  .jtip .jt-meta{font-size:14px;color:#8b93b4;margin:1px 0 6px}
-  .jtip .jt-row{display:flex;align-items:center;gap:6px;font-size:15px;color:#d4dcef;margin:2px 0}
-  .jtip .jt-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;box-shadow:0 0 5px currentColor}
-  .jtip .jt-rank{margin-left:auto;font-size:12px;font-family:'Press Start 2P';letter-spacing:.4px}
-  .jtip .jt-none{font-size:15px;color:#6f7794}
-  /* ---- fullscreen battle-map button ---- */
-  .fs-btn{position:absolute;top:6px;right:8px;z-index:9;width:28px;height:28px;display:flex;
-    align-items:center;justify-content:center;font-size:14px;line-height:1;color:#b6c0df;
-    background:rgba(12,16,30,.72);border:1px solid rgba(120,140,200,.42);border-radius:7px;cursor:pointer;
-    opacity:.55;box-shadow:0 2px 10px rgba(0,0,0,.45);transition:opacity .18s,background .15s,border-color .15s,color .15s,transform .1s}
-  .arena-wrap:hover .fs-btn{opacity:1}
-  .fs-btn:hover{background:rgba(46,60,108,.96);border-color:rgba(150,180,255,.85);color:#fff}
-  .fs-btn:active{transform:scale(.92)}
-  .arena-wrap:fullscreen{background:radial-gradient(120% 120% at 50% 40%,#0b0f1e 0%,#06070f 70%,#04050b 100%);padding:0}
-  .arena-wrap:fullscreen .arena{height:100%}
-
-  .rightcol{display:flex;flex-direction:column;gap:12px;min-height:0;min-width:0}
-  .panel.rank{flex:1;min-height:0}
-  #ranklist{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:6px;
-    scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
-  #ranklist::-webkit-scrollbar{width:6px}#ranklist::-webkit-scrollbar-thumb{background:var(--line2);border-radius:3px}
-  .rk{flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:6px 7px;margin-bottom:5px;
-    border:1px solid var(--line);position:relative;
-    background:linear-gradient(90deg,rgba(255,255,255,.02),transparent);
-    transition:transform .35s cubic-bezier(.2,.9,.2,1)}
-  .rk .pos{font-family:'Press Start 2P';font-size:12px;width:22px;text-align:center;color:var(--dim)}
-  .rk.p1 .pos{color:var(--amber);text-shadow:0 0 8px var(--amber)}
-  .rk.p2 .pos{color:#d8e0ff}
-  .rk.p3 .pos{color:var(--orange)}
-  .rk .av{width:38px;height:38px;flex:none;border:1px solid var(--line2);
-    border-radius:5px;overflow:hidden;background:#0a0818}
-  .rk .av svg{display:block;width:100%;height:100%}
-  .rk .body{flex:1;min-width:0}
-  .rk .nm{font-family:'Press Start 2P';font-size:8px;letter-spacing:.5px;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .rk .bars{display:flex;gap:3px;margin-top:4px;height:5px}
-  .rk .bars i{display:block;height:100%;border-radius:1px;opacity:.9}
-  .rk .sc{font-size:22px;color:#fff;line-height:1;text-align:right;min-width:46px;
-    text-shadow:0 0 8px rgba(255,255,255,.25)}
-  .rk .sc small{display:block;font-size:11px;color:var(--good);margin-top:1px}
-  .rk .sc small.dn{color:var(--bad)}
-
-  .strow{display:flex;justify-content:space-between;padding:3px 0;
-    border-bottom:1px dashed var(--line)}
-  .strow:last-child{border-bottom:0}
-  .strow .k{color:var(--dim);font-size:16px;font-family:'DotGothic16'}
-  .strow .v{color:#fff;letter-spacing:1px}
-  .strow .v.acc{color:var(--cyan);text-shadow:0 0 6px rgba(39,227,255,.5)}
-  .legend{display:flex;gap:12px;padding:8px 12px;border-top:1px solid var(--line);
-    font-family:'Press Start 2P';font-size:7px;color:var(--dim);flex-wrap:wrap}
-  .legend span{display:inline-flex;align-items:center;gap:5px}
-  .legend i{width:9px;height:9px;display:inline-block}
-  .slegend{display:flex;flex-wrap:wrap;gap:6px 10px;padding:8px 0 2px;margin-top:4px;
-    border-top:1px dashed var(--line);font-family:'Press Start 2P';font-size:7px;color:var(--dim)}
-  .slegend span{display:inline-flex;align-items:center;gap:5px}
-  .slegend i{width:8px;height:8px;display:inline-block;border-radius:2px;border:1px solid #06050f}
-
-  .devbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:8px 14px;
-    border:1px solid var(--line2);background:var(--panel);
-    clip-path:polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px)}
-  .devbar .label{font-family:'Press Start 2P';font-size:8px;color:var(--violet);
-    letter-spacing:1px;margin-right:4px}
-  #cfgBtns{display:inline-flex;gap:7px;flex-wrap:wrap}
-  .cfg{display:inline-flex;align-items:center;gap:5px;font-family:'Press Start 2P';font-size:7px;
-    color:var(--dim);border:1px solid var(--line2);padding:4px 6px;border-radius:4px}
-  .cfg input{width:38px;background:#0a0818;border:1px solid var(--line2);color:#fff;
-    font-family:'VT323';font-size:15px;padding:2px 4px;border-radius:3px;text-align:center}
-  .cfg input:focus{outline:none;border-color:var(--cyan)}
-  .btn{font-family:'Press Start 2P';font-size:8px;letter-spacing:.5px;color:#0a0612;
-    border:0;padding:8px 11px;cursor:pointer;position:relative;
-    clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px);
-    transition:transform .08s,filter .15s}
-  .btn:active{transform:translateY(2px)}
-  .btn:hover{filter:brightness(1.15)}
-  .btn.ghost{background:transparent;color:var(--dim);border:1px solid var(--line2);box-shadow:none}
-  .btn.ghost.on{color:#0a0612;background:var(--cyan);border-color:var(--cyan)}
-  .btn.fb-ad{background:var(--red);box-shadow:0 0 14px rgba(255,77,94,.5)}
-  .btn.fb-jeo{background:var(--amber);box-shadow:0 0 14px rgba(255,198,55,.5)}
-  .btn.fb-koth{background:#9d6bff;color:#0a0612;box-shadow:0 0 14px rgba(157,107,255,.5)}
-  .btn.patch{background:#27e3ff;color:#06121a;box-shadow:0 0 14px rgba(39,227,255,.5)}
-  #fbBtns{display:inline-flex;gap:10px}
-  .sp{flex:1}
-
-  .float{position:absolute;font-family:'Press Start 2P';font-size:9px;pointer-events:none;
-    z-index:7;text-shadow:0 0 6px currentColor;animation:floatUp 1.1s ease-out forwards}
-  @keyframes floatUp{0%{opacity:0;transform:translateY(4px) scale(.7)}
-    20%{opacity:1;transform:translateY(-2px) scale(1.1)}
-    100%{opacity:0;transform:translateY(-30px) scale(1)}}
-
-  /* avatar idle motion lives on the #fxbg canvas now (see drawAmbient) — the SVG stays static */
-
-  @keyframes shake{
-    0%,100%{transform:translate(0,0)}
-    10%{transform:translate(-5px,3px)}25%{transform:translate(6px,-4px)}
-    40%{transform:translate(-7px,2px)}55%{transform:translate(5px,4px)}
-    70%{transform:translate(-4px,-3px)}85%{transform:translate(3px,2px)}}
-  .shell.shake{animation:shake .5s cubic-bezier(.36,.07,.19,.97)}
-
-  @keyframes nodeGlitch{0%,100%{opacity:1;filter:none}18%{opacity:.35;filter:brightness(1.7) hue-rotate(-18deg)}40%{opacity:.9}58%{opacity:.25;filter:brightness(.5) saturate(2.2)}78%{opacity:.7}}
-  .node-down{animation:nodeGlitch .42s steps(2) 3}
-
-  /* ===== FIRST BLOOD CINEMATIC ===== */
-  .fb-overlay{position:fixed;inset:0;z-index:95;pointer-events:none;visibility:hidden;overflow:hidden}
-  .fb-overlay.play,.fb-overlay.tele{visibility:visible}
-  .fb-overlay>div{position:absolute;opacity:0}
-  .fb-dark{inset:0;background:radial-gradient(circle at 50% 45%,rgba(40,2,12,.72),rgba(2,1,6,.97))}
-  .fb-bar{left:0;width:100%;height:11vh;background:#040308;border-color:#ff3b5b}
-  .fb-bar.t{top:0;border-bottom:2px solid #ff3b5b}
-  .fb-bar.b{bottom:0;border-top:2px solid #ff3b5b}
-  .fb-rays{inset:-25%;
-    background:repeating-conic-gradient(from 0deg at 50% 47%,rgba(255,255,255,0) 0deg 3.4deg,rgba(255,90,110,.24) 3.4deg 4deg);
-    -webkit-mask:radial-gradient(circle at 50% 47%,transparent 11%,#000 40%,transparent 78%);
-            mask:radial-gradient(circle at 50% 47%,transparent 11%,#000 40%,transparent 78%)}
-  /* Artistic radial RED-LIQUID splash from center — a bright core with tapering liquid tendrils
-     + flung droplets, revealed center-out by a growing clip-path. No drips/gore. Composited only. */
-  .fb-splat{left:50%;top:47%;width:108vmin;height:108vmin;transform:translate(-50%,-50%) scale(.55);
-    background:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20600%20600'%3E%3Cdefs%3E%3CradialGradient%20id='g'%20cx='50%25'%20cy='50%25'%20r='58%25'%3E%3Cstop%20offset='0'%20stop-color='%23ff5a6e'/%3E%3Cstop%20offset='.35'%20stop-color='%23e8122f'/%3E%3Cstop%20offset='.72'%20stop-color='%23bf0f24'/%3E%3Cstop%20offset='1'%20stop-color='%238c0c1d'/%3E%3C/radialGradient%3E%3C/defs%3E%3Cg%20fill='url(%23g)'%3E%3Cellipse%20cx='300'%20cy='300'%20rx='52'%20ry='46'/%3E%3Cellipse%20cx='286'%20cy='310'%20rx='30'%20ry='26'/%3E%3Cellipse%20cx='316'%20cy='292'%20rx='26'%20ry='22'/%3E%3Cpath%20d='M340.2%20313.9%20Q450.7%20304.6%20541.1%20297%20Q450.6%20291.7%20339.8%20285.1%20Z'/%3E%3Cpath%20d='M333.8%20324.6%20Q436.8%20353.6%20521.1%20377.4%20Q440.4%20343.4%20341.7%20301.9%20Z'/%3E%3Cpath%20d='M321.4%20336.1%20Q423.2%20418.1%20506.5%20485.3%20Q430.7%20409.7%20338.2%20317.4%20Z'/%3E%3Cpath%20d='M302.9%20340.7%20Q338.4%20450.3%20367.5%20539.9%20Q345.6%20448.3%20318.8%20336.3%20Z'/%3E%3Cpath%20d='M291.8%20339.8%20Q293.7%20425.2%20295.3%20495%20Q300.2%20425.3%20306.3%20340.2%20Z'/%3E%3Cpath%20d='M270.3%20329%20Q216.5%20433.1%20172.5%20518.3%20Q225.1%20438.1%20289.3%20340.1%20Z'/%3E%3Cpath%20d='M258.3%20307.1%20Q134.2%20383.3%2032.7%20445.6%20Q140.1%20394.1%20271.4%20331.2%20Z'/%3E%3Cpath%20d='M258%20297.8%20Q190.7%20323.4%20135.7%20344.5%20Q193.8%20334.9%20264.8%20323.1%20Z'/%3E%3Cpath%20d='M264.4%20280.5%20Q136.7%20241%2032.3%20208.7%20Q134.7%20247%20259.9%20293.7%20Z'/%3E%3Cpath%20d='M276%20267.1%20Q201.9%20203.3%20141.2%20151.1%20Q197.2%20208.3%20265.6%20278.2%20Z'/%3E%3Cpath%20d='M288.3%20259%20Q227.2%20189.1%20177.2%20131.9%20Q216.5%20196.9%20264.5%20276.4%20Z'/%3E%3Cpath%20d='M304.8%20258.1%20Q283%20190.4%20265.1%20135%20Q271.2%20192.9%20278.6%20263.6%20Z'/%3E%3Cpath%20d='M317.1%20263%20Q341.6%20140.9%20361.6%2041.1%20Q334.5%20139.3%20301.4%20259.2%20Z'/%3E%3Cpath%20d='M336.2%20277.4%20Q383.3%20203.2%20421.8%20142.5%20Q372.8%20195.1%20312.8%20259.3%20Z'/%3E%3Cpath%20d='M341.8%20293.2%20Q424%20240.3%20491.2%20197%20Q418.1%20229.3%20328.7%20268.9%20Z'/%3E%3C/g%3E%3Cg%20fill='%23ff3b5b'%3E%3Ccircle%20cx='547.8'%20cy='296.9'%20r='6.9'/%3E%3Ccircle%20cx='530.4'%20cy='378.4'%20r='5.5'/%3E%3Ccircle%20cx='508.3'%20cy='493.2'%20r='8.8'/%3E%3Ccircle%20cx='368.1'%20cy='547'%20r='4.3'/%3E%3Ccircle%20cx='295.1'%20cy='501.4'%20r='8.2'/%3E%3Ccircle%20cx='168.1'%20cy='524'%20r='5.4'/%3E%3Ccircle%20cx='24.8'%20cy='448.1'%20r='5.1'/%3E%3Ccircle%20cx='129.9'%20cy='347.2'%20r='5.9'/%3E%3Ccircle%20cx='28.4'%20cy='205.2'%20r='6.3'/%3E%3Ccircle%20cx='135.2'%20cy='144.5'%20r='5.3'/%3E%3Ccircle%20cx='171.5'%20cy='129.3'%20r='5.2'/%3E%3Ccircle%20cx='264.3'%20cy='127.5'%20r='6.2'/%3E%3Ccircle%20cx='363.6'%20cy='38'%20r='6.1'/%3E%3Ccircle%20cx='428'%20cy='138.5'%20r='8.4'/%3E%3Ccircle%20cx='498.6'%20cy='195.6'%20r='8.9'/%3E%3Ccircle%20cx='333'%20cy='440.2'%20r='5.1'/%3E%3Ccircle%20cx='228'%20cy='433.1'%20r='2.3'/%3E%3Ccircle%20cx='473.6'%20cy='410.4'%20r='3'/%3E%3Ccircle%20cx='166.8'%20cy='201.6'%20r='3.8'/%3E%3Ccircle%20cx='480.8'%20cy='252.5'%20r='4.3'/%3E%3Ccircle%20cx='386.7'%20cy='203.5'%20r='2.6'/%3E%3Ccircle%20cx='510.1'%20cy='163.8'%20r='3'/%3E%3Ccircle%20cx='387'%20cy='518.8'%20r='5.8'/%3E%3Ccircle%20cx='390.7'%20cy='560.2'%20r='5.5'/%3E%3Ccircle%20cx='160.7'%20cy='194'%20r='2.4'/%3E%3Ccircle%20cx='569.7'%20cy='366.9'%20r='3'/%3E%3Ccircle%20cx='259.5'%20cy='162'%20r='5.3'/%3E%3Ccircle%20cx='176.1'%20cy='214.1'%20r='2.7'/%3E%3Ccircle%20cx='280'%20cy='193.8'%20r='2.9'/%3E%3Ccircle%20cx='60.7'%20cy='206.4'%20r='4.5'/%3E%3Ccircle%20cx='249.2'%20cy='564.5'%20r='2.8'/%3E%3Ccircle%20cx='445.4'%20cy='315.2'%20r='3.8'/%3E%3Ccircle%20cx='419.3'%20cy='347.6'%20r='3.5'/%3E%3Ccircle%20cx='192.1'%20cy='247.4'%20r='3.4'/%3E%3Ccircle%20cx='517.8'%20cy='122'%20r='4.6'/%3E%3Ccircle%20cx='225.6'%20cy='107.8'%20r='2.6'/%3E%3Ccircle%20cx='396'%20cy='321.5'%20r='5.6'/%3E%3Ccircle%20cx='215.7'%20cy='35.2'%20r='2.1'/%3E%3Ccircle%20cx='177.6'%20cy='159.1'%20r='4.9'/%3E%3Ccircle%20cx='180.5'%20cy='558.6'%20r='2.3'/%3E%3Ccircle%20cx='74.8'%20cy='232.9'%20r='5.6'/%3E%3C/g%3E%3Ccircle%20cx='300'%20cy='300'%20r='20'%20fill='%23ff7283'/%3E%3C/svg%3E") center/contain no-repeat;
-    will-change:transform,opacity}
-  .fb-splat2{left:50%;top:47%;width:126vmin;height:126vmin;transform:translate(-50%,-50%) scale(.7);
-    background:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20600%20600'%3E%3Cg%20fill='%23e8122f'%3E%3Ccircle%20cx='107.3'%20cy='239.9'%20r='6.3'/%3E%3Ccircle%20cx='245.6'%20cy='519.9'%20r='4'/%3E%3Ccircle%20cx='44.7'%20cy='449.9'%20r='3'/%3E%3Ccircle%20cx='127.3'%20cy='362.6'%20r='4.1'/%3E%3Ccircle%20cx='499.4'%20cy='298.4'%20r='5.2'/%3E%3Ccircle%20cx='72.8'%20cy='425.6'%20r='4.5'/%3E%3Ccircle%20cx='403.1'%20cy='488.8'%20r='4.3'/%3E%3Ccircle%20cx='362.2'%20cy='74'%20r='3.4'/%3E%3Ccircle%20cx='210.3'%20cy='127.1'%20r='4.8'/%3E%3Ccircle%20cx='339.8'%20cy='507.8'%20r='6'/%3E%3Ccircle%20cx='38.4'%20cy='274.1'%20r='5.9'/%3E%3Ccircle%20cx='89.3'%20cy='171.6'%20r='4.3'/%3E%3Ccircle%20cx='103.3'%20cy='120'%20r='2.9'/%3E%3Ccircle%20cx='489.5'%20cy='221.7'%20r='3.1'/%3E%3Ccircle%20cx='418.2'%20cy='462.7'%20r='2.8'/%3E%3Ccircle%20cx='130'%20cy='427.1'%20r='5.4'/%3E%3Ccircle%20cx='16.1'%20cy='360.5'%20r='5.5'/%3E%3Ccircle%20cx='178.6'%20cy='553.7'%20r='5.6'/%3E%3Ccircle%20cx='554.7'%20cy='247'%20r='6.8'/%3E%3Ccircle%20cx='353.2'%20cy='484.2'%20r='6.9'/%3E%3Ccircle%20cx='585.8'%20cy='339.5'%20r='6.6'/%3E%3Ccircle%20cx='413.4'%20cy='430.1'%20r='6.6'/%3E%3C/g%3E%3Cg%20fill='%23ff5a6e'%3E%3Ccircle%20cx='534'%20cy='239.5'%20r='3.8'/%3E%3Ccircle%20cx='310'%20cy='137.2'%20r='2'/%3E%3Ccircle%20cx='131'%20cy='124.7'%20r='4.4'/%3E%3Ccircle%20cx='179.4'%20cy='288.7'%20r='2.4'/%3E%3Ccircle%20cx='155.4'%20cy='347.9'%20r='2.1'/%3E%3Ccircle%20cx='366.9'%20cy='477.8'%20r='2.3'/%3E%3Ccircle%20cx='408.7'%20cy='393.2'%20r='2.1'/%3E%3Ccircle%20cx='350.4'%20cy='64.1'%20r='2.5'/%3E%3Ccircle%20cx='138.4'%20cy='119'%20r='2.6'/%3E%3Ccircle%20cx='178.2'%20cy='510.7'%20r='3.9'/%3E%3Ccircle%20cx='132.7'%20cy='140.5'%20r='3.4'/%3E%3Ccircle%20cx='214.4'%20cy='498.3'%20r='4'/%3E%3C/g%3E%3C/svg%3E") center/contain no-repeat;
-    will-change:transform,opacity}
-  .fb-flash{inset:0;background:#fff}
-  .fb-overlay .fb-core{inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.4vh;text-align:center;opacity:1;padding-bottom:8vh}
-  .fb-title{font-family:'Press Start 2P';font-size:clamp(26px,7vw,86px);color:#fff;line-height:1;opacity:0;
-    text-shadow:4px 0 #ff2350,-4px 0 #27e3ff,0 0 26px rgba(255,40,80,.9),0 0 60px rgba(255,40,80,.6)}
-  .fb-sub{font-family:'Press Start 2P';font-size:clamp(9px,1.5vw,15px);color:#ffd0d6;opacity:0;
-    letter-spacing:1px;text-shadow:0 0 10px rgba(255,80,110,.7)}
-  .fb-overlay.play .fb-dark{animation:fbDark 5s ease-out forwards}
-  .fb-overlay.play .fb-bar.t{animation:fbBarT 5s ease-out forwards}
-  .fb-overlay.play .fb-bar.b{animation:fbBarB 5s ease-out forwards}
-  .fb-overlay.play .fb-rays{animation:fbRays 5s ease-out forwards}
-  .fb-overlay.play .fb-splat{animation:fbSplat 5s cubic-bezier(.18,.9,.25,1) forwards}
-  .fb-overlay.play .fb-splat2{animation:fbSplat2 5s cubic-bezier(.2,.85,.3,1) forwards}
-  .fb-overlay.play .fb-flash{animation:fbFlash 5s linear forwards}
-  .fb-overlay.play .fb-title{animation:fbTitle 5s cubic-bezier(.2,1.5,.3,1) forwards}
-  .fb-overlay.play .fb-sub{animation:fbSub 5s ease-out forwards}
-  @keyframes fbDark{0%{opacity:0}5%{opacity:.95}82%{opacity:.95}100%{opacity:0}}
-  @keyframes fbBarT{0%{opacity:1;transform:translateY(-100%)}9%{transform:translateY(0)}84%{opacity:1;transform:translateY(0)}100%{opacity:1;transform:translateY(-100%)}}
-  @keyframes fbBarB{0%{opacity:1;transform:translateY(100%)}9%{transform:translateY(0)}84%{opacity:1;transform:translateY(0)}100%{opacity:1;transform:translateY(100%)}}
-  @keyframes fbRays{0%,12%{opacity:0}16%{opacity:.7}82%{opacity:.45}100%{opacity:0}}
-  /* radial splash: bursts outward from center on a scale punch, settles, holds, then fades
-     drifting a touch wider (the splash dissipating). transform/opacity ONLY — no clip-path,
-     so it stays GPU-composited (animating clip-path on this screen-sized filtered element
-     repainted every frame and was the source of the first-blood lag). */
-  @keyframes fbSplat{
-    0%,11%{opacity:0;transform:translate(-50%,-50%) scale(0)}
-    16%{opacity:1;transform:translate(-50%,-50%) scale(1.12)}
-    24%{transform:translate(-50%,-50%) scale(.97)}
-    30%{transform:translate(-50%,-50%) scale(1)}
-    78%{opacity:1;transform:translate(-50%,-50%) scale(1.03)}
-    100%{opacity:0;transform:translate(-50%,-50%) scale(1.14)}}
-  /* secondary spray: a beat later, splashes a touch wider/lighter, holds, fades. */
-  @keyframes fbSplat2{
-    0%,15%{opacity:0;transform:translate(-50%,-50%) scale(0)}
-    21%{opacity:.9;transform:translate(-50%,-50%) scale(1.08)}
-    30%{opacity:.85;transform:translate(-50%,-50%) scale(1)}
-    78%{opacity:.8;transform:translate(-50%,-50%) scale(1.04)}
-    100%{opacity:0;transform:translate(-50%,-50%) scale(1.16)}}
-  @keyframes fbFlash{0%,11%{opacity:0}13%{opacity:.95}16%{opacity:0}18%{opacity:.5}21%{opacity:0}100%{opacity:0}}
-  @keyframes fbTitle{0%{opacity:0;transform:scale(4.2)}11%{opacity:.25}15%{opacity:1;transform:scale(.92)}19%{transform:scale(1.05)}24%{transform:scale(1)}45%{transform:scale(1.015)}65%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:scale(1.7)}}
-  @keyframes fbSub{0%,21%{opacity:0;transform:translateY(16px)}29%{opacity:1;transform:translateY(0)}82%{opacity:1}100%{opacity:0}}
-  /* symmetric 3-col grid: equal side columns keep the separator dead-centre even when
-     the two team names differ in width; fighters hug the centre (atk->end, vic->start).
-     .solo (jeopardy: no victim) collapses to a single centred attacker. */
-  .fb-overlay .fb-vs{display:grid;grid-template-columns:1fr auto 1fr;align-items:start;justify-items:center;column-gap:clamp(18px,7vw,90px);opacity:1}
-  .fb-overlay .fb-vs .fb-fighter.atk{justify-self:end}
-  .fb-overlay .fb-vs .fb-fighter.vic{justify-self:start}
-  .fb-overlay .fb-vs.solo{display:flex;justify-content:center}
-  .fb-overlay .fb-vs.solo .fb-vs-x,.fb-overlay .fb-vs.solo .fb-fighter.vic{display:none}
-  .fb-fighter{display:flex;flex-direction:column;align-items:center;gap:6px;opacity:0}
-  .fb-rtag{font-family:'Press Start 2P';font-size:clamp(6px,.82vw,9px);letter-spacing:.1em;padding:.45em .7em;border-radius:5px;opacity:0;white-space:nowrap}
-  .fb-fighter .por.fb-throne{display:grid;place-items:center;background:radial-gradient(circle at 38% 30%,#d8c4ff,#9d6bff)}
-  .fb-fighter .por.fb-throne svg{width:76%;height:76%;color:#220a3a;display:block}
-  /* RETICLE BRACKETS challenge container — four amber corner brackets, no fill. --rc/--rcg set inline. */
-  .fb-chal{opacity:0;display:inline-flex;align-items:center;justify-content:center}
-  .fb-brk{position:relative;font-family:'Press Start 2P';font-size:clamp(9px,1.3vw,15px);color:#fff;padding:.7em 1.3em;text-shadow:0 0 10px var(--rcg,rgba(255,198,55,.6))}
-  .fb-brk.big{font-size:clamp(11px,1.7vw,20px);padding:.85em 1.7em}
-  .fb-brk .lbl{color:var(--rc,#ffc637)}
-  .fb-brk i{position:absolute;width:13px;height:13px;border:2px solid var(--rc,#ffc637);box-shadow:0 0 8px var(--rcg,rgba(255,198,55,.6))}
-  .fb-brk.big i{width:17px;height:17px}
-  .fb-brk .tl{top:0;left:0;border-right:0;border-bottom:0}
-  .fb-brk .tr{top:0;right:0;border-left:0;border-bottom:0}
-  .fb-brk .bl{bottom:0;left:0;border-right:0;border-top:0}
-  .fb-brk .br{bottom:0;right:0;border-left:0;border-top:0}
-  .fb-fighter .por{width:clamp(64px,11vw,124px);height:clamp(64px,11vw,124px);border-radius:50%;
-    overflow:hidden;border:3px solid rgba(255,40,80,.55);box-shadow:0 0 26px rgba(255,40,80,.7);background:#0a0818}
-  .fb-fighter .por svg{display:block;width:100%;height:100%}
-  .fb-fighter .nm{font-family:'Press Start 2P';font-size:clamp(8px,1.1vw,13px);color:#fff;text-shadow:0 0 8px currentColor}
-  /* separator sits in its own cell, height = portrait height so it centres on the portrait row
-     (not the taller name+tag column). Holds "VS"/flag text or a crown SVG (KotH). */
-  .fb-vs-x{display:grid;place-items:center;height:clamp(64px,11vw,124px);font-family:'Press Start 2P';font-size:clamp(16px,2.4vw,30px);color:#fff;opacity:0;
-    text-shadow:0 0 14px #ff3b5b,2px 0 #ff2350,-2px 0 #27e3ff}
-  .fb-vs-x svg{width:74%;height:74%;display:block;filter:drop-shadow(0 0 12px rgba(157,107,255,.85))}
-  .fb-fighter.atk{transform:translateX(-130vw)}
-  .fb-fighter.vic{transform:translateX(130vw)}
-  .fb-overlay.play .fb-vs .fb-fighter.atk{animation:fbAtk 5s cubic-bezier(.2,1.3,.3,1) forwards}
-  .fb-overlay.play .fb-vs .fb-fighter.vic{animation:fbVic 5s cubic-bezier(.2,1.3,.3,1) forwards}
-  .fb-overlay.play .fb-vs-x{animation:fbVsx 5s ease-out forwards}
-  .fb-overlay.play .fb-rtag{animation:fbRtag 5s ease-out forwards}
-  .fb-overlay.play .fb-chal{animation:fbChal 5s cubic-bezier(.2,1.4,.4,1) forwards}
-  @keyframes fbRtag{0%,18%{opacity:0;transform:translateY(10px)}24%{opacity:1;transform:translateY(0)}80%{opacity:1}100%{opacity:0}}
-  @keyframes fbChal{0%,22%{opacity:0;transform:translateY(12px) scale(.9)}28%{opacity:1;transform:translateY(0) scale(1.05)}32%{transform:translateY(0) scale(1)}80%{opacity:1}100%{opacity:0}}
-  @keyframes fbAtk{0%{opacity:0;transform:translateX(-130vw)}9%{opacity:1;transform:translateX(-14px)}
-    14%{transform:translateX(14px)}16%{transform:translateX(0)}80%{opacity:1;transform:translateX(0)}100%{opacity:0;transform:translateX(-22vw)}}
-  @keyframes fbVic{0%{opacity:0;transform:translateX(130vw)}9%{opacity:1;transform:translateX(14px)}
-    14%{transform:translateX(26px) rotate(6deg)}16%{transform:translateX(20px) rotate(4deg)}80%{opacity:1;transform:translateX(20px) rotate(4deg)}100%{opacity:0;transform:translateX(22vw)}}
-  @keyframes fbVsx{0%,12%{opacity:0;transform:scale(2.4)}16%{opacity:1;transform:scale(1)}80%{opacity:1}100%{opacity:0}}
-
-  /* ===== FIRST-BLOOD TELEGRAPH (attention-seeking pre-roll; board stays visible) =====
-     Plays before the slam: a transparent edge-vignette + a pulsing "INCOMING …"
-     banner — the centre stays clear so the scoreboard reads through. Durations track
-     the JS FB.preroll via the --fbPre custom property. */
-  .fb-tele{inset:0;overflow:hidden}
-  .fb-overlay.tele .fb-tele{animation:fbTele var(--fbPre,5000ms) ease-out forwards}
-  .fb-tele-vig{position:absolute;inset:0;background:radial-gradient(circle at 50% 50%,transparent 40%,rgba(255,40,80,.34) 100%);opacity:0}
-  .fb-overlay.tele .fb-tele-vig{animation:fbTeleVig var(--fbPre,5000ms) ease-in-out forwards}
-  .fb-tele-ban{position:absolute;left:50%;top:15vh;transform:translateX(-50%);display:flex;align-items:center;gap:14px;white-space:nowrap;opacity:0}
-  .fb-tele-ban .fb-tele-txt{font-family:'Press Start 2P';font-size:clamp(13px,2.4vw,28px);color:#fff;letter-spacing:2px;text-shadow:0 0 16px rgba(255,59,91,.95)}
-  .fb-overlay.tele .fb-tele-ban{animation:fbTeleBan var(--fbPre,5000ms) ease-in-out forwards}
-  @keyframes fbTele{0%{opacity:0}10%{opacity:1}100%{opacity:1}}
-  @keyframes fbTeleVig{0%{opacity:0}30%{opacity:.45}100%{opacity:1}}
-  @keyframes fbTeleBan{0%{opacity:0;transform:translateX(-50%) scale(1.25);letter-spacing:8px}
-    18%{opacity:1;transform:translateX(-50%) scale(1);letter-spacing:2px}
-    55%{opacity:.74}82%{opacity:1}100%{opacity:1}}
-
-  /* match countdown + freeze pills */
-  .freezepill{display:none;font-family:'Press Start 2P';font-size:9px;color:#bfe9ff;
-    border:1px solid rgba(120,200,255,.5);padding:6px 9px;background:rgba(120,200,255,.1);
-    text-shadow:0 0 8px rgba(120,200,255,.8);animation:freezePulse 1.6s ease-in-out infinite}
-  .freezepill.show{display:block}
-  @keyframes freezePulse{50%{box-shadow:0 0 14px rgba(120,200,255,.5)}}
-  .panel.rank.frozen{box-shadow:inset 0 0 34px rgba(120,200,255,.16);border-color:rgba(120,200,255,.45)}
-  .panel.rank.frozen .phead .t{color:#bfe9ff}
-  .panel.rank.frozen .rk{filter:saturate(.85)}
-  .btn.end{background:#ff5b6e;color:#1a0508;box-shadow:0 0 14px rgba(255,91,110,.5)}
-  .btn.frz{background:#7fd7ff;color:#06121a;box-shadow:0 0 14px rgba(127,215,255,.5)}
-
-  /* ===== SCOREBOARD FREEZE CINEMATIC ===== */
-  /* ===== WINDOW FROST: dark wash + 2D-canvas corner frost + frosted-glass panel ===== */
-  .fz-overlay{position:fixed;inset:0;z-index:96;pointer-events:none;visibility:hidden;overflow:hidden}
-  .fz-overlay.show{visibility:visible}
-  .fz-dark{position:absolute;inset:0;opacity:0;transition:opacity .5s;background:radial-gradient(circle at 50% 44%,#103257,#0a1f3c 55%,#040b18)}
-  .fz-overlay.show .fz-dark{opacity:.97}
-  .fz-cv{position:absolute;inset:0;width:100%;height:100%}
-  .fz-vig{position:absolute;inset:0;background:radial-gradient(circle at 50% 46%,transparent 42%,rgba(2,8,20,.6) 100%)}
-  .fz-overlay .fz-core{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center}
-  .fz-panel{position:relative;display:flex;flex-direction:column;align-items:center;gap:clamp(8px,1.6vh,16px);
-    padding:clamp(22px,3.4vw,40px) clamp(30px,5vw,66px);border-radius:18px;opacity:0;overflow:hidden;
-    background:linear-gradient(160deg,rgba(180,220,255,.10),rgba(120,180,255,.04));border:1px solid rgba(180,225,255,.28);
-    box-shadow:0 24px 70px rgba(0,18,45,.55),inset 0 1px 0 rgba(255,255,255,.22),inset 0 0 48px rgba(150,210,255,.10);
-    -webkit-backdrop-filter:blur(7px) saturate(1.15);backdrop-filter:blur(7px) saturate(1.15)}
-  .fz-overlay.show .fz-panel{animation:fzPanelIn .8s .15s cubic-bezier(.2,1.1,.3,1) forwards}
-  .fz-panel::after{content:'';position:absolute;top:0;bottom:0;width:55%;left:-70%;pointer-events:none;
-    background:linear-gradient(105deg,transparent,rgba(230,245,255,.30),transparent);transform:skewX(-18deg)}
-  .fz-overlay.show .fz-panel::after{animation:fzSweep 2.4s 1.1s ease-in-out}
-  .fz-brk{position:absolute;width:18px;height:18px;border:2px solid #8fdcff;box-shadow:0 0 8px rgba(140,220,255,.7);opacity:.9}
-  .fz-brk.tl{top:10px;left:10px;border-right:0;border-bottom:0}.fz-brk.tr{top:10px;right:10px;border-left:0;border-bottom:0}
-  .fz-brk.bl{bottom:10px;left:10px;border-right:0;border-top:0}.fz-brk.br{bottom:10px;right:10px;border-left:0;border-top:0}
-  .fz-badge{color:#cdeaff;filter:drop-shadow(0 0 18px rgba(150,210,255,.9));opacity:0;width:clamp(64px,9vw,92px)}
-  .fz-badge svg{display:block;width:100%;height:auto}
-  .fz-overlay.show .fz-badge{animation:fzIcoIn .9s .25s cubic-bezier(.2,1.3,.3,1) forwards}
-  .fz-title{font-family:'Press Start 2P';font-size:clamp(18px,4.4vw,46px);color:#eef8ff;line-height:1.14;letter-spacing:2px;
-    text-shadow:0 0 22px rgba(140,210,255,.95),0 0 6px rgba(180,230,255,.8),0 2px 0 rgba(20,50,90,.5);opacity:0}
-  .fz-overlay.show .fz-title{animation:fzTitleIn .8s .3s cubic-bezier(.2,1.3,.3,1) forwards}
-  .fz-bar{width:min(280px,66vw);height:9px;border:1px solid rgba(150,205,255,.34);border-radius:6px;overflow:hidden;background:rgba(10,26,50,.5);opacity:0}
-  .fz-overlay.show .fz-bar{animation:fzFade .4s .6s forwards}
-  .fz-fill{display:block;height:100%;width:0;background:linear-gradient(90deg,#5fc4ff,#bdf0ff);box-shadow:0 0 14px rgba(150,220,255,.8)}
-  .fz-overlay.show .fz-fill{animation:fzFill 1.1s .65s cubic-bezier(.3,.8,.3,1) forwards}
-  .fz-secured{font-family:'VT323';font-size:clamp(12px,1.6vw,17px);color:#8fdcff;letter-spacing:2px;opacity:0;text-shadow:0 0 10px rgba(140,210,255,.6)}
-  .fz-overlay.show .fz-secured{animation:fzFade .5s 1.05s forwards}
-  .fz-count{font-family:'VT323';font-size:clamp(20px,3vw,34px);color:#eef8ff;letter-spacing:3px;text-shadow:0 0 14px rgba(150,210,255,.9);opacity:0}
-  .fz-overlay.show .fz-count{animation:fzFade .6s 1.2s forwards}
-  @keyframes fzPanelIn{0%{opacity:0;transform:translateY(16px) scale(.96)}100%{opacity:1;transform:translateY(0) scale(1)}}
-  @keyframes fzSweep{0%{left:-70%}60%,100%{left:160%}}
-  @keyframes fzIcoIn{0%{opacity:0;transform:scale(1.7) rotate(-10deg);filter:blur(6px)}60%{opacity:1;transform:scale(1) rotate(0);filter:blur(0)}100%{opacity:1}}
-  @keyframes fzTitleIn{0%{opacity:0;transform:scale(1.5);filter:blur(8px)}60%{opacity:1;transform:scale(1);filter:blur(0)}100%{opacity:1}}
-  @keyframes fzFill{to{width:100%}}
-  @keyframes fzFade{to{opacity:1}}
-
-  /* ===== MATCH WINNER SCREEN ===== */
-  /* ===== MATCH COMPLETE — PODIUM SPOTLIGHT (gold god-rays canvas + tiered podium) ===== */
-  .win-overlay{position:fixed;inset:0;z-index:97;pointer-events:none;opacity:0;visibility:hidden;overflow:hidden;
-    background:radial-gradient(circle at 50% 40%,rgba(60,44,8,.72),rgba(3,2,8,.97));transition:opacity .5s}
-  .win-overlay.show{opacity:1;visibility:visible;pointer-events:auto}
-  .win-cv{position:absolute;inset:0;width:100%;height:100%;z-index:0}
-  .win-core{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:clamp(6px,1.4vh,14px);text-align:center;padding:18px}
-  .win-overlay.show .win-core{animation:winIn .7s cubic-bezier(.2,1.3,.3,1) both}
-  @keyframes winIn{0%{opacity:0;transform:translateY(24px) scale(.92)}100%{opacity:1;transform:none}}
-  .win-eyebrow{font-family:'Press Start 2P';font-size:clamp(8px,1.2vw,12px);color:var(--amber);letter-spacing:2px;text-shadow:0 0 10px rgba(255,198,55,.6)}
-  .win-title{font-family:'Press Start 2P';font-size:clamp(18px,3.6vw,38px);color:#fff;line-height:1;letter-spacing:2px;
-    text-shadow:0 0 24px rgba(255,198,55,.8),3px 0 var(--amber),-3px 0 #ff7a3a}
-  /* tiered podium: 1st tall/centre/gold, 2nd left/silver, 3rd right/bronze */
-  .podium{display:flex;gap:clamp(8px,1.6vw,22px);align-items:flex-end;justify-content:center;margin-top:clamp(8px,1.6vh,18px)}
-  .pod{display:flex;flex-direction:column;align-items:center;gap:6px;opacity:0}
-  .pod .pcrown{width:clamp(34px,4.4vw,58px);color:var(--amber);filter:drop-shadow(0 0 12px rgba(255,198,55,.9));animation:crownBob 2.6s ease-in-out infinite}
-  .pod .pcrown svg{display:block;width:100%;height:auto}
-  @keyframes crownBob{50%{transform:translateY(-6px)}}
-  .pod .pav{aspect-ratio:1;border-radius:50%;overflow:hidden;border:3px solid var(--c);background:#0a0818;box-shadow:0 0 26px -4px var(--c)}
-  .pod .pav svg{display:block;width:100%;height:100%}
-  .pod .pn{font-family:'Press Start 2P';font-size:clamp(7px,.9vw,10px);max-width:clamp(70px,12vw,160px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .pod .ps{font-family:'VT323';font-size:clamp(16px,2.2vw,28px);color:#fff;line-height:.9}
-  .pod .ped{display:flex;align-items:flex-start;justify-content:center;width:clamp(66px,10vw,116px);border-radius:6px 6px 0 0;padding-top:6px;
-    background:linear-gradient(180deg,rgba(255,210,120,.20),rgba(255,180,70,.05));border:1px solid rgba(255,200,90,.3);border-bottom:0;box-shadow:inset 0 1px 0 rgba(255,255,255,.12)}
-  .pod .rk{font-family:'Press Start 2P';font-size:clamp(9px,1.3vw,15px);color:var(--c);text-shadow:0 0 8px currentColor}
-  .pod.p1{order:2;--c:var(--amber)}.pod.p2{order:1;--c:#cfe0ee}.pod.p3{order:3;--c:#e0975a}
-  .pod.p1 .pav{width:clamp(74px,10.5vw,132px);border-width:4px}
-  .pod.p2 .pav{width:clamp(52px,7vw,90px)}.pod.p3 .pav{width:clamp(46px,6vw,78px)}
-  .pod.p1 .ped{height:clamp(40px,6vw,82px)}
-  .pod.p2 .ped{height:clamp(28px,4.4vw,58px)}
-  .pod.p3 .ped{height:clamp(20px,3.4vw,44px)}
-  .win-overlay.show .pod.p2{animation:podrise .6s .85s ease-out forwards}
-  .win-overlay.show .pod.p1{animation:podrise .6s .98s cubic-bezier(.2,1.3,.3,1) forwards}
-  .win-overlay.show .pod.p3{animation:podrise .6s 1.1s ease-out forwards}
-  @keyframes podrise{0%{opacity:0;transform:translateY(28px)}100%{opacity:1;transform:translateY(0)}}
-  .btn.rematch{margin-top:16px;pointer-events:auto;font-size:11px;padding:12px 22px;background:var(--amber);color:#1c1400;box-shadow:0 0 20px rgba(255,198,55,.6)}
-
-  @media (max-width:900px){
-    :host{overflow-y:auto;position:absolute}
-    .shell{height:auto;min-height:100vh}
-    .midrow{display:flex;flex-direction:column;gap:12px}
-    /* stack the wheel + the jeopardy constellations in normal flow and let the page scroll;
-       no fullscreen on mobile (the square wheel + below-stack don't fit a phone fullscreen) */
-    .arena-wrap{order:-1;height:auto;padding:8px;flex-direction:column;justify-content:flex-start;overflow:visible}
-    .arena{width:min(92vw,560px);height:auto;max-height:none;flex:0 0 auto}
-    #jeopSpace{display:block;width:100%}
-    .fs-btn{display:none}
-    .panel.log-panel,.rightcol{display:flex}
-    .panel.log-panel{order:1}.rightcol{order:2}
-    #log{height:30vh;flex:none}
-    .panel.rank{flex:none}
-    #ranklist{max-height:48vh;overflow-y:auto}
-  }
-  @media (max-width:680px){
-    .shell{padding:8px;gap:8px}
-    .topbar{flex-wrap:wrap;gap:8px;padding:8px 12px}
-    .brand{gap:9px}.brand .logo{font-size:12px}
-    .topright{gap:11px}
-    .devbar{flex-wrap:wrap;gap:7px;justify-content:center}
-    .btn{font-size:7px;padding:7px 8px}
-    .arena{width:min(96vw,100%)}
-    #log{font-size:13px;height:25vh}
-    .sp{display:none}
-  }
-  :where(button,input):focus-visible{outline:3px solid var(--cyan);outline-offset:3px}
-  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-  @media (prefers-reduced-motion:reduce){
-    *,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
-    .grain{display:none}
-  }
-`
+const ARENA_CSS = arenaEffects + arenaTheme
 
 /* -------------------------------------------------------------------------- */
 /* Scene markup. Dynamic regions (#svg / #log / #ranklist / #stats / FB       */
 /* portraits) are populated by the engine.                                    */
 /* -------------------------------------------------------------------------- */
 const ARENA_BODY = `
-  <h1 class="sr-only">Live attack and defense arena</h1>
-  <div class="circuit"></div>
   <div class="shell">
-    <div class="topbar">
-      <div class="brand">
-        <div class="logo" id="brandLogo">CYBER<b>A/D</b>.ARENA</div>
-      </div>
+    <div class="arena-toolbar">
+    <dl class="overview" aria-label="Arena overview">
+      <div class="metric"><dt>Teams</dt><dd id="teamCount">0</dd></div>
+      <div class="metric"><dt>Challenge countries</dt><dd id="challengeCount">0</dd></div>
+      <div class="metric"><dt>A&amp;D services</dt><dd id="serviceCount">0</dd></div>
+      <div class="metric"><dt>KotH hills</dt><dd id="hillCount">0</dd></div>
+    </dl>
+    <div class="arena-actions">
       <div class="topright">
-        <div class="freezepill" id="freezeTag">&#10052; FROZEN</div>
-        <div class="countpill" id="countPill" role="timer" aria-label="Time remaining">0:00</div>
-        <div class="roundpill" id="roundPill">TICK</div>
+        <span class="connection" id="connectionStatus" role="status" data-state="connecting">Connecting</span>
+        <div class="freezepill" id="freezeTag">❄ Frozen</div>
+        <div class="countpill" id="countPill" role="timer" aria-label="Time until next tick">0:00</div>
+        <div class="roundpill" id="roundPill">Tick 0</div>
       </div>
-    </div>
-    <div class="midrow">
-      <div class="panel log-panel">
-        <div class="phead accent-m"><span class="t">BATTLE LOG</span></div>
-        <div id="log" role="log" aria-live="polite" aria-label="Battle event log"></div>
-      </div>
-      <div class="panel arena-wrap accent-v">
-        <button id="fsBtn" class="fs-btn" title="Fullscreen battle map" aria-label="Fullscreen">⛶</button>
-        <svg id="jeop" preserveAspectRatio="none" aria-label="Jeopardy challenge constellation"></svg>
-        <div class="arena" id="arena">
-          <canvas id="fxbg" width="870" height="870" aria-hidden="true"></canvas>
-          <svg id="svg" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" aria-label="Live attack and defense map"></svg>
-          <canvas id="fx" width="870" height="870" aria-hidden="true"></canvas>
-        </div>
-        <div id="jeopSpace"></div>
-        <div id="jtip" class="jtip"></div>
-      </div>
-      <div class="rightcol">
-        <div class="panel rank">
-          <div class="phead accent-c"><span class="t">RANKING</span><span class="rank-tabs" id="rankTabs"><button data-rm="ad" class="on" aria-pressed="true">A&amp;D</button><button data-rm="koth" aria-pressed="false">KOTH</button><button data-rm="jeopardy" aria-pressed="false">JEO</button></span></div>
-          <div id="ranklist" role="region" aria-label="Live team ranking"></div>
-        </div>
-      </div>
-    </div>
-    <div class="devbar">
-      <span class="label">VIEW</span>
-      <button class="btn ghost" id="speedBtn" aria-pressed="false">SPEED 1X</button>
-      <button class="btn ghost on" id="soundBtn" aria-pressed="true">SOUND</button>
+    <div class="devbar" role="group" aria-label="Spectator controls">
+      <button class="btn ghost" id="speedBtn" aria-pressed="false">Speed 1×</button>
+      <button class="btn ghost" id="soundBtn" aria-pressed="false">Sound off</button>
+      <button class="btn ghost on" id="motionBtn" aria-pressed="true">Motion on</button>
       <span id="cfgBtns" style="display:none">
-        <label class="cfg">TEAMS<input id="cfgTeams" type="number" min="2" max="20" value="8"></label>
+        <label class="cfg">Teams<input id="cfgTeams" type="number" min="2" max="20" value="8"></label>
         <label class="cfg">A&amp;D<input id="cfgAd" type="number" min="0" max="10" value="4"></label>
-        <label class="cfg">KOTH<input id="cfgKoth" type="number" min="0" max="12" value="3"></label>
-        <label class="cfg">JEOP<input id="cfgJeop" type="number" min="0" max="40" value="24"></label>
+        <label class="cfg">KotH<input id="cfgKoth" type="number" min="0" max="12" value="3"></label>
+        <label class="cfg">Jeopardy<input id="cfgJeop" type="number" min="0" max="40" value="24"></label>
       </span>
       <span id="fbBtns" style="display:none">
-        <button class="btn fb-ad" id="fbAdBtn">FB A&amp;D</button>
-        <button class="btn fb-jeo" id="fbJeoBtn">FB JEO</button>
-        <button class="btn fb-koth" id="fbKothBtn">FB KOTH</button>
-        <button class="btn patch" id="patchBtn">PATCH</button>
-        <button class="btn frz" id="freezeBtn">FREEZE</button>
-        <button class="btn end" id="endBtn">END</button>
+        <button class="btn fb-ad" id="fbAdBtn">First blood · A&amp;D</button>
+        <button class="btn fb-jeo" id="fbJeoBtn">First blood · Jeopardy</button>
+        <button class="btn fb-koth" id="fbKothBtn">First crown · KotH</button>
+        <button class="btn patch" id="patchBtn">Patch</button>
+        <button class="btn frz" id="freezeBtn">Freeze</button>
+        <button class="btn end" id="endBtn">End</button>
       </span>
-      <span class="sp"></span>
+    </div>
+    </div>
+    </div>
+    <div class="midrow">
+      <section class="panel arena-wrap" aria-labelledby="globeTitle">
+        <div class="map-heading">
+          <div><h2 id="globeTitle">Conquest globe</h2><p>Categories are continents. Challenges are countries.</p></div>
+          <button id="fsBtn" class="fs-btn" title="Fullscreen globe" aria-label="Fullscreen globe">⛶</button>
+        </div>
+        <div class="arena" id="arena" tabindex="0" role="group" aria-label="3D conquest globe" aria-describedby="globeHelp">
+          <canvas id="globeSurface" aria-hidden="true"></canvas>
+          <svg id="territories" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
+          <canvas id="worldScenery" class="settlements" aria-hidden="true"></canvas>
+          <svg id="conquestRoutes" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
+          <canvas id="fxbg" width="870" height="870" aria-hidden="true"></canvas>
+          <svg id="svg" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+          <canvas id="fx" width="870" height="870" aria-hidden="true"></canvas>
+          <div id="globePins"></div>
+        </div>
+        <div class="globe-navigation" role="group" aria-label="Globe controls">
+          <div class="globe-directions" role="group" aria-label="Rotate view">
+          <button class="btn" id="globeUp" aria-label="Rotate globe up">↑</button>
+          <button class="btn" id="globeLeft" aria-label="Rotate globe left">←</button>
+          <button class="btn" id="globeRight" aria-label="Rotate globe right">→</button>
+          <button class="btn" id="globeDown" aria-label="Rotate globe down">↓</button>
+          </div>
+          <button class="btn" id="globeReset">Reset view</button>
+          <button class="btn" id="rotateBtn" aria-pressed="true">Pause rotation</button>
+          <button class="btn" id="mapLabelsBtn" aria-pressed="true">Labels on</button>
+        </div>
+        <p class="globe-help" id="globeHelp">Drag/swipe or use arrow keys to rotate; Home resets. Scroll outside the globe to move the page.</p>
+        <div class="map-shortcuts" role="group" aria-label="Explore the map">
+          <button class="btn" id="browseIslands">Browse countries</button>
+          <button class="btn" id="browseTeams">Find a team</button>
+        </div>
+        <div class="selection" aria-label="Highlighted team" hidden>
+          <span class="selection-name" id="selectionName">Select a team in the rankings to highlight it.</span>
+          <span class="selection-score" id="selectionScore"></span>
+          <button class="btn" id="clearTeam">Clear team</button>
+        </div>
+        <p class="globe-help map-legend">◇ Unconquered · ⚑ Solved · Borders separate challenge countries; coastlines group category continents. Numbered outposts are teams. A country's tint and flag mark its first solver, not exclusive ownership. The gold ring marks your selection. Terrain, roads, and settlements are decorative, not player locations or game state.</p>
+      </section>
+      <aside class="panel inspector" aria-label="Arena explorer">
+        <div class="inspector-tabs" role="tablist" aria-label="Explore the arena">
+          <button type="button" role="tab" id="arena-tab-islands" data-arena-pane="islands" aria-controls="arena-pane-islands" aria-selected="true">Countries</button>
+          <button type="button" role="tab" id="arena-tab-teams" data-arena-pane="teams" aria-controls="arena-pane-teams" aria-selected="false" tabindex="-1">Teams</button>
+          <button type="button" role="tab" id="arena-tab-activity" data-arena-pane="activity" aria-controls="arena-pane-activity" aria-selected="false" tabindex="-1">Activity</button>
+        </div>
+        <section class="territory-browser" id="arena-pane-islands" role="tabpanel" aria-labelledby="arena-tab-islands">
+          <div>
+            <h2>Challenge countries</h2>
+            <p id="territorySummary" role="status">Loading countries</p>
+            <progress id="territoryProgress" value="0" max="1" aria-label="Countries with an accepted solve"></progress>
+          </div>
+          <section id="territoryDetail" aria-label="Selected country" aria-live="polite"></section>
+          <div class="territory-directory">
+            <label for="territorySearch">Find a challenge</label>
+            <input id="territorySearch" type="search" placeholder="Name or category">
+            <div class="territory-filters" role="group" aria-label="Filter challenge countries">
+              <button class="btn" data-territory-filter="all" aria-pressed="true">All</button>
+              <button class="btn" data-territory-filter="open" aria-pressed="false">Unconquered</button>
+              <button class="btn" data-territory-filter="solved" aria-pressed="false">Solved</button>
+            </div>
+            <p id="territoryResults" role="status"></p>
+            <div id="jeop" role="region" tabindex="0" aria-label="Challenge countries grouped by continent"></div>
+          </div>
+        </section>
+        <section class="rank" id="arena-pane-teams" role="tabpanel" aria-labelledby="arena-tab-teams" hidden>
+          <div class="phead">
+            <h2 class="t" id="rankingTitle">Rankings</h2>
+            <span class="rank-tabs" id="rankTabs" role="group" aria-label="Scoring mode">
+              <button data-rm="ad" class="on" aria-pressed="true">A&amp;D</button>
+              <button data-rm="koth" aria-pressed="false">KotH</button>
+              <button data-rm="jeopardy" aria-pressed="false">Jeopardy</button>
+            </span>
+          </div>
+          <div id="ranklist" role="region" tabindex="0" aria-label="Live team ranking"></div>
+        </section>
+        <section class="log-panel" id="arena-pane-activity" role="tabpanel" aria-labelledby="arena-tab-activity" hidden>
+          <div class="phead"><h2 class="t" id="logTitle">Recent activity</h2></div>
+          <div id="log" role="log" tabindex="0" aria-live="polite" aria-label="Battle event log"></div>
+        </section>
+      </aside>
     </div>
   </div>
 
@@ -624,8 +230,20 @@ const ARENA_BODY = `
 /* and returns a teardown function. Heavily uses `any` because this is a       */
 /* self-contained DOM/canvas scene, not app data flow.                        */
 /* -------------------------------------------------------------------------- */
-function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => void {
+function runArena(
+  root: ShadowRoot,
+  gameId: string,
+  preview: boolean,
+  onGame: (game: DetailedGameInfoModel) => void
+): () => void {
   let killed = false
+  const publishGame = (game: DetailedGameInfoModel | null) => {
+    if (!killed && game?.id === Number(gameId)) onGame(game)
+  }
+  const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  let motionRequested = true
+  let motionEnabled = !motionQuery.matches
+  root.host.setAttribute('data-motion', motionEnabled ? 'on' : 'off')
   const timers: number[] = []
   const deferred = new Set<number>()
   const ownedTimeout = (callback: () => void, delay: number) => {
@@ -667,7 +285,6 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
 
   const CX = 500,
     CY = 500,
-    RING = 362,
     HILLR = 165
   const PALETTE = [
     '#ff4d5e',
@@ -730,6 +347,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     cfgJeop = 24
   let arenaRect: any = null // cached arena.getBoundingClientRect(); refreshed in sizeCanvas
   const snd = createSoundEngine() // procedural Web Audio engine (see audio.ts)
+  snd.setEnabled(false) // Sound is opt-in, not unlocked by unrelated navigation.
   let stopIncomingSound: (() => void) | null = null
   let stopFirstBloodSound: (() => void) | null = null
   let rankDirty = false,
@@ -753,6 +371,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   // while frozen the board shows the snapshot taken at freeze; real values keep updating underneath.
   // RANKING panel mode — switchable between the three score boards.
   let rankMode: 'ad' | 'koth' | 'jeopardy' = 'ad'
+  let rankModeChosen = false
+  let selectedTeamId: string | null = null
   // during the freeze, show the snapshot captured at freeze time instead of the live value
   const shownOr = (t: any, snap: string, live: string) => (frozen && t[snap] != null ? t[snap] : t[live])
   const adScore = (t: any) => shownOr(t, 'shown', 'score')
@@ -814,22 +434,28 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   const fzRenderer = createFzRenderer($('fzCanvas') as HTMLCanvasElement)
   // 2D-canvas VICTORY effects (god-rays + confetti + sparkles) for MATCH COMPLETE / podium.
   const winRenderer = createWinRenderer($('winCanvas') as HTMLCanvasElement)
-  const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0
-  // Pixi v8 WebGL renderer for the jeopardy constellation layer (its own overlay canvas on
-  // .arena-wrap, wrap-pixel space). When ready it takes over the star twinkle + lasers from the
-  // SVG (which kept 40 infinite CSS animations); SVG stays as the static text + hit-test layer.
-  const wrapEl: any = root.querySelector('.arena-wrap')
-  const jeopRenderer = createJeopRenderer(wrapEl, { onReady: () => jeop.syncPixi() })
-  const jeop = createJeopardy({
+  const inspector = createArenaInspector(root)
+  // One camera projects teams, hills and challenge countries onto the same world.
+  const jeop = createArenaGlobe({
     root,
-    arena,
-    isFrozen: () => frozen,
-    isTouch,
-    pixiReady: () => jeopRenderer.ready,
-    onStars: (cats, dense) => jeopRenderer.setStars(cats, dense),
-    onBeam: (tx, ty, sx, sy, sr, col) => jeopRenderer.beam(tx, ty, sx, sy, sr, col),
-    onFlash: (x, y, r, col) => jeopRenderer.flash(x, y, r, col),
+    teams: () => TEAMS,
+    hills: () => HILLS,
+    frozen: () => frozen,
+    motion: () => motionEnabled,
+    showIsland: () => inspector.show('islands'),
+    selectTeam: (id) => {
+      inspector.show('teams')
+      selectedTeamId = id
+      updateSelection()
+      jeop.focusTeam(id)
+    },
   })
+  $('clearTeam').onclick = () => {
+    selectedTeamId = null
+    updateSelection()
+    jeop.focusTeam(null)
+    arena.focus({ preventScroll: true })
+  }
   const logEl: any = $('log')
   const rankEl: any = $('ranklist')
 
@@ -845,56 +471,13 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       <filter id="glow"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`
     svg.appendChild(defs)
 
-    // COLOSSEUM SECTORS — each team gets a donut wedge "seat" (alternating fill) with a
-    // divider at every boundary; teams ring the rim, the central pit (hills + open core)
-    // stays clear. RIN = inner edge of the seating band; bases sit on the cyan ring at RING.
-    const step = 360 / TEAMS.length,
-      R = 470,
-      RIN = 224
-    const polar = (r: number, deg: number): [number, number] => {
-      const a = (deg * Math.PI) / 180
-      return [CX + r * Math.cos(a), CY + r * Math.sin(a)]
-    }
-    TEAMS.forEach((t, i) => {
-      const d0 = -90 + i * step - step / 2,
-        d1 = -90 + i * step + step / 2
-      const [ox0, oy0] = polar(R, d0),
-        [ox1, oy1] = polar(R, d1)
-      const [ix0, iy0] = polar(RIN, d0),
-        [ix1, iy1] = polar(RIN, d1)
-      svg.appendChild(
-        el('path', {
-          d: `M${ix0.toFixed(1)} ${iy0.toFixed(1)} L${ox0.toFixed(1)} ${oy0.toFixed(1)} A${R} ${R} 0 0 1 ${ox1.toFixed(1)} ${oy1.toFixed(1)} L${ix1.toFixed(1)} ${iy1.toFixed(1)} A${RIN} ${RIN} 0 0 0 ${ix0.toFixed(1)} ${iy0.toFixed(1)} Z`,
-          fill: t.color,
-          opacity: i % 2 ? 0.05 : 0.1,
-        })
-      )
-    })
-
-    const ringG = el('g', {})
-    // bold outer rim + inner seating-band ring; clean cyan ring where the bases stand
-    ringG.appendChild(el('circle', { cx: CX, cy: CY, r: R, fill: 'none', stroke: 'var(--line2)', 'stroke-width': 1.6 }))
-    ringG.appendChild(
-      el('circle', {
-        cx: CX,
-        cy: CY,
-        r: RIN,
-        fill: 'none',
-        stroke: 'var(--line)',
-        'stroke-width': 1,
-        'stroke-opacity': 0.5,
-      })
-    )
-    // NO ring at the avatar radius (RING) — that circle ran right through all the bases and read
-    // as a line connecting the avatars. NO radial dividers either; the seats read from the
-    // alternating colour fill alone.
-    svg.appendChild(ringG)
-
-    // arena center (the pit) is intentionally left open — hills sit just inside the inner ring
-
+    // The globe controller positions these markers after each camera change.
+    svg.setAttribute('data-dense', String(TEAMS.length > 16))
     HILLS.forEach((h) => svg.appendChild(buildHill(h)))
     TEAMS.forEach((t) => svg.appendChild(buildBase(t)))
     TEAMS.forEach((t) => renderSvc(t))
+    updateSelection()
+    jeop.layout()
   }
 
   function buildHill(h: any) {
@@ -928,34 +511,6 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     if (own) own.textContent = h.owner ? h.owner.name : 'NEUTRAL'
     const st = $('hstat-' + h.id)
     if (st) st.setAttribute('fill', SVC_COLOR[h.status] || SVC_COLOR.none)
-  }
-
-  function labelOffset(t: any) {
-    const c = Math.cos(t.ang),
-      s = Math.sin(t.ang)
-    let x = 0,
-      y = -58,
-      anc = 'middle'
-    if (s < -0.5) {
-      y = -60
-    } else if (s > 0.5) {
-      y = 72
-    }
-    if (c > 0.5) {
-      x = 58
-      anc = 'start'
-      y = -4
-    } else if (c < -0.5) {
-      x = -58
-      anc = 'end'
-      y = -4
-    }
-    if (Math.abs(s) > 0.85) {
-      x = 0
-      anc = 'middle'
-      y = s < 0 ? -62 : 72
-    }
-    return { x, y, anc }
   }
 
   /* -------- shared chibi head: the SINGLE source of truth for the team head, used by both the
@@ -1006,53 +561,35 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   }
 
   function buildBase(t: any) {
-    const c = t.color,
-      L = t.look,
-      idx = t.idx,
-      hair = L.hair
-    const g = el('g', { id: 'base-' + t.id, transform: `translate(${t.x} ${t.y})` })
-    const body = `
-      <rect x="-7" y="14" width="6" height="13" rx="3" fill="#14122e" stroke="${c}" stroke-width="1.2"/>
-      <rect x="1" y="14" width="6" height="13" rx="3" fill="#14122e" stroke="${c}" stroke-width="1.2"/>
-      <path d="M-13 0 Q-13 -3 -9 -3 L9 -3 Q13 -3 13 0 L13 14 Q13 18 9 18 L-9 18 Q-13 18 -13 14 Z" fill="#1b1838" stroke="${c}" stroke-width="2"/>
-      <path d="M-13 0 Q-13 -3 -9 -3 L0 -3 L0 18 L-9 18 Q-13 18 -13 14 Z" fill="${c}" opacity="0.8"/>
-      <path d="M-9 -3 L0 5 L9 -3 Z" fill="#0c0a1c"/>
-      <circle cx="0" cy="8" r="3" fill="${c}"/>
-      <rect x="-17" y="2" width="5" height="12" rx="2.5" fill="#14122e" stroke="${c}" stroke-width="1.2"/>
-      <rect x="12" y="2" width="5" height="12" rx="2.5" fill="#14122e" stroke="${c}" stroke-width="1.2"/>`
-    let back = ''
-    if (L.style === 'pony') back += `<path d="M11 -16 Q28 -8 22 12 Q19 0 9 -4 Z" fill="${hair}"/>`
-    if (L.style === 'long')
-      back += `<path d="M-15 -12 Q-18 -30 0 -30 Q18 -30 15 -12 L16 12 L11 12 Q12 -14 0 -14 Q-12 -14 -11 12 L-16 12 Z" fill="${hair}" opacity="0.95"/>`
-    if (L.style === 'twin')
-      back += `<path d="M-14 -14 Q-22 -2 -18 12 Q-15 2 -10 -4 Z" fill="${hair}"/><path d="M14 -14 Q22 -2 18 12 Q15 2 10 -4 Z" fill="${hair}"/>`
-    if (L.prop === 'katana')
-      back += `<g transform="rotate(-26)"><rect x="13" y="-32" width="2.6" height="34" rx="1.2" fill="#e6ecff"/><rect x="11" y="0" width="7" height="3" rx="1" fill="${c}"/><rect x="13.4" y="3" width="2" height="9" rx="1" fill="#2a2740"/></g>`
-    let props = ''
-    if (L.prop === 'orb')
-      props += `<circle cx="21" cy="7" r="8" fill="none" stroke="${c}" stroke-width="0.9" opacity="0.5"/><circle cx="21" cy="7" r="4.6" fill="${c}"/><circle cx="19.4" cy="5.6" r="1.4" fill="#fff" opacity="0.8"/>`
-    if (L.prop === 'gaunt')
-      props += `<rect x="13" y="9" width="11" height="10" rx="2.5" fill="#1b1838" stroke="${c}" stroke-width="1.6"/><rect x="14.5" y="10.5" width="8" height="2.4" fill="${c}"/>`
-    if (L.prop === 'kunai')
-      props += `<g transform="rotate(28 20 8)"><path d="M20 0 L24 7 L20 9 L16 7 Z" fill="#dfe6ff"/><rect x="19" y="9" width="2" height="6" fill="#2a2740"/><circle cx="20" cy="16" r="2.2" fill="none" stroke="#dfe6ff" stroke-width="1.2"/></g>`
-    if (L.prop === 'shield')
-      props += `<g transform="translate(-20 4)"><path d="M0 -7 L8 -4 Q8 7 0 13 Q-8 7 -8 -4 Z" fill="#1b1838" stroke="${c}" stroke-width="1.6"/><circle cx="0" cy="1" r="2.4" fill="${c}"/></g>`
-
-    const head = chibiHead(L, c)
-    const flag = `<line x1="-17" y1="-2" x2="-17" y2="-25" stroke="#cfd2ee" stroke-width="1.6"/><path d="M-17 -25 L-33 -21 L-17 -18 Z" fill="${c}" stroke="#0a0818" stroke-width="0.8"/>`
-    const lo = labelOffset(t)
+    const g = el('g', { id: 'base-' + t.id, class: 'team-marker', transform: `translate(${t.x} ${t.y})` })
     g.innerHTML = `
-      <ellipse cx="0" cy="30" rx="40" ry="13" fill="${c}" opacity="0.13" filter="url(#soft)"/>
-      <ellipse cx="0" cy="31" rx="22" ry="6" fill="#000" opacity="0.42"/>
-      <ellipse cx="0" cy="28" rx="24" ry="7" fill="#0b0a1c" stroke="${c}" stroke-width="1.6" stroke-opacity="0.75"/>
-      <ellipse cx="0" cy="28" rx="14" ry="3.6" fill="none" stroke="${c}" stroke-width="1" stroke-opacity="0.4"/>
-      <g class="u-float" style="animation-delay:${(idx * 0.34).toFixed(2)}s">
-        ${back}${body}${props}${head}${flag}
-      </g>
-      <g id="svc-${t.id}" transform="translate(0 41)"></g>
-      <text x="${lo.x}" y="${lo.y}" text-anchor="${lo.anc}" fill="#fff" font-family="'Press Start 2P'" font-size="11" paint-order="stroke" stroke="#06050f" stroke-width="4">${esc(t.name)}</text>
-      <text id="sc-${t.id}" x="${lo.x}" y="${lo.y + 18}" text-anchor="${lo.anc}" fill="${c}" font-family="'VT323'" font-size="22" paint-order="stroke" stroke="#06050f" stroke-width="4">${t.score}</text>`
+      <title>${esc(t.name)}</title>
+      <circle class="marker-ring" r="20" stroke="${t.color}"/>
+      <text class="marker-index" y="4.5" text-anchor="middle">${t.idx + 1}</text>
+      <g id="svc-${t.id}" transform="translate(0 27)"></g>
+      <text class="node-label" x="0" y="54" text-anchor="middle">${esc(arenaTeamLabel(t.name))}</text>
+      <text class="node-score" id="sc-${t.id}" x="0" y="71" text-anchor="middle">${fmtAdScore(dispScore(t))}</text>`
     return g
+  }
+
+  function updateSelection() {
+    const selected = TEAMS.find((team) => team.id === selectedTeamId)
+    if (!selected) selectedTeamId = null
+    for (const team of TEAMS) {
+      const active = team.id === selectedTeamId
+      $('base-' + team.id)?.classList.toggle('selected', active)
+      const row = $('rk-' + team.id)
+      row?.classList.toggle('selected', active)
+      row?.setAttribute('aria-pressed', String(active))
+    }
+    $('selectionName').textContent = selected ? selected.name : 'Select a team in the rankings to highlight it.'
+    $('selectionName').closest('.selection').hidden = !selected
+    $('selectionScore').textContent = selected ? fmtAdScore(dispScore(selected)) + ' pts' : ''
+    $('teamCount').textContent = String(TEAMS.length)
+    $('serviceCount').textContent = String(SERVICES.length)
+    $('hillCount').textContent = String(HILLS.length)
+    $('serviceCount').closest('.metric').hidden = SERVICES.length === 0
+    $('hillCount').closest('.metric').hidden = HILLS.length === 0
   }
 
   // service status → colour. def=Ok(green) vuln=Mumble(amber) down=Offline(grey)
@@ -1104,10 +641,10 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   }
   function renderScore(t: any) {
     const e = $('sc-' + t.id)
-    if (e) e.textContent = fmtAdScore(adScore(t))
+    if (e) e.textContent = fmtAdScore(dispScore(t))
   }
   function pulseBase(t: any, col: string) {
-    if (frozen) return
+    if (frozen || !motionEnabled) return
     const g = $('base-' + t.id)
     if (!g) return
     g.style.transition = 'none'
@@ -1135,10 +672,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     fbRenderer.resize() // first-blood layer is viewport-sized; tracks the window
     fzRenderer.resize() // freeze frost is viewport-sized too
     winRenderer.resize() // victory confetti/rays viewport-sized too
-    jeop.layout() // re-place the jeopardy constellations (and hand the laid-out stars to jeopRenderer via onStars)
-    // size the wrap-space Pixi jeopardy canvas AFTER layout() (which may grow the wrap via #jeopSpace).
-    const wr = wrapEl.getBoundingClientRect()
-    if (wr.width > 1) jeopRenderer.resize(wr.width, wr.height, r.left - wr.left, r.top - wr.top, r.width)
+    jeop.layout()
   }
   // rAF-coalesce the window resize: a drag-burst (30-60/s) collapses to one sizeCanvas per frame,
   // each of which does forced reflows + a full jeopardy relayout/SVG rebuild + two Pixi resizes.
@@ -1203,12 +737,13 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     return c
   }
   function drawAmbient(T: number) {
-    if (frozen || ambientTick++ % 2) return // ~30fps ambient; skip entirely while frozen (overlay covers it)
+    if (!motionEnabled || frozen || ambientTick++ % 2) return // ~30fps ambient; skip entirely while frozen (overlay covers it)
     const TAU = 6.2832
     ctxbg.clearRect(0, 0, 1000, 1000)
     // the colosseum ring is static SVG now (no rotating recon rings) — the ambient canvas
     // only carries the per-avatar breathing aura (replaces the per-avatar SVG bob)
     for (const t of TEAMS) {
+      if (t.globeVisible === false) continue
       const p = (Math.sin((T * TAU) / 2.8 + t.idx * 0.7) + 1) / 2
       const rad = 24 + 5 * p
       ctxbg.globalAlpha = 0.18 + 0.13 * p
@@ -1218,7 +753,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   }
 
   function fireShot(from: any, to: any, col: string, miss = false) {
-    if (frozen || document.hidden || shots.length > 220) return // cap: a huge flag burst can't unbound the queue
+    if (!motionEnabled || frozen || document.hidden || shots.length > 220) return // cap: a huge flag burst can't unbound the queue
     const cx = (from.x + to.x) / 2,
       cy = (from.y + to.y) / 2
     const dx = to.x - from.x,
@@ -1248,6 +783,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     return u * u * a + 2 * u * t * c + t * t * b
   }
   function addSpark(x: number, y: number, col: string) {
+    if (!motionEnabled) return
     if (document.hidden || sparks.length > 600) return
     for (let i = 0; i < 16; i++) {
       const a = rng(0, 6.28),
@@ -1268,6 +804,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     ctx.closePath()
   }
   function spawnShield(x: number, y: number, col: string) {
+    if (!motionEnabled) return
     if (frozen || document.hidden) return
     fxq.push({ kind: 'shield', x, y, col, t: 0, dur: 0.95 })
     for (let i = 0; i < 10; i++) {
@@ -1277,6 +814,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     }
   }
   function spawnDown(x: number, y: number, col: string) {
+    if (!motionEnabled) return
     if (frozen || document.hidden) return
     fxq.push({ kind: 'down', x, y, col, t: 0, dur: 1.0 })
     for (let i = 0; i < 14; i++) {
@@ -1285,16 +823,19 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     }
   }
   function spawnBeam(from: any, to: any, col: string, big: boolean) {
+    if (!motionEnabled) return
     if (frozen || document.hidden) return
     fxq.push({ kind: 'beam', fx: from.x, fy: from.y, tx: to.x, ty: to.y, col, t: 0, dur: big ? 0.6 : 0.42, big: !!big })
   }
   function spawnCapture(from: any, hill: any, col: string) {
+    if (!motionEnabled) return
     if (frozen || document.hidden) return
     spawnBeam(from, hill, col, false)
     fxq.push({ kind: 'shield', x: hill.x, y: hill.y, col, t: 0, dur: 0.9 })
   }
   // replay a CSS class animation (toggle + forced reflow), then drop the class after ms
   function restartAnim(g: any, cls: string, ms: number) {
+    if (!motionEnabled) return
     if (!g) return
     g.classList.remove(cls)
     void g.offsetWidth
@@ -1471,6 +1012,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   }
 
   function floatText(wx: number, wy: number, txt: string, col: string) {
+    if (!motionEnabled) return
     if (frozen || document.hidden) return
     const r = arenaRect || arena.getBoundingClientRect() // cached; only re-measured if not yet sized
     const px = (wx / 1000) * r.width,
@@ -1597,6 +1139,10 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
 
   // opt: { kind, oppName, oppColor, oppPortrait(html), beamTo, onImpact }
   function fbCinematic(atkr: any, opt: any) {
+    if (!motionEnabled) {
+      opt.onImpact?.()
+      return
+    }
     cinema = true
     const th = FB_THEME[opt.kind] || FB_THEME.ad
     const oppName = opt.oppName || 'THE FIELD'
@@ -1699,10 +1245,11 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       // GPU slam graphics (dark+splash+flash), synced with the DOM text/bars. Burst behind the
       // hero title (its layout centre is stable under the scale animation), tinted per mode.
       const tr: any = ttl ? ttl.getBoundingClientRect() : null
-      fbRenderer.play(
-        FB.total,
-        tr ? { cx: tr.left + tr.width / 2, cy: tr.top + tr.height / 2, palette: th.palette } : { palette: th.palette }
-      )
+      if (motionEnabled)
+        fbRenderer.play(
+          FB.total,
+          tr ? { cx: tr.left + tr.width / 2, cy: tr.top + tr.height / 2, palette: th.palette } : { palette: th.palette }
+        )
       slamCovering = true // the dark slam overlay covers the board — pause the arena draw underneath
       // The procedural first-blood stinger fires with the reveal so it
       // punctuates the slam rather than the build-up.
@@ -1776,14 +1323,22 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   function rebuildRank() {
     rankEl.innerHTML = ''
     TEAMS.forEach((t) => {
-      const div = document.createElement('div')
+      const div = document.createElement('button')
+      div.type = 'button'
+      div.dataset.teamId = t.id
+      div.setAttribute('aria-pressed', String(selectedTeamId === t.id))
+      div.onclick = () => {
+        selectedTeamId = selectedTeamId === t.id ? null : t.id
+        updateSelection()
+        jeop.focusTeam(selectedTeamId)
+      }
       div.id = 'rk-' + t.id
       div.className = 'rk'
-      div.innerHTML = `<div class="pos"></div>
-        <div class="av">${avatar(t.look, t.color)}</div>
-        <div class="body"><div class="nm" style="color:${t.color}">${esc(t.name)}</div>
-          <div class="bars" id="bars-${t.id}"><i id="ba-${t.id}" title="Offense rate" style="background:#27e3ff"></i><i id="bd-${t.id}" title="Defense rate" style="background:#3dffb0"></i><i id="bf-${t.id}" title="SLA rate" style="background:#ffc637"></i></div></div>
-        <div class="sc" id="rsc-${t.id}"></div>`
+      div.innerHTML = `<span class="pos"></span>
+        <span class="av" aria-hidden="true" style="--team-color:${t.color}">${esc(arenaTeamInitials(t.name))}</span>
+        <span class="body"><span class="nm">${esc(t.name)}</span>
+          <span class="bars" id="bars-${t.id}"><i id="ba-${t.id}" title="Offense rate" style="background:#27e3ff"></i><i id="bd-${t.id}" title="Defense rate" style="background:#3dffb0"></i><i id="bf-${t.id}" title="SLA rate" style="background:#ffc637"></i></span></span>
+        <span class="sc" id="rsc-${t.id}"></span>`
       rankEl.appendChild(div)
       const bars: any = div.querySelector('.bars')
       // cache node refs (kills the per-frame getElementById chains in drawRank) + last-rendered values
@@ -1817,13 +1372,15 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       }
       return dispScore(b) - dispScore(a) || stableTeamOrder(a, b)
     })
+    const orderChanged = sorted.some((team, index) => rankEl.children[index] !== team._rk?.div)
+    const focused = root.activeElement as HTMLElement | null
     sorted.forEach((t, i) => {
       const r = t._rk
       if (!r) return
       // only touch position/class when the rank actually moved
       if (r.lastPos !== i) {
         r.lastPos = i
-        r.div.className = 'rk p' + (i + 1)
+        r.div.className = 'rk p' + (i + 1) + (t.id === selectedTeamId ? ' selected' : '')
         r.div.style.order = String(i)
         r.pos.textContent = (i + 1 < 10 ? '0' : '') + (i + 1)
       }
@@ -1855,6 +1412,12 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
         r.sc.innerHTML = sc
       }
     })
+    // Keep keyboard/screen-reader order aligned with the visual ranking after live updates.
+    if (orderChanged) {
+      rankEl.append(...sorted.map((team) => team._rk.div))
+      if (focused && rankEl.contains(focused)) focused.focus({ preventScroll: true })
+    }
+    updateSelection()
   }
   const renderAllScores = () => TEAMS.forEach(renderScore)
 
@@ -1874,7 +1437,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     })
     const tag = $('freezeTag')
     if (tag) tag.classList.add('show')
-    const rp = root.querySelector('.panel.rank')
+    const rp = root.querySelector('.rank')
     if (rp) rp.classList.add('frozen')
     const fb = $('freezeBtn')
     if (fb) {
@@ -1887,7 +1450,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       ov.classList.remove('show')
       void ov.offsetWidth
       ov.classList.add('show')
-      fzRenderer.start()
+      if (motionEnabled) fzRenderer.start()
     }
     const fc = $('fzCount')
     if (fc) fc.textContent = 'RESULTS IN T- ' + fmtMS(secsLeft())
@@ -1900,7 +1463,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     snd.sfxUnfreeze()
     const tag = $('freezeTag')
     if (tag) tag.classList.remove('show')
-    const rp = root.querySelector('.panel.rank')
+    const rp = root.querySelector('.rank')
     if (rp) rp.classList.remove('frozen')
     const fb = $('freezeBtn')
     if (fb) {
@@ -1987,14 +1550,14 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
         team
           ? `<div class="pod ${cls[i]}">${i === 0 ? `<div class="pcrown">${JEWEL_CROWN}</div>` : ''}` +
             `<div class="pav">${avatar(team.look, team.color)}</div>` +
-            `<div class="pn" style="color:${team.color}">${esc(team.name)}</div>` +
+            `<div class="pn">${esc(team.name)}</div>` +
             `<div class="ps">${fmtAdScore(team.score)}</div><div class="ped"><span class="rk">${lbl[i]}</span></div></div>`
           : ''
       )
       .join('')
     const ov = $('winOverlay')
     if (ov) ov.classList.add('show')
-    winRenderer.start()
+    if (motionEnabled) winRenderer.start()
     if (preview) {
       const rb = $('rematchBtn')
       if (rb) rb.style.display = ''
@@ -2084,13 +1647,12 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     // draw only when there's something to draw: skip while the slam overlay covers the
     // board, while the tab is hidden, and while frozen with no active FX (idle freeze).
     const fxActive = shots.length || sparks.length || fxq.length
-    const jeopActive = jeopRenderer.active() // GPU jeopardy stars twinkling / lasers in flight
+    if (!slamCovering && !matchOver) jeop.tick(ts, dt)
     // !matchOver: after endMatch the opaque PODIUM win overlay (z97) covers the whole arena and
     // winRenderer runs its own loop on top — skip the ambient/jeop draw beneath it to save GPU.
-    if (!slamCovering && !matchOver && !document.hidden && (fxActive || jeopActive || !frozen)) {
+    if (motionEnabled && !slamCovering && !matchOver && !document.hidden && (fxActive || !frozen)) {
       drawFX(dt) // advances FX physics + ambient; draws the 2D fallback only while !fxRenderer.ready
       if (fxRenderer.ready) fxRenderer.tick(dt, shots, sparks, fxq) // WebGL render of the same arrays
-      jeopRenderer.render(ts, frozen) // WebGL jeopardy star twinkle (30fps) + lasers; skips while frozen
     }
     // a first-crown owed but deferred past a running cinematic — fire it once free. Also hold
     // through a freeze (the FB overlay z95 sits under the frost z96 — it would play invisibly)
@@ -2143,6 +1705,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     const progress = epochProgress(clock.round, clock.startRound, clock.epochTicks)
     const rp = $('roundPill')
     if (rp) {
+      rp.hidden = !preview && SERVICES.length === 0 && HILLS.length === 0
       rp.textContent = progress
         ? `R${Math.max(clock.round, 0)} · E${progress.epoch} ${progress.tick}/${progress.totalTicks}`
         : 'TICK ' + Math.max(clock.round, 0)
@@ -2151,7 +1714,10 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
         : `Round ${Math.max(clock.round, 0)}`
     }
     const cp = $('countPill')
-    if (cp) cp.textContent = fmtMS(Math.max(tickLeft, 0))
+    if (cp) {
+      cp.hidden = !preview && SERVICES.length === 0 && HILLS.length === 0
+      cp.textContent = fmtMS(Math.max(tickLeft, 0))
+    }
   }
 
   function applyAdRoundClock(ad: AdScoreboardModel) {
@@ -2270,10 +1836,12 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
           name: c.title,
           base: Math.round(c.score || 0),
           solveCount: c.solved || 0,
-          solvers: (c.bloods || []).map((b: any) => {
-            const tm = teamByName(b.name)
-            return { name: b.name || '', color: tm ? tm.color : '#7fd7ff' }
-          }),
+          solvers: acceptedTerritorySolvers(
+            c.id,
+            jp?.items || [],
+            c.bloods || [],
+            (name) => teamByName(name)?.color || '#7fd7ff'
+          ),
         })),
       })
     })
@@ -2304,7 +1872,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       }
     })
   }
-  function buildLiveModel(ad: AdScoreboardModel, koth: any, jp: any, title: string | null) {
+  function buildLiveModel(ad: AdScoreboardModel, koth: any, jp: any) {
     const previousTeams = new Map(TEAMS.map((team) => [team.id, team]))
     const kothHills = koth && koth.hills ? koth.hills : []
     const kothIds = new Set(kothHills.map((h: any) => h.challengeId))
@@ -2345,11 +1913,11 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     })
 
     TEAMS.forEach((t, i) => {
-      const ang = ((-90 + i * (360 / TEAMS.length)) * Math.PI) / 180
       t.idx = i
-      t.ang = ang
-      t.x = CX + RING * Math.cos(ang)
-      t.y = CY + RING * Math.sin(ang)
+      const point = arenaTeamPosition(i, TEAMS.length)
+      t.ang = point.angle
+      t.x = point.x
+      t.y = point.y
       t.look = makeLook(t, i)
     })
 
@@ -2372,8 +1940,14 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       h.y = CY + HILLR * Math.sin(ang)
     })
 
-    if (!preview && SERVICES.length === 0 && HILLS.length > 0 && rankMode === 'ad') {
-      rankMode = 'koth'
+    const categories = buildJeopCats(ad, jp)
+    const availableModes = {
+      ad: SERVICES.length > 0,
+      koth: HILLS.length > 0,
+      jeopardy: categories.some((category) => category.challenges.length > 0),
+    }
+    if (!preview && (!rankModeChosen || !availableModes[rankMode])) {
+      rankMode = initialArenaRanking(SERVICES.length, HILLS.length)
       const tabs: any = $('rankTabs')
       if (tabs)
         tabs.querySelectorAll('button').forEach((button: any) => {
@@ -2382,13 +1956,16 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
           button.setAttribute('aria-pressed', String(selected))
         })
     }
+    const rankingModes = root.querySelectorAll<HTMLButtonElement>('#rankTabs button')
+    rankingModes.forEach((button) => {
+      button.hidden = !availableModes[button.dataset.rm as keyof typeof availableModes]
+    })
+    $('rankTabs').hidden = Object.values(availableModes).filter(Boolean).length < 2
     applyAuxScores(koth, jp)
     applyKothRoundClock(koth)
     totalFlags = Math.max(0, Number(ad.evidence?.acceptedCaptures) || 0)
-    jeop.setData(buildJeopCats(ad, jp))
-    jeop.initHover()
+    jeop.setData(categories)
     applyAdRoundClock(ad)
-    if (title) $('brandLogo').textContent = title.toUpperCase().slice(0, 22)
   }
 
   function applyOfficialAdBoard(ad: AdScoreboardModel) {
@@ -2437,10 +2014,10 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     })
   }
 
-  function reconcileLiveModel(ad: AdScoreboardModel, koth: any, jp: any, title: string | null) {
+  function reconcileLiveModel(ad: AdScoreboardModel, koth: any, jp: any) {
     const signature = snapshotSignature(ad, koth, jp)
     if (signature !== liveModelSignature) {
-      buildLiveModel(ad, koth, jp, title)
+      buildLiveModel(ad, koth, jp)
       liveModelSignature = signature
       if (!TEAMS.length) {
         showNote('WAITING FOR THE OFFICIAL EVENT ROSTER')
@@ -2452,7 +2029,6 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       sizeCanvas()
     }
     applyLivePoll(ad, koth, jp)
-    if (title) $('brandLogo').textContent = title.toUpperCase().slice(0, 22)
   }
 
   function applyLivePoll(ad: AdScoreboardModel, koth: any, jp: any) {
@@ -2513,7 +2089,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       if (gi?.end) gameEndMs = new Date(gi.end).getTime()
       if (matchOver && gameEndMs != null && Date.now() < gameEndMs - 1500) reopenMatch()
       if (!killed && !controller.signal.aborted) {
-        reconcileLiveModel(ad, koth, jp, gi?.title || null)
+        publishGame(gi)
+        reconcileLiveModel(ad, koth, jp)
         if (!livePollStarted) livePollStarted = true
         connectWS()
       }
@@ -2553,6 +2130,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     if (!vic && f.teamScore != null) pts = Math.max(0, Math.round(f.teamScore) - (atkr.jpScore || 0))
     const isFB = f.type === 'FirstBlood'
     if (isFB) {
+      if (!vic) jeop.solveByTitle(atkr.x, atkr.y, f.challengeTitle || '', { name: atkr.name, color: atkr.color })
       if (cinema) {
         resolveFlag(atkr, vic, svc, pts, true)
         return
@@ -2644,6 +2222,12 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     patchEffect(teamByName(f.teamName), f.challengeTitle, f.changeCount || 0)
   }
 
+  function setConnection(label: string, state: string) {
+    const badge = $('connectionStatus')
+    if (badge.textContent !== label) badge.textContent = label
+    badge.dataset.state = state
+  }
+
   function connectWS() {
     if (killed || !liveReadsAllowed() || ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING)
       return
@@ -2654,6 +2238,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     ws = socket
     socket.onopen = () => {
       wsOpenedAt = Date.now()
+      if (!killed && ws === socket) setConnection('Connected', 'connected')
     }
     socket.onmessage = (m) => {
       if (killed || ws !== socket) return
@@ -2670,6 +2255,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     }
     socket.onclose = () => {
       if (ws === socket) ws = null
+      if (!killed) setConnection(navigator.onLine === false ? 'Offline' : 'Reconnecting', 'connecting')
       if (killed || !liveReadsAllowed()) return
       wsRetry = Date.now() - wsOpenedAt >= 30_000 ? 1 : Math.min(wsRetry + 1, 10)
       reconnectTimer = window.setTimeout(connectWS, arenaReconnectDelay(wsRetry))
@@ -2706,6 +2292,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       ad = await fetchJSONWithTimeout<AdScoreboardModel>(liveRoutes.adScoreboard)
     } catch {
       if (killed) return
+      setConnection('Waiting for data', 'connecting')
       showNote('WAITING FOR LIVE EVENT DATA<br/>automatic recovery is active')
       addLog('SYS', 'sys', `<span class="em">LIVE DATA TEMPORARILY UNAVAILABLE</span> :: retrying`)
       tNow = Date.now()
@@ -2723,17 +2310,17 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     try {
       jp = await fetchJSONWithTimeout(liveRoutes.scoreboard)
     } catch {}
-    let title: string | null = null
     try {
       const gi = await fetchJSONWithTimeout(liveRoutes.game)
-      title = gi && gi.title
+      publishGame(gi)
       if (gi && gi.end) gameEndMs = new Date(gi.end).getTime()
     } catch {}
     if (killed) return
 
-    buildLiveModel(ad, koth, jp, title)
+    buildLiveModel(ad, koth, jp)
     liveModelSignature = snapshotSignature(ad, koth, jp)
     if (!TEAMS.length) {
+      setConnection('Waiting for teams', 'connecting')
       showNote('WAITING FOR THE OFFICIAL EVENT ROSTER')
       tNow = Date.now()
       ensureLiveLoops()
@@ -2835,13 +2422,13 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     SERVICES = genDemoServices(cfgAd)
     const teamDefs = genDemoTeams(cfgTeams)
     TEAMS = teamDefs.map((d: any, i: number) => {
-      const ang = ((-90 + i * (360 / Math.max(teamDefs.length, 1))) * Math.PI) / 180
+      const point = arenaTeamPosition(i, teamDefs.length)
       const t: any = {
         ...d,
         idx: i,
-        ang,
-        x: CX + RING * Math.cos(ang),
-        y: CY + RING * Math.sin(ang),
+        ang: point.angle,
+        x: point.x,
+        y: point.y,
         score: 0,
         projectedScore: 0,
         officialRank: i + 1,
@@ -2868,7 +2455,6 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       return { ...d, idx: i, ang, x: CX + HILLR * Math.cos(ang), y: CY + HILLR * Math.sin(ang), owner: null }
     })
     jeop.setData(genJeopCats(cfgJeop))
-    jeop.initHover()
   }
   // rebuild the whole preview model + arena for the current count knobs
   function rebuildPreview() {
@@ -3043,14 +2629,12 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     // Preview is a fully simulated battle driven by the TEAMS / A&D / KOTH / JEOP
     // knobs — it does NOT mirror live game data (use the non-preview view for that),
     // so the on-screen counts always match the inputs from the start.
-    let title: string | null = null
     try {
       const gi = await fetchJSONWithTimeout(liveRoutes.game)
-      title = gi && gi.title
+      publishGame(gi)
     } catch {}
     if (killed) return
     bootDemoModel()
-    if (title) $('brandLogo').textContent = title.toUpperCase().slice(0, 22)
     liveRoundEndsAt = null
     round = 1
     tickLeft = 30
@@ -3079,7 +2663,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   if (speedBtn)
     speedBtn.onclick = function () {
       speed = speed === 1 ? 2 : speed === 2 ? 4 : 1
-      speedBtn.textContent = 'SPEED ' + speed + 'X'
+      speedBtn.textContent = 'Speed ' + speed + '×'
       speedBtn.classList.toggle('on', speed !== 1)
       speedBtn.setAttribute('aria-pressed', String(speed !== 1))
     }
@@ -3101,12 +2685,15 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       rebuildPreview()
     }
   })
-  // fullscreen the battle map (recompute wheel + constellations for the new size)
-  const fsWrap: any = root.querySelector('.arena-wrap')
+  // Keep the inspector reachable while exploring the fullscreen map.
+  const fsWrap: any = root.querySelector('.midrow')
   const onFsChange = () => {
-    const fs = document.fullscreenElement === fsWrap
+    const fs = root.fullscreenElement === fsWrap
     const b = $('fsBtn')
-    if (b) b.textContent = fs ? '✕' : '⛶'
+    if (b) {
+      b.textContent = fs ? '✕' : '⛶'
+      b.setAttribute('aria-label', fs ? 'Exit fullscreen globe' : 'Fullscreen globe')
+    }
     sizeCanvas()
   }
   const fsBtn: any = $('fsBtn')
@@ -3122,11 +2709,13 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     rankTabs.querySelectorAll('button').forEach((b: any) => {
       b.onclick = () => {
         rankMode = b.getAttribute('data-rm')
+        rankModeChosen = true
         rankTabs.querySelectorAll('button').forEach((x: any) => {
           x.classList.toggle('on', x === b)
           x.setAttribute('aria-pressed', String(x === b))
         })
         setTickPill()
+        renderAllScores()
         refreshRank()
       }
     })
@@ -3146,6 +2735,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     soundBtn.onclick = function () {
       const on = !snd.isEnabled()
       snd.setEnabled(on)
+      soundBtn.textContent = on ? 'Sound on' : 'Sound off'
       soundBtn.classList.toggle('on', on)
       soundBtn.setAttribute('aria-pressed', String(on))
       if (on) snd.unlock()
@@ -3238,12 +2828,48 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       if (preview) resetMatch()
     }
 
-  if (preview) startPreview()
-  else start()
+  const motionBtn: HTMLButtonElement = $('motionBtn')
+  const applyMotion = () => {
+    motionEnabled = motionRequested && !motionQuery.matches
+    root.host.setAttribute('data-motion', motionEnabled ? 'on' : 'off')
+    motionBtn.textContent = motionEnabled ? 'Motion on' : 'Motion off'
+    motionBtn.setAttribute('aria-pressed', String(motionEnabled))
+    motionBtn.classList.toggle('on', motionEnabled)
+    motionBtn.disabled = motionQuery.matches
+    motionBtn.title = motionQuery.matches ? 'Your reduced-motion preference is active' : 'Toggle animated effects'
+    if (!motionEnabled) {
+      shots.forEach((shot) => {
+        shot.t = 1
+      })
+      sparks.forEach((spark) => {
+        spark.life = 0
+      })
+      shots.length = sparks.length = fxq.length = 0
+      ctx.clearRect(0, 0, 1000, 1000)
+      ctxbg.clearRect(0, 0, 1000, 1000)
+      if (fxRenderer.ready) fxRenderer.tick(0, shots, sparks, fxq)
+      fbRenderer.stop()
+      fzRenderer.stop()
+      winRenderer.stop()
+    }
+    jeop.refreshMotion()
+  }
+  motionBtn.onclick = () => {
+    motionRequested = !motionRequested
+    applyMotion()
+  }
+  motionQuery.addEventListener('change', applyMotion)
+  applyMotion()
+
+  if (preview) {
+    setConnection('Preview', 'preview')
+    startPreview()
+  } else start()
 
   /* -------- teardown -------- */
   return () => {
     killed = true
+    motionQuery.removeEventListener('change', applyMotion)
     timers.forEach((id) => clearInterval(id))
     timers.forEach((id) => clearTimeout(id))
     deferred.forEach((id) => clearTimeout(id))
@@ -3275,8 +2901,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     snd.close()
     document.removeEventListener('fullscreenchange', onFsChange)
     jeop.destroy()
+    inspector.destroy()
     fxRenderer.destroy()
-    jeopRenderer.destroy()
     fbRenderer.destroy()
     fzRenderer.destroy()
     winRenderer.destroy()
@@ -3294,29 +2920,22 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
 
 const Attack: FC = () => {
   const { id } = useParams()
+  const scheme = useComputedColorScheme('dark')
   const [searchParams] = useSearchParams()
   const preview = searchParams.has('preview')
   const hostRef = useRef<HTMLDivElement>(null)
   const cleanupRef = useRef<null | (() => void)>(null)
+  const [game, setGame] = useState<DetailedGameInfoModel>()
+  const currentGame = game?.id === Number(id) ? game : undefined
+  usePageTitle(currentGame?.title)
 
   useEffect(() => {
     const host = hostRef.current
     if (!host || !id) return
 
-    // Google Fonts must live at document level so @font-face resolves inside
-    // the shadow root (font-family references in a shadow root match
-    // document-level @font-face rules).
-    if (!document.getElementById('cyber-arena-fonts')) {
-      const link = document.createElement('link')
-      link.id = 'cyber-arena-fonts'
-      link.rel = 'stylesheet'
-      link.href = FONTS_HREF
-      document.head.appendChild(link)
-    }
-
     const shadow = host.shadowRoot ?? host.attachShadow({ mode: 'open' })
     shadow.innerHTML = `<style>${ARENA_CSS}</style>${ARENA_BODY}`
-    cleanupRef.current = runArena(shadow, id, preview)
+    cleanupRef.current = runArena(shadow, id, preview, setGame)
 
     return () => {
       cleanupRef.current?.()
@@ -3325,14 +2944,19 @@ const Attack: FC = () => {
   }, [id, preview])
 
   return (
-    <div
-      ref={hostRef}
-      id="main-content"
-      role="main"
-      tabIndex={-1}
-      aria-label="Live attack and defense arena"
-      style={{ position: 'fixed', inset: 0, zIndex: 100 }}
-    />
+    <WithNavBar competition width="1600px">
+      <Stack className={workspace.competitionStack} gap="sm" style={{ containerType: 'inline-size' }}>
+        <GameWorkspaceHeader gameId={Number(id)} game={currentGame} />
+        <div
+          ref={hostRef}
+          role="region"
+          aria-label="Live competition arena"
+          data-arena-theme="globe"
+          data-arena-scheme={scheme}
+          style={{ minWidth: 0, colorScheme: scheme }}
+        />
+      </Stack>
+    </WithNavBar>
   )
 }
 

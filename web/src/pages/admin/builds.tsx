@@ -63,6 +63,7 @@ import { createOperationId, startControlJob, waitForControlJob } from '@Utils/Co
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import api, { ChallengeBuildAuditModel, ChallengeBuildStatus } from '@Api'
 import classes from '@Styles/AdminBuilds.module.css'
 import ops from '@Styles/AdminOperations.module.css'
@@ -93,6 +94,7 @@ const matchesFilter = (status: ChallengeBuildStatus, filter: ChallengeBuildStatu
 const PAGE_SIZE = 25
 
 const Builds: FC = () => {
+  const [tab, setTab] = useUrlTab('tab', ['log', 'images'], 'log')
   const { t } = useTranslation()
   const isMobile = useIsMobile()
   const modals = useModals()
@@ -388,7 +390,7 @@ const Builds: FC = () => {
             </Group>
           </Group>
 
-          <Tabs defaultValue="log" keepMounted={false} className={classes.tabs}>
+          <Tabs value={tab} onChange={setTab} keepMounted={false} className={classes.tabs}>
             <Tabs.List aria-label={t('admin.operations.build_sections')}>
               <Tabs.Tab value="log" leftSection={<Icon path={mdiTextBoxOutline} size={0.7} />}>
                 {t('admin.content.builds.tab.log', 'Build log')}

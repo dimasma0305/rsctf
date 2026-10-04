@@ -703,6 +703,14 @@ async fn team_links_are_solve_gated_team_scoped_and_provider_checked() {
     assert_eq!(f.monitor_status(Some("Links")).await["total"], 0);
     assert_eq!(f.monitor_status(Some("Missing")).await["total"], 2);
 
+    // Teams cannot disclose for a disabled challenge, so it is not Missing.
+    sqlx::query(r#"UPDATE "GameChallenges" SET is_enabled = FALSE WHERE id = $1"#)
+        .bind(f.solved)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(f.monitor_status(Some("Missing")).await["total"], 0);
+
     f.teardown().await;
 }
 

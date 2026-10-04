@@ -90,7 +90,8 @@ struct MonitorRow {
 }
 
 /// Every competitive Jeopardy solve of the game merged with every saved
-/// disclosure. A solve without a disclosure is `Missing`.
+/// disclosure. A solve without a disclosure is `Missing`, except on a disabled
+/// challenge, which teams cannot disclose for.
 const MERGED_CTE: &str = r#"
 WITH window_bounds AS (
     SELECT start_time_utc, end_time_utc FROM "Games" WHERE id = $1
@@ -102,7 +103,7 @@ WITH window_bounds AS (
         ON submission.id = first_solve.submission_id AND submission.game_id = $1
       JOIN "GameChallenges" challenge
         ON challenge.id = first_solve.challenge_id AND challenge.game_id = $1
-       AND challenge."Type" = ANY($4)
+       AND challenge.is_enabled AND challenge."Type" = ANY($4)
       CROSS JOIN window_bounds
      WHERE submission.submit_time_utc >= window_bounds.start_time_utc
        AND submission.submit_time_utc < window_bounds.end_time_utc

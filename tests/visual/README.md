@@ -1,5 +1,17 @@
 # Full-page visual audit
 
+For the arena's spherical coastline regression, run the independent SVG/ray oracle:
+
+```sh
+scripts/bounded-frontend.sh exec bash -c 'cd .. && exec node tests/visual/arena-surface.mjs'
+```
+
+It checks concave countries at 24 yaw angles and three pitches against spherical
+point containment, including points close to the globe's limb. A retained
+straight-chord negative control must fail. It uses an isolated blank browser,
+requires no server or credentials, and saves its report under
+`visual-audit-output/settlement-surface-proof/`.
+
 The visual audit renders every React page component at ultrawide (3440×1440),
 wide desktop (1920×1080), desktop (1440×1100), notebook (1366×768), laptop
 (1024×768), tablet (768×1024), mobile (390×844), and compact mobile (320×568)
@@ -74,6 +86,46 @@ scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
 
 Stop the fixture server and preview afterward. Never supply a real credential
 to the fixture server.
+
+## Challenge card hash links
+
+`node tests/visual/challenge-links.mjs` checks the built client at
+`http://127.0.0.1:18080`: catalog and event card/list links, keyboard activation,
+focus restoration, copy/reload, Back/Forward, filtered and off-page challenges,
+unavailable/failed links, late responses after close, and login return URLs.
+It runs Axe and overflow checks at 320, 390, 768, 1440, and 1920 pixels.
+All API/hub traffic uses invented fixtures; writes are blocked. Backend access
+boundaries are tested separately against PostgreSQL in `catalog_tests.rs`.
+
+Set `RSCTF_CHALLENGE_LINK_TARGET=https://tcp.1pc.tf` to check released assets and
+`RSCTF_CHALLENGE_LINK_OUTPUT` to select the evidence directory. For the general
+full-content audit, run `node tests/visual/challenge-links-fixtures.mjs --serve`,
+then:
+
+```sh
+RSCTF_VISUAL_TARGET=http://127.0.0.1:63019 \
+RSCTF_VISUAL_PLAYER_JWT=local-fixture-not-a-credential \
+RSCTF_VISUAL_GAME_ID=901 \
+scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
+  --page =challenges--index --page =games--game--challenges \
+  --viewport desktop --viewport compact
+```
+
+Stop the fixture proxy after the audit. Never supply it with real credentials.
+
+## Section and tab hash links
+
+`node tests/visual/url-navigation.mjs` checks hash-backed sections, tabs, and
+challenge views, with legacy query bookmarks retained for compatibility. Examples
+include `#section=abnormal-solves`, `#tab=stats`, and
+`#snapshot=2&snapshotTab=history`. Existing challenge title-slug fragments can
+coexist with tabs, such as `#9001-Ret2win&category=Pwn&view=list`.
+
+The read-only fixtures cover reload, Back/Forward, keyboard navigation, preserving
+unsaved settings/profile/event drafts, nested snapshot/card selection, login
+return links, and retaining the anti-cheat report's existing request owner.
+Set `RSCTF_URL_NAV_TARGET` to the released origin and `RSCTF_URL_NAV_OUTPUT` to
+select the evidence directory. No form drafts or credentials are put in URLs.
 
 ## Event readiness fixtures
 
@@ -161,6 +213,35 @@ above remains necessary against the same candidate.
 
 ## Competition globe and list fixtures
 
+### Public conquest arena
+
+`attack-arena.mjs` verifies `/games/901/attack` using read-only invented public
+snapshots and a local WebSocket fixture. Run it from the repository root:
+
+```sh
+scripts/bounded-frontend.sh exec bash -c 'cd .. && exec node tests/visual/attack-arena.mjs'
+```
+
+It covers 49 teams, shared navigation/theme, the rotating 3D world, challenge
+islands, accepted-solve presentation, mouse/touch/keyboard rotation, far-side
+selection, hash bookmarks, fullscreen, reduced motion, live reconnect/recovery,
+and preview freeze/end. It checks Axe, overflow and runtime errors from 320px to
+1920px, including the managed red accent in light mode. Results go to
+`visual-audit-output/attack-arena/` by default.
+
+The arena composes `WithNavBar` and `PageHeader`; its isolated renderer inherits
+the application theme. The camera projects the ocean, raised island coasts,
+teams and hills in the same coordinate system. Locations are fictional. A
+Jeopardy island can have multiple accepted solvers; first-solve color is not
+exclusive ownership. The public snapshot remains authoritative, frozen feed
+updates cannot change an island, and ambiguous challenge titles await a poll.
+No scoring, authorization, endpoint or polling cadence changes are introduced.
+
+For the full-page audit, run `node tests/visual/attack-arena-fixtures.mjs --serve`
+alongside the preview, then target `http://127.0.0.1:63020` with game ID `901`.
+
+### Challenge workspace
+
 `competition-workspace.mjs` uses the same isolated loopback preview and intercepts
 all API calls. Its 100-challenge fixture covers category clustering, bounded globe
 pages, keyboard selection, search/reset, persistent Globe/List/Cards preferences,
@@ -176,6 +257,27 @@ Screenshots and the request/Axe/overflow report are written to
 `visual-audit-output/competition/`. The globe draws only after interaction or a
 theme change; it does not own a poll, idle animation loop, or score calculation.
 Both desktop views reuse the existing challenge actions and their access gates.
+
+Cards are the default unless a player has saved another view. The harness also
+checks multi-word/category search, clear-search focus, shared card/list sorting,
+rejected attempts under the unsolved filter, and compact practice-event headers.
+`RSCTF_WORKSPACE_PREVIEW=https://tcp.1pc.tf` checks the published assets with the
+same browser-intercepted fixtures; no real player data or writes are used.
+
+For the standard full-page audit, start
+`node tests/visual/competition-fixtures.mjs --serve` alongside the preview. It
+serves a practice event on loopback port 63018 and blocks every API mutation:
+
+```sh
+RSCTF_VISUAL_TARGET=http://127.0.0.1:63018 \
+RSCTF_VISUAL_PLAYER_JWT=local-fixture-not-a-credential \
+RSCTF_VISUAL_GAME_ID=901 \
+scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
+  --page =/games/901/challenges --viewport desktop --viewport mobile --viewport compact \
+  --output visual-audit-output/challenge-full
+```
+
+Stop both temporary servers afterward. Never supply real credentials to fixtures.
 
 ## Repository and build administration fixtures
 

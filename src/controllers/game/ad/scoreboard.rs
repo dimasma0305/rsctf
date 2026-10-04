@@ -435,9 +435,6 @@ pub async fn scoreboard(
 ) -> AppResult<Response> {
     let is_monitor = maybe.as_ref().is_some_and(|user| user.is_monitor());
     let game = crate::controllers::game::load_game_cached(&st, id).await?;
-    if game.hidden && !is_monitor {
-        return Err(AppError::not_found("Game not found"));
-    }
     if Utc::now() < game.start_time_utc && !is_monitor {
         return Err(AppError::game_not_started());
     }

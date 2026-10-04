@@ -30,7 +30,9 @@ export const WithRole: FC<WithRoleProps> = ({ requiredRole, allowEventAdmin, chi
 
   useEffect(() => {
     if (error && error.status === 401) {
-      navigate(`/account/login?from=${location.pathname}`, { replace: true })
+      navigate(`/account/login?from=${encodeURIComponent(location.pathname + location.search + location.hash)}`, {
+        replace: true,
+      })
     }
 
     if (!role) return
@@ -43,7 +45,17 @@ export const WithRole: FC<WithRoleProps> = ({ requiredRole, allowEventAdmin, chi
       }
       navigate('/404')
     }
-  }, [role, error, required, navigate, allowEventAdmin, user?.hasManagedGames])
+  }, [
+    role,
+    error,
+    required,
+    navigate,
+    allowEventAdmin,
+    user?.hasManagedGames,
+    location.pathname,
+    location.search,
+    location.hash,
+  ])
 
   const current = role ? RoleMap.get(role)! : -1
   if (role && current < required && !(allowEventAdmin && user?.hasManagedGames)) {

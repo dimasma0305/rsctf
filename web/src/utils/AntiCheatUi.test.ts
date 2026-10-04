@@ -13,7 +13,7 @@ const apiTypes = readFileSync('src/Api.ts', 'utf8')
 test('the report exposes freshness, failures, coverage, and an explicit refresh action', () => {
   assert.match(reportPage, /useAntiCheatReport\(numId, activeTab === 'analysis'\)/)
   assert.match(reportPage, /keepMounted=\{false\}/)
-  assert.match(reportPage, /isCheatReportStale\(lastReconciledAt\)/)
+  assert.match(reportPage, /isCheatReportStale\(report\)/)
   assert.match(reportPage, /Last evaluated: \{\{time\}\}/)
   assert.match(reportPage, /Refresh failed — showing the last report/)
   assert.match(reportPage, /Detector reconciliation failed/)
@@ -23,6 +23,13 @@ test('the report exposes freshness, failures, coverage, and an explicit refresh 
   assert.match(reportPage, /View detector inventory/)
   assert.match(reportPage, /report\?\.detectorCapabilities\?\.map/)
   assert.match(reportPage, /Detector implementation and scoring coverage|detector_inventory_caption/)
+})
+
+test('identity analysis offers no username column or filter, since the server records none', () => {
+  // Identity overlaps are built from observations only; account names are
+  // intentionally absent, so a Users column or @user filter could never match.
+  assert.doesNotMatch(analysis, /field: 'user'/)
+  assert.doesNotMatch(analysis, /userNames|relatedUsers/)
 })
 
 test('participation mutations are admin-gated and evidence shows stable IDs and applied scores', () => {

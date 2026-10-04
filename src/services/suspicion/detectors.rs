@@ -539,6 +539,41 @@ pub(super) async fn record_with_dedup_at(
     Ok(())
 }
 
+/// Record a scan-driven agent-artifact rule. The event is keyed by the file
+/// content (or challenge, for a contradiction), so rescans are idempotent.
+pub(crate) async fn record_agent_artifact_event(
+    db: &DatabaseConnection,
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: Option<i32>,
+    ty: SuspicionType,
+    evidence_key: &str,
+    observed_at: chrono::DateTime<chrono::Utc>,
+) -> AppResult<bool> {
+    if !matches!(
+        ty,
+        SuspicionType::AgentArtifact | SuspicionType::AiDeclarationContradiction
+    ) {
+        return Err(AppError::internal(
+            "only agent-artifact rules use the scan event writer",
+        ));
+    }
+    let (weight, description) = resolve_entry(db, ty).await?;
+    persist_suspicion_event_with_weight_guarded(
+        db.get_postgres_connection_pool(),
+        game_id,
+        participation_id,
+        challenge_id,
+        ty,
+        evidence_key,
+        weight,
+        description,
+        observed_at,
+        None,
+    )
+    .await
+}
+
 /// Persist a mature HighWrongRate incident after rechecking the shared
 /// challenge/window predicate under the same participation lock used by submit.
 /// This closes the query→insert race where a suppressing solve could otherwise

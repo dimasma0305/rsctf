@@ -138,7 +138,7 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
                 fw={650}
                 title={startTime.locale(locale).format('L LTS')}
               >
-                {startTime.locale(locale).format('L LTS')}
+                {startTime.locale(locale).format('ll · LT')}
               </Text>
               <Text
                 component="time"
@@ -147,7 +147,9 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
                 c="dimmed"
                 title={endTime.locale(locale).format('L LTS')}
               >
-                {t('game.content.until', 'until {{time}}', { time: endTime.locale(locale).format('L LTS') })}
+                {t('game.content.until', 'until {{time}}', {
+                  time: endTime.locale(locale).format(startTime.isSame(endTime, 'day') ? 'LT' : 'll · LT'),
+                })}
               </Text>
             </div>
           </div>

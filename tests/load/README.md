@@ -17,6 +17,7 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      GAME=27 npm run arena-read # bounded public spectator/health acceptance, 2 req/s for 30s
       npm run read-only-websocket-flood # read-only feed inbound-abuse gate
       npm run proxy-traffic-admission # acknowledged line-rate proxy byte-work gate
       npm run monitor-history # fixed-rate bounded monitor history + durable backfills
@@ -1467,6 +1468,28 @@ and the live ownership assertion are in
 
 ### Optimization ledger
 
+The 3 October globe comparison uses production frontend builds, the same host,
+Chromium, 49-team/12-island fixture, 12-second observation windows and two island
+selections per second. Browser frame cadence is separate from server throughput.
+Run the browser workload through the bounded frontend wrapper:
+
+```sh
+RSCTF_ANIMATION_OUTPUT=visual-audit-output/arena-animation-candidate \
+  scripts/bounded-frontend.sh exec bash -c 'cd .. && exec node tests/visual/arena-animation.mjs'
+```
+
+`tests/visual/arena-animation.mjs` requires a loopback production frontend build
+(default `http://127.0.0.1:18080`), intercepts all game APIs with the same read-only
+fixture, and exports avg/p50/p90/p95/p99/max frame intervals, camera steps,
+long tasks, renderer task time, heap use and roster integrity. The browser is
+software-rendered; these measurements do not promise an FPS on every device.
+The `arena-read` companion uses k6's `constant-arrival-rate` at 2 requests/s for
+30 seconds, with no credentials or mutations. `TARGET`, `GAME`, `SUMMARY_JSON`
+and optional `ARENA_RESOURCE_CONTAINERS` choose the scoped acceptance target.
+It checks exact `healthz`, public-board identities and duplicate-free rosters
+before/after, and saves application/PostgreSQL CPU/RAM samples beside the k6
+summary. This is a production health guardrail, not a server optimization claim.
+
 All 16 July rows compare adjacent images with the common workload above. The
 max-batch 19 July row is a frozen pre-submit-fence campaign using the isolated
 A&D harness documented in
@@ -1497,6 +1520,11 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 
 | Date | Change | Held-rate throughput | Direct work reduction | App CPU-s | Stack CPU-s | Relevant p95 | Result |
 | --- | --- | ---: | --- | ---: | ---: | ---: | --- |
+| 2026-10-04 | Immersive scenery / cached world meshes and ocean | 2 → 2 country selections/s | One baseline / two final trials; lower renderer task time in all phases, no server throughput claim | — | — | Desktop rotation frame p95 33.30 → 16.80 ms in final 1; mobile focus p95 16.80 ms in both final trials | 0 browser/integrity errors; desktop worst-frame regressions, heap variation and pre-detail-limit attempt disclosed in REPORT.md |
+| 2026-10-04 | Detailed terrain / coordinated towns, shared lighting palette and early face culling | 2 → 2 country selections/s | One baseline / two final trials; added detail increases renderer work, no speed claim | — | — | Mobile frame p95 16.80 ms; desktop 33.30–33.40 ms in both final trials | 0 browser/integrity errors; pre-culling failure and final slow-frame/heap tradeoffs retained in REPORT.md |
+| 2026-10-04 | Spherical limb clipping / borders / settlements (visual acceptance) | 2 → 2 country selections/s | No optimization claim; maximum 24 settlements / 120 buildings | — | — | Desktop rotation frame p95 16.80 → 33.30 ms; mobile focus max 33.50 → 100.00 ms | 0 browser/integrity errors; extra render cost and worse tails disclosed in REPORT.md; 313,776 independent surface checks pass |
+| 2026-10-04 | Procedural category continents / challenge countries (visual acceptance) | 2 → 2 country selections/s | No optimization claim; membership-keyed geometry, richer coastlines and labels | — | — | Rotation frame p95 16.80 → 16.80 ms; desktop focus 16.80 → 33.30 ms | 0 browser/integrity errors; worse focus tail, task cost and heap variation disclosed in REPORT.md |
+| 2026-10-03 | Smooth arena camera and bounded globe rendering | 2 → 2 island selections/s | Canvas allocation on each repaint → only on size change; retained geometry/routes | — | — | Desktop steady globe updates 66.70 → 16.80 ms; 390px 33.40 → 16.80 ms | 0 browser/integrity errors; extra focus task time and heap variation disclosed in REPORT.md |
 | 2026-07-16 | Batch authenticated limiter policies | 429.20 → 429.72 req/s | Redis commands −12.01% | 157.47 → 155.20 | 345.88 → 339.48 | HTTP 9.13 → 9.17 ms | 0 5xx; clean |
 | 2026-07-16 | Cache KotH lifecycle with round fencing | 429.72 → 429.34 req/s | SQL calls −98.52% | 155.20 → 151.51 | 339.48 → 316.10 | KotH State 9.20 → 7.83 ms | 0 5xx; clean |
 | 2026-07-16 | Set-based closing-SLA evidence query | 429.34 → 429.11 req/s | Snapshot median −57.31% | 151.51 → 150.92 | 316.10 → 309.80 | HTTP 9.32 → 8.97 ms | 0 5xx; clean |

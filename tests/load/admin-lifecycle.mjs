@@ -120,6 +120,7 @@ const state = {
   runtimeContainerIds: [],
   originalGlobalConfig: null,
   aiChatProviders: null,
+  agentSignatures: null,
   evidence: {},
 };
 const covered = new Set();
@@ -1551,6 +1552,184 @@ async function aiChatProviderLifecycle() {
   console.log(
     `  ✓ custom provider ${customKey} created, read back, and deleted; ` +
       `built-in ${builtin.key} toggled and restored; invalid pattern and built-in delete rejected`,
+  );
+}
+
+const AGENT_SIGNATURES_PATH = "/api/admin/agent-signatures";
+const AGENT_SIGNATURE_TEMPLATE = "/api/admin/agent-signatures/{key}";
+const AGENT_RESCAN_TEMPLATE = "/api/admin/games/{id}/agent-artifacts/rescan";
+const AGENT_LIFECYCLE_PATTERN = "/opt/lifecycle-agent/runs/[0-9]+";
+
+function agentSignaturePath(key) {
+  return `${AGENT_SIGNATURES_PATH}/${encodeURIComponent(key)}`;
+}
+
+function agentSignatureByKey(registry, key) {
+  requireCondition(
+    Array.isArray(registry?.signatures),
+    "agent signature registry omitted signatures",
+  );
+  return registry.signatures.find((signature) => signature.key === key) || null;
+}
+
+async function readAgentSignatures(label, options = {}) {
+  const response = await adminApi("GET", AGENT_SIGNATURES_PATH, options);
+  requireCondition(
+    validateAdminResponse("admin_agent_signatures_get", response),
+    `${label} returned a malformed agent signature registry`,
+  );
+  return exactJson(response, label);
+}
+
+async function assertAgentSignatureConverged(key, enabled, label) {
+  for (const [index, baseUrl] of webTargets.entries()) {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const registry = await readAgentSignatures(
+        `${label} on web replica ${index + 1}`,
+        { baseUrl, ip: `10.252.12.${index + 1}` },
+      );
+      if (agentSignatureByKey(registry, key)?.enabled === enabled) break;
+      requireCondition(
+        Date.now() < deadline,
+        `web replica ${index + 1} did not converge on ${label}`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
+async function restoreAgentBuiltin(builtin) {
+  const current = agentSignatureByKey(
+    await readAgentSignatures("agent built-in restore read"),
+    builtin.key,
+  );
+  requireCondition(current?.builtin === true, `built-in ${builtin.key} vanished`);
+  if (current.enabled !== builtin.enabled) {
+    await adminApi("PUT", agentSignaturePath(builtin.key), {
+      body: { enabled: builtin.enabled },
+    });
+  }
+  await assertAgentSignatureConverged(
+    builtin.key,
+    builtin.enabled,
+    `agent built-in ${builtin.key} restore`,
+  );
+}
+
+async function agentSignatureLifecycle() {
+  console.log("\nagent-artifact signature registry…");
+  const customKey = `lc-${tag}`;
+  const invalidKey = `lc-${tag}-invalid`;
+  const initial = exactJson(
+    await call("GET", AGENT_SIGNATURES_PATH, AGENT_SIGNATURES_PATH),
+    "agent signatures",
+  );
+  requireCondition(
+    !agentSignatureByKey(initial, customKey) &&
+      !agentSignatureByKey(initial, invalidKey),
+    "agent signature lifecycle namespace is not empty",
+  );
+  const builtinModel = agentSignatureByKey(initial, "claude-code-scratchpad");
+  requireCondition(
+    builtinModel?.builtin === true,
+    "agent signature registry omitted the Claude Code scratchpad built-in",
+  );
+  const builtin = { key: builtinModel.key, enabled: builtinModel.enabled };
+  // Persist restore values before the first registry mutation.
+  state.agentSignatures = { customKeys: [customKey, invalidKey], builtin };
+  saveRecovery();
+
+  const created = exactJson(
+    await call("PUT", AGENT_SIGNATURE_TEMPLATE, agentSignaturePath(customKey), {
+      body: { enabled: true, label: "Lifecycle", pattern: AGENT_LIFECYCLE_PATTERN },
+    }),
+    "custom agent signature",
+  );
+  requireCondition(
+    created.key === customKey &&
+      created.label === "Lifecycle" &&
+      created.pattern === AGENT_LIFECYCLE_PATTERN &&
+      created.builtin === false &&
+      created.enabled === true,
+    `custom agent signature did not persist exactly: ${JSON.stringify(created)}`,
+  );
+  requireCondition(
+    agentSignatureByKey(
+      await readAgentSignatures("agent signatures after create"),
+      customKey,
+    )?.pattern === AGENT_LIFECYCLE_PATTERN,
+    "custom agent signature read-back differs from its write",
+  );
+
+  try {
+    const toggled = exactJson(
+      await adminApi("PUT", agentSignaturePath(builtin.key), {
+        body: { enabled: !builtin.enabled },
+      }),
+      "agent built-in toggle",
+    );
+    requireCondition(
+      toggled.key === builtin.key &&
+        toggled.builtin === true &&
+        toggled.enabled === !builtin.enabled &&
+        toggled.pattern === builtinModel.pattern,
+      `agent built-in toggle changed more than its enabled flag: ${JSON.stringify(toggled)}`,
+    );
+    await assertAgentSignatureConverged(
+      builtin.key,
+      !builtin.enabled,
+      `agent built-in ${builtin.key} toggle`,
+    );
+  } finally {
+    await restoreAgentBuiltin(builtin);
+  }
+
+  const overBroad = await adminApi("PUT", agentSignaturePath(invalidKey), {
+    body: { enabled: true, label: "Lifecycle", pattern: ".*" },
+    expected: 400,
+    label: "over-broad agent signature",
+  });
+  requireCondition(
+    typeof overBroad.json?.title === "string",
+    "rejected agent signature pattern did not explain itself",
+  );
+  await adminApi("DELETE", agentSignaturePath(builtin.key), {
+    expected: 400,
+    label: "agent built-in delete",
+  });
+  const afterRejections = await readAgentSignatures(
+    "agent signatures after rejected mutations",
+  );
+  requireCondition(
+    !agentSignatureByKey(afterRejections, invalidKey) &&
+      agentSignatureByKey(afterRejections, builtin.key)?.builtin === true,
+    "a rejected agent signature mutation changed the registry",
+  );
+
+  const deleted = exactJson(
+    await call("DELETE", AGENT_SIGNATURE_TEMPLATE, agentSignaturePath(customKey)),
+    "custom agent signature delete",
+  );
+  requireCondition(deleted.key === customKey, "agent signature delete named the wrong key");
+  await adminApi("DELETE", agentSignaturePath(customKey), {
+    expected: 404,
+    label: "repeated agent signature delete",
+  });
+  console.log(
+    `  ✓ custom signature ${customKey} created, read back, and deleted; ` +
+      `built-in ${builtin.key} toggled and restored; over-broad pattern and built-in delete rejected`,
+  );
+}
+
+async function agentArtifactRescan() {
+  console.log("\nagent-artifact rescan…");
+  const path = `/api/admin/games/${positiveId(fixtureGame, "fixture game")}/agent-artifacts/rescan`;
+  const response = await call("POST", AGENT_RESCAN_TEMPLATE, path, { expected: 202 });
+  requireCondition(
+    validateAdminResponse("admin_agent_artifact_rescan", response) &&
+      response.json.gameId === fixtureGame,
+    `agent artifact rescan returned ${JSON.stringify(response.json)}`,
   );
 }
 
@@ -3632,6 +3811,23 @@ function exactResidualSnapshot() {
           ),
         )
       : 0,
+    agentCustomSignatures: state.agentSignatures?.customKeys?.length
+      ? Number(
+          sql(
+            `SELECT count(*) FROM "AgentArtifactSignatures" WHERE signature_key IN (` +
+              `${state.agentSignatures.customKeys.map(sqlLiteral).join(",")})`,
+          ),
+        )
+      : 0,
+    agentBuiltinDrift: state.agentSignatures?.builtin
+      ? Number(
+          sql(
+            `SELECT count(*) FROM "AgentArtifactSignatures" WHERE signature_key=` +
+              `${sqlLiteral(state.agentSignatures.builtin.key)} AND builtin ` +
+              `AND enabled<>${state.agentSignatures.builtin.enabled ? "TRUE" : "FALSE"}`,
+          ),
+        )
+      : 0,
     credentialRedisKeys: state.credentialCacheKeys.reduce(
       (count, key) => count + redisKeyExists(key),
       0,
@@ -4259,6 +4455,17 @@ async function cleanup() {
     }
     if (registry.builtin) await restoreAiChatBuiltin(registry.builtin);
   });
+  await attempt("agent signature registry", async () => {
+    const registry = state.agentSignatures;
+    if (!registry) return;
+    for (const key of registry.customKeys) {
+      await adminApi("DELETE", agentSignaturePath(key), {
+        expected: [200, 404],
+        label: `agent signature ${key} cleanup`,
+      });
+    }
+    if (registry.builtin) await restoreAgentBuiltin(registry.builtin);
+  });
   await attempt("remaining namespaced evidence", async () => {
     if (antiCheatBlockId)
       sql(`DELETE FROM "AntiCheatBlocks" WHERE id=${antiCheatBlockId}`);
@@ -4301,7 +4508,9 @@ async function main() {
     await identityLifecycle();
     await configurationLifecycle();
     await aiChatProviderLifecycle();
+    await agentSignatureLifecycle();
     await eventFixture();
+    await agentArtifactRescan();
     await runtimeImageRepairLifecycle();
     await observabilityAndRuntime();
     await buildLifecycle();

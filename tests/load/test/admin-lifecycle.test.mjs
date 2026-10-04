@@ -447,6 +447,25 @@ const customAiChatProvider = {
   updatedAt: 1_700_000_000_000,
 };
 
+const builtinAgentSignature = {
+  key: "claude-code-scratchpad",
+  label: "Claude Code scratchpad path",
+  pattern: "/tmp/claude-[0-9]+/(?-u:[^/\\s]){1,200}/scratchpad",
+  builtin: true,
+  enabled: true,
+  examples: ["/tmp/claude-0/p/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0/scratchpad"],
+  updatedAt: null,
+};
+const customAgentSignature = {
+  key: "lc-adm1",
+  label: "Lifecycle",
+  pattern: "/opt/lifecycle-agent/runs/[0-9]+",
+  builtin: false,
+  enabled: true,
+  examples: [],
+  updatedAt: 1_700_000_000_000,
+};
+
 const worker = {
   id: "018f3c6a-d79b-7cc0-8f68-8fdbad0f57bb",
   name: "admin-lifecycle-worker",
@@ -501,6 +520,17 @@ function sampleBody(kind, status) {
       return customAiChatProvider;
     case "ai-chat-provider-deleted":
       return { key: customAiChatProvider.key };
+    case "agent-signatures":
+      return {
+        signatures: [builtinAgentSignature, customAgentSignature],
+        maxCustomSignatures: 32,
+      };
+    case "agent-signature":
+      return customAgentSignature;
+    case "agent-signature-deleted":
+      return { key: customAgentSignature.key };
+    case "agent-artifact-rescan":
+      return { gameId: 1, started: true };
     case "realtime-metrics":
       return {
         websocket: {
@@ -690,15 +720,15 @@ function sampleResponse(operation) {
   return { status, body: sampleBody(operation.responseKind, status), headers };
 }
 
-test("catalog covers all 86 HTTP operations and keeps SignalR as separate surfaces", () => {
-  assert.equal(ADMIN_OPERATIONS.length, 86);
-  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 86);
+test("catalog covers all 90 HTTP operations and keeps SignalR as separate surfaces", () => {
+  assert.equal(ADMIN_OPERATIONS.length, 90);
+  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 90);
   assert.deepEqual(
     ADMIN_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 39, PUT: 8, POST: 28, DELETE: 11 },
+    { GET: 40, PUT: 9, POST: 29, DELETE: 12 },
   );
   const enroll = ADMIN_OPERATIONS.find(({ id }) => id === "worker_enroll");
   assert.deepEqual(
@@ -767,7 +797,7 @@ test("fixed-rate admin load uses one bounded instance batch and never a per-row 
 test("authorization classes keep Admin, manager, and enrollment-token surfaces explicit", () => {
   assert.equal(
     ADMIN_OPERATIONS.filter(({ auth }) => auth === "admin").length,
-    84,
+    88,
   );
   assert.deepEqual(
     ADMIN_OPERATIONS.filter(({ auth }) => auth !== "admin").map(
@@ -999,11 +1029,11 @@ test("read-origin matrix covers every live read on every eligible replica exactl
 test("repository router source and lifecycle catalog have exact bidirectional coverage", () => {
   const sources = repositoryRouterSources();
   assert.deepEqual(assertRouterCoverage(sources), {
-    operations: 86,
+    operations: 90,
     signalR: 2,
   });
   const parsed = parseAdminRouterOperations(sources);
-  assert.equal(parsed.operations.length, 86);
+  assert.equal(parsed.operations.length, 90);
   assert.equal(parsed.signalR.length, 2);
 });
 
@@ -1048,8 +1078,8 @@ test("router parser ignores route-like text in Rust comments and strings", () =>
 
 test("coverage accounting rejects omissions, duplicates, and unknown operations", () => {
   assert.deepEqual(assertCompleteCoverage(ADMIN_OPERATION_IDS), {
-    covered: 86,
-    required: 86,
+    covered: 90,
+    required: 90,
     missing: [],
     extra: [],
   });
@@ -1074,8 +1104,8 @@ test("coverage accounting rejects omissions, duplicates, and unknown operations"
   assert.deepEqual(
     assertCompleteCoverage(allSurfaces, { includeSignalR: true }),
     {
-      covered: 88,
-      required: 88,
+      covered: 92,
+      required: 92,
       missing: [],
       extra: [],
     },
