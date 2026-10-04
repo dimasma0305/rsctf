@@ -26,7 +26,7 @@ jobs:
   validate-release-state:
     name: Require a fresh GitHub release
     needs: [validate-release]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
       contents: read

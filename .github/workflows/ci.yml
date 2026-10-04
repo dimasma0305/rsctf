@@ -19,7 +19,8 @@ env:
 jobs:
   plan:
     name: Select affected checks
-    runs-on: ubuntu-24.04
+    # Git/Node bookkeeping only; no compiler, services or privileged operations.
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     outputs:
       server: ${{ steps.scope.outputs.server }}
@@ -558,6 +559,9 @@ jobs:
         run: pnpm --dir web lint:check
 
       - name: Run frontend tests
+        env:
+          # The standard public-repository Linux runner has four cores.
+          RSCTF_FRONTEND_WORKERS: 4
         run: pnpm --dir web test
 
       - name: Build frontend
@@ -766,7 +770,7 @@ jobs:
     name: Required CI checks
     if: always()
     needs: [plan, rust-lint, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, dependency-security, load-harness-contracts, cheat-acceptance, docs, repository-conventions]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

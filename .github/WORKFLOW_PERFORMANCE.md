@@ -113,9 +113,30 @@ compiler settings:
   revisions/versions and companion metadata, then attests and promotes only the
   assembled digest. Tag publication still requires that exact main attestation.
 
-These changes require a new observed Actions run before reporting a new duration.
-In particular, parallelism does not make the 15-minute Rust release compilation
-disappear, and a new lint cache will be cold on its first run.
+Parallelism does not make the 15-minute Rust release compilation disappear, and
+a new lint cache is cold on its first run. Distinguish cache-hit image builds
+from runs whose application source actually changed.
+
+### Observed full CI result
+
+The [second optimization PR gate](https://github.com/dimasma0305/rsctf/actions/runs/37220491931)
+passed in **9m17s** from workflow creation to completion on 2026-10-04. All 16
+selected checks passed. Rust compilation/tests took 6m23s and the parallel lint
+job took 6m27s (Clippy itself 5m57s with a cold lint cache). Coverage/database
+checks took 7m49s, including all 431 selected database regressions and 57.35%
+line coverage, above the unchanged 40% floor. Kubernetes and isolated anti-cheat
+checks passed in 1m53s and 1m19s after the Rust artifacts were available.
+
+This is observed CI latency, not a controlled percentage improvement over the
+dependency-update run. It does not include image compilation, tag publication,
+or production deployment. PR #167 was merged as `4ac18dea`; the first main image
+validation, [run 37221124219](https://github.com/dimasma0305/rsctf/actions/runs/37221124219),
+passed in **9m43s**, including full CI, both native images, assembly, verification
+and main-image attestation. Metadata assembly itself took 23 seconds. That run
+reused the unchanged v0.1.137 application compilation layer, so its duration must
+not be presented as the cost of compiling changed Rust. Its verified main digest
+is `sha256:517f532b0b4cc4b8c1064ef4cc95d258e8274baa67a901f59564615156f9daf5`;
+this is not a new tagged release or a production deployment.
 
 ### Local findings, not an Actions speedup claim
 
@@ -130,4 +151,43 @@ an unpublished local AMD64/ARM64 OCI export. Both platforms retained all nine
 filesystem layers and the full original runtime config, including Docker's
 healthcheck extension, while generating 155-package SBOMs and SLSA provenance.
 The exact workflow verification shell also passed against the existing immutable
-release. GitHub execution and deployment of the candidate remain required.
+release. GitHub execution subsequently passed as recorded above; deployment of
+a new tagged release remains required.
+
+## Third pass: bounded test concurrency and lightweight orchestration
+
+The frontend test runner now honors the existing `RSCTF_FRONTEND_WORKERS` limit
+(integer 1 through 4). Its local default remains two; CI requests four on its
+standard four-core Linux runner. Invalid settings fail before compilation, and
+test discovery, per-file process isolation, and failure propagation are unchanged.
+
+Four matched local full-suite trials, ordered **2, 4, 4, 2** workers, all passed
+722 application tests and 35 visual-harness contracts, with no failures, skipped
+tests or cancellations. Two-worker trials took 54.82s and 52.77s; four-worker
+trials took 31.58s and 30.87s: approximately **42% lower mean local wall time**.
+Both conditions used the same source and installed dependency hashes, Node
+24.8.0, pnpm 11.22.0, an isolated 400% CPU quota and 8 GiB memory cap, through
+`scripts/bounded-frontend.sh`. This comparison includes test bundling and pnpm
+startup, but not dependency installation. No other local compilation overlapped.
+The normal local CPU quota is still 150%; the 400% setting was only the matched
+CI-shaped experiment. These local timings are not a claim about CI's pinned
+Node 22/pnpm 11.8.0; its clean-room gate remains required.
+
+To repeat each condition on an otherwise idle compile slot:
+
+```sh
+RSCTF_FRONTEND_CPU_QUOTA=400% RSCTF_FRONTEND_WORKERS=2 scripts/bounded-frontend.sh test
+RSCTF_FRONTEND_CPU_QUOTA=400% RSCTF_FRONTEND_WORKERS=4 scripts/bounded-frontend.sh test
+```
+
+Only five short, unprivileged Git/Node/API bookkeeping jobs move to `ubuntu-slim`:
+CI planning and aggregation, image preparation, shared release-source validation,
+and the fresh-release check. Each retains its five-minute timeout and existing
+fail-closed policy. Compilers, service containers, Docker builds, integration
+tests and signing/promotion jobs remain on their existing full runners. The
+[runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+documents the single-core container runner's limits, and its
+[image manifest](https://github.com/actions/runner-images/blob/main/images/ubuntu-slim/ubuntu-slim-Readme.md)
+includes the required Git, Node, shell and GitHub CLI tools. Local planner and
+aggregate tests also passed under a one-CPU, 1 GiB cgroup. Actual Actions startup
+latency must be observed; shorter queue time is not guaranteed.
