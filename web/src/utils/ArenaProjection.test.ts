@@ -65,9 +65,9 @@ test('settlements have varied architecture with spherical foundations inside the
     )) {
       for (const country of continent.countries) {
         styles.add(country.settlement.style)
-        assert.ok(country.settlement.buildings.length <= 5)
+        assert.ok(country.settlement.buildings.length <= 8)
         for (const building of country.settlement.buildings) {
-          assert.ok(building.height > 0 && building.height <= 0.065)
+          assert.ok(building.height > 0 && building.height <= 0.075)
           for (const p of building.base) {
             assert.ok(Math.abs(Math.hypot(p.x, p.y, p.z) - 1) < 1e-10, 'foundation rests on the globe surface')
             assert.ok(
@@ -77,10 +77,15 @@ test('settlements have varied architecture with spherical foundations inside the
           }
         }
         const landscape = country.landscape
-        assert.equal(landscape.peaks.length, 3)
-        assert.equal(landscape.trees.length, 14)
+        assert.equal(landscape.peaks.length, 5)
+        assert.equal(landscape.trees.length, 18)
         for (const p of [
-          ...landscape.meadows.flat(),
+          ...landscape.patches.flatMap((p) => p.points),
+          ...landscape.fields.flatMap((p) => p.points),
+          ...landscape.lanes.flat(),
+          ...landscape.lake,
+          ...landscape.tributary,
+          ...landscape.bridge,
           ...landscape.road,
           ...landscape.river,
           ...landscape.peaks.flatMap((p) => p.base),
@@ -93,16 +98,45 @@ test('settlements have varied architecture with spherical foundations inside the
           )
         }
         const scene = buildCountryScene(country)
-        assert.ok(scene.length <= 22, 'bounded detail per country')
+        assert.ok(scene.length <= 31, 'bounded detail per country')
         for (const object of scene)
-          for (const face of object.faces)
+          for (const face of object.faces) {
+            assert.ok(Math.abs(Math.hypot(face.normal.x, face.normal.y, face.normal.z) - 1) < 1e-8)
+            assert.equal(face.shades.length, 8, 'lighting colors are precomputed, not allocated per frame')
+            assert.ok(face.shades.every((color) => /^#[a-f0-9]{6}$/.test(color)))
             for (const p of face.points) {
               const radius = Math.hypot(p.x, p.y, p.z)
               assert.ok(Number.isFinite(radius) && radius >= 0.999 && radius < 1.11, 'finite outward-facing relief')
             }
+          }
         const view = faceLocation(country.location)
         assert.ok(projectSurface(country.coast, view.yaw, view.pitch).fill)
       }
     }
   assert.deepEqual([...styles].sort(), ['modern', 'town', 'village'])
+})
+
+test('early normal culling agrees with projected triangle winding through a full orbit', () => {
+  const countries = buildArenaGeography([{ id: 'Web', challenges: [{ id: 1 }, { id: 2 }, { id: 3 }] }])[0].countries
+  const palette = new Map<string, string[]>()
+  for (const country of countries)
+    for (const object of buildCountryScene(country))
+      for (const face of object.faces) {
+        if (palette.has(face.color))
+          assert.equal(face.shades, palette.get(face.color), 'fixed colors share lighting ramps')
+        palette.set(face.color, face.shades)
+        for (let turn = 0; turn < 24; turn++) {
+          const yaw = (turn * Math.PI) / 12,
+            pitch = 0.4
+          const rotate = (p: GlobePoint) => ({
+            x: p.x * Math.cos(yaw) + p.z * Math.sin(yaw),
+            y: p.y * Math.cos(pitch) - (p.z * Math.cos(yaw) - p.x * Math.sin(yaw)) * Math.sin(pitch),
+          })
+          const [a, b, c] = face.points.map(rotate)
+          const winding = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+          const n = face.normal
+          const facing = n.y * Math.sin(pitch) + (n.z * Math.cos(yaw) - n.x * Math.sin(yaw)) * Math.cos(pitch)
+          if (Math.abs(winding) > 1e-12) assert.equal(facing > 0, winding > 0)
+        }
+      }
 })

@@ -38,6 +38,8 @@ interface Territory extends JeopChallenge, CountryGeometry {
 interface Continent extends ContinentGeometry {
   name: string
   shelf: SVGPathElement
+  shore: SVGPathElement
+  coastClip: SVGPathElement
   outline: SVGPathElement
   label: HTMLSpanElement
   group: HTMLElement
@@ -250,6 +252,8 @@ export function createArenaGlobe(deps: GlobeDeps) {
     for (const continent of continents) {
       const projected = projectSurface(continent.coast, yaw, pitch)
       continent.shelf.setAttribute('d', projected.edge)
+      continent.shore.setAttribute('d', projected.edge)
+      continent.coastClip.setAttribute('d', projected.fill)
       continent.outline.setAttribute('d', projected.edge)
       const p = projectGlobe(continent.labelLocation, yaw, pitch, 1.055)
       continent.label.hidden = !p.visible || p.z < 0.3
@@ -370,10 +374,18 @@ export function createArenaGlobe(deps: GlobeDeps) {
       surface.replaceChildren()
       pins.replaceChildren()
       directory.replaceChildren()
-      continents = buildArenaGeography(categories).map((geometry) => {
+      continents = buildArenaGeography(categories).map((geometry, index) => {
         const category = categories.find((c) => c.id === geometry.id)!
         const shelf = path(),
+          shore = path(),
+          coastClip = path(),
           outline = path()
+        const clip = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath')
+        clip.id = `arenaShoreClip-${index}`
+        clip.append(coastClip)
+        surface.append(clip)
+        shore.classList.add('continent-shore')
+        shore.setAttribute('clip-path', `url(#${clip.id})`)
         shelf.classList.add('continent-shelf')
         outline.classList.add('continent-outline')
         outline.dataset.continent = category.id
@@ -392,7 +404,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
         button.onclick = () => selectContinent(category.id)
         group.append(button)
         directory.append(group)
-        return { ...geometry, name: category.name, shelf, outline, label, group, button }
+        return { ...geometry, name: category.name, shelf, shore, coastClip, outline, label, group, button }
       })
       const geometry = new Map(continents.flatMap((c) => c.countries.map((country) => [country.id, country] as const)))
       territories = incoming.map((c) => {
@@ -404,6 +416,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
         borderLight.classList.add('country-border-light')
         for (const edge of [border, borderLight]) edge.setAttribute('vector-effect', 'non-scaling-stroke')
         shape.classList.add('island', 'country')
+        shape.style.setProperty('--terrain-color', country.landscape.groundColor)
         shape.style.setProperty('--country-tone', `${18 + (Math.abs(c.id * 17) % 5) * 3}%`)
         shape.dataset.territory = String(c.id)
         shape.dataset.continent = c.categoryId
@@ -419,6 +432,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
         continents.find((continent) => continent.id === c.categoryId)!.group.append(choice)
         return { ...c, ...country, shape, border, borderLight, pin, choice }
       })
+      for (const continent of continents) surface.append(continent.shore)
       addArenaLighting(surface)
       for (const country of territories) surface.append(country.border)
       for (const country of territories) surface.append(country.borderLight)

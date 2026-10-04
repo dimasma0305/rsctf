@@ -362,7 +362,7 @@ a:hover {
   cursor: pointer;
 }
 .island {
-  fill: color-mix(in srgb, var(--land-color) var(--country-tone, 24%), #8b9b6b);
+  fill: color-mix(in srgb, var(--land-color) var(--country-tone, 24%), var(--terrain-color, #8b9b6b));
   pointer-events: visiblePainted;
   cursor: pointer;
 }
@@ -391,6 +391,14 @@ a:hover {
 }
 .settlements,
 .world-lighting {
+  pointer-events: none;
+}
+.continent-shore {
+  fill: none;
+  stroke: #d7cd9f;
+  stroke-width: 9;
+  stroke-linejoin: round;
+  opacity: 0.7;
   pointer-events: none;
 }
 .continent-shelf {

@@ -4,7 +4,7 @@ import test from 'node:test'
 import { createArenaOcean } from '../pages/games/[id]/arenaAtmosphere'
 import { buildArenaGeography } from '../pages/games/[id]/arenaGeography'
 import { faceLocation } from '../pages/games/[id]/arenaGlobeModel'
-import { createArenaSettlements, MAX_SCENIC_COUNTRIES } from '../pages/games/[id]/arenaSettlements'
+import { createArenaSettlements, MAX_SCENIC_COUNTRIES, MAX_SCENIC_OBJECTS } from '../pages/games/[id]/arenaSettlements'
 import { installTestDom } from '../test/installDom'
 
 function canvasProbe() {
@@ -61,10 +61,13 @@ test('scenery has fixed draw bounds, hides the back hemisphere and cannot invent
     draw(countries, view.yaw, view.pitch, 6000, 0)
     assert.equal(probe.canvas.width, 1200)
     assert.equal(Number(probe.canvas.dataset.visibleSettlements), MAX_SCENIC_COUNTRIES)
-    assert.ok(Number(probe.canvas.dataset.visibleObjects) <= MAX_SCENIC_COUNTRIES * 22)
+    assert.ok(Number(probe.canvas.dataset.visibleObjects) <= MAX_SCENIC_OBJECTS)
     const fullObjects = Number(probe.canvas.dataset.visibleObjects)
-    assert.equal(Number(probe.canvas.dataset.visibleTrees), MAX_SCENIC_COUNTRIES * 14)
-    assert.equal(Number(probe.canvas.dataset.visiblePeaks), MAX_SCENIC_COUNTRIES * 3)
+    assert.ok(probe.fills.includes('#4f959e'), 'lake water is rendered')
+    assert.ok(probe.fills.includes('#c6ab69'), 'large views render cultivated fields')
+    assert.ok(probe.fills.includes('#d4c7aa'), 'the river crossing has a bridge deck')
+    assert.equal(Number(probe.canvas.dataset.visibleTrees), MAX_SCENIC_COUNTRIES * 18)
+    assert.equal(Number(probe.canvas.dataset.visiblePeaks), MAX_SCENIC_COUNTRIES * 5)
     const unsolvedFills = probe.fills.length
     countries[0].solvers = [{ color: '#fedcba' }]
     probe.fills.length = 0

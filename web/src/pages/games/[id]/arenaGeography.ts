@@ -1,5 +1,6 @@
 import { sphereLocation, type GlobePoint } from './arenaGlobeModel'
-import { buildLandscape, type Landscape } from './arenaLandscape'
+import { buildCountryDetails, type Landscape, type Settlement } from './arenaLandscape'
+import { buildTerrainCover } from './arenaTerrain'
 
 interface Point {
   x: number
@@ -14,10 +15,7 @@ export interface CountryGeometry {
   location: GlobePoint
   coast: GlobePoint[]
   landscape: Landscape
-  settlement: {
-    style: 'modern' | 'town' | 'village'
-    buildings: { base: GlobePoint[]; height: number; pitched: boolean }[]
-  }
+  settlement: Settlement
 }
 export interface ContinentGeometry {
   id: string
@@ -86,7 +84,11 @@ function centroid(points: Point[]): Point {
 function densify(points: Point[]) {
   return points.flatMap((p, i) => {
     const q = points[(i + 1) % points.length]
-    const steps = Math.max(1, Math.ceil(Math.hypot(p.x - q.x, p.y - q.y) / 0.045))
+    // A short inland edge can still bend sharply under the coastline warp.
+    // Give shared inland edges a minimum resolution, symmetrically in either
+    // direction; the already dense outer coast needs no extra samples.
+    const coastal = Math.hypot(p.x, p.y) > 0.999 && Math.hypot(q.x, q.y) > 0.999
+    const steps = Math.max(coastal ? 1 : 8, Math.ceil(Math.hypot(p.x - q.x, p.y - q.y) / 0.045))
     return Array.from({ length: steps }, (_, step) => ({
       x: p.x + ((q.x - p.x) * step) / steps,
       y: p.y + ((q.y - p.y) * step) / steps,
@@ -184,33 +186,17 @@ export function buildArenaGeography(categories: readonly Category[]): ContinentG
             )
           })
         )
-        const style = (['modern', 'town', 'village'] as const)[seedOf(`${category.id}:${ids[i]}`) % 3]
-        const unit = Math.min(0.075, clearance * 0.18)
-        const buildings = Array.from({ length: style === 'village' ? 4 : 5 }, (_, b) => {
-          const x = middle.x + ((b % 3) - 1) * unit * 1.8
-          const y = middle.y + clearance * 0.22 + Math.floor(b / 3) * unit * 1.7
-          const size = unit * (style === 'modern' ? 0.55 : 0.68)
-          const base = [
-            [-1, -1],
-            [1, -1],
-            [1, 1],
-            [-1, 1],
-          ].map(([dx, dy]) => onSphere({ x: x + dx * size, y: y + dy * size }))
-          const width = Math.hypot(base[0].x - base[1].x, base[0].y - base[1].y, base[0].z - base[1].z)
-          return {
-            base,
-            height: Math.min(0.065, width * (style === 'modern' ? 1.8 + (b % 3) * 0.9 : 0.7)),
-            pitched: style !== 'modern',
-          }
-        })
+        const details = buildCountryDetails(middle, clearance * 0.7, seedOf(`${category.id}:${ids[i]}`), onSphere)
+        details.landscape.patches.unshift(
+          ...buildTerrainCover(cell, middle, seedOf(`${category.id}:${ids[i]}`), onSphere)
+        )
         return {
           id: ids[i],
           location: onSphere(middle),
           coast: densify(cell).map(onSphere),
           // Leave a margin for the piecewise-geodesic approximation of warped
           // borders, especially for very small coastal countries.
-          landscape: buildLandscape(middle, clearance * 0.7, seedOf(`${category.id}:${ids[i]}`), onSphere),
-          settlement: { style, buildings },
+          ...details,
         }
       }),
     }

@@ -14,6 +14,83 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Detailed terrain and coordinated settlements — 4 October 2026
+
+Compared v0.1.134 (`9fb2f739`) with the v0.1.135 candidate using the same
+unchanged animation harness, loopback production build, software Chromium,
+150% CPU cap, 49 teams, 12 countries, four categories and 12-second phases.
+Focus received 24 selections at 2/second. One baseline and two final trials
+were retained. No Cargo build ran during measurement. Final acceptance was
+a phase-average frame interval below 22ms, p95 at most 33.5ms, unchanged
+rosters and zero runtime errors or event writes; both final trials passed.
+These bounded trials do not establish universal FPS or a speed improvement.
+
+Frame intervals (milliseconds):
+
+| Viewport / phase | Build | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1600 / rotation | Before | 17.83 | 16.70 | 16.80 | 33.30 | 49.90 | 50.10 |
+| 1600 / rotation | Final 1 | 18.07 | 16.70 | 16.80 | 33.30 | 50.00 | 83.40 |
+| 1600 / rotation | Final 2 | 17.98 | 16.70 | 16.80 | 33.30 | 50.00 | 83.30 |
+| 1600 / focus | Before | 18.29 | 16.70 | 16.80 | 33.30 | 49.90 | 116.70 |
+| 1600 / focus | Final 1 | 19.02 | 16.70 | 16.80 | 33.30 | 66.60 | 166.70 |
+| 1600 / focus | Final 2 | 19.39 | 16.70 | 33.30 | 33.40 | 50.00 | 83.30 |
+| 390 / rotation | Before | 16.80 | 16.70 | 16.70 | 16.80 | 16.80 | 50.00 |
+| 390 / rotation | Final 1 | 17.00 | 16.70 | 16.70 | 16.80 | 33.30 | 66.70 |
+| 390 / rotation | Final 2 | 17.14 | 16.70 | 16.70 | 16.80 | 33.40 | 50.10 |
+| 390 / focus | Before | 17.50 | 16.70 | 16.70 | 16.80 | 33.40 | 99.90 |
+| 390 / focus | Final 1 | 17.54 | 16.70 | 16.70 | 16.80 | 33.40 | 66.60 |
+| 390 / focus | Final 2 | 17.32 | 16.70 | 16.70 | 16.80 | 33.40 | 66.70 |
+
+Resource measurements list **before / final 1 / final 2**:
+
+| Viewport / phase | Renderer task seconds | End-of-phase JS heap MiB | Long tasks ≥50ms |
+| --- | ---: | ---: | ---: |
+| 1600 / rotation | 8.37 / 9.17 / 9.23 | 17.79 / 20.93 / 18.20 | 3 / 4 / 3 |
+| 1600 / focus | 7.38 / 8.23 / 8.59 | 19.09 / 27.26 / 18.31 | 5 / 8 / 4 |
+| 390 / rotation | 6.58 / 6.77 / 7.49 | 24.89 / 19.89 / 20.21 | 0 / 1 / 0 |
+| 390 / focus | 6.01 / 6.53 / 6.54 | 18.84 / 30.27 / 34.65 | 2 / 2 / 2 |
+
+This is a detail/quality tradeoff, not a performance win over v0.1.134.
+The added landcover, shore clipping, roads, water and meshes increase renderer
+work. Mobile frame p95 stayed 16.8ms; desktop p95 stayed near 33.3ms. Final 1's
+desktop-focus maximum worsened from 116.7 to 166.7ms, and final 2 focus p95 was
+33.4ms. Heap samples vary with garbage collection, not peak memory. Focus
+paint intervals also include the intentional rest between camera transitions;
+their distributions are retained in the raw reports.
+
+The renderer still owns one 400–1200px bitmap and no additional animation
+clock or IO. Detail is capped at 24 scenic countries / 744 objects, with
+sub-two-pixel meshes and unreadable field/window details omitted. Palette
+ramps are shared across meshes; back-facing polygons are culled by normals
+before projecting their vertices. An independent projected-winding regression
+checks that optimization through a full orbit. Geometry tests check all
+foundations against their own spherical countries at 1, 3, 12 and 150 countries
+per category. The surface proof checked 313,776 rays with zero disagreements;
+the old straight-chord negative control still disagreed 1,727 times.
+
+Earlier attempts remain distinguishable: the first broad landcover reached
+outside tiny coastal cells and was rejected by the containment test. Short
+inland borders now have eight shared samples minimum, and landcover has a
+conservative inset. A pre-culling animation repeat failed the target
+(desktop rotation average 23.96ms, p95 50ms, max 166.8ms); it was not discarded.
+Sharing lighting palettes and early face culling preceded the two accepted
+final trials. Host variation remains a limitation, not grounds for excluding
+a measured slow frame.
+
+Evidence (gitignored, retained on the deployment host):
+
+- `visual-audit-output/detailed-animation-before-v135/report.json`
+- `visual-audit-output/detailed-animation-final-v135/report.json` and
+  `detailed-animation-repeat-v135/report.json` (pre-culling development trials)
+- `visual-audit-output/detailed-animation-culling-v135/report.json` and
+  `detailed-animation-culling-repeat-v135/report.json` (final trials)
+- `visual-audit-output/detailed-surface-v135/report.json`
+- `visual-audit-output/detailed-verified-v135/` and `detailed-audit-v135/`
+- Public read baseline: `/tmp/rsctf-detailed-read-before.json`, 61 reads at
+  2/second, p95 13.91ms, zero 5xx/invalid/dropped reads and unchanged roster.
+  This UI-only change does not alter server read paths.
+
 ## Immersive world scenery and bounded rendering — 4 October 2026
 
 Compared v0.1.133 (`a7f80fd4`) with the v0.1.134 candidate on the same

@@ -1,11 +1,13 @@
 import type { CountryGeometry } from './arenaGeography'
 import { GLOBE_RADIUS, type GlobePoint } from './arenaGlobeModel'
+import { paintArenaGround } from './arenaGround'
 import { buildCountryScene, raised, type SceneObject } from './arenaSceneModel'
 
 interface ScenicCountry extends CountryGeometry {
   solvers?: { color: string }[]
 }
 export const MAX_SCENIC_COUNTRIES = 24
+export const MAX_SCENIC_OBJECTS = MAX_SCENIC_COUNTRIES * 31
 
 /** One bounded bitmap, static cached meshes, and the existing camera's clock.
  * This decorative layer never handles input, fetches data, or owns an animator.
@@ -60,27 +62,8 @@ export function createArenaSettlements(canvas: HTMLCanvasElement) {
     for (const { country, p } of visible) {
       const alpha = Math.min(1, (p.z - 0.12) / 0.2)
       ctx.globalAlpha = alpha
-      for (const [i, patch] of country.landscape.meadows.entries()) {
-        const points = patch.map(project)
-        if (points.some((v) => v.z < 0)) continue
-        trace(points)
-        ctx.fillStyle = i ? '#a4ae663b' : '#335d4059'
-        ctx.fill()
-      }
-      const road = country.landscape.road.map(project),
-        river = country.landscape.river.map(project)
       const scale = Math.min(1, country.settlement.buildings[0].height / 0.035)
-      for (const [points, color, thickness] of [
-        [river, '#243c3b', 3.5],
-        [river, '#77b7b8', 1.8],
-        [road, '#514e39', 4],
-        [road, '#d0bb89', 2],
-      ] as const) {
-        trace(points, false)
-        ctx.strokeStyle = color
-        ctx.lineWidth = thickness * scale
-        ctx.stroke()
-      }
+      paintArenaGround(ctx, country.landscape, project, scale, country.settlement.buildings[0].height * width > 8)
       let scene = scenes.get(country)
       if (!scene) {
         scene = buildCountryScene(country)
@@ -98,18 +81,22 @@ export function createArenaSettlements(canvas: HTMLCanvasElement) {
     }
     // Depth-sort ALL objects, not separate building/tree material layers.
     objects.sort((a, b) => a.z - b.z)
+    // Rotate the light into world space once. Normals also reject back faces
+    // before allocating/projecting all their vertices (orthographic camera).
+    const lightX = -0.4 * cy - 0.55 * sp * sy - 0.7 * cp * sy,
+      lightY = -0.55 * cp + 0.7 * sp,
+      lightZ = -0.4 * sy + 0.55 * sp * cy + 0.7 * cp * cy
     for (const { object, alpha } of objects) {
       ctx.globalAlpha = alpha
       for (const face of object.faces) {
         if (face.window && object.height * width * 0.435 < 12) continue
+        const n = face.normal
+        if (n.y * sp + (n.z * cy - n.x * sy) * cp <= 0) continue
         const p = face.points.map(project)
-        if (
-          p.some((v) => v.z < 0) ||
-          (p[1].x - p[0].x) * (p[2].y - p[0].y) - (p[1].y - p[0].y) * (p[2].x - p[0].x) <= 0
-        )
-          continue
+        if (p.some((v) => v.z < 0)) continue
         trace(p)
-        ctx.fillStyle = face.color
+        const light = Math.max(0, n.x * lightX + n.y * lightY + n.z * lightZ)
+        ctx.fillStyle = face.shades[Math.min(7, Math.floor(light * 8))]
         ctx.fill()
       }
     }
