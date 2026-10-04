@@ -467,6 +467,14 @@ This PR changes only CI selection, its tests and this report; none is an input t
 the application, agent, installer or deployment bundle. It therefore needs no
 new application release, and production remains the verified v0.1.138 digest.
 
+The subsequent report-only [PR #172](https://github.com/dimasma0305/rsctf/pull/172)
+verified that routing in a real [Actions run](https://github.com/dimasma0305/rsctf/actions/runs/37241076472):
+**55s** from creation to completion. All four unconditional checks passed;
+the twelve unrelated component jobs were explicitly skipped according to the
+plan. Repository conventions took 43s, harness contracts 32s, planning 9s and
+aggregation 8s, with independent jobs overlapping. This is the report-only path,
+not a claim that a full Rust or release workflow takes 55 seconds.
+
 The final cache audit found current main caches being read by that PR for server,
 coverage, lint, audit, BYOC, and both worker platforms. No user cache was deleted
 and no cache quota or paid runner was added. Temporary compiler-runtime and
