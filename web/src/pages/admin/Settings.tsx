@@ -29,24 +29,16 @@ import {
 } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import {
-  mdiAccountGroupOutline,
   mdiAlert,
   mdiCheck,
   mdiContentSaveOutline,
-  mdiCubeOutline,
   mdiDocker,
   mdiDotsHorizontal,
-  mdiEmailOutline,
-  mdiHammerWrench,
-  mdiHandHeart,
-  mdiHeartPulse,
   mdiInformationOutline,
   mdiKeyChainVariant,
   mdiKubernetes,
-  mdiPackageVariantClosed,
   mdiRestore,
   mdiShieldCheckOutline,
-  mdiViewDashboardOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useMemo, useRef, useState } from 'react'
@@ -55,13 +47,29 @@ import { ColorPreview } from '@Components/ColorPreview'
 import { IconTabs } from '@Components/IconTabs'
 import { LogoBox } from '@Components/LogoBox'
 import { AdminPage } from '@Components/admin/AdminPage'
+import { AgentSignaturesSettings, useAgentSignatures } from '@Components/admin/AgentSignaturesSettings'
+import { AiChatProvidersSettings, useAiChatProviders } from '@Components/admin/AiChatProvidersSettings'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
+import { SETTINGS_SECTIONS, type SettingsSectionKey } from '@Components/admin/navigation'
 import { webCryptoAvailable } from '@Utils/Crypto'
+import {
+  clearSettingsOperation,
+  dirtySettingsSections,
+  loadSettingsOperation,
+  newSettingsOperationId,
+  ownsSettingsResult,
+  settingsBrandingDigest,
+  settingsRequestSignature,
+  storeSettingsOperation,
+  type SettingsOperationOwner,
+} from '@Utils/SettingsOperations'
 import { getInputNumber, showErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { OnceSWRConfig, useCaptchaConfig, useConfig } from '@Hooks/useConfig'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import api, {
   AccountPolicy,
+  BrandingAction,
   BuildRegistryConfig,
   CaptchaConfig,
   CaptchaProvider,
@@ -77,6 +85,7 @@ import api, {
   OAuthConfig,
   ProxyTrustConfig,
   RegistryConfig,
+  SettingsMutationResult,
 } from '@Api'
 import misc from '@Styles/Misc.module.css'
 import classes from '@Styles/Settings.module.css'
@@ -110,27 +119,28 @@ const Configs: FC = () => {
   // Sidebar nav + dirty tracking. The snapshot captured on initial
   // load is the comparison baseline — when any field diverges from
   // that snapshot, the sticky save bar lights up.
-  type SectionKey =
-    | 'platform'
-    | 'account'
-    | 'container'
-    | 'build_registry'
-    | 'email'
-    | 'captcha'
-    | 'oauth'
-    | 'registry_pull'
-    | 'donations'
-    | 'diagnostics'
-  const [activeSection, setActiveSection] = useState<SectionKey>('platform')
-  const initialSnapshotRef = useRef<string | null>(null)
+  type SectionKey = SettingsSectionKey
+  const [activeSection, setActiveSection] = useUrlTab(
+    'section',
+    SETTINGS_SECTIONS.map((section) => section.key),
+    'platform'
+  )
+  const initialSnapshotRef = useRef<ConfigEditModel | null>(null)
+  const saveOwnerRef = useRef(false)
+  const operationRef = useRef<SettingsOperationOwner | null>(loadSettingsOperation())
   const [color, setColor] = useState<string | undefined | null>(globalConfig?.customTheme)
   const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [brandingAction, setBrandingAction] = useState<BrandingAction>(BrandingAction.Keep)
 
   const { t } = useTranslation()
 
   const [saved, setSaved] = useState(true)
   const theme = useMantineTheme()
   const accountUniqueness = useMemo(() => getAccountUniquenessState(accountPolicy), [accountPolicy])
+  const { data: aiChatProviders } = useAiChatProviders()
+  const aiLinksConfigured = aiChatProviders?.providers.some((provider) => provider.enabled) ?? false
+  const { data: agentSignatures } = useAgentSignatures()
+  const agentSignaturesConfigured = agentSignatures?.signatures.some((signature) => signature.enabled) ?? false
 
   useEffect(() => {
     if (configs) {
@@ -150,7 +160,7 @@ const Configs: FC = () => {
       // equality) isn't enough — the SWR cache may return the same
       // object instance after a no-op revalidation, but we want the
       // dirty flag to reset after a save anyway. Stringify wins.
-      initialSnapshotRef.current = JSON.stringify({
+      initialSnapshotRef.current = {
         globalConfig: configs.globalConfig,
         accountPolicy: configs.accountPolicy,
         containerPolicy: configs.containerPolicy,
@@ -158,17 +168,21 @@ const Configs: FC = () => {
         buildRegistry: configs.buildRegistry,
         email: configs.email,
         captcha: configs.captcha,
-        oauth: configs.oAuth,
+        oAuth: configs.oAuth,
         registry: configs.registry,
-        proxyTrust: configs.proxyTrust,
         donations: configs.donations,
-      })
+      }
+      const pending = operationRef.current
+      if (pending && (configs.revision ?? 0) > pending.expectedRevision) {
+        operationRef.current = null
+        clearSettingsOperation()
+      }
     }
   }, [configs])
 
   // Recompute the current snapshot on every render — cheap (<10 small
   // objects) and gets us a fresh dirty flag without per-field plumbing.
-  const currentSnapshot = JSON.stringify({
+  const currentSnapshot: ConfigEditModel = {
     globalConfig: { ...globalConfig, customTheme: color ?? globalConfig?.customTheme },
     accountPolicy,
     containerPolicy,
@@ -176,13 +190,14 @@ const Configs: FC = () => {
     buildRegistry,
     email,
     captcha,
-    oauth,
+    oAuth: oauth,
     registry,
-    proxyTrust,
     donations,
-  })
-  const dirty =
-    logoFile !== null || (initialSnapshotRef.current !== null && currentSnapshot !== initialSnapshotRef.current)
+  }
+  const dirtySections = initialSnapshotRef.current
+    ? dirtySettingsSections(initialSnapshotRef.current, currentSnapshot)
+    : {}
+  const dirty = logoFile !== null || brandingAction !== BrandingAction.Keep || Object.keys(dirtySections).length > 0
 
   const logoPreviewUrl = useMemo(() => (logoFile ? URL.createObjectURL(logoFile) : undefined), [logoFile])
 
@@ -236,9 +251,13 @@ const Configs: FC = () => {
           ? 'configured'
           : 'attention'
         : 'inactive',
+      ai_links: aiLinksConfigured ? 'configured' : 'inactive',
+      agent_signatures: agentSignaturesConfigured ? 'configured' : 'inactive',
       diagnostics: 'configured',
     }
   }, [
+    aiLinksConfigured,
+    agentSignaturesConfigured,
     accountUniqueness,
     buildRegistry,
     email,
@@ -249,18 +268,7 @@ const Configs: FC = () => {
     donations,
   ])
 
-  const navItems: { key: SectionKey; icon: string }[] = [
-    { key: 'platform', icon: mdiViewDashboardOutline },
-    { key: 'account', icon: mdiAccountGroupOutline },
-    { key: 'container', icon: mdiCubeOutline },
-    { key: 'email', icon: mdiEmailOutline },
-    { key: 'captcha', icon: mdiShieldCheckOutline },
-    { key: 'oauth', icon: mdiKeyChainVariant },
-    { key: 'registry_pull', icon: mdiPackageVariantClosed },
-    { key: 'build_registry', icon: mdiHammerWrench },
-    { key: 'donations', icon: mdiHandHeart },
-    { key: 'diagnostics', icon: mdiHeartPulse },
-  ]
+  const navItems = SETTINGS_SECTIONS
 
   const STATUS_COLORS: Record<SectionStatus, string> = {
     configured: 'teal',
@@ -282,27 +290,33 @@ const Configs: FC = () => {
     </Tooltip>
   )
 
-  const updateConfig = async (conf: ConfigEditModel) => {
-    setDisabled(true)
-
+  const updateConfig = async (
+    conf: ConfigEditModel,
+    owner: SettingsOperationOwner
+  ): Promise<SettingsMutationResult | null> => {
     try {
-      await api.admin.adminUpdateConfigs(conf)
-
-      if (logoFile) {
-        await api.admin.adminUpdateLogo({ file: logoFile })
+      if (conf.brandingAction === BrandingAction.Set) {
+        if (!logoFile) throw new Error('Select a logo before saving this branding operation')
+        await api.admin.adminStageSettingsBranding(owner.operationId, { file: logoFile })
       }
-
-      await mutate({ ...configs, ...conf, proxyTrust }, { revalidate: false })
-      // Refetch the complete public projection so effective OAuth providers and
-      // environment-backed policy defaults update together after this write.
-      await mutateConfig()
-      await mutateCaptchaConfig()
-      return true
-    } catch (e) {
-      showErrorMsg(e, t)
-      return false
-    } finally {
-      setDisabled(false)
+      const { data } = await api.admin.adminUpdateConfigs(conf)
+      return data
+    } catch (originalError) {
+      // The write may have committed before the response was lost. Reconcile
+      // the durable operation before showing a failure or offering Retry.
+      try {
+        const { data: result } = await api.admin.adminGetSettingsOperation(owner.operationId)
+        if (ownsSettingsResult(owner, result)) return result
+      } catch {
+        // No durable result was available to reconcile this response.
+      }
+      if ((originalError as { response?: { status?: number } }).response?.status === 409) {
+        operationRef.current = null
+        clearSettingsOperation()
+        await mutate()
+      }
+      showErrorMsg(originalError, t)
+      return null
     }
   }
 
@@ -354,42 +368,68 @@ const Configs: FC = () => {
     }
   }
 
-  const onResetLogo = async () => {
-    setDisabled(true)
+  const onResetLogo = () => {
     setLogoFile(null)
-
-    try {
-      await api.admin.adminResetLogo()
-      mutate({ ...configs, globalConfig: { ...globalConfig, faviconHash: '' } })
-      mutateConfig({ ...configs, logoUrl: '' })
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setDisabled(false)
-    }
+    setBrandingAction(BrandingAction.Clear)
   }
 
   const colors = color && /^#[0-9A-F]{6}$/i.test(color) ? generateColors(color) : theme.colors.brand
 
   const handleSave = async () => {
+    if (saveOwnerRef.current || !configs || !dirty) return
+    saveOwnerRef.current = true
     setSaved(false)
-    const success = await updateConfig({
-      globalConfig: {
-        ...globalConfig,
-        customTheme: color && /^#[0-9A-F]{6}$/i.test(color) ? color : '',
-      },
-      accountPolicy,
-      containerPolicy,
-      containerProvider,
-      buildRegistry,
-      email,
-      captcha,
-      oAuth: oauth,
-      registry,
-      donations,
-    })
-    if (success) setLogoFile(null)
-    setSaved(true)
+    setDisabled(true)
+    const requestBody = {
+      ...dirtySections,
+      brandingAction,
+    }
+    let signature: string
+    try {
+      signature = settingsRequestSignature(requestBody, await settingsBrandingDigest(logoFile))
+    } catch (error) {
+      showErrorMsg(error, t)
+      saveOwnerRef.current = false
+      setDisabled(false)
+      setSaved(true)
+      return
+    }
+    const expectedRevision = configs.revision ?? 0
+    const pending = operationRef.current
+    const owner =
+      pending && pending.expectedRevision === expectedRevision && pending.signature === signature
+        ? pending
+        : {
+            operationId: newSettingsOperationId(),
+            expectedRevision,
+            signature,
+          }
+    operationRef.current = owner
+    storeSettingsOperation(owner)
+    try {
+      const result = await updateConfig(
+        {
+          ...requestBody,
+          operationId: owner.operationId,
+          expectedRevision: owner.expectedRevision,
+        },
+        owner
+      )
+      if (!result || !ownsSettingsResult(owner, result)) return
+      operationRef.current = null
+      clearSettingsOperation()
+      setLogoFile(null)
+      setBrandingAction(BrandingAction.Keep)
+      initialSnapshotRef.current = currentSnapshot
+      // A refresh failure after a confirmed commit is not a Save failure. The
+      // durable revision remains authoritative and the next revalidation will
+      // safely refresh write-only secret placeholders.
+      await Promise.allSettled([mutate(), mutateConfig(), mutateCaptchaConfig()])
+    } finally {
+      saveOwnerRef.current = false
+      setDisabled(false)
+      setSaved(true)
+    }
   }
 
   return (
@@ -397,18 +437,19 @@ const Configs: FC = () => {
       <Stack gap="md" w="100%" pb={100} className={classes.formContent}>
         <IconTabs
           idPrefix="settings"
+          orientation="vertical"
           active={navItems.findIndex((i) => i.key === activeSection)}
           onTabChange={(_, tabKey) => setActiveSection(tabKey as SectionKey)}
           tabs={navItems.map((item) => ({
             tabKey: item.key,
             icon: <Icon path={item.icon} size={1} />,
             label: (
-              <Group gap={6} wrap="nowrap" align="center" justify="center">
+              <Stack gap={3} align="flex-start">
                 <Text size="sm" fw={500}>
                   {t(`admin.content.settings.nav.${item.key}`)}
                 </Text>
                 <StatusDot status={statuses[item.key]} />
-              </Group>
+              </Stack>
             ),
           }))}
         />
@@ -427,7 +468,12 @@ const Configs: FC = () => {
                 <SectionHelp description={t('admin.content.settings.platform.api_encryption.description')} />
               </Group>
               <Divider />
-              <Grid columns={4} align="center">
+              <Grid
+                type="container"
+                breakpoints={{ xs: '24em', sm: '32em', md: '48em', lg: '68em', xl: '80em' }}
+                columns={4}
+                align="end"
+              >
                 <Grid.Col span={{ base: 4, sm: 2, lg: 1 }}>
                   <TextInput
                     label={t('admin.content.settings.platform.name.label')}
@@ -465,11 +511,19 @@ const Configs: FC = () => {
                     disabled={disabled}
                     accept={IMAGE_MIME_TYPES.join(',')}
                     value={logoFile}
-                    onChange={setLogoFile}
+                    onChange={(file) => {
+                      setLogoFile(file)
+                      setBrandingAction(file ? BrandingAction.Set : BrandingAction.Keep)
+                    }}
                     rightSectionWidth={48}
                     rightSection={
                       <Tooltip label={t('common.button.reset')}>
-                        <ActionIcon size={44} onClick={onResetLogo} aria-label={t('common.button.reset')}>
+                        <ActionIcon
+                          size={44}
+                          disabled={disabled}
+                          onClick={onResetLogo}
+                          aria-label={t('common.button.reset')}
+                        >
                           <Icon path={mdiRestore} size={0.85} />
                         </ActionIcon>
                       </Tooltip>
@@ -568,7 +622,7 @@ const Configs: FC = () => {
                 <SectionHelp description={t('admin.content.settings.account.unique_ip_per_team_user.description')} />
               </Group>
               <Divider />
-              <SimpleGrid cols={{ base: 1, sm: 2, md: 3, lg: 4 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2, '52em': 3, '68em': 4 }}>
                 <Switch
                   checked={accountPolicy?.allowRegister ?? true}
                   disabled={disabled}
@@ -612,6 +666,23 @@ const Configs: FC = () => {
                   }
                 />
                 <Switch
+                  checked={accountPolicy?.allowTeamCreation ?? true}
+                  disabled={disabled}
+                  label={SwitchLabel(
+                    t('admin.content.settings.account.allow_team_creation.label', 'Allow users to create teams'),
+                    t(
+                      'admin.content.settings.account.allow_team_creation.description',
+                      'When disabled, teams can only be created by an administrator through CSV user import.'
+                    )
+                  )}
+                  onChange={(e) =>
+                    setAccountPolicy({
+                      ...accountPolicy,
+                      allowTeamCreation: e.currentTarget.checked,
+                    })
+                  }
+                />
+                <Switch
                   checked={accountPolicy?.activeOnRegister ?? true}
                   disabled={disabled}
                   label={SwitchLabel(
@@ -636,6 +707,26 @@ const Configs: FC = () => {
                     setAccountPolicy({
                       ...accountPolicy,
                       useCaptcha: e.currentTarget.checked,
+                    })
+                  }
+                />
+                <Switch
+                  checked={accountPolicy?.lockTeamOnEventAccept ?? false}
+                  disabled={disabled}
+                  label={SwitchLabel(
+                    t(
+                      'admin.content.settings.account.lock_team_on_event_accept.label',
+                      'Lock teams on event acceptance'
+                    ),
+                    t(
+                      'admin.content.settings.account.lock_team_on_event_accept.description',
+                      'Freeze the team roster automatically when its event participation is accepted. A&D and KotH rosters still freeze after scoring starts.'
+                    )
+                  )}
+                  onChange={(e) =>
+                    setAccountPolicy({
+                      ...accountPolicy,
+                      lockTeamOnEventAccept: e.currentTarget.checked,
                     })
                   }
                 />
@@ -845,7 +936,11 @@ const Configs: FC = () => {
                     </Paper>
                   )
                 })()}
-              <SimpleGrid cols={{ base: 1, sm: 2, md: 3, lg: 4 }} className={misc.alignCenter}>
+              <SimpleGrid
+                type="container"
+                cols={{ base: 1, '32em': 2, '52em': 3, '68em': 4 }}
+                className={misc.alignCenter}
+              >
                 <NumberInput
                   label={t('admin.content.settings.container.default_lifetime.label')}
                   description={t('admin.content.settings.container.default_lifetime.description')}
@@ -1029,7 +1124,7 @@ const Configs: FC = () => {
                 onChange={(e) => setBuildRegistry({ ...buildRegistry, pushOnBuild: e.currentTarget.checked })}
               />
               {buildRegistry?.pushOnBuild && (
-                <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                   <TextInput
                     label={t('admin.content.settings.build_registry.server.label')}
                     description={t('admin.content.settings.build_registry.server.description')}
@@ -1077,7 +1172,7 @@ const Configs: FC = () => {
                 {t('admin.content.settings.email.description')}
               </Text>
               <Divider />
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                 <TextInput
                   label={t('admin.content.settings.email.smtp_host.label')}
                   description={t('admin.content.settings.email.smtp_host.description')}
@@ -1188,7 +1283,7 @@ const Configs: FC = () => {
                 onChange={(v) => setCaptcha({ ...captcha, provider: (v ?? 'None') as CaptchaProvider })}
               />
               {captcha?.provider === 'CloudflareTurnstile' && (
-                <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                   <TextInput
                     label={t('admin.content.settings.captcha.site_key.label')}
                     description={t('admin.content.settings.captcha.site_key.description')}
@@ -1263,7 +1358,7 @@ const Configs: FC = () => {
               <Text size="xs" c="dimmed" ff="monospace">
                 {window.location.origin}/api/oauth/google/callback
               </Text>
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                 <TextInput
                   label={t('admin.content.settings.oauth.google_client_id.label', 'Google client ID')}
                   disabled={disabled}
@@ -1286,7 +1381,7 @@ const Configs: FC = () => {
               <Text size="xs" c="dimmed" ff="monospace">
                 {window.location.origin}/api/oauth/discord/callback
               </Text>
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                 <TextInput
                   label={t('admin.content.settings.oauth.discord_client_id.label', 'Discord client ID')}
                   disabled={disabled}
@@ -1317,7 +1412,7 @@ const Configs: FC = () => {
                 {t('admin.content.settings.registry_pull.description')}
               </Text>
               <Divider />
-              <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2, '52em': 3 }}>
                 <TextInput
                   label={t('admin.content.settings.registry_pull.server.label')}
                   description={t('admin.content.settings.registry_pull.server.description')}
@@ -1374,7 +1469,7 @@ const Configs: FC = () => {
                 disabled={disabled}
                 onChange={(event) => setDonations({ ...donations, enabled: event.currentTarget.checked })}
               />
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                 <Select
                   label={t('admin.content.settings.donations.provider.label', 'Provider')}
                   description={t(
@@ -1430,6 +1525,8 @@ const Configs: FC = () => {
               </Alert>
             </Stack>
           )}
+          {activeSection === 'ai_links' && <AiChatProvidersSettings />}
+          {activeSection === 'agent_signatures' && <AgentSignaturesSettings />}
           {activeSection === 'diagnostics' && (
             <Stack gap="sm">
               <Group justify="space-between">
@@ -1506,7 +1603,7 @@ const Configs: FC = () => {
       {/* Sticky save bar — only fires the save flow; dirty
          tracking lights the indicator when any field diverges
          from the snapshot captured at first load. */}
-      <Affix position={{ bottom: 12, right: 16 }} className={classes.saveAffix}>
+      <Affix position={{ bottom: 12, right: 16 }} className={classes.saveAffix} hidden={!dirty && saved}>
         <Paper shadow="lg" radius="lg" p="xs" withBorder className={classes.saveBar}>
           <Group gap="md" align="center" wrap="nowrap">
             <Group gap={6} wrap="nowrap" role="status" aria-live="polite">

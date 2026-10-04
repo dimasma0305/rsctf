@@ -23,22 +23,20 @@ use crate::services::ad::engine::{
     koth_marker::observation_precedes_deadline,
     AdCheckStatus, RoundFinishLease,
 };
-use crate::services::container::{ContainerLiveness, ContainerManager};
+use crate::services::ad::koth_capability_cache::release_game_control;
+use crate::services::container::ContainerManager;
 use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 
 mod claims;
+mod eligibility;
+mod liveness;
 mod scheduling;
 
 use claims::{read_claim_input, read_initial_claim_input, stable_claim_outcome};
+use eligibility::lock_eligibility_fence;
+use liveness::{inspect_liveness, ManagedHillLiveness};
 use scheduling::{api_settlement_start_instant, API_MAX_PROBE_BUDGET, KOTH_COMPLETION_MARGIN};
-
-#[derive(Debug, PartialEq, Eq)]
-enum ManagedHillLiveness {
-    Running,
-    Dead(String),
-    Unknown(String),
-}
 
 const PENDING_KOTH_CHALLENGES_SQL: &str = r#"SELECT (frozen.item->>'challengeId')::integer,
               COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker')
@@ -52,20 +50,6 @@ const PENDING_KOTH_CHALLENGES_SQL: &str = r#"SELECT (frozen.item->>'challengeId'
                    AND result.ad_round_id = $2
               )
         ORDER BY (frozen.item->>'challengeId')::integer"#;
-
-async fn inspect_liveness(
-    containers: &dyn ContainerManager,
-    container_id: &str,
-) -> ManagedHillLiveness {
-    match containers.inspect_liveness(container_id).await {
-        Ok(ContainerLiveness::Running) => ManagedHillLiveness::Running,
-        Ok(ContainerLiveness::Stopped) => ManagedHillLiveness::Dead(container_id.to_string()),
-        Ok(ContainerLiveness::Unknown) => {
-            ManagedHillLiveness::Unknown("backend is in a transitional state".to_string())
-        }
-        Err(error) => ManagedHillLiveness::Unknown(error.to_string()),
-    }
-}
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub(super) struct LiveHill {
@@ -81,6 +65,7 @@ pub(super) struct LiveHill {
     claim_confirmation_ticks: i32,
     token_count: i64,
     roster_count: i64,
+    practice_mode: bool,
     pub(super) eligible_roster: Vec<i32>,
     game_start: chrono::DateTime<Utc>,
     game_end: chrono::DateTime<Utc>,
@@ -90,8 +75,13 @@ pub(super) struct LiveHill {
 
 impl LiveHill {
     fn has_complete_token_window(&self) -> bool {
-        self.roster_count >= 2 && self.token_count == self.roster_count
+        token_window_complete(self.token_count, self.roster_count, self.practice_mode)
     }
+}
+
+fn token_window_complete(token_count: i64, roster_count: i64, practice_mode: bool) -> bool {
+    let minimum_roster = if practice_mode { 1 } else { 2 };
+    roster_count >= minimum_roster && token_count == roster_count
 }
 
 async fn load_live_hill(
@@ -116,6 +106,7 @@ async fn load_live_hill(
                     THEN (SELECT COUNT(*) FROM "KothApiTeamTokens" token
                            WHERE token.game_id = target.game_id
                              AND token.challenge_id = target.challenge_id
+                             AND NOT token.revocation_pending
                              AND token.participation_id = ANY(eligible.participation_ids))
                     ELSE (SELECT COUNT(*) FROM "KothTokens" token
                            WHERE token.cycle_id = cycle.id
@@ -126,6 +117,7 @@ async fn load_live_hill(
                              AND token.revoked_at IS NULL)
                   END AS token_count,
                   cardinality(eligible.participation_ids)::bigint AS roster_count,
+                  game.practice_mode,
                   eligible.participation_ids AS eligible_roster,
                   game.start_time_utc AS game_start,
                   game.end_time_utc AS game_end,
@@ -203,7 +195,11 @@ async fn reconcile_ineligible_incumbents(
     connection: &mut sqlx::PgConnection,
     game_id: i32,
     hill: &LiveHill,
-) -> AppResult<()> {
+) -> AppResult<bool> {
+    // Event-scoped API capability rows are deliberately retained with freshly
+    // rotated secrets while a team is ineligible. Eligibility gates auth and
+    // context admission, so those dormant rows are not live incumbents and
+    // must not trigger another security rotation on every checker pass.
     let ineligible_incumbents: Vec<i32> = sqlx::query_scalar(
         r#"SELECT DISTINCT incumbent.participation_id
              FROM (
@@ -229,11 +225,6 @@ async fn reconcile_ineligible_incumbents(
                    FROM "KothClaimStates" claim
                    JOIN "KothTokens" token ON token.id = claim.token_id
                   WHERE claim.target_id = $1 AND claim.cycle_id = $2
-                 UNION ALL
-                 SELECT token.participation_id
-                   FROM "KothApiTeamTokens" token
-                  WHERE token.game_id = $4
-                    AND token.challenge_id = $5
              ) incumbent
             WHERE incumbent.participation_id IS NOT NULL
               AND NOT (incumbent.participation_id = ANY($3))"#,
@@ -241,12 +232,19 @@ async fn reconcile_ineligible_incumbents(
     .bind(hill.target_id)
     .bind(hill.cycle_id)
     .bind(&hill.eligible_roster)
-    .bind(game_id)
-    .bind(hill.challenge_id)
     .fetch_all(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    koth_auth::revoke_game_capabilities(connection, game_id, &ineligible_incumbents).await
+    // Eligibility writers own capability-generation changes: participation
+    // suspension records a durable pending request, roster mutations rotate
+    // under the game lock, and account unban is fenced behind teardown. The
+    // checker only removes stale holder projections here; creating a new
+    // request would rotate a just-reconciled suspended incumbent twice.
+    if ineligible_incumbents.is_empty() {
+        return Ok(false);
+    }
+    koth_auth::revoke_game_capabilities(connection, game_id, &ineligible_incumbents, false).await?;
+    Ok(true)
 }
 
 async fn insert_missing_cycle_void(
@@ -337,6 +335,7 @@ async fn insert_void(
 async fn check_one_hill(
     db: &DatabaseConnection,
     containers: &dyn ContainerManager,
+    cache: &dyn crate::services::cache::Cache,
     game_id: i32,
     challenge_id: i32,
     round: &ad_round::Model,
@@ -356,7 +355,7 @@ async fn check_one_hill(
         &key,
     )
     .await?;
-    let mut control = koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control = koth_auth::acquire_engine_game_lock(db, game_id).await?;
     crate::services::ad_engine::lock_owned_round_finish(
         control.transaction_mut(),
         game_id,
@@ -364,6 +363,22 @@ async fn check_one_hill(
         lease,
     )
     .await?;
+    let reconciled =
+        crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
+            control.transaction_mut(),
+            game_id,
+            Some(challenge_id),
+            None,
+        )
+        .await?;
+    let repaired =
+        crate::services::ad::koth_api_capability::repair_missing_eligible_event_capabilities(
+            control.transaction_mut(),
+            game_id,
+            challenge_id,
+        )
+        .await?;
+    let mut capability_changed = !reconciled.is_empty() || !repaired.is_empty();
     let Some(hill) = load_live_hill(
         &mut *control.transaction_mut(),
         game_id,
@@ -379,14 +394,22 @@ async fn check_one_hill(
             round,
         )
         .await?;
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        release_game_control(control, cache, game_id, capability_changed).await?;
         lifecycle.release().await?;
         return Ok(());
     };
-    reconcile_ineligible_incumbents(&mut *control.transaction_mut(), game_id, &hill).await?;
+    if hill.claim_source == "Api" {
+        crate::services::ad::koth_api_capability::retain_eligible_unsettled_scores(
+            control.transaction_mut(),
+            game_id,
+            challenge_id,
+            hill.target_id,
+            &hill.eligible_roster,
+        )
+        .await?;
+    }
+    capability_changed |=
+        reconcile_ineligible_incumbents(&mut *control.transaction_mut(), game_id, &hill).await?;
     let complete_tokens = hill.has_complete_token_window();
     if hill.phase != "Active" || !complete_tokens {
         let reason = if hill.phase != "Active" {
@@ -405,17 +428,11 @@ async fn check_one_hill(
             reason.as_ref(),
         )
         .await?;
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        release_game_control(control, cache, game_id, capability_changed).await?;
         lifecycle.release().await?;
         return Ok(());
     }
-    control
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    release_game_control(control, cache, game_id, capability_changed).await?;
 
     let liveness = inspect_liveness(containers, &hill.container_id).await;
     let (marker, marker_observed, api_snapshot, status, message, dead_container_id) = match liveness
@@ -557,7 +574,7 @@ async fn check_one_hill(
     let message = bounded_optional_diagnostic(message);
     let observed_at = Utc::now();
 
-    let mut control = koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control = koth_auth::acquire_engine_game_lock(db, game_id).await?;
     crate::services::ad_engine::lock_owned_round_finish(
         control.transaction_mut(),
         game_id,
@@ -565,6 +582,23 @@ async fn check_one_hill(
         lease,
     )
     .await?;
+    lock_eligibility_fence(control.transaction_mut()).await?;
+    let reconciled =
+        crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
+            control.transaction_mut(),
+            game_id,
+            Some(challenge_id),
+            None,
+        )
+        .await?;
+    let repaired =
+        crate::services::ad::koth_api_capability::repair_missing_eligible_event_capabilities(
+            control.transaction_mut(),
+            game_id,
+            challenge_id,
+        )
+        .await?;
+    let mut capability_changed = !reconciled.is_empty() || !repaired.is_empty();
     let Some(current) = load_live_hill(
         &mut *control.transaction_mut(),
         game_id,
@@ -580,14 +614,22 @@ async fn check_one_hill(
             round,
         )
         .await?;
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        release_game_control(control, cache, game_id, capability_changed).await?;
         lifecycle.release().await?;
         return Ok(());
     };
-    reconcile_ineligible_incumbents(&mut *control.transaction_mut(), game_id, &current).await?;
+    if current.claim_source == "Api" {
+        crate::services::ad::koth_api_capability::retain_eligible_unsettled_scores(
+            control.transaction_mut(),
+            game_id,
+            challenge_id,
+            current.target_id,
+            &current.eligible_roster,
+        )
+        .await?;
+    }
+    capability_changed |=
+        reconcile_ineligible_incumbents(&mut *control.transaction_mut(), game_id, &current).await?;
     let duplicate: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(SELECT 1 FROM "KothControlResults"
                           WHERE game_id = $1 AND challenge_id = $2
@@ -603,15 +645,14 @@ async fn check_one_hill(
         || current.cycle_id != hill.cycle_id
         || current.container_id != hill.container_id
         || current.claim_source != hill.claim_source
+        || current.token_window_attempt != hill.token_window_attempt
+        || current.eligible_roster != hill.eligible_roster
         || current.game_start > observed_at
         || current.round_start > observed_at
         || !observation_precedes_deadline(observed_at, current.round_end)
         || !observation_precedes_deadline(observed_at, current.game_end)
     {
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        release_game_control(control, cache, game_id, capability_changed).await?;
         lifecycle.release().await?;
         return Ok(());
     }
@@ -632,10 +673,7 @@ async fn check_one_hill(
             &reason,
         )
         .await?;
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        release_game_control(control, cache, game_id, capability_changed).await?;
         lifecycle.release().await?;
         return Ok(());
     }
@@ -653,10 +691,7 @@ async fn check_one_hill(
             api_snapshot.as_ref(),
         )
         .await?;
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        release_game_control(control, cache, game_id, capability_changed).await?;
         lifecycle.release().await?;
         return Ok(());
     }
@@ -669,10 +704,7 @@ async fn check_one_hill(
             "unsupported snapshotted KotH claim source",
         )
         .await?;
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        release_game_control(control, cache, game_id, capability_changed).await?;
         lifecycle.release().await?;
         return Ok(());
     }
@@ -783,7 +815,7 @@ async fn check_one_hill(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .rows_affected();
-    if inserted == 1 {
+    let retired_capability_window = if inserted == 1 {
         sqlx::query(
             r#"WITH holder AS (
                UPDATE "KothTargets"
@@ -824,12 +856,20 @@ async fn check_one_hill(
         .bind("active hill container stopped; recovery reset scheduled")
         .execute(&mut **control.transaction_mut())
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-    control
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .rows_affected()
+            == 1
+            && dead_container_id.is_some()
+    } else {
+        false
+    };
+    release_game_control(
+        control,
+        cache,
+        game_id,
+        capability_changed || retired_capability_window,
+    )
+    .await?;
     lifecycle.release().await?;
     Ok(())
 }
@@ -838,6 +878,7 @@ async fn check_one_hill(
 pub(super) async fn check_hills(
     db: &DatabaseConnection,
     containers: &dyn ContainerManager,
+    cache: &dyn crate::services::cache::Cache,
     game_id: i32,
     round: &ad_round::Model,
     checker_dirs: &HashMap<i32, Option<String>>,
@@ -908,6 +949,7 @@ pub(super) async fn check_hills(
                 check_one_hill(
                     db,
                     containers,
+                    cache,
                     game_id,
                     challenge_id,
                     round,

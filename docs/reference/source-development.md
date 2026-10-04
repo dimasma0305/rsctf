@@ -18,7 +18,8 @@ The runner:
 - starts PostgreSQL and Redis in the dedicated `rsctf-source-dev` Compose project;
 - binds every service to loopback rather than exposing a development server;
 - generates stable local-only secrets under the ignored `.rsctf-dev/` directory;
-- runs the Rust API from the working tree and rebuilds it after backend changes;
+- builds the Rust API through the shared bounded Cargo target, then restarts it after
+  a locally batched backend change;
 - runs Vite with hot module replacement for changes under `web/src/`; and
 - runs the real suspicion reconciler for anti-cheat development; and
 - disables round scheduling, checker execution, container provisioning, packet
@@ -31,8 +32,9 @@ token. You can print it again without starting the services:
 node scripts/dev.mjs --token
 ```
 
-The first Rust build can take several minutes. Later rebuilds reuse Cargo's
-incremental cache. PostgreSQL, Redis, uploaded development files, and generated
+The first Rust build can take several minutes. Later rebuilds reuse the same bounded
+Cargo target and compiler cache as other worktrees, and source changes are debounced
+into local batches. PostgreSQL, Redis, uploaded development files, and generated
 secrets persist across source-process restarts.
 
 ## Develop on a remote machine
@@ -85,6 +87,37 @@ The gateway publishes no host port; Traefik is the only public entry point.
 Use the actual address assigned to the `traefik` bridge on the development
 host. Never use `0.0.0.0` or point this stack at production secrets/services.
 
+### Upload deadlines at the public proxy
+
+Configure the external Traefik HTTPS entry point with this static argument:
+
+```text
+--entrypoints.websecure.transport.respondingtimeouts.readtimeout=330s
+```
+
+Traefik's default 60-second request-body deadline can cut off a valid writeup
+upload before RSCTF's 300-second body deadline, producing a 502 through the
+development gateway. The 330-second ingress deadline lets RSCTF enforce its
+own bound and return an application error first. Keep the 20 MiB writeup limit,
+shared upload-memory admission, authentication, and event deadline checks;
+do not disable timeouts or add whole-body buffering at the proxy.
+
+This is a static entry-point setting, not a router label. Validate the external
+proxy's Compose configuration and recreate only that proxy using its existing
+immutable image digest. A shared-proxy restart can briefly interrupt connections
+on its other hostnames; do not restart the API, databases, VPN, or challenges.
+
+Run the opt-in Linux/Docker regression with a locally available Traefik digest:
+
+```sh
+RSCTF_TEST_TRAEFIK_IMAGE='traefik@sha256:<installed-digest>' \
+  node --test tests/load/test/ingress-upload-timeout.test.mjs
+```
+
+It sends two paced 5.3 MB uploads to isolated loopback fixture ports: the default
+deadline must fail at about 60 seconds, while the configured deadline must accept
+the complete body after 70 seconds. It does not submit a player's writeup.
+
 The standard source runner intentionally disables container provisioning. A
 Docker backend applies the configured writable-layer limit when the daemon and
 backing filesystem support it. On an incompatible host (for example overlay2
@@ -96,3 +129,61 @@ project quotas (or another supported driver) or a quota-capable worker.
 
 This stack is for debugging and review. A production deployment must still be
 built by the release workflow and rolled out by immutable image digest.
+
+## Exercise the full Docker and VPN runtime locally
+
+Use `compose.dev.yml` when a change must exercise container provisioning, A&D,
+KotH, or the event VPN. It reuses the isolated development PostgreSQL and Redis,
+but runs the shared locally linked Rust binary inside a stable development
+runtime image. A backend-only source change therefore needs no release image:
+
+```sh
+scripts/bounded-cargo.sh build --locked
+docker compose -f compose.dev.yml up --detach --build --wait
+```
+
+Create `.rsctf-dev/runtime.container.env` first with the deployment-specific
+RSCTF settings and secrets required by the feature under test. Keep it mode
+`0600`; `.rsctf-dev/` is ignored and must never be committed. The dedicated A&D
+network must also exist with the configured service subnet. For the standard
+development subnet:
+
+```sh
+docker network inspect rsctf-source-dev-ad >/dev/null 2>&1 || \
+  docker network create --subnet 10.13.41.0/24 rsctf-source-dev-ad
+```
+
+After a Rust edit, rebuild and restart only the backend:
+
+```sh
+scripts/bounded-cargo.sh build --locked
+docker compose -f compose.dev.yml restart backend
+node scripts/check-event-vpn.mjs rsctf-source-dev-backend-1 rsctf-source-dev-event-vpn-dns-1
+```
+
+VPN DNS shares the backend's network namespace. After **replacing** the backend
+container (including a backend-only `up --no-deps`), recreate its DNS companion
+and run the check above:
+
+```sh
+docker compose -f compose.dev.yml up -d --no-deps --force-recreate --pull never event-vpn-dns
+```
+
+The check requires host `nsenter` and `dig`; it verifies namespace identity and
+private/public-name answers over UDP and TCP. A running DNS process in an old
+namespace is not healthy. The VPN profile sets the system DNS server, so this
+failure can affect ordinary browsing even though internet traffic is split-tunneled.
+Do not publish port 53 or remove VPN firewall rules to work around it.
+
+The stack keeps `rsctf-koth-reporter` on a stable private address and proxies
+managed KotH callbacks to the backend over the Compose default network. This
+lets backend rebuilds continue without sending target evidence through public
+DNS or ingress. Keep `RSCTF_DEV_KOTH_REPORTER_IP` inside the A&D service subnet
+and outside the addresses assigned to challenge containers.
+
+The binary directory, files directory, API/SSH/VPN ports, and backend A&D
+address can be overridden with `RSCTF_DEV_BINARY_DIR`,
+`RSCTF_DEV_STORAGE_DIR`, `RSCTF_DEV_BACKEND_PORT`, `RSCTF_DEV_SSH_PORT`,
+`RSCTF_DEV_VPN_PORT`, `RSCTF_DEV_AD_BACKEND_IP`, and
+`RSCTF_DEV_KOTH_REPORTER_IP`. Do not use this full-runtime profile with
+production databases, secrets, storage, or networks.

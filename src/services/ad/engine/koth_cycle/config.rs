@@ -99,6 +99,7 @@ pub(crate) async fn snapshot_official_config(
     .map_err(|error| AppError::internal(error.to_string()))?;
     if unsnapshotted_cooldown.is_some_and(|ticks| ticks > 0)
         && has_marker_hill
+        && roster_count >= 2
         && !crate::services::ad_vpn::enabled()
     {
         return Err(AppError::bad_request(
@@ -164,7 +165,8 @@ pub(crate) async fn snapshot_official_config(
               AND game.koth_claim_confirmation_ticks BETWEEN 1 AND game.koth_cycle_ticks
               AND (SELECT COUNT(*) FROM "Participations" participation
                     WHERE participation.game_id = game.id
-                      AND participation.status = $3) >= 2
+                      AND participation.status = $3)
+                    >= CASE WHEN game.practice_mode THEN 1 ELSE 2 END
               AND NOT EXISTS (
                     SELECT 1 FROM "GameChallenges" challenge
                     LEFT JOIN "KothTargets" target

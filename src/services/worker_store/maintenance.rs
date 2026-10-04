@@ -4,6 +4,35 @@ use uuid::Uuid;
 use super::{database_error, WorkerStore, WorkerStoreError};
 
 impl WorkerStore {
+    pub async fn delete_expired_enrollment_operations(
+        &self,
+        completed_before: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<u64, WorkerStoreError> {
+        if !(1..=1_000).contains(&limit) {
+            return Err(WorkerStoreError::InvalidInput(
+                "enrollment maintenance limit must be between 1 and 1000".to_owned(),
+            ));
+        }
+        let result = sqlx::query(
+            r#"WITH expired AS (
+                   SELECT operation_id FROM "WorkerEnrollmentOperations"
+                    WHERE (state = 'Completed' AND completed_at <= $1)
+                       OR (state <> 'Completed' AND claim_expires_at <= $1)
+                 ORDER BY COALESCE(completed_at, claim_expires_at), operation_id
+                    FOR UPDATE SKIP LOCKED LIMIT $2
+               )
+               DELETE FROM "WorkerEnrollmentOperations" operation
+                USING expired WHERE operation.operation_id = expired.operation_id"#,
+        )
+        .bind(completed_before)
+        .bind(limit)
+        .execute(&self.pool)
+        .await
+        .map_err(database_error)?;
+        Ok(result.rows_affected())
+    }
+
     /// Delete a bounded batch of fully-absent workload history after its
     /// application container record has gone away. Active container handles
     /// remain resolvable even if they outlive the normal destroy sequence.
@@ -64,6 +93,12 @@ mod tests {
         ));
         assert!(matches!(
             store.delete_terminal_workloads(Utc::now(), 1_001).await,
+            Err(WorkerStoreError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            store
+                .delete_expired_enrollment_operations(Utc::now(), 0)
+                .await,
             Err(WorkerStoreError::InvalidInput(_))
         ));
     }

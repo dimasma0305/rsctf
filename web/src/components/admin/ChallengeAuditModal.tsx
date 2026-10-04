@@ -17,10 +17,29 @@ import {
 } from '@mantine/core'
 import { mdiDownload, mdiFileDocumentOutline, mdiFolderZipOutline, mdiHammerWrench } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import { HunamizeSize, showErrorMsg } from '@Utils/Shared'
+import { createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
 import api, { ChallengeAuditModel } from '@Api'
+
+const AUDIT_PROJECTION_CACHE_LIMIT = 16
+const auditProjectionCache = new Map<string, ChallengeAuditModel>()
+
+const cacheAuditProjection = (key: string, projection: ChallengeAuditModel) => {
+  auditProjectionCache.delete(key)
+  auditProjectionCache.set(key, projection)
+  while (auditProjectionCache.size > AUDIT_PROJECTION_CACHE_LIMIT) {
+    const oldest = auditProjectionCache.keys().next().value
+    if (oldest === undefined) break
+    auditProjectionCache.delete(oldest)
+  }
+}
+
+const pageCanInspectArchive = () =>
+  (typeof document === 'undefined' || document.visibilityState !== 'hidden') &&
+  (typeof navigator === 'undefined' || navigator.onLine !== false)
 
 interface ChallengeAuditModalProps extends Omit<ModalProps, 'children'> {
   gameId: number
@@ -34,47 +53,132 @@ export const ChallengeAuditModal: FC<ChallengeAuditModalProps> = (props) => {
   const { t } = useTranslation()
   const [audit, setAudit] = useState<ChallengeAuditModel | null>(null)
   const [loading, setLoading] = useState(false)
-  const [reloadKey, setReloadKey] = useState(0)
+  const buildFlight = useRef<Promise<void> | null>(null)
+  const buildAbort = useRef(new AbortController())
+  const statusQuery = api.edit.useEditGetChallengeBuildStatus(
+    gameId,
+    challengeId ?? -1,
+    CompletionPollSWRConfig,
+    opened && challengeId != null
+  )
+  const latestStatus = useRef(statusQuery.data)
+  latestStatus.current = statusQuery.data
+  const archiveAvailable = statusQuery.data?.archiveAvailable
+  const archiveVersion = statusQuery.data?.archiveVersion
+  const inFlight = statusQuery.data?.buildStatus === 'Queued' || statusQuery.data?.buildStatus === 'Building'
+
+  useCompletionPolling({
+    key:
+      opened && challengeId != null && inFlight
+        ? `/api/edit/games/${gameId}/challenges/${challengeId}/buildstatus`
+        : '',
+    phase: `audit:${gameId}:${challengeId ?? 'closed'}`,
+    enabled: opened && challengeId != null && inFlight,
+    data: statusQuery.data,
+    error: statusQuery.error,
+    isValidating: statusQuery.isValidating,
+    mutate: statusQuery.mutate,
+    successDelay: () => 2_000,
+  })
 
   useEffect(() => {
     if (!opened || challengeId == null) {
       setAudit(null)
+      setLoading(false)
       return
     }
-    let cancelled = false
-    let timer: number | null = null
+    const status = latestStatus.current
+    if (!status) return
+    if (!status.archiveAvailable || !status.archiveVersion) {
+      setAudit({
+        archiveAvailable: false,
+        files: [],
+        previews: {},
+        yamlText: null,
+        buildStatus: status.buildStatus,
+        lastBuildLog: status.lastBuildLog,
+      })
+      setLoading(false)
+      return
+    }
 
-    // Polls AuditMeta on a 2s cadence whenever the build is in flight
-    // so the modal reflects Queued → Building → Success/Failed without
-    // the operator having to reload. 2s matches the live-strip cadence
-    // on /admin/builds.
-    const tick = async (isInitial: boolean) => {
-      if (isInitial) setLoading(true)
+    const cacheKey = `${gameId}:${challengeId}:${status.archiveVersion}`
+    const cached = auditProjectionCache.get(cacheKey)
+    if (cached) {
+      setAudit({ ...cached, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog })
+      setLoading(false)
+      return
+    }
+
+    let controller: AbortController | null = null
+    let cancelled = false
+    const load = async () => {
+      if (!pageCanInspectArchive() || controller) return
+      const requestController = new AbortController()
+      controller = requestController
+      setLoading(true)
       try {
-        const res = await api.edit.editGetChallengeAuditMeta(gameId, challengeId)
+        const res = await api.edit.editGetChallengeAuditMeta(gameId, challengeId, {
+          signal: requestController.signal,
+        })
         if (cancelled) return
-        setAudit(res.data)
-        const inFlight = res.data.buildStatus === 'Queued' || res.data.buildStatus === 'Building'
-        if (inFlight && !cancelled) {
-          timer = window.setTimeout(() => void tick(false), 2000)
-        }
+        const projection = { ...res.data, buildStatus: undefined, lastBuildLog: undefined }
+        cacheAuditProjection(cacheKey, projection)
+        const currentStatus = latestStatus.current ?? status
+        setAudit({
+          ...projection,
+          buildStatus: currentStatus.buildStatus,
+          lastBuildLog: currentStatus.lastBuildLog,
+        })
       } catch (e) {
-        if (!cancelled) {
-          if (isInitial) setAudit(null)
+        if (!cancelled && !requestController.signal.aborted) {
+          setAudit(null)
           showErrorMsg(e, t)
         }
       } finally {
-        if (isInitial && !cancelled) setLoading(false)
+        if (controller === requestController) controller = null
+        if (!cancelled) setLoading(false)
       }
     }
-
-    void tick(true)
+    const updateActivity = () => {
+      if (!pageCanInspectArchive()) {
+        controller?.abort()
+        controller = null
+        setLoading(false)
+        return
+      }
+      void load()
+    }
+    document.addEventListener('visibilitychange', updateActivity)
+    window.addEventListener('online', updateActivity)
+    window.addEventListener('offline', updateActivity)
+    void load()
     return () => {
       cancelled = true
-      if (timer != null) window.clearTimeout(timer)
+      controller?.abort()
+      document.removeEventListener('visibilitychange', updateActivity)
+      window.removeEventListener('online', updateActivity)
+      window.removeEventListener('offline', updateActivity)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opened, gameId, challengeId, reloadKey, t])
+  }, [opened, gameId, challengeId, archiveAvailable, archiveVersion, t])
+
+  useEffect(() => {
+    const status = statusQuery.data
+    if (!status) return
+    setAudit((current) =>
+      current ? { ...current, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog } : current
+    )
+  }, [statusQuery.data])
+
+  useEffect(() => {
+    if (opened) {
+      if (buildAbort.current.signal.aborted) buildAbort.current = new AbortController()
+      return
+    }
+    buildAbort.current.abort()
+  }, [opened])
+
+  useEffect(() => () => buildAbort.current.abort(), [])
 
   const downloadArchive = () => {
     if (challengeId == null) return
@@ -82,30 +186,34 @@ export const ChallengeAuditModal: FC<ChallengeAuditModalProps> = (props) => {
   }
 
   const [rebuilding, setRebuilding] = useState(false)
-  const onRebuild = async () => {
-    if (challengeId == null) return
-    setRebuilding(true)
-    try {
-      const resp = await api.edit.editRebuildChallengeImage(gameId, challengeId)
-      // The endpoint now returns 202 with buildStatus=Queued. Patch the
-      // local state to Queued immediately so the operator sees the
-      // transition; the next AuditMeta tick (kicked by reloadKey
-      // bumping) will drive Building → Success/Failed.
-      setAudit((prev) =>
-        prev
-          ? {
-              ...prev,
-              buildStatus: resp.data.buildStatus,
-              lastBuildLog: resp.data.lastBuildLog,
-            }
-          : prev
-      )
-      setReloadKey((k) => k + 1)
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setRebuilding(false)
-    }
+  const onRebuild = () => {
+    if (challengeId == null) return Promise.resolve()
+    if (buildFlight.current) return buildFlight.current
+    const targetChallengeId = challengeId
+    const operationId = createOperationId()
+    const task = (async () => {
+      setRebuilding(true)
+      try {
+        const job = await startControlJob(
+          operationId,
+          () =>
+            api.edit.editRebuildChallengeImage(gameId, targetChallengeId, operationId, {
+              signal: buildAbort.current.signal,
+            }),
+          buildAbort.current.signal
+        )
+        await statusQuery.mutate()
+        await waitForControlJob(job, buildAbort.current.signal)
+        await statusQuery.mutate()
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      } finally {
+        setRebuilding(false)
+        buildFlight.current = null
+      }
+    })()
+    buildFlight.current = task
+    return task
   }
 
   return (
@@ -129,7 +237,7 @@ export const ChallengeAuditModal: FC<ChallengeAuditModalProps> = (props) => {
       }
       {...rest}
     >
-      {loading ? (
+      {loading || statusQuery.isLoading ? (
         <Center py="xl">
           <Loader />
         </Center>

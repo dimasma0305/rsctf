@@ -517,7 +517,7 @@ fn combine_scoreboards(
     }
 }
 
-async fn build_combined_scoreboard(
+pub(crate) async fn build_combined_scoreboard(
     st: &SharedState,
     game: &game::Model,
     is_monitor: bool,
@@ -593,7 +593,11 @@ async fn build_combined_scoreboard_bundle(
             let model = build_combined_scoreboard(&st2, &game2, is_monitor)
                 .await
                 .ok()?;
-            let ttl = combined_cache_ttl(model.generated_at, Utc::now());
+            let now = Utc::now();
+            let ttl = super::scoreboard_encoding::final_or_live_cache_ttl(
+                !game2.practice_mode && now >= game2.end_time_utc,
+                combined_cache_ttl(model.generated_at, now),
+            );
             let built = encode_combined_scoreboard(&model).await.ok()?;
             if built.cacheable {
                 st2.cache.set(&key2, &built.bytes, Some(ttl)).await;
@@ -614,9 +618,6 @@ pub async fn combined_scoreboard(
 ) -> AppResult<Response> {
     let game = load_game_cached(&st, id).await?;
     let is_monitor = maybe.as_ref().is_some_and(|user| user.is_monitor());
-    if game.hidden && !is_monitor {
-        return Err(AppError::not_found("Game not found"));
-    }
     if Utc::now() < game.start_time_utc {
         return Err(AppError::game_not_started());
     }

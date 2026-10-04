@@ -1,9 +1,8 @@
-use std::collections::HashSet;
-
 use super::{
-    authoritative_round_window, classify_round_target, complete_engine_scoring_roster,
-    koth_scoring_lifecycle_ready, network_scope_matches, playable_round_window,
-    prepared_checker_exists, valid_service_endpoint, RoundTargetDisposition,
+    authoritative_round_window, classify_round_target, complete_ad_scoring_roster,
+    complete_koth_scoring_roster, earliest_complete_ad_roster_round, koth_scoring_lifecycle_ready,
+    minimum_round_duration_seconds, network_scope_matches, playable_round_window,
+    prepared_checker_exists, RoundTargetDisposition,
 };
 use chrono::{Duration, Utc};
 
@@ -27,104 +26,133 @@ fn checker_readiness_requires_prepared_files() {
 }
 
 #[test]
-fn service_readiness_rejects_provisioning_placeholders() {
-    assert!(!valid_service_endpoint("", 0));
-    assert!(!valid_service_endpoint("  ", 31337));
-    assert!(!valid_service_endpoint("10.13.37.2", 0));
-    assert!(valid_service_endpoint("10.13.37.2", 31337));
-}
-
-#[test]
-fn scoring_roster_requires_two_complete_teams() {
+fn ad_scoring_start_does_not_wait_for_service_enrollment() {
     let challenges = [10, 11];
-    let complete = HashSet::from([(1, 10), (1, 11), (2, 10), (2, 11)]);
-    assert!(complete_engine_scoring_roster(
+    assert!(complete_ad_scoring_roster(
+        &[1, 2],
+        &challenges,
+        true,
+        false
+    ));
+    assert!(!complete_ad_scoring_roster(&[1], &challenges, true, false));
+    assert!(!complete_ad_scoring_roster(&[1, 2], &[], true, false));
+    assert!(!complete_ad_scoring_roster(
         &[1, 2],
         &challenges,
         false,
         false,
-        &complete,
-        true,
-        true,
     ));
-    assert!(!complete_engine_scoring_roster(
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn delayed_scoring_recovers_the_first_round_with_the_complete_roster() {
+    use sqlx::{Connection, PgConnection};
+
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let mut connection = PgConnection::connect(&database_url).await.unwrap();
+    sqlx::query(
+        r#"CREATE TEMP TABLE "AdRounds" (
+               id INTEGER PRIMARY KEY,
+               game_id INTEGER NOT NULL,
+               number INTEGER NOT NULL
+           )"#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"CREATE TEMP TABLE "AdFlags" (
+               round_id INTEGER NOT NULL,
+               team_service_id INTEGER NOT NULL
+           )"#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::raw_sql(
+        r#"INSERT INTO "AdRounds" (id, game_id, number)
+           VALUES (1, 7, 1), (2, 7, 2), (3, 7, 3);
+           INSERT INTO "AdFlags" (round_id, team_service_id)
+           VALUES (1, 10), (2, 10), (2, 11), (3, 10), (3, 11)"#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        earliest_complete_ad_roster_round(&mut connection, 7, 3, &[10, 11])
+            .await
+            .unwrap(),
+        Some(2)
+    );
+    assert_eq!(
+        earliest_complete_ad_roster_round(&mut connection, 7, 3, &[10, 11, 12])
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn practice_scoring_can_start_with_one_team() {
+    assert!(complete_koth_scoring_roster(
         &[1],
-        &challenges,
-        false,
-        false,
-        &complete,
         true,
         true,
-    ));
-    let partial = HashSet::from([(1, 10), (1, 11), (2, 10)]);
-    assert!(!complete_engine_scoring_roster(
-        &[1, 2],
-        &challenges,
-        false,
-        false,
-        &partial,
+        true,
         true,
         true,
     ));
-    assert!(!complete_engine_scoring_roster(
-        &[1, 2],
-        &[],
-        false,
-        false,
-        &complete,
+    assert!(!complete_koth_scoring_roster(
+        &[1],
         true,
         true,
+        true,
+        true,
+        false,
     ));
-    assert!(!complete_engine_scoring_roster(
-        &[1, 2],
-        &challenges,
-        false,
-        false,
-        &complete,
-        false,
-        true,
-    ));
+
+    assert!(complete_ad_scoring_roster(&[1], &[58], true, true));
 }
 
 #[test]
-fn koth_scoring_requires_ready_crown_lifecycle() {
-    let empty = HashSet::new();
-    assert!(complete_engine_scoring_roster(
+fn koth_scoring_requires_ready_target_checker_and_crown_lifecycle() {
+    assert!(complete_koth_scoring_roster(
         &[1, 2],
-        &[],
         true,
         true,
-        &empty,
         true,
-        true,
-    ));
-    assert!(!complete_engine_scoring_roster(
-        &[1, 2],
-        &[],
         true,
         false,
-        &empty,
-        true,
-        true,
     ));
-    assert!(!complete_engine_scoring_roster(
+    assert!(!complete_koth_scoring_roster(
         &[1, 2],
-        &[],
+        true,
+        false,
         true,
         true,
-        &empty,
+        false,
+    ));
+    assert!(!complete_koth_scoring_roster(
+        &[1, 2],
+        true,
+        true,
+        false,
         true,
         false,
     ));
 }
 
 #[test]
-fn only_boot2root_koth_requires_the_managed_vpn() {
-    assert!(koth_scoring_lifecycle_ready(true, false, false));
-    assert!(koth_scoring_lifecycle_ready(true, false, true));
-    assert!(!koth_scoring_lifecycle_ready(true, true, false));
-    assert!(koth_scoring_lifecycle_ready(true, true, true));
-    assert!(!koth_scoring_lifecycle_ready(false, false, true));
+fn managed_vpn_is_required_only_when_a_marker_cooldown_can_select_a_champion() {
+    assert!(koth_scoring_lifecycle_ready(true, false, 1, 2, false));
+    assert!(koth_scoring_lifecycle_ready(true, true, 0, 2, false));
+    assert!(koth_scoring_lifecycle_ready(true, true, 1, 1, false));
+    assert!(!koth_scoring_lifecycle_ready(true, true, 1, 2, false));
+    assert!(koth_scoring_lifecycle_ready(true, true, 1, 2, true));
+    assert!(!koth_scoring_lifecycle_ready(false, false, 0, 1, true));
 }
 
 #[test]
@@ -232,4 +260,63 @@ fn terminal_round_is_capped_only_when_minimum_runway_remains() {
     assert_eq!(end, playable_end);
 
     assert!(playable_round_window(nominal, now + Duration::seconds(14), 30, now, 15,).is_none());
+}
+
+#[test]
+fn leaderboard_terminal_round_requires_a_nonempty_settlement_window() {
+    let now = Utc::now();
+    let nominal = (now, now + Duration::seconds(30));
+    let minimum = super::super::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS.saturating_add(1);
+    assert_eq!(minimum, 21);
+    assert!(
+        playable_round_window(nominal, now + Duration::seconds(15), 30, now, minimum).is_none()
+    );
+    assert!(
+        playable_round_window(nominal, now + Duration::seconds(20), 30, now, minimum).is_none()
+    );
+    let (start, end, reanchored) =
+        playable_round_window(nominal, now + Duration::seconds(21), 30, now, minimum).unwrap();
+    assert_eq!(start, now);
+    assert_eq!(end, now + Duration::seconds(21));
+    assert!(!reanchored);
+    assert_eq!(end - Duration::seconds(20), now + Duration::seconds(1));
+}
+
+#[test]
+fn api_hill_wiring_raises_the_production_minimum_to_twenty_one_seconds() {
+    assert_eq!(minimum_round_duration_seconds(3, false), 15);
+    assert_eq!(minimum_round_duration_seconds(3, true), 21);
+}
+
+#[test]
+fn leaderboard_round_absorbs_every_too_short_terminal_tail() {
+    let start = Utc::now();
+    let nominal_end = start + Duration::seconds(30);
+    let minimum = minimum_round_duration_seconds(3, true);
+
+    for tail_seconds in 1..minimum {
+        let event_end = nominal_end + Duration::seconds(tail_seconds);
+        let (_, end, reanchored) =
+            playable_round_window((start, nominal_end), event_end, 30, start, minimum).unwrap();
+        assert!(!reanchored);
+        assert_eq!(end, event_end, "tail={tail_seconds}s");
+        assert!(
+            end - Duration::seconds(super::super::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS)
+                > nominal_end
+                    - Duration::seconds(super::super::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS),
+            "absorbing tail={tail_seconds}s must make the later advertised cutoff reachable"
+        );
+    }
+}
+
+#[test]
+fn leaderboard_round_leaves_a_playable_terminal_tail_for_its_own_round() {
+    let start = Utc::now();
+    let nominal_end = start + Duration::seconds(30);
+    let minimum = minimum_round_duration_seconds(3, true);
+    let event_end = nominal_end + Duration::seconds(minimum);
+
+    let (_, end, _) =
+        playable_round_window((start, nominal_end), event_end, 30, start, minimum).unwrap();
+    assert_eq!(end, nominal_end);
 }

@@ -1,6 +1,6 @@
 # Back up and update
 
-An rsctf backup is complete only when it contains PostgreSQL and the uploaded-file storage from the same operational period.
+An rsctf backup is complete only when it contains PostgreSQL and the uploaded-file storage from the same operational period. For a single ended event, the per-event archive described in [Back up and restore competition data](../organizers/games#back-up-and-restore-competition-data) complements, but does not replace, this platform backup.
 
 ## Docker backup
 

@@ -1,42 +1,17 @@
-.lockBadge {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  background: orange;
-  border-radius: 50%;
-  width: 30px;
-  height: 30px;
-  border: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .card {
   min-width: 0;
-  max-width: none;
   width: 100%;
-  position: relative;
+  gap: 1rem;
+  padding: 1.25rem;
 }
-
-.cardMobile {
-  width: 100%;
-  position: relative;
+.name {
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
-
-.contentGroup {
-  align-items: center;
-}
-
-.contentGroupMobile {
-  align-items: center;
-  flex-wrap: wrap;
-}
-
 .avatarGroup {
-  --ag-spacing: 12px;
+  --ag-spacing: 8px;
 }
-
-.captainIcon {
-  color: var(--mantine-color-yellow-6);
+.card > :global(.mantine-Button-root) {
+  margin-top: auto;
+  min-height: 42px;
 }

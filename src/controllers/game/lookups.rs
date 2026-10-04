@@ -52,21 +52,3 @@ pub(super) async fn user_name_map(
         .map(|user| (user.id, user.user_name.unwrap_or_default()))
         .collect())
 }
-
-pub(super) async fn challenge_title_map(
-    st: &SharedState,
-    ids: impl Iterator<Item = i32>,
-) -> AppResult<HashMap<i32, String>> {
-    let ids: Vec<i32> = ids.collect::<HashSet<_>>().into_iter().collect();
-    if ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let rows = game_challenge::Entity::find()
-        .filter(game_challenge::Column::Id.is_in(ids))
-        .all(&st.db)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .map(|challenge| (challenge.id, challenge.title))
-        .collect())
-}

@@ -15,7 +15,7 @@ import { CSSProperties, FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { useLanguage } from '@Utils/I18n'
-import { getGameStatus, toLimitTag } from '@Hooks/useGame'
+import { toLimitTag, useGameStatus } from '@Hooks/useGame'
 import { BasicGameInfoModel, ParticipationStatus } from '@Api'
 import classes from '@Styles/GameCard.module.css'
 
@@ -52,7 +52,7 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
   const { locale } = useLanguage()
 
   const { summary, title, poster, limit, teamCount, userCount } = game
-  const { startTime, endTime, status } = getGameStatus(game)
+  const { startTime, endTime, status } = useGameStatus(game)
   const durationMinutes = Math.max(0, endTime.diff(startTime, 'minute'))
   const durationLabel =
     durationMinutes >= 48 * 60
@@ -97,24 +97,25 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
               <span className={classes.posterSignal}>
                 <Icon path={mdiFlagOutline} size={1.35} />
               </span>
-              <span className={classes.posterMark}>RS::CTF</span>
             </div>
-          )}
-          <span className={classes.status} data-status={status}>
-            <span className={classes.statusDot} aria-hidden="true" />
-            {statusLabel}
-          </span>
-          {showMembership && (
-            <span className={classes.membership} data-membership={membership.status}>
-              <Icon path={membership.icon} size={0.62} aria-hidden="true" />
-              {membership.label}
-            </span>
           )}
         </div>
 
         <div className={classes.content}>
+          <div className={classes.stateRow}>
+            <span className={classes.status} data-status={status}>
+              <span className={classes.statusDot} aria-hidden="true" />
+              {statusLabel}
+            </span>
+            {showMembership && (
+              <span className={classes.membership} data-membership={membership.status}>
+                <Icon path={membership.icon} size={0.62} aria-hidden="true" />
+                {membership.label}
+              </span>
+            )}
+          </div>
           <Stack gap={7} className={classes.copy}>
-            <Title order={4} size="h4" lineClamp={2} className={classes.title} title={eventTitle}>
+            <Title order={3} size="h4" className={classes.title}>
               {eventTitle}
             </Title>
             <Text
@@ -137,7 +138,7 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
                 fw={650}
                 title={startTime.locale(locale).format('L LTS')}
               >
-                {startTime.locale(locale).format('L LTS')}
+                {startTime.locale(locale).format('ll · LT')}
               </Text>
               <Text
                 component="time"
@@ -146,7 +147,9 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
                 c="dimmed"
                 title={endTime.locale(locale).format('L LTS')}
               >
-                {t('game.content.until', 'until {{time}}', { time: endTime.locale(locale).format('L LTS') })}
+                {t('game.content.until', 'until {{time}}', {
+                  time: endTime.locale(locale).format(startTime.isSame(endTime, 'day') ? 'LT' : 'll · LT'),
+                })}
               </Text>
             </div>
           </div>

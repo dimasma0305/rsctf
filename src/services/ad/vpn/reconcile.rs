@@ -154,31 +154,38 @@ fn hub_identity(prvkey: &str, port: u16, address: &str) -> [u8; 32] {
     identity.finalize().into()
 }
 
-fn policy_fingerprint(
-    prvkey: &str,
+struct PolicyFingerprintInput<'a> {
+    prvkey: &'a str,
     port: u16,
-    configured_client_cidr: &str,
-    configured_service_cidrs: &[String],
-    route_fingerprint: &str,
-    peers: &[DesiredPeer],
-    policies: &[GameVpnPolicy],
-) -> [u8; 32] {
+    client_cidr: &'a str,
+    service_cidrs: &'a [String],
+    route: &'a str,
+    same_origin: Option<SameOriginAccess>,
+    peers: &'a [DesiredPeer],
+    policies: &'a [GameVpnPolicy],
+}
+
+fn policy_fingerprint(input: PolicyFingerprintInput<'_>) -> [u8; 32] {
     let mut fingerprint = Sha256::new();
-    fingerprint.update(prvkey.as_bytes());
-    fingerprint.update(port.to_be_bytes());
-    fingerprint.update(configured_client_cidr.as_bytes());
-    for cidr in configured_service_cidrs {
+    fingerprint.update(input.prvkey.as_bytes());
+    fingerprint.update(input.port.to_be_bytes());
+    fingerprint.update(input.client_cidr.as_bytes());
+    for cidr in input.service_cidrs {
         fingerprint.update(cidr.as_bytes());
     }
-    fingerprint.update(route_fingerprint.as_bytes());
-    for peer in peers {
+    fingerprint.update(input.route.as_bytes());
+    if let Some(access) = input.same_origin {
+        fingerprint.update(access.dns.octets());
+        fingerprint.update(access.ingress.octets());
+    }
+    for peer in input.peers {
         fingerprint.update(peer.stable_id.as_bytes());
         fingerprint.update(peer.game_id.to_be_bytes());
         fingerprint.update(peer.participation_id.to_be_bytes());
         fingerprint.update(peer.public_key.as_bytes());
         fingerprint.update(peer.address.as_bytes());
     }
-    for policy in policies {
+    for policy in input.policies {
         fingerprint.update(policy.game_id.to_be_bytes());
         for peer in &policy.peers {
             fingerprint.update(peer.octets());
@@ -282,6 +289,7 @@ fn apply_kernel_state(
     service_networks: &[Ipv4Net],
     policies: &[GameVpnPolicy],
     guard_service_interfaces: bool,
+    same_origin: Option<SameOriginAccess>,
     incremental: bool,
 ) -> Result<(), String> {
     if incremental {
@@ -292,6 +300,7 @@ fn apply_kernel_state(
                     service_networks,
                     policies,
                     guard_service_interfaces,
+                    same_origin,
                 )?;
                 return lock.unlock();
             }
@@ -306,6 +315,7 @@ fn apply_kernel_state(
         service_networks,
         policies,
         guard_service_interfaces,
+        same_origin,
     )?;
     configure_hub_with_retry(cfg, 3)?;
     policy_lock.unlock()?;
@@ -398,13 +408,12 @@ async fn load_peers(
     service_networks: &[Ipv4Net],
 ) -> AppResult<Vec<DesiredPeer>> {
     let team_peers = load_team_peers(db, client_network, service_networks).await?;
-    let event_peers = sqlx::query_as::<_, EventPeerIntent>(
+    let eligibility = crate::services::event_security::PERSONAL_PEER_GAME_ELIGIBLE_SQL;
+    let event_peers = sqlx::query_as::<_, EventPeerIntent>(&format!(
         r#"SELECT peer.id, peer.game_id, peer.participation_id,
                   peer.public_key, peer.address,
                   (
-                      game.vpn_access_required = TRUE
-                      AND game.deletion_pending = FALSE
-                      AND clock_timestamp() < game.end_time_utc
+                      ({eligibility})
                       AND participation.status = 1
                       AND team.deletion_pending = FALSE
                       AND account.email_confirmed = TRUE
@@ -431,7 +440,7 @@ async fn load_peers(
                ON member.team_id = team.id AND member.user_id = peer.user_id
             WHERE peer.revoked_at_utc IS NULL
             ORDER BY peer.id"#,
-    )
+    ))
     .fetch_all(db.get_postgres_connection_pool())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -682,6 +691,7 @@ async fn ensure_hub_and_sync_owned(db: &DatabaseConnection) -> AppResult<()> {
     let peers_rows = load_peers(db, &client_network, &service_networks).await?;
     super::capture_policy::refresh(db).await?;
     let policies = load_policies(db, &peers_rows, &client_network, &service_networks).await?;
+    let same_origin = same_origin_access().map_err(AppError::internal)?;
     let guard_service_interfaces = backend_config()
         .map_err(AppError::internal)?
         .guard_service_interfaces;
@@ -694,15 +704,16 @@ async fn ensure_hub_and_sync_owned(db: &DatabaseConnection) -> AppResult<()> {
     .map_err(AppError::internal)?;
     let port = listen_port();
     let address = format!("{}/{}", hub_address(), cidr_bits(&configured_client_cidr));
-    let fingerprint = policy_fingerprint(
-        &prvkey,
+    let fingerprint = policy_fingerprint(PolicyFingerprintInput {
+        prvkey: &prvkey,
         port,
-        &configured_client_cidr,
-        &configured_service_cidrs,
-        &route_fingerprint,
-        &peers_rows,
-        &policies,
-    );
+        client_cidr: &configured_client_cidr,
+        service_cidrs: &configured_service_cidrs,
+        route: &route_fingerprint,
+        same_origin,
+        peers: &peers_rows,
+        policies: &policies,
+    });
     let (applied_peers, peers): (Vec<_>, Vec<_>) = peers_rows.iter().filter_map(build_peer).unzip();
     let desired = AppliedState {
         fingerprint,
@@ -721,6 +732,7 @@ async fn ensure_hub_and_sync_owned(db: &DatabaseConnection) -> AppResult<()> {
             &firewall_client,
             &firewall_services,
             guard_service_interfaces,
+            same_origin,
         )
     })
     .await
@@ -791,6 +803,7 @@ async fn ensure_hub_and_sync_owned(db: &DatabaseConnection) -> AppResult<()> {
                     &kernel_services,
                     &kernel_policies,
                     guard_service_interfaces,
+                    same_origin,
                     incremental,
                 )
             },

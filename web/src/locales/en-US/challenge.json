@@ -183,17 +183,20 @@
   },
   "verdict": {
     "close": "Close result",
+    "label": "Submission result",
+    "points": "pts",
     "success": {
-      "title_start": "Challenge",
-      "title_accent": "Conquered",
-      "description": "{{challenge}} solved. Nice work.",
+      "title_start": "Flag",
+      "title_accent": "Accepted",
+      "description": "Flag verified. Nicely done.",
+      "value": "Challenge value",
       "score": "Score",
-      "continue": "Continue"
+      "continue": "Back to challenge"
     },
     "wrong": {
-      "title_start": "Signal",
-      "title_accent": "Rejected",
-      "description": "No match. Check the flag and try again.",
+      "title_start": "Flag",
+      "title_accent": "Denied",
+      "description": "That flag did not match. Check your answer and try again.",
       "status": "Status",
       "result": "Wrong flag",
       "retry": "Try again"
@@ -224,5 +227,102 @@
       "desrc": "A shared competitive service. Boot2Root rotates pristine hills for exclusive control; Leaderboard arenas stay online while teams compete through challenge-native play.",
       "label": "King of the Hill"
     }
+  },
+  "ai_chat": {
+    "reason": {
+      "invalid": "Enter a full link that starts with https://",
+      "https_required": "Only https:// links are accepted",
+      "credentials": "Links that contain a username or password are not accepted",
+      "port": "Links with a custom port are not accepted",
+      "too_long": "This link is too long",
+      "unsupported": "This AI provider is not accepted",
+      "duplicate": "This link is already in the list",
+      "full": "You can attach up to {{count}} links"
+    },
+    "copied": "Link copied",
+    "saved": "AI chat links saved",
+    "conflict": {
+      "title": "Links changed",
+      "message": "A teammate changed these links. The latest list is shown; add your changes again."
+    },
+    "loading": "Loading…",
+    "load_failed": "AI chat links could not be loaded.",
+    "count": "{{count}} of {{max}} links",
+    "title": "AI chat links",
+    "hide": "Hide",
+    "manage": "Manage",
+    "show": "Show",
+    "description": "Share the public links of AI chats your team used for this challenge. Organizers may review them.",
+    "closed": "The window for changing AI chat links has closed.",
+    "unsolved": "Solve this challenge to attach AI chat links.",
+    "input_label": "Share link",
+    "add": "Add",
+    "matched": "Matches {{provider}}",
+    "supported": "Supported: {{providers}}",
+    "no_providers": "No AI providers are accepted right now.",
+    "empty": "No links attached yet.",
+    "unknown_provider": "Unknown provider",
+    "provider_blocked": "Provider no longer accepted",
+    "unsaved_link": "Not saved",
+    "copy": "Copy link",
+    "open": "Open link in a new tab",
+    "remove": "Remove link",
+    "unsaved": "Unsaved changes",
+    "last_saved_by": "Last saved by {{user}}",
+    "discard": "Discard",
+    "save": "Save links",
+    "clear_warning": "Saving an empty list removes your disclosure. This event requires one, so this challenge will need a disclosure again.",
+    "no_ai": {
+      "button": "We did not use AI",
+      "cancel": "Cancel",
+      "change_hint": "Used AI after all? Add its share link above and save; the links replace this declaration.",
+      "confirm": "Declare that your team did not use any AI assistant for this challenge? Organizers can see this declaration and when it was made.",
+      "confirm_button": "Confirm: no AI used",
+      "declared": "Declared: no AI used",
+      "saved": "Declaration saved: no AI used"
+    },
+    "pending": {
+      "description": "This event requires a disclosure for every solved challenge. Add the AI chat links your team used, or declare that no AI was used.",
+      "title": "Disclosure required"
+    },
+    "replace_declaration": "Saving these links replaces the \"No AI used\" declaration.",
+    "requirement_label": "AI chat disclosure",
+    "timing": {
+      "both": "Solved at {{solved}}, disclosed at {{disclosed}}",
+      "solved": "Solved at {{solved}}"
+    }
+  },
+  "close_blocked": {
+    "both": "Rate this challenge and complete the {{requirement}} before closing",
+    "requirement": "Complete the {{requirement}} before closing"
+  },
+  "review": {
+    "submit_and_continue": "Submit & continue"
+  },
+  "solver": {
+    "title": "Solver",
+    "loading": "Loading…",
+    "load_failed": "Solver uploads could not be loaded.",
+    "none": "Optional",
+    "count": "{{count}} of {{max}} versions",
+    "hide": "Hide",
+    "manage": "Upload",
+    "show": "Show",
+    "description": "Optionally upload the script or notes your team used to solve this challenge so organizers can verify the solve. Each upload is kept as a new version; organizers can see every version and when it was uploaded.",
+    "unsolved": "Solve this challenge to upload a solver.",
+    "full": "Your team has uploaded the maximum number of versions.",
+    "quota_full": "Your team has used all of its solver storage for this event.",
+    "closed": "The window for uploading solvers has closed.",
+    "select_label": "Solver file",
+    "select_placeholder": "Choose a file",
+    "limits": "Up to {{size}} per file. Your team has used {{used}} of {{limit}} for this event.",
+    "clear_file": "Remove selected file",
+    "upload": "Upload solver",
+    "uploaded": "Solver uploaded",
+    "too_large": "The file must be {{size}} or smaller.",
+    "empty": "The file is empty.",
+    "empty_list": "No solver uploaded yet.",
+    "version": "v{{version}}",
+    "uploaded_by": "Uploaded by {{user}} at {{time}}"
   }
 }

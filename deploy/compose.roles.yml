@@ -7,8 +7,8 @@
 # docs/deploy/scaling.md. Existing installations must use the stop-the-world
 # maintenance-cutover script so no old role writes during incompatible schema
 # changes. Then:
-# The bundled PostgreSQL default safely budgets two 26-connection web pools
-# plus the 21-connection control pool. Read docs/deploy/scaling.md and provide
+# The bundled PostgreSQL default safely budgets two 27-connection web pools
+# plus the 38-connection control pool. Read docs/deploy/scaling.md and provide
 # PgBouncer or a larger reviewed database budget before adding a third web.
 #   docker compose up -d --scale rsctf=2
 services:
@@ -36,7 +36,7 @@ services:
       RSCTF_MIGRATE: "0"
       RSCTF_SHARED_STORAGE: "true"
       RSCTF_DISTRIBUTED_RATELIMIT: "true"
-      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_WEB_DB_MAX_CONNECTIONS:-26}
+      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_WEB_DB_MAX_CONNECTIONS:-27}
     networks:
       default:
         # The base service owns this alias in single-role mode. Remove it from
@@ -48,7 +48,7 @@ services:
     image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to one immutable rsctf image digest}
     restart: unless-stopped
     logging:
-      driver: json-file
+      driver: local
       options:
         max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
         max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"
@@ -98,6 +98,7 @@ services:
       RSCTF_TRUSTED_PROXY_CIDRS: ${RSCTF_TRUSTED_PROXY_CIDRS:-}
       RSCTF_ALLOW_REGISTER: ${RSCTF_ALLOW_REGISTER:-true}
       RSCTF_ALLOW_PASSWORD_REGISTRATION: ${RSCTF_ALLOW_PASSWORD_REGISTRATION:-true}
+      RSCTF_ALLOW_COMPETITION_HISTORY_PURGE: ${RSCTF_ALLOW_COMPETITION_HISTORY_PURGE:-false}
       RSCTF_EMAIL_CONFIRM: ${RSCTF_EMAIL_CONFIRM:-false}
       RSCTF_ADMIN_CONFIRM: ${RSCTF_ADMIN_CONFIRM:-false}
       RSCTF_ACTIVE_ON_REGISTER: ${RSCTF_ACTIVE_ON_REGISTER:-true}
@@ -125,7 +126,7 @@ services:
       RSCTF_S3_SECRET_KEY: ${RSCTF_S3_SECRET_KEY:-}
       RSCTF_ASSET_SIGNED_URL_TTL_SECS: ${RSCTF_ASSET_SIGNED_URL_TTL_SECS:-0}
       RSCTF_MIGRATE: "0"
-      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_CONTROL_DB_MAX_CONNECTIONS:-21}
+      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_CONTROL_DB_MAX_CONNECTIONS:-38}
       RSCTF_SUSPICION_RECONCILE_SECONDS: ${RSCTF_SUSPICION_RECONCILE_SECONDS:-30}
       RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS: ${RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS:-360}
       RSCTF_PROVISIONING_CONCURRENCY: ${RSCTF_PROVISIONING_CONCURRENCY:-4}
@@ -152,11 +153,11 @@ services:
     healthcheck:
       test:
         - CMD
-        - python3
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()"
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
+        - /usr/local/bin/rsctf
+        - healthcheck
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
     stop_grace_period: 5m

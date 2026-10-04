@@ -27,13 +27,14 @@ services:
     pids_limit: 32
     healthcheck:
       test: ["CMD", "/usr/local/sbin/rsctf-proxy-firewall", "check"]
-      interval: 2s
+      interval: 30s
       timeout: 2s
-      retries: 15
-      start_period: 2s
+      retries: 3
+      start_period: 10s
+      start_interval: 2s
     stop_grace_period: 10s
     logging:
-      driver: json-file
+      driver: local
       options:
         max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
         max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"

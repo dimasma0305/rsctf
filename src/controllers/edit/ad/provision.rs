@@ -1,6 +1,38 @@
 //! A&D container ensure/provision (EnsureContainers, EnsureInstances, on-accept
 //! provisioning) — split from edit/ad/mod.rs to stay under the 1000-line rule.
 use super::super::*;
+use axum::http::HeaderMap;
+use uuid::Uuid;
+
+const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+
+fn reconcile_operation_id(headers: &HeaderMap) -> AppResult<Uuid> {
+    let Some(raw) = headers.get(IDEMPOTENCY_KEY_HEADER) else {
+        // Keep cached pre-idempotency clients and existing operator automation
+        // working during a rolling deployment. Such a request gets protection
+        // within this attempt, but only a client-supplied key can span retries.
+        return Ok(Uuid::new_v4());
+    };
+    let raw = raw
+        .to_str()
+        .map_err(|_| AppError::bad_request("Idempotency-Key must be an ASCII UUID"))?;
+    Uuid::parse_str(raw).map_err(|_| AppError::bad_request("Idempotency-Key must be a UUID"))
+}
+
+fn ad_service_operation_id(
+    reconcile_operation_id: Option<Uuid>,
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+) -> Option<String> {
+    reconcile_operation_id.map(|operation_id| {
+        format!("ad-ensure:{operation_id}:{game_id}:{participation_id}:{challenge_id}")
+    })
+}
+
+fn is_manual_operation_conflict(error: &AppError, operation_id: Option<Uuid>) -> bool {
+    operation_id.is_some() && matches!(error, AppError::Conflict(_))
+}
 
 fn should_provision_vpn(
     vpn_enabled: bool,
@@ -13,6 +45,10 @@ fn should_provision_vpn(
 
 fn should_reconcile_vpn(need_vpn: bool, has_managed_challenges: bool) -> bool {
     need_vpn || has_managed_challenges
+}
+
+fn should_ensure_network(reconcile_vpn: bool, topology_owner: bool) -> bool {
+    reconcile_vpn && topology_owner
 }
 
 async fn current_ad_pair(
@@ -121,19 +157,210 @@ async fn deactivate_stale_pair(
 /// (whole game, every accepted team).
 pub async fn ad_ensure_containers(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    user: CurrentUser,
     Path(game_id): Path<i32>,
-) -> AppResult<MessageResponse> {
-    let game = load_game(&st, game_id).await?;
-    let (launched, failures) = ensure_ad_containers(&st, &game, None, true, true).await?;
-    Ok(MessageResponse::ok(format!(
-        "Launched {launched} service container(s){}",
-        if failures > 0 {
-            format!(", {failures} failed (runtime unavailable?)")
-        } else {
-            String::new()
+    headers: HeaderMap,
+) -> AppResult<(
+    axum::http::StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
+    manager_or_admin(&st, &user, game_id).await?;
+    let operation = reconcile_operation_id(&headers)?;
+    let input = serde_json::json!({ "ensureVpn": true, "ensureKoth": true });
+    let fingerprint = super::super::control_jobs::fingerprint(&input)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::AdReconcile,
+        &format!("game:{game_id}"),
+        game_id,
+        None,
+        operation,
+        &fingerprint,
+        input,
+    )
+    .await?;
+    crate::services::control_jobs::merge_reconcile_input(
+        st.pg(),
+        job.id,
+        serde_json::json!({ "ensureVpn": true, "ensureKoth": true }),
+    )
+    .await?;
+    let job = crate::services::control_jobs::get(st.pg(), job.id)
+        .await?
+        .ok_or_else(|| AppError::internal("queued reconcile job disappeared"))?;
+    crate::services::control_jobs::kick(st);
+    Ok((axum::http::StatusCode::ACCEPTED, RequestResponse::ok(job)))
+}
+
+pub(crate) async fn run_ad_reconcile_job(
+    st: &SharedState,
+    claimed: &crate::services::control_jobs::ClaimedControlJob,
+    ensure_vpn: bool,
+    ensure_koth: bool,
+) -> AppResult<(i32, i32)> {
+    let game_id = claimed.model.game_id;
+    let game = load_game(st, game_id).await?;
+    let (has_managed_ad, has_engine_challenge): (bool, bool) = sqlx::query_as(
+        r#"SELECT
+             EXISTS (
+               SELECT 1 FROM "GameChallenges"
+                WHERE game_id = $1 AND is_enabled = TRUE
+                  AND review_status = $2 AND "Type" = $3
+                  AND ad_self_hosted = FALSE
+             ),
+             EXISTS (
+               SELECT 1 FROM "GameChallenges"
+                WHERE game_id = $1 AND is_enabled = TRUE
+                  AND review_status = $2 AND "Type" IN ($3, $4)
+             )"#,
+    )
+    .bind(game_id)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::AttackDefense as i16)
+    .bind(ChallengeType::KingOfTheHill as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let need_vpn = should_provision_vpn(
+        crate::services::ad_vpn::enabled(),
+        game.is_active(Utc::now()),
+        has_engine_challenge,
+        ensure_vpn,
+    );
+    if should_ensure_network(should_reconcile_vpn(need_vpn, has_managed_ad), true)
+        && st.containers.backend_kind() == crate::services::container::ContainerBackendKind::Docker
+    {
+        st.containers
+            .ensure_network(
+                &crate::services::ad_vpn::services_network(),
+                &crate::services::ad_vpn::services_cidr(),
+            )
+            .await?;
+    }
+    const PARTICIPATION_PAGE_SIZE: i64 = 64;
+    let participation_total: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM "Participations" WHERE game_id = $1 AND status = $2"#,
+    )
+    .bind(game_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let progress_total = i32::try_from(participation_total.max(1)).unwrap_or(i32::MAX);
+    crate::services::control_jobs::set_progress(
+        st.pg(),
+        claimed.model.id,
+        claimed.lease_token,
+        0,
+        progress_total,
+    )
+    .await?;
+    let mut cursor = 0;
+    let mut launched = 0i32;
+    let mut failures = 0i32;
+    let mut examined = 0i32;
+    let mut cancelled = false;
+    loop {
+        let participation_ids = sqlx::query_scalar::<_, i32>(
+            r#"SELECT id FROM "Participations"
+                WHERE game_id = $1 AND status = $2 AND id > $3
+                ORDER BY id LIMIT $4"#,
+        )
+        .bind(game_id)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(cursor)
+        .bind(PARTICIPATION_PAGE_SIZE)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if participation_ids.is_empty() {
+            break;
         }
-    )))
+        for participation_id in participation_ids {
+            if crate::services::control_jobs::cancellation_requested(
+                st.pg(),
+                claimed.model.id,
+                claimed.lease_token,
+            )
+            .await?
+            {
+                cancelled = true;
+                break;
+            }
+            cursor = participation_id;
+            let (page_launched, page_failures) = ensure_ad_containers(
+                st,
+                &game,
+                Some(participation_id),
+                ensure_vpn,
+                false,
+                false,
+                Some(claimed.model.operation_id),
+            )
+            .await?;
+            launched = launched.saturating_add(page_launched);
+            failures = failures.saturating_add(page_failures);
+            examined = examined.saturating_add(1).min(progress_total);
+            crate::services::control_jobs::set_progress(
+                st.pg(),
+                claimed.model.id,
+                claimed.lease_token,
+                examined,
+                progress_total,
+            )
+            .await?;
+        }
+        if cancelled {
+            break;
+        }
+    }
+    if cancelled {
+        return Ok((launched, failures));
+    }
+    if ensure_vpn || has_managed_ad {
+        crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
+    }
+    if ensure_koth {
+        crate::controllers::game::koth::ensure_koth_hills_with_operation(
+            st,
+            game.id,
+            Some(claimed.model.operation_id),
+        )
+        .await?;
+    }
+    Ok((launched, failures))
+}
+
+pub(crate) async fn request_ad_reconcile_job(
+    st: &SharedState,
+    game_id: i32,
+    ensure_vpn: bool,
+    ensure_koth: bool,
+) -> AppResult<crate::services::control_jobs::ControlJobModel> {
+    let input = serde_json::json!({ "ensureVpn": ensure_vpn, "ensureKoth": ensure_koth });
+    let fingerprint = super::super::control_jobs::fingerprint(&input)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::AdReconcile,
+        &format!("game:{game_id}"),
+        game_id,
+        None,
+        uuid::Uuid::new_v4(),
+        &fingerprint,
+        input,
+    )
+    .await?;
+    crate::services::control_jobs::merge_reconcile_input(
+        st.pg(),
+        job.id,
+        serde_json::json!({ "ensureVpn": ensure_vpn, "ensureKoth": ensure_koth }),
+    )
+    .await?;
+    let job = crate::services::control_jobs::get(st.pg(), job.id)
+        .await?
+        .ok_or_else(|| AppError::internal("queued reconcile job disappeared"))?;
+    crate::services::control_jobs::kick(st.clone());
+    Ok(job)
 }
 
 /// Reusable core of [`ad_ensure_containers`]: launch the platform-hosted A&D
@@ -165,6 +392,14 @@ pub(crate) async fn ensure_ad_containers(
     // The round pipeline repairs A&D before checking, but KotH only after the
     // checker has persisted a dead-backend receipt for the published holder.
     ensure_koth: bool,
+    // Durable event jobs page participants and finalize topology exactly once
+    // after the final page. Direct one-team acceptance keeps the old immediate
+    // finalization behavior.
+    finalize_topology: bool,
+    // A manual reconcile keeps one request identity across retries. Binding it
+    // to each service lets Docker/Kubernetes adopt a container created before
+    // a lost response or process crash instead of launching a duplicate.
+    reconcile_operation_id: Option<Uuid>,
 ) -> AppResult<(i32, i32)> {
     let all_ad: Vec<game_challenge::Model> = game_challenge::Entity::find()
         .filter(game_challenge::Column::GameId.eq(game.id))
@@ -220,7 +455,7 @@ pub(crate) async fn ensure_ad_containers(
     // Create the isolated service network before peer/firewall reconciliation,
     // then retain the allocator-selected address so BYOC rows can never drift
     // from WireGuard cryptokey routing after a collision probe.
-    if reconcile_vpn
+    if should_ensure_network(reconcile_vpn, finalize_topology)
         && st.containers.backend_kind() == crate::services::container::ContainerBackendKind::Docker
     {
         st.containers
@@ -354,8 +589,23 @@ pub(crate) async fn ensure_ad_containers(
             }
             let team_hash =
                 crate::utils::flag_generator::team_challenge_hash(&salt, c.id, &p.token);
-            let flag =
-                crate::utils::flag_generator::generate_flag(c.flag_template.as_deref(), &team_hash);
+            let operation_id = ad_service_operation_id(reconcile_operation_id, game.id, p.id, c.id);
+            let flag = match operation_id.as_deref() {
+                Some(operation_id) => crate::utils::flag_generator::generate_retryable_ad_flag(
+                    &team_hash,
+                    operation_id,
+                ),
+                None => crate::utils::flag_generator::generate_ad_flag(),
+            };
+            let flag = match flag {
+                Ok(flag) => flag,
+                Err(error) => {
+                    tracing::error!(challenge = c.id, %error, "A&D warmup flag generation failed");
+                    failures += 1;
+                    distributed.release().await?;
+                    continue;
+                }
+            };
             let image = match crate::services::challenge_images::runtime_image(st, &c) {
                 Ok(image) => image,
                 Err(error) => {
@@ -369,26 +619,26 @@ pub(crate) async fn ensure_ad_containers(
                     continue;
                 }
             };
-            let info = match st
-                .containers
-                .create(ContainerSpec::ad_service(
-                    image,
-                    ContainerResourceLimits {
-                        memory_limit: c.memory_limit.unwrap_or(256),
-                        cpu_count: c.cpu_count.unwrap_or(1),
-                        storage_limit: crate::services::container::storage_limit_or_default(
-                            c.storage_limit,
-                        ),
-                    },
-                    c.expose_port.unwrap_or(80),
-                    p.team_id,
-                    c.ad_allow_egress,
-                    flag,
-                ))
-                .await
-            {
+            let mut spec = ContainerSpec::ad_service(
+                image,
+                ContainerResourceLimits {
+                    memory_limit: c.memory_limit.unwrap_or(256),
+                    cpu_count: c.cpu_count.unwrap_or(1),
+                    storage_limit: crate::services::container::storage_limit_or_default(
+                        c.storage_limit,
+                    ),
+                },
+                c.expose_port.unwrap_or(80),
+                p.team_id,
+                c.ad_allow_egress,
+                flag,
+            );
+            spec.operation_id = operation_id;
+            let info = match st.containers.create(spec).await {
                 Ok(i) => i,
-                Err(_) => {
+                Err(error) => {
+                    let operation_conflict =
+                        is_manual_operation_conflict(&error, reconcile_operation_id);
                     // Best-effort (accept path): register a container-less service
                     // row so the team shows in the grid without failing the accept.
                     // Gated on `only_participation` so the manual endpoint keeps its
@@ -417,6 +667,9 @@ pub(crate) async fn ensure_ad_containers(
                     }
                     failures += 1;
                     distributed.release().await?;
+                    if operation_conflict {
+                        return Err(error);
+                    }
                     continue;
                 }
             };
@@ -550,12 +803,17 @@ pub(crate) async fn ensure_ad_containers(
     }
 
     // Reconcile the wg0 hub with the (possibly newly-created) peer set.
-    if reconcile_vpn {
+    if reconcile_vpn && finalize_topology {
         crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
     }
 
-    if ensure_koth {
-        crate::controllers::game::koth::ensure_koth_hills(st, game.id).await?;
+    if ensure_koth && finalize_topology {
+        crate::controllers::game::koth::ensure_koth_hills_with_operation(
+            st,
+            game.id,
+            reconcile_operation_id,
+        )
+        .await?;
     }
 
     Ok((launched, failures))
@@ -564,7 +822,62 @@ pub(crate) async fn ensure_ad_containers(
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::{should_provision_vpn, should_reconcile_vpn};
+    use axum::http::{HeaderMap, HeaderValue};
+    use uuid::Uuid;
+
+    use super::{
+        ad_service_operation_id, is_manual_operation_conflict, reconcile_operation_id,
+        should_ensure_network, should_provision_vpn, should_reconcile_vpn, IDEMPOTENCY_KEY_HEADER,
+    };
+
+    #[test]
+    fn reconcile_identity_is_backward_compatible_and_binds_each_service_retry() {
+        let mut headers = HeaderMap::new();
+        assert!(!reconcile_operation_id(&headers).unwrap().is_nil());
+        headers.insert(
+            IDEMPOTENCY_KEY_HEADER,
+            HeaderValue::from_static("not-a-uuid"),
+        );
+        assert!(reconcile_operation_id(&headers).is_err());
+
+        let first = Uuid::new_v4();
+        headers.insert(
+            IDEMPOTENCY_KEY_HEADER,
+            HeaderValue::from_str(&first.to_string()).unwrap(),
+        );
+        assert_eq!(reconcile_operation_id(&headers).unwrap(), first);
+        let service = ad_service_operation_id(Some(first), 7, 11, 13).unwrap();
+        assert_eq!(
+            ad_service_operation_id(Some(first), 7, 11, 13).as_deref(),
+            Some(service.as_str())
+        );
+        assert_ne!(
+            ad_service_operation_id(Some(Uuid::new_v4()), 7, 11, 13).as_deref(),
+            Some(service.as_str())
+        );
+        assert_ne!(
+            ad_service_operation_id(Some(first), 7, 11, 14).as_deref(),
+            Some(service.as_str())
+        );
+        assert_eq!(ad_service_operation_id(None, 7, 11, 13), None);
+    }
+
+    #[test]
+    fn only_a_definitive_manual_workload_conflict_rotates_the_operation() {
+        let operation_id = Some(Uuid::new_v4());
+        assert!(is_manual_operation_conflict(
+            &crate::utils::error::AppError::conflict("changed launch specification"),
+            operation_id
+        ));
+        assert!(!is_manual_operation_conflict(
+            &crate::utils::error::AppError::unavailable("runtime unavailable"),
+            operation_id
+        ));
+        assert!(!is_manual_operation_conflict(
+            &crate::utils::error::AppError::conflict("automatic repair"),
+            None
+        ));
+    }
 
     #[test]
     fn round_repair_skips_byoc_vpn_reprovisioning() {
@@ -585,6 +898,13 @@ mod tests {
         let need_vpn = should_provision_vpn(true, true, true, false);
         assert!(!need_vpn);
         assert!(should_reconcile_vpn(need_vpn, true));
+    }
+
+    #[test]
+    fn paged_reconcile_has_one_network_topology_owner() {
+        assert!(should_ensure_network(true, true));
+        assert!(!should_ensure_network(true, false));
+        assert!(!should_ensure_network(false, true));
     }
 }
 
@@ -609,67 +929,29 @@ pub(crate) async fn ensure_instances(
     let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
     let distributed =
         crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &flight_key).await?;
-    let accepted = participation::Entity::find()
-        .filter(participation::Column::Id.eq(participation_id))
-        .filter(participation::Column::GameId.eq(game_id))
-        .filter(participation::Column::Status.eq(ParticipationStatus::Accepted))
-        .one(&st.db)
-        .await?
-        .is_some();
-    if !accepted {
-        distributed.release().await?;
-        return Ok(0);
-    }
-    let existing: std::collections::HashSet<i32> = game_instance::Entity::find()
-        .filter(game_instance::Column::ParticipationId.eq(participation_id))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|gi| gi.challenge_id)
-        .collect();
-
-    let challenges = game_challenge::Entity::find()
-        .filter(game_challenge::Column::GameId.eq(game_id))
-        .filter(game_challenge::Column::IsEnabled.eq(true))
-        .filter(game_challenge::Column::ReviewStatus.eq(ChallengeReviewStatus::Active))
-        .all(&st.db)
-        .await?;
-
-    let mut inserted = 0;
-    for c in challenges {
-        if existing.contains(&c.id) {
-            continue;
-        }
-        let created: Option<i32> = sqlx::query_scalar(
-            r#"INSERT INTO "GameInstances"
-                 (challenge_id, participation_id, is_loaded, last_container_operation,
-                  flag_id, container_id)
-               SELECT challenge.id, participation.id, FALSE, now(), NULL, NULL
-                 FROM "Participations" participation
-                 JOIN "GameChallenges" challenge
-                   ON challenge.id = $3 AND challenge.game_id = participation.game_id
-                WHERE participation.id = $1
-                  AND participation.game_id = $2
-                  AND participation.status = $4
-                  AND challenge.is_enabled = TRUE
-                  AND challenge.review_status = $5
-                  AND NOT EXISTS (
-                      SELECT 1 FROM "GameInstances" existing
-                       WHERE existing.participation_id = participation.id
-                         AND existing.challenge_id = challenge.id
-                  )
-               RETURNING id"#,
-        )
-        .bind(participation_id)
-        .bind(game_id)
-        .bind(c.id)
-        .bind(ParticipationStatus::Accepted as i16)
-        .bind(ChallengeReviewStatus::Active as i16)
-        .fetch_optional(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        inserted += usize::from(created.is_some());
-    }
+    let inserted = sqlx::query(
+        r#"INSERT INTO "GameInstances"
+              (challenge_id, participation_id, is_loaded, last_container_operation,
+               flag_id, container_id)
+           SELECT challenge.id, participation.id, FALSE, clock_timestamp(), NULL, NULL
+             FROM "Participations" participation
+             JOIN "GameChallenges" challenge
+               ON challenge.game_id = participation.game_id
+            WHERE participation.id = $1
+              AND participation.game_id = $2
+              AND participation.status = $3
+              AND challenge.is_enabled = TRUE
+              AND challenge.review_status = $4
+           ON CONFLICT (participation_id, challenge_id) DO NOTHING"#,
+    )
+    .bind(participation_id)
+    .bind(game_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected() as usize;
     distributed.release().await?;
     Ok(inserted)
 }
@@ -687,7 +969,13 @@ pub(crate) async fn provision_accepted_participation(
 ) -> AppResult<()> {
     ensure_instances(st, participation_id, game_id).await?;
     if let Some(game) = game::Entity::find_by_id(game_id).one(&st.db).await? {
-        ensure_ad_containers(st, &game, Some(participation_id), true, true).await?;
+        let (_, failures) =
+            ensure_ad_containers(st, &game, Some(participation_id), true, true, true, None).await?;
+        if failures > 0 {
+            return Err(AppError::unavailable(format!(
+                "{failures} accepted-participation service workload(s) remain unavailable"
+            )));
+        }
     }
     Ok(())
 }

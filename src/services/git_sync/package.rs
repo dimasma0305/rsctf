@@ -55,10 +55,18 @@ pub(super) fn resolve_category(raw: Option<&str>, package_dir: &Path) -> Challen
 /// package-root `Dockerfile`).
 pub(super) fn find_dockerfile_context(dir: &Path) -> Option<PathBuf> {
     let src = dir.join("src");
-    if src.join("Dockerfile").is_file() {
+    if is_real_directory(&src) && is_real_file(&src.join("Dockerfile")) {
         return Some(src);
     }
-    dir.join("Dockerfile").is_file().then(|| dir.to_path_buf())
+    is_real_file(&dir.join("Dockerfile")).then(|| dir.to_path_buf())
+}
+
+fn is_real_directory(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_dir())
+}
+
+fn is_real_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
 pub(super) fn image_tag(game_id: i32, name: &str) -> String {
@@ -247,7 +255,7 @@ pub(super) async fn archived_context_fingerprint(
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{symlink, PermissionsExt};
 
     use super::*;
 
@@ -281,5 +289,30 @@ mod tests {
         assert_ne!(regular_fingerprint, executable_fingerprint);
 
         tokio::fs::remove_dir_all(&root).await.unwrap();
+    }
+
+    #[test]
+    fn dockerfile_discovery_rejects_symlinked_build_inputs() {
+        let root = std::env::temp_dir().join(format!(
+            "rsctf-docker-context-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "rsctf-docker-context-outside-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Dockerfile"), "FROM scratch\n").unwrap();
+
+        symlink(outside.join("Dockerfile"), root.join("src/Dockerfile")).unwrap();
+        assert_eq!(find_dockerfile_context(&root), None);
+        std::fs::remove_file(root.join("src/Dockerfile")).unwrap();
+
+        std::fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
+        assert_eq!(find_dockerfile_context(&root), Some(root.join("src")));
+
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
     }
 }

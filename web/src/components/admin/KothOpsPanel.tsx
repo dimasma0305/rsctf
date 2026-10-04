@@ -6,7 +6,6 @@ import {
   Code,
   CopyButton,
   Group,
-  Modal,
   ScrollArea,
   Stack,
   Switch,
@@ -32,8 +31,15 @@ import {
   mdiTrashCanOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useMemo, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { AccessibleModal } from '@Components/AccessibleModal'
+import {
+  type KothObserverOperationKind,
+  type KothObserverOperationOwner,
+  newKothObserverOperationId,
+  ownsKothObserverResult,
+} from '@Utils/KothObserverOperations'
 import { showErrorMsg } from '@Utils/Shared'
 import { isKothResetTransition } from '@Utils/kothLifecycle'
 import {
@@ -43,7 +49,8 @@ import {
   type AdminKothReceiptsModel,
   type AdminKothStateModel,
 } from '@Hooks/useGame'
-import api from '@Api'
+import api, { ContentType } from '@Api'
+import ops from '@Styles/AdOperations.module.css'
 import tableClasses from '@Styles/AdOpsTable.module.css'
 import misc from '@Styles/Misc.module.css'
 
@@ -63,6 +70,7 @@ const statusMeta = (status?: string | null): { color: string; icon: string } => 
 }
 
 const fmtPts = (value: number): string => (Number.isInteger(value) ? String(value) : value.toFixed(1))
+const OBSERVER_MUTATION_TIMEOUT_MS = 15_000
 const shortId = (value: string) => (value.length > 16 ? `${value.slice(0, 12)}…` : value)
 const formatJson = (value: unknown): string => {
   try {
@@ -104,7 +112,7 @@ const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill
           {hill.claimSource === 'Api'
             ? hill.apiObserverConfigured
               ? t('admin.content.ad_ops.koth.observer_api', 'Leaderboard')
-              : t('admin.content.ad_ops.koth.observer_missing', 'API key missing')
+              : t('admin.content.ad_ops.koth.observer_missing', 'Leaderboard disabled')
             : hill.cycleNumber > 0
               ? t('admin.content.ad_ops.koth.observer_marker_locked', 'Container marker · locked')
               : t('admin.content.ad_ops.koth.observer_marker', 'Container marker')}
@@ -126,7 +134,7 @@ const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill
           {hill.claimSource === 'Marker' && hill.cycleNumber > 0
             ? t('admin.button.ad_ops.koth.observer_view', 'View input')
             : hill.apiObserverConfigured
-              ? t('admin.button.ad_ops.koth.observer_manage', 'Manage API')
+              ? t('admin.button.ad_ops.koth.observer_manage', 'Manage scoring')
               : t('admin.button.ad_ops.koth.observer_enable', 'Enable Leaderboard')}
         </Button>
       </Stack>
@@ -187,11 +195,18 @@ export interface KothOpsPanelProps {
   koth: AdminKothStateModel
   onShell: (guid: string, title: string) => void
   onToggleHill: (hill: AdminKothHill) => void
-  busyHill: number | null
+  pendingHillStates: ReadonlyMap<number, boolean>
   onMutate: () => Promise<unknown>
 }
 
-export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onToggleHill, busyHill, onMutate }) => {
+export const KothOpsPanel: FC<KothOpsPanelProps> = ({
+  gameId,
+  koth,
+  onShell,
+  onToggleHill,
+  pendingHillStates,
+  onMutate,
+}) => {
   const { t } = useTranslation()
   const [retryingHill, setRetryingHill] = useState<number | null>(null)
   const [auditHill, setAuditHill] = useState<AdminKothHill | null>(null)
@@ -201,6 +216,16 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
   const [observer, setObserver] = useState<AdminKothObserverModel | null>(null)
   const [observerLoading, setObserverLoading] = useState(false)
   const [observerBusy, setObserverBusy] = useState(false)
+  const [pendingObserverOperation, setPendingObserverOperation] = useState<KothObserverOperationOwner | null>(null)
+  const observerHillRef = useRef<AdminKothHill | null>(null)
+  const observerViewGenerationRef = useRef(0)
+  const observerMutationGenerationRef = useRef(0)
+  const observerMutationRef = useRef<KothObserverOperationOwner | null>(null)
+  const observerBusyRef = useRef(false)
+  const auditHillRef = useRef<AdminKothHill | null>(null)
+  const auditGenerationRef = useRef(0)
+  const auditAbortRef = useRef<AbortController | null>(null)
+  const observerAbortRef = useRef<AbortController | null>(null)
   const enabledHills = useMemo(() => koth.hills.filter((hill) => hill.isEnabled), [koth.hills])
   const hasResetInProgress = useMemo(
     () => koth.hills.some((hill) => hill.isEnabled && hill.cycleNumber > 0 && isKothResetTransition(hill.resetPhase)),
@@ -208,6 +233,11 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
   )
 
   const openReceipts = async (hill: AdminKothHill) => {
+    auditAbortRef.current?.abort()
+    const controller = new AbortController()
+    auditAbortRef.current = controller
+    auditHillRef.current = hill
+    const generation = ++auditGenerationRef.current
     setAuditHill(hill)
     setAudit(null)
     setAuditLoading(true)
@@ -216,15 +246,32 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         path: `/api/edit/games/${gameId}/ad/koth/${hill.challengeId}/receipts`,
         method: 'GET',
         format: 'json',
+        signal: controller.signal,
       })
       const body = response.data
-      setAudit('data' in body ? body.data : body)
+      const result = 'data' in body ? body.data : body
+      if (
+        auditGenerationRef.current === generation &&
+        auditHillRef.current?.challengeId === hill.challengeId &&
+        result.challengeId === hill.challengeId
+      ) {
+        setAudit(result)
+      }
     } catch (error) {
-      showErrorMsg(error, t)
+      if (!controller.signal.aborted && auditGenerationRef.current === generation) showErrorMsg(error, t)
     } finally {
-      setAuditLoading(false)
+      if (auditGenerationRef.current === generation) setAuditLoading(false)
     }
   }
+
+  const closeReceipts = useCallback(() => {
+    auditGenerationRef.current += 1
+    auditAbortRef.current?.abort()
+    auditHillRef.current = null
+    setAuditHill(null)
+    setAudit(null)
+    setAuditLoading(false)
+  }, [])
 
   const recoverHill = async (hill: AdminKothHill) => {
     setRetryingHill(hill.challengeId)
@@ -250,9 +297,27 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
     }
   }
 
-  const observerPath = (hill: AdminKothHill) => `/api/edit/games/${gameId}/ad/koth/${hill.challengeId}/observer`
+  const observerPath = (hill: Pick<AdminKothHill, 'challengeId'>) =>
+    `/api/edit/games/${gameId}/ad/koth/${hill.challengeId}/observer`
 
   const openObserver = async (hill: AdminKothHill) => {
+    const pending = observerMutationRef.current
+    if (pending && pending.challengeId !== hill.challengeId) {
+      showNotification({
+        color: 'yellow',
+        icon: <Icon path={mdiAlertCircle} size={1} />,
+        message: t(
+          'admin.notification.ad_ops.koth.observer_recover_first',
+          'Recover the pending referee change on its original hill before managing another credential.'
+        ),
+      })
+      return
+    }
+    observerHillRef.current = hill
+    observerAbortRef.current?.abort()
+    const controller = new AbortController()
+    observerAbortRef.current = controller
+    const viewGeneration = ++observerViewGenerationRef.current
     setObserverHill(hill)
     setObserver(null)
     setObserverLoading(true)
@@ -261,82 +326,227 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         path: observerPath(hill),
         method: 'GET',
         format: 'json',
+        signal: controller.signal,
       })
-      setObserver(response.data)
+      if (
+        observerHillRef.current?.challengeId === hill.challengeId &&
+        observerViewGenerationRef.current === viewGeneration &&
+        response.data.challengeId === hill.challengeId
+      ) {
+        setObserver(response.data)
+      }
     } catch (error) {
-      showErrorMsg(error, t)
+      if (!controller.signal.aborted && observerViewGenerationRef.current === viewGeneration) showErrorMsg(error, t)
     } finally {
-      setObserverLoading(false)
+      if (observerViewGenerationRef.current === viewGeneration) setObserverLoading(false)
     }
   }
 
-  const rotateObserver = async () => {
-    if (!observerHill) return
-    setObserverBusy(true)
-    try {
-      const response = await api.request<AdminKothObserverModel>({
-        path: observerPath(observerHill),
-        method: 'POST',
-        format: 'json',
-      })
+  const closeObserver = useCallback(() => {
+    observerAbortRef.current?.abort()
+    observerHillRef.current = null
+    observerViewGenerationRef.current += 1
+    setObserverHill(null)
+    setObserver(null)
+    setObserverLoading(false)
+  }, [])
+
+  useEffect(() => {
+    const challengeIds = new Set(koth.hills.map((hill) => hill.challengeId))
+    if (auditHillRef.current && !challengeIds.has(auditHillRef.current.challengeId)) closeReceipts()
+    if (observerHillRef.current && !challengeIds.has(observerHillRef.current.challengeId)) closeObserver()
+  }, [closeObserver, closeReceipts, gameId, koth.hills])
+
+  useEffect(() => {
+    closeReceipts()
+    closeObserver()
+    return () => {
+      auditGenerationRef.current += 1
+      observerViewGenerationRef.current += 1
+      auditAbortRef.current?.abort()
+      observerAbortRef.current?.abort()
+    }
+  }, [closeObserver, closeReceipts, gameId])
+
+  const observerOperationPath = (operation: KothObserverOperationOwner) =>
+    `${observerPath({ challengeId: operation.challengeId })}/operations/${operation.operationId}`
+
+  const requestObserverOperation = async (operation: KothObserverOperationOwner): Promise<AdminKothObserverModel> => {
+    const response = await api.request<AdminKothObserverModel>({
+      path: observerPath({ challengeId: operation.challengeId }),
+      method: operation.kind === 'Rotate' ? 'POST' : 'DELETE',
+      type: ContentType.Json,
+      body: {
+        operationId: operation.operationId,
+        expectedRevision: operation.expectedRevision,
+      },
+      timeout: OBSERVER_MUTATION_TIMEOUT_MS,
+      format: 'json',
+    })
+    return response.data
+  }
+
+  const recoverObserverOperation = async (operation: KothObserverOperationOwner): Promise<AdminKothObserverModel> => {
+    const response = await api.request<AdminKothObserverModel>({
+      path: observerOperationPath(operation),
+      method: 'GET',
+      timeout: OBSERVER_MUTATION_TIMEOUT_MS,
+      format: 'json',
+    })
+    return response.data
+  }
+
+  const applyObserverOperation = async (
+    operation: KothObserverOperationOwner,
+    result: AdminKothObserverModel
+  ): Promise<boolean> => {
+    if (
+      !ownsKothObserverResult(
+        observerMutationRef.current,
+        result,
+        observerHillRef.current?.challengeId ?? null,
+        observerViewGenerationRef.current
+      ) ||
+      observerMutationRef.current?.generation !== operation.generation
+    ) {
+      return false
+    }
+    setObserver(result)
+    observerMutationRef.current = null
+    setPendingObserverOperation(null)
+    showNotification({
+      color: 'teal',
+      icon: <Icon path={operation.kind === 'Rotate' ? mdiKeyVariant : mdiCheck} size={1} />,
+      message:
+        operation.kind === 'Rotate'
+          ? t(
+              'admin.notification.ad_ops.koth.observer_rotated',
+              result.managedTargetReporting
+                ? 'Managed scoring is enabled. The displayed credential is only for legacy external reporting.'
+                : 'A new referee secret was created. Copy it now; only this authorized operation can recover it for 24 hours.'
+            )
+          : t(
+              'admin.notification.ad_ops.koth.observer_revoked',
+              result.managedTargetReporting
+                ? 'Managed scoring was disabled for this hill.'
+                : 'The KotH referee secret was revoked.'
+            ),
+    })
+    await onMutate()
+    return true
+  }
+
+  const refreshObserverMetadata = async () => {
+    const hill = observerHillRef.current
+    if (!hill) return
+    const viewGeneration = observerViewGenerationRef.current
+    const response = await api.request<AdminKothObserverModel>({
+      path: observerPath(hill),
+      method: 'GET',
+      format: 'json',
+    })
+    if (
+      observerHillRef.current?.challengeId === hill.challengeId &&
+      observerViewGenerationRef.current === viewGeneration
+    ) {
       setObserver(response.data)
-      showNotification({
-        color: 'teal',
-        icon: <Icon path={mdiKeyVariant} size={1} />,
-        message: t(
-          'admin.notification.ad_ops.koth.observer_rotated',
-          'A new referee secret was created. Copy it now; it will not be shown again.'
-        ),
-      })
-      await onMutate()
+    }
+  }
+
+  const runObserverOperation = async (operation: KothObserverOperationOwner, recoverFirst: boolean) => {
+    if (observerBusyRef.current) return
+    observerBusyRef.current = true
+    setObserverBusy(true)
+    operation.viewGeneration = observerViewGenerationRef.current
+    try {
+      let result: AdminKothObserverModel
+      if (recoverFirst) {
+        try {
+          result = await recoverObserverOperation(operation)
+        } catch (recoveryError: any) {
+          if (recoveryError?.response?.status !== 404) throw recoveryError
+          result = await requestObserverOperation(operation)
+        }
+      } else {
+        try {
+          result = await requestObserverOperation(operation)
+        } catch {
+          try {
+            result = await recoverObserverOperation(operation)
+          } catch (recoveryError: any) {
+            if (recoveryError?.response?.status !== 404) throw recoveryError
+            result = await requestObserverOperation(operation)
+          }
+        }
+      }
+      await applyObserverOperation(operation, result)
     } catch (error) {
+      if ((error as any)?.response?.status === 409 && observerMutationRef.current === operation) {
+        observerMutationRef.current = null
+        setPendingObserverOperation(null)
+        try {
+          await refreshObserverMetadata()
+        } catch {
+          // The original conflict remains the useful operator-facing error.
+        }
+      }
       showErrorMsg(error, t)
     } finally {
+      observerBusyRef.current = false
       setObserverBusy(false)
     }
   }
 
+  const beginObserverOperation = (kind: KothObserverOperationKind) => {
+    const hill = observerHillRef.current
+    if (!hill || !observer || observer.challengeId !== hill.challengeId) return
+    const pending = observerMutationRef.current
+    if (pending) {
+      void runObserverOperation(pending, true)
+      return
+    }
+    const operation: KothObserverOperationOwner = {
+      challengeId: hill.challengeId,
+      expectedRevision: observer.revision,
+      generation: ++observerMutationGenerationRef.current,
+      operationId: newKothObserverOperationId(),
+      kind,
+      viewGeneration: observerViewGenerationRef.current,
+    }
+    observerMutationRef.current = operation
+    setPendingObserverOperation(operation)
+    void runObserverOperation(operation, false)
+  }
+
+  const rotateObserver = () => beginObserverOperation('Rotate')
+
   const revokeObserver = async () => {
-    if (!observerHill || !observer?.configured) return
+    if (!observerHill || !observer?.configured || observer.challengeId !== observerHill.challengeId) return
     if (
       !window.confirm(
         t(
           'admin.confirm.ad_ops.koth.observer_revoke',
-          'Revoke this referee secret? Leaderboard evidence will stop until a new secret is created.'
+          observer.managedTargetReporting
+            ? 'Disable managed scoring for this hill? Leaderboard evidence will stop until it is enabled again.'
+            : 'Revoke this referee secret? Leaderboard evidence will stop until a new secret is created.'
         )
       )
     )
       return
-    setObserverBusy(true)
-    try {
-      await api.request({
-        path: observerPath(observerHill),
-        method: 'DELETE',
-        format: 'json',
-      })
-      const response = await api.request<AdminKothObserverModel>({
-        path: observerPath(observerHill),
-        method: 'GET',
-        format: 'json',
-      })
-      setObserver(response.data)
-      showNotification({
-        color: 'teal',
-        icon: <Icon path={mdiCheck} size={1} />,
-        message: t('admin.notification.ad_ops.koth.observer_revoked', 'The KotH referee secret was revoked.'),
-      })
-      await onMutate()
-    } catch (error) {
-      showErrorMsg(error, t)
-    } finally {
-      setObserverBusy(false)
-    }
+    beginObserverOperation('Revoke')
   }
 
   return (
     <Stack gap="lg">
-      <ScrollArea type="auto">
-        <Table verticalSpacing="xs" highlightOnHover>
+      <Text className={ops.scope}>{t('admin.ad_console.hill_scope')}</Text>
+      <ScrollArea
+        type="auto"
+        viewportProps={{
+          tabIndex: 0,
+          'aria-label': t('admin.content.ad_ops.koth.table_caption', 'King of the Hill operations'),
+        }}
+      >
+        <Table verticalSpacing="xs" highlightOnHover className={ops.kothTable}>
           <Table.Caption>{t('admin.content.ad_ops.koth.table_caption', 'King of the Hill operations')}</Table.Caption>
           <Table.Thead className={tableClasses.thead}>
             <Table.Tr>
@@ -363,13 +573,22 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
               const hasCycle = hill.cycleNumber > 0
               const cooldown = hill.cooldownParticipants
               const isApiArena = hill.claimSource === 'Api'
+              const pendingEnabled = pendingHillStates.get(hill.challengeId)
+              const displayedEnabled = pendingEnabled ?? hill.isEnabled
               return (
-                <Table.Tr key={hill.challengeId} style={{ opacity: hill.isEnabled ? 1 : 0.5 }}>
+                <Table.Tr key={hill.challengeId}>
                   <Table.Td>
                     <Stack gap={2}>
-                      <Text fw="bold" size="sm">
-                        {hill.title}
-                      </Text>
+                      <Group gap={4} wrap="wrap">
+                        <Text fw="bold" size="sm">
+                          {hill.title}
+                        </Text>
+                        {!displayedEnabled && (
+                          <Badge size="xs" color="gray" variant="outline">
+                            {t('common.content.disabled', 'Disabled')}
+                          </Badge>
+                        )}
+                      </Group>
                       <Group gap={4}>
                         {hill.resetReceiptId != null && (
                           <Badge size="xs" color="gray" variant="light">
@@ -435,7 +654,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                       )}
                       {hill.readinessFailureCount > 0 && (
                         <Tooltip label={hill.lastReadinessError ?? ''} disabled={!hill.lastReadinessError} withArrow>
-                          <Text size="xs" c="red">
+                          <Text size="xs" className={ops.error}>
                             {t('admin.content.ad_ops.koth.readiness_failures', {
                               count: hill.readinessFailureCount,
                               defaultValue: '{{count}} readiness failure(s)',
@@ -599,8 +818,9 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                       withArrow
                     >
                       <Switch
-                        checked={hill.isEnabled}
-                        disabled={busyHill === hill.challengeId}
+                        checked={displayedEnabled}
+                        disabled={pendingEnabled !== undefined}
+                        aria-busy={pendingEnabled !== undefined}
                         onChange={() => onToggleHill(hill)}
                         aria-label={t('admin.tooltip.ad_ops.koth.toggle_hill', {
                           title: hill.title,
@@ -628,7 +848,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                         <Button
                           size="compact-xs"
                           color="orange"
-                          variant="light"
+                          variant="default"
                           leftSection={<Icon path={mdiRestart} size={0.7} />}
                           loading={retryingHill === hill.challengeId}
                           disabled={!hill.canRetry || (retryingHill != null && retryingHill !== hill.challengeId)}
@@ -659,14 +879,23 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
 
       <Stack gap="xs">
         <Group gap="xs" align="center">
-          <Title order={5}>{t('admin.content.ad_ops.koth.leaderboard', 'Official KotH leaderboard')}</Title>
+          <Title order={3} size="h5">
+            {t('admin.content.ad_ops.koth.leaderboard', 'Official KotH leaderboard')}
+          </Title>
         </Group>
         {koth.teams.length === 0 || enabledHills.length === 0 ? (
           <Text size="sm" c="dimmed">
             {t('admin.content.ad_ops.koth.no_scores', 'No official KotH score yet.')}
           </Text>
         ) : (
-          <ScrollArea h="40vh" type="auto">
+          <ScrollArea
+            h="40vh"
+            type="auto"
+            viewportProps={{
+              tabIndex: 0,
+              'aria-label': t('admin.content.ad_ops.koth.leaderboard', 'Official KotH leaderboard'),
+            }}
+          >
             <Table verticalSpacing="xs" striped highlightOnHover withColumnBorders>
               <Table.Caption>{t('admin.content.ad_ops.koth.leaderboard', 'Official KotH leaderboard')}</Table.Caption>
               <Table.Thead className={tableClasses.thead}>
@@ -706,7 +935,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                           {fmtPts(row.settledTotal)}
                         </Text>
                         {Math.abs(row.projectedTotal - row.settledTotal) > 0.05 && (
-                          <Text size="xs" c="orange">
+                          <Text size="xs" className={ops.warning}>
                             live {fmtPts(row.projectedTotal)}
                           </Text>
                         )}
@@ -733,12 +962,9 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         )}
       </Stack>
 
-      <Modal
+      <AccessibleModal
         opened={auditHill !== null}
-        onClose={() => {
-          setAuditHill(null)
-          setAudit(null)
-        }}
+        onClose={closeReceipts}
         size="xl"
         centered
         title={t('admin.content.ad_ops.koth.receipts_title', {
@@ -775,24 +1001,21 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
             {t('admin.content.ad_ops.koth.receipts_empty', 'No receipts have been recorded for this hill yet.')}
           </Text>
         )}
-      </Modal>
+      </AccessibleModal>
 
-      <Modal
+      <AccessibleModal
         opened={observerHill !== null}
-        onClose={() => {
-          setObserverHill(null)
-          setObserver(null)
-        }}
+        onClose={closeObserver}
         size="lg"
         centered
         title={t('admin.content.ad_ops.koth.observer_title', {
           hill: observerHill?.title ?? '',
-          defaultValue: 'Leaderboard referee — {{hill}}',
+          defaultValue: 'Leaderboard scoring — {{hill}}',
         })}
       >
-        {observerLoading || !observer ? (
+        {observerLoading || !observer || observer.challengeId !== observerHill?.challengeId ? (
           <Text size="sm" c="dimmed">
-            {t('admin.content.ad_ops.koth.observer_loading', 'Loading referee configuration…')}
+            {t('admin.content.ad_ops.koth.observer_loading', 'Loading scoring configuration…')}
           </Text>
         ) : (
           <Stack gap="md">
@@ -806,15 +1029,17 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                   ? observer.configured
                     ? t(
                         'admin.content.ad_ops.koth.observer_active',
-                        'This Leaderboard hill accepts signed finalized-wave evidence for every team. RSCTF binds it to the current scoring round, brackets it around the functional checker, normalizes every result, and calculates every point.'
+                        observer.managedTargetReporting
+                          ? 'This Leaderboard hill receives finalized-wave evidence directly from its platform-managed target. RSCTF injects a lifecycle-bound credential, binds every snapshot to the current target and round, normalizes each result, and calculates every point.'
+                          : 'This Leaderboard hill accepts signed finalized-wave evidence from a compatible external referee. RSCTF binds it to the current scoring round, normalizes every result, and calculates every point.'
                       )
                     : t(
                         'admin.content.ad_ops.koth.observer_required',
-                        'This hill is officially locked to Leaderboard scoring but has no active referee credential. Create one before resuming scoring.'
+                        'This hill is officially locked to Leaderboard scoring but scoring is disabled. Enable it before resuming the event.'
                       )
                   : t(
                       'admin.content.ad_ops.koth.observer_marker_mode',
-                      'This boot2root hill currently reads /koth/king. Enabling the referee before the official snapshot selects multi-team Leaderboard scoring; the mode cannot change after scoring starts.'
+                      'This boot2root hill currently reads /koth/king. Enabling Leaderboard scoring before the official snapshot selects multi-team evidence scoring; the mode cannot change after scoring starts.'
                     )}
               </Text>
               {observer.claimSource === 'Api' && observer.configured && (
@@ -827,7 +1052,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                     : t('admin.content.ad_ops.koth.observer_scheme_locked', {
                         count: observer.objectiveCount,
                         defaultValue:
-                          'Objective scheme locked: {{count}} identified, equally normalized components for the event. Referee credential changes cannot alter it.',
+                          'Objective scheme locked: {{count}} identified, equally normalized components for the event. Credential changes cannot alter it.',
                       })}
                 </Text>
               )}
@@ -850,12 +1075,23 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
             </Alert>
 
             {observer.secret && (
-              <Alert color="orange" variant="light" title={t('admin.content.ad_ops.koth.secret_once', 'Copy once')}>
+              <Alert
+                color="orange"
+                variant="light"
+                title={t(
+                  'admin.content.ad_ops.koth.secret_recoverable',
+                  observer.managedTargetReporting
+                    ? 'Optional legacy external credential'
+                    : 'Copy and store this credential'
+                )}
+              >
                 <Stack gap="xs">
                   <Text size="sm">
                     {t(
-                      'admin.content.ad_ops.koth.secret_once_body',
-                      'This HMAC secret is shown only now. Keep it in the independent referee service, never in the player-facing arena or client.'
+                      'admin.content.ad_ops.koth.secret_recoverable_body',
+                      observer.managedTargetReporting
+                        ? 'No copy is needed for the managed target. rsctf injects a separate short-lived credential for each target lifecycle. This recoverable HMAC value exists only for deployments that still run a compatible external referee.'
+                        : 'This HMAC secret is retained for 24 hours only for this authorized operation, so an ambiguous response can recover the exact same result. Copy it into the independent referee service, never the player-facing arena or client.'
                     )}
                   </Text>
                   <Group gap="xs" wrap="nowrap">
@@ -874,56 +1110,97 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
               </Alert>
             )}
 
-            <Stack gap={4}>
-              <Text size="xs" fw={700}>
-                {t('admin.content.ad_ops.koth.observer_context_endpoint', '1. Fetch active context')}
-              </Text>
-              <Code block className={misc.ffmono} style={{ overflowWrap: 'anywhere' }}>
-                GET {observer.contextPath}
-              </Code>
-              <Text size="xs" fw={700} mt="xs">
-                {t('admin.content.ad_ops.koth.observer_post_endpoint', '2. Submit current evidence')}
-              </Text>
-              <Code block className={misc.ffmono} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                {`POST ${observer.observationPath}
+            {pendingObserverOperation?.challengeId === observer.challengeId && (
+              <Alert color="yellow" variant="light" title={t('common.status.pending', 'Pending operation')}>
+                <Text size="sm">
+                  {t(
+                    'admin.content.ad_ops.koth.observer_recovery_pending',
+                    'This credential change has an ambiguous response. Recover the same operation before starting another change.'
+                  )}
+                </Text>
+              </Alert>
+            )}
+
+            {!observer.managedTargetReporting && (
+              <Stack gap={4}>
+                <Text size="xs" fw={700}>
+                  {t('admin.content.ad_ops.koth.observer_context_endpoint', '1. Fetch active context')}
+                </Text>
+                <Code block className={misc.ffmono} style={{ overflowWrap: 'anywhere' }}>
+                  GET {observer.contextPath}
+                </Code>
+                <Text size="xs" fw={700} mt="xs">
+                  {t('admin.content.ad_ops.koth.observer_post_endpoint', '2. Submit current evidence')}
+                </Text>
+                <Code block className={misc.ffmono} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                  {`POST ${observer.observationPath}
 X-RSCTF-Timestamp: <Unix milliseconds>
 X-RSCTF-Signature: sha256=<HMAC-SHA256>
 
 {"context":"<context>","objectiveIds":["official-score"],"waves":[{"waveId":"heat-42","endedAtUnixMs":1786200000000,"teams":[{"tokenHash":"<sha256-current-capability>","activity":{"earned":1,"possible":1},"objectives":[{"earned":150,"possible":150}],"isCrown":true}]}]}`}
-              </Code>
-              <Text size="xs" c="dimmed">
-                {t(
-                  'admin.content.ad_ops.koth.observer_signature',
-                  'Hash each current capability with SHA-256 and sign the exact raw body as timestamp.gameId.challengeId.body. Every wave needs a unique ID, its server-confirmed end time, completed native results, and at most one best-scoring Crown. Stable ordered objectiveIds are frozen and bound into later contexts; raw capabilities and platform points are never accepted. Requests expire after five minutes and accepted signatures cannot be replayed.'
-                )}
-              </Text>
-            </Stack>
+                </Code>
+                <Text size="xs" c="dimmed">
+                  {t(
+                    'admin.content.ad_ops.koth.observer_signature',
+                    'Hash each current capability with SHA-256 and sign the exact raw body as timestamp.gameId.challengeId.body. Every wave needs a unique ID, its server-confirmed end time, completed native results, and at most one best-scoring Crown. Stable ordered objectiveIds are frozen and bound into later contexts; raw capabilities and platform points are never accepted. Requests expire after five minutes and accepted signatures cannot be replayed.'
+                  )}
+                </Text>
+              </Stack>
+            )}
+
+            {observer.managedTargetReporting && observer.configured && (
+              <Stack gap={4}>
+                <Text size="sm" c="dimmed">
+                  {t(
+                    'admin.content.ad_ops.koth.managed_target_reporting',
+                    'Each newly created target receives scoped context and observation URLs plus a lifecycle-bound signing credential. Challenge code submits native evidence; it never submits platform points.'
+                  )}
+                </Text>
+                <Text size="xs" c="dimmed">
+                  {t(
+                    'admin.content.ad_ops.koth.managed_target_reset_note',
+                    'If scoring was enabled after the current target started, reset that target once so rsctf can inject its managed credential.'
+                  )}
+                </Text>
+              </Stack>
+            )}
 
             <Group justify="space-between" wrap="wrap">
               <Button
                 color="red"
                 variant="subtle"
                 leftSection={<Icon path={mdiTrashCanOutline} size={0.8} />}
-                disabled={!observer.configured}
+                disabled={!observer.configured || pendingObserverOperation !== null}
                 loading={observerBusy}
                 onClick={revokeObserver}
               >
-                {t('admin.button.ad_ops.koth.observer_revoke', 'Revoke')}
+                {t('admin.button.ad_ops.koth.observer_revoke', 'Disable Leaderboard')}
               </Button>
               <Button
                 leftSection={<Icon path={mdiKeyVariant} size={0.8} />}
-                disabled={observer.claimSource === 'Marker' && (observerHill?.cycleNumber ?? 0) > 0}
+                disabled={
+                  observer.challengeId !== observerHill?.challengeId ||
+                  (observer.claimSource === 'Marker' && (observerHill?.cycleNumber ?? 0) > 0)
+                }
                 loading={observerBusy}
                 onClick={rotateObserver}
               >
-                {observer.configured
-                  ? t('admin.button.ad_ops.koth.observer_rotate', 'Rotate secret')
-                  : t('admin.button.ad_ops.koth.observer_create', 'Create referee secret')}
+                {pendingObserverOperation
+                  ? t('admin.button.ad_ops.koth.observer_recover', 'Recover pending change')
+                  : observer.configured
+                    ? t(
+                        'admin.button.ad_ops.koth.observer_rotate',
+                        observer.managedTargetReporting ? 'Rotate legacy fallback' : 'Rotate secret'
+                      )
+                    : t(
+                        'admin.button.ad_ops.koth.observer_create',
+                        observer.managedTargetReporting ? 'Enable managed scoring' : 'Create referee secret'
+                      )}
               </Button>
             </Group>
           </Stack>
         )}
-      </Modal>
+      </AccessibleModal>
     </Stack>
   )
 }

@@ -15,13 +15,13 @@ import {
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose, mdiDiceMultiple, mdiMinusCircle } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ScrollingText } from '@Components/ScrollingText'
 import { PermissionDot, PermissionSelector } from '@Components/admin/PermissionSelector'
 import { PERMISSION_DEFINITIONS, permissionMaskToArray } from '@Utils/Permission'
 import { randomInviteCode, showErrorMsg } from '@Utils/Shared'
-import { ChallengeInfoModel, Division, DivisionCreateModel, GamePermission } from '@Api'
+import { ChallengeInfoModel, Division, DivisionCreateModel, DivisionEditModel, GamePermission } from '@Api'
 import api from '@Api'
 
 interface DivisionEditDrawerProps extends DrawerProps {
@@ -61,6 +61,8 @@ export const DivisionEditDrawer: FC<DivisionEditDrawerProps> = ({
   const [selectedChallenges, setSelectedChallenges] = useState<string[]>([])
   const [challengePermissions, setChallengePermissions] = useState<ChallengePermissionState>({})
   const [loading, setLoading] = useState(false)
+  const mutationOwner = useRef(false)
+  const operationId = useRef<string | null>(null)
 
   const challengeMap = useMemo(() => {
     const map = new Map<number, ChallengeInfoModel>()
@@ -120,6 +122,7 @@ export const DivisionEditDrawer: FC<DivisionEditDrawerProps> = ({
     if (opened) {
       resetForm()
       setLoading(false)
+      operationId.current = null
     }
   }, [division, opened])
 
@@ -166,6 +169,7 @@ export const DivisionEditDrawer: FC<DivisionEditDrawerProps> = ({
   })
 
   const handleSubmit = async () => {
+    if (mutationOwner.current) return
     const trimmedName = name.trim()
     if (!trimmedName) {
       showNotification({
@@ -176,13 +180,36 @@ export const DivisionEditDrawer: FC<DivisionEditDrawerProps> = ({
       return
     }
 
-    setLoading(true)
-
     const model = buildModel(trimmedName)
+    mutationOwner.current = true
+    setLoading(true)
 
     try {
       if (division) {
-        const response = await api.edit.editUpdateDivision(gameId, division.id, model)
+        const desiredConfigs = [...(model.challengeConfigs ?? [])].sort((a, b) => a.challengeId - b.challengeId)
+        const currentConfigs = [...(division.challengeConfigs ?? [])]
+          .map((config) => ({
+            challengeId: config.challengeId,
+            permissions: config.permissions ?? GamePermission.All,
+          }))
+          .sort((a, b) => a.challengeId - b.challengeId)
+        const edit: DivisionEditModel = {
+          operationId: operationId.current ?? crypto.randomUUID(),
+          expectedRevision: division.revision,
+        }
+        operationId.current = edit.operationId
+        if (model.name !== division.name) edit.name = model.name
+        if ((model.inviteCode ?? '') !== (division.inviteCode ?? '')) {
+          edit.inviteCode = model.inviteCode?.trim() ? model.inviteCode : null
+        }
+        if (model.defaultPermissions !== division.defaultPermissions) edit.defaultPermissions = model.defaultPermissions
+        if (JSON.stringify(desiredConfigs) !== JSON.stringify(currentConfigs)) edit.challengeConfigs = desiredConfigs
+        if (Object.keys(edit).length === 2) {
+          onClose?.()
+          return
+        }
+        const response = await api.edit.editUpdateDivision(gameId, division.id, edit)
+        operationId.current = null
 
         showNotification({
           color: 'teal',
@@ -205,6 +232,7 @@ export const DivisionEditDrawer: FC<DivisionEditDrawerProps> = ({
     } catch (error) {
       showErrorMsg(error, t)
     } finally {
+      mutationOwner.current = false
       setLoading(false)
     }
   }

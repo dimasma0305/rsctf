@@ -17,6 +17,24 @@ use crate::models::data::participation;
 use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 
+/// The API gate and challenge transport are independent. Keep one predicate for
+/// credential issuance and kernel peer retention (the query must alias Games as
+/// `game`). This does not authorize a caller or grant access to any target.
+pub(crate) const PERSONAL_PEER_GAME_ELIGIBLE_SQL: &str = r#"
+    game.deletion_pending = FALSE
+    AND clock_timestamp() < game.end_time_utc
+    AND (
+        game.vpn_access_required = TRUE
+        OR EXISTS (
+            SELECT 1 FROM "GameChallenges" challenge
+             WHERE challenge.game_id = game.id
+               AND challenge.is_enabled = TRUE
+               AND challenge.review_status = 0
+               AND challenge."Type" IN (4, 5)
+        )
+    )
+"#;
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EventVpnUserPeer {
     pub id: Uuid,
@@ -44,6 +62,7 @@ pub struct VerifiedPeerSource {
     pub peer_id: Uuid,
     pub user_id: Uuid,
     pub participation_id: i32,
+    pub public_key: String,
     pub generation: i32,
     pub policy_revision: i64,
     pub security_stamp: String,
@@ -172,6 +191,31 @@ where
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
+async fn load_reserved_addresses<'e, E>(executor: E) -> AppResult<HashSet<Ipv4Addr>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    // Event VPN peer rows are immutable audit history and their address column
+    // has a global unique index. A revoked row therefore still reserves its
+    // address even though it is no longer installed in WireGuard. Keep those
+    // historical addresses in the allocator set or a later event can select
+    // one and fail its config download with a unique-constraint violation.
+    sqlx::query_scalar::<_, String>(
+        r#"SELECT address FROM "AdVpnPeers"
+           UNION ALL
+           SELECT address FROM "EventVpnUserPeers""#,
+    )
+    .fetch_all(executor)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+    .map(|addresses| {
+        addresses
+            .into_iter()
+            .filter_map(|address| Ipv4Addr::from_str(&address).ok())
+            .collect()
+    })
+}
+
 pub async fn ensure_user_peer(
     st: &SharedState,
     user: &CurrentUser,
@@ -198,22 +242,17 @@ pub async fn ensure_user_peer(
     crate::utils::single_flight::acquire_transaction_advisory_lock(tx, "ad-vpn-peer-allocation")
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let allowed: bool = sqlx::query_scalar(
-        r#"SELECT EXISTS(
-               SELECT 1 FROM "Games"
-                WHERE id = $1
-                  AND deletion_pending = FALSE
-                  AND vpn_access_required = TRUE
-                  AND clock_timestamp() < end_time_utc
-           )"#,
-    )
+    let allowed: bool = sqlx::query_scalar(&format!(
+        r#"SELECT EXISTS(SELECT 1 FROM "Games" game
+             WHERE game.id = $1 AND ({PERSONAL_PEER_GAME_ELIGIBLE_SQL}))"#,
+    ))
     .bind(part.game_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     if !allowed {
         return Err(AppError::bad_request(
-            "Event VPN configuration is unavailable after the event has ended",
+            "VPN configuration requires an unended event with VPN access or an enabled A&D/KotH challenge",
         ));
     }
 
@@ -240,17 +279,7 @@ pub async fn ensure_user_peer(
         });
     }
 
-    let used = sqlx::query_scalar::<_, String>(
-        r#"SELECT address FROM "AdVpnPeers"
-           UNION ALL
-           SELECT address FROM "EventVpnUserPeers" WHERE revoked_at_utc IS NULL"#,
-    )
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .into_iter()
-    .filter_map(|address| Ipv4Addr::from_str(&address).ok())
-    .collect::<HashSet<_>>();
+    let used = load_reserved_addresses(&mut **tx).await?;
     let address = allocate_address(
         &crate::services::ad_vpn::client_cidr(),
         part.game_id,
@@ -314,6 +343,7 @@ pub async fn verified_peer_source(
 ) -> AppResult<Option<VerifiedPeerSource>> {
     sqlx::query_as::<_, VerifiedPeerSource>(
         r#"SELECT peer.id AS peer_id, peer.user_id, peer.participation_id,
+                  peer.public_key,
                   peer.generation, game.vpn_policy_revision AS policy_revision,
                   account.security_stamp
              FROM "EventVpnUserPeers" peer
@@ -357,6 +387,60 @@ pub async fn verified_peer_source(
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
+pub async fn verified_user_peer(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    user_id: Uuid,
+    participation_id: i32,
+) -> AppResult<Option<VerifiedPeerSource>> {
+    sqlx::query_as::<_, VerifiedPeerSource>(
+        r#"SELECT peer.id AS peer_id, peer.user_id, peer.participation_id,
+                  peer.public_key,
+                  peer.generation, game.vpn_policy_revision AS policy_revision,
+                  account.security_stamp
+             FROM "EventVpnUserPeers" peer
+             JOIN "Games" game ON game.id = peer.game_id
+             JOIN "Participations" participation
+               ON participation.game_id = peer.game_id
+              AND participation.id = peer.participation_id
+             JOIN "UserParticipations" historical
+               ON historical.user_id = peer.user_id
+              AND historical.game_id = peer.game_id
+              AND historical.participation_id = peer.participation_id
+              AND historical.team_id = participation.team_id
+             JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "AspNetUsers" account ON account.id = peer.user_id
+            WHERE peer.game_id = $1
+              AND peer.user_id = $2
+              AND peer.participation_id = $3
+              AND peer.revoked_at_utc IS NULL
+              AND game.deletion_pending = FALSE
+              AND game.vpn_access_required = TRUE
+              AND game.start_time_utc <= clock_timestamp()
+              AND clock_timestamp() < game.end_time_utc
+              AND participation.status = $4
+              AND team.deletion_pending = FALSE
+              AND account.email_confirmed = TRUE
+              AND account.role <> $5
+              AND account.security_stamp IS NOT NULL
+              AND (
+                    team.captain_id = peer.user_id
+                    OR EXISTS (
+                        SELECT 1 FROM "TeamMembers" member
+                         WHERE member.team_id = team.id AND member.user_id = peer.user_id
+                    )
+              )"#,
+    )
+    .bind(game_id)
+    .bind(user_id)
+    .bind(participation_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(Role::Banned as i16)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 pub fn proof_url(game_id: i32) -> AppResult<String> {
     let base = std::env::var("RSCTF_EVENT_VPN_PROOF_URL")
         .ok()
@@ -364,25 +448,19 @@ pub fn proof_url(game_id: i32) -> AppResult<String> {
         .filter(|value| value.starts_with("https://") && value.len() > 8)
         .ok_or_else(|| {
             AppError::unavailable(
-                "Event VPN requires an HTTPS RSCTF_EVENT_VPN_PROOF_URL routed through WireGuard",
+                "Event VPN requires an HTTPS RSCTF_EVENT_VPN_PROOF_URL on the browser origin",
             )
         })?;
     Ok(format!("{base}/api/game/{game_id}/vpn/proof"))
 }
 
-pub async fn render_user_config(
-    st: &SharedState,
-    user: &CurrentUser,
-    part: &participation::Model,
-) -> AppResult<String> {
-    let peer = ensure_user_peer(st, user, part).await?;
-    let proof_url = proof_url(part.game_id)?;
-    let endpoint = std::env::var("RSCTF_AD_VPN_SERVER_ENDPOINT")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| AppError::unavailable("RSCTF_AD_VPN_SERVER_ENDPOINT is required"))?;
-    let mut allowed = std::env::var("RSCTF_EVENT_VPN_ALLOWED_IPS")
-        .unwrap_or_else(|_| crate::services::ad_vpn::client_cidr())
+fn event_profile_routes(
+    configured: Option<&str>,
+    service_routes: Vec<String>,
+    client_route: String,
+) -> AppResult<Vec<String>> {
+    let mut allowed = configured
+        .unwrap_or_default()
         .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -396,15 +474,51 @@ pub async fn render_user_config(
             "Event VPN must use split-tunnel routes; default routes are forbidden",
         ));
     }
-    for route in crate::services::ad_vpn::service_route_cidrs().map_err(AppError::internal)? {
+    for route in service_routes
+        .into_iter()
+        .chain(std::iter::once(client_route))
+    {
         if !allowed.contains(&route) {
             allowed.push(route);
         }
     }
+    Ok(allowed)
+}
+
+pub async fn render_user_config(
+    st: &SharedState,
+    user: &CurrentUser,
+    part: &participation::Model,
+) -> AppResult<String> {
+    let policy = super::load_policy(st, part.game_id).await?;
+    let proof_hint = if policy.access_required {
+        format!("; VPN proof endpoint: {}", proof_url(part.game_id)?)
+    } else {
+        String::new()
+    };
+    let endpoint = std::env::var("RSCTF_AD_VPN_SERVER_ENDPOINT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| AppError::unavailable("RSCTF_AD_VPN_SERVER_ENDPOINT is required"))?;
+    // The Toolkit profile also reaches managed BYOC peers in the client
+    // network. Kernel policy still limits each event's peers to its exact live
+    // targets, so adding the route does not grant cross-event access.
+    let configured = std::env::var("RSCTF_EVENT_VPN_ALLOWED_IPS").ok();
+    let allowed = event_profile_routes(
+        configured.as_deref(),
+        crate::services::ad_vpn::service_route_cidrs().map_err(AppError::internal)?,
+        crate::services::ad_vpn::client_cidr(),
+    )?;
+    let dns = crate::services::ad_vpn::same_origin_access()
+        .map_err(AppError::internal)?
+        .map(|access| format!("DNS = {}\n", access.dns))
+        .unwrap_or_default();
+    let peer = ensure_user_peer(st, user, part).await?;
     let server_public_key = crate::services::ad_vpn::server_public_key(&st.db).await?;
     Ok(format!(
-        "# RSCTF event {game_id}; VPN proof endpoint: {proof_url}\n\
-         [Interface]\nPrivateKey = {private_key}\nAddress = {address}/32\n\n\
+        "# RSCTF event {game_id}{proof_hint}\n\
+         # Personal player profile: do not share or run on multiple devices at once.\n\
+         [Interface]\nPrivateKey = {private_key}\nAddress = {address}/32\n{dns}\n\
          [Peer]\nPublicKey = {server_public_key}\nEndpoint = {endpoint}\n\
          AllowedIPs = {allowed}\nPersistentKeepalive = 25\n",
         game_id = part.game_id,
@@ -454,4 +568,33 @@ mod tests {
         assert_ne!(first, second);
         assert_ne!(first, "10.14.0.1");
     }
+
+    #[test]
+    fn personal_event_profile_includes_toolkit_routes_once() {
+        let allowed = event_profile_routes(
+            Some("192.0.2.0/28, 10.13.41.0/24"),
+            vec!["10.13.41.0/24".to_string()],
+            "10.13.42.0/24".to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            allowed,
+            vec!["192.0.2.0/28", "10.13.41.0/24", "10.13.42.0/24"]
+        );
+        assert_eq!(
+            allowed
+                .iter()
+                .filter(|route| route.as_str() == "10.13.41.0/24")
+                .count(),
+            1
+        );
+        assert!(
+            event_profile_routes(Some("0.0.0.0/0"), Vec::new(), "10.13.42.0/24".to_string())
+                .is_err()
+        );
+    }
 }
+
+#[cfg(test)]
+#[path = "peer_pg_tests.rs"]
+mod pg_tests;

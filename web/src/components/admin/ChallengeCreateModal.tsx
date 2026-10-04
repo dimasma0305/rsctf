@@ -3,9 +3,11 @@ import { useInputState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
+import { ChallengeMutationOperation, prepareChallengeMutation } from '@Utils/ChallengeMutation'
+import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { showErrorMsg } from '@Utils/Shared'
 import {
   ChallengeCategoryItem,
@@ -22,7 +24,7 @@ interface ChallengeCreateModalProps extends ModalProps {
 
 export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
   const { id } = useParams()
-  const { onAddChallenge, onClose, ...modalProps } = props
+  const { onAddChallenge, onClose, opened, ...modalProps } = props
   const [disabled, setDisabled] = useState(false)
   const navigate = useNavigate()
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
@@ -31,21 +33,40 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
   const [title, setTitle] = useInputState('')
   const [category, setCategory] = useState<string | null>(null)
   const [type, setType] = useState<string | null>(null)
+  const createOperation = useRef<ChallengeMutationOperation | null>(null)
+  const requestOwner = useRef(new RetryableMutationOwner())
 
   const { t } = useTranslation()
+
+  useEffect(() => {
+    requestOwner.current.cancel()
+    createOperation.current = null
+    setDisabled(false)
+    return () => requestOwner.current.cancel()
+  }, [id, opened])
 
   const onCreate = async () => {
     if (!title || !category || !type) return
 
-    setDisabled(true)
     const numId = parseInt(id ?? '-1')
-
-    try {
-      const res = await api.edit.editAddGameChallenge(numId, {
-        title: title,
+    const prepared = prepareChallengeMutation(
+      {
+        title,
         category: category as ChallengeCategory,
         type: type as ChallengeType,
-      })
+      },
+      undefined,
+      createOperation.current
+    )
+    const lease = requestOwner.current.claim(prepared.operation.digest, prepared.operation.id)
+    if (!lease) return
+    createOperation.current = prepared.operation
+    setDisabled(true)
+
+    try {
+      const res = await api.edit.editAddGameChallenge(numId, prepared.payload, { signal: lease.signal })
+      if (!requestOwner.current.settle(lease, true)) return
+      createOperation.current = null
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.challenges.created'),
@@ -54,13 +75,16 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
       onAddChallenge(res.data)
       navigate(`/admin/games/${id}/challenges/${res.data.id}`)
     } catch (e) {
+      if (!requestOwner.current.settle(lease, false)) return
       showErrorMsg(e, t)
-    } finally {
       setDisabled(false)
     }
   }
 
   const handleClose = () => {
+    if (requestOwner.current.isActive()) return
+    requestOwner.current.cancel()
+    createOperation.current = null
     setTitle('')
     setCategory(null)
     setType(null)
@@ -68,14 +92,28 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
   }
 
   return (
-    <Modal {...modalProps} onClose={handleClose}>
-      <Stack>
+    <Modal
+      {...modalProps}
+      opened={opened}
+      onClose={handleClose}
+      closeOnClickOutside={!disabled}
+      closeOnEscape={!disabled}
+      withCloseButton={!disabled}
+    >
+      <Stack
+        component="form"
+        onSubmit={(event) => {
+          event.preventDefault()
+          void onCreate()
+        }}
+      >
         <TextInput
           label={t('admin.content.games.challenges.title')}
           type="text"
           required
           placeholder="Title"
           value={title}
+          disabled={disabled}
           onChange={setTitle}
         />
         <Select
@@ -83,6 +121,7 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
           label={t('admin.content.games.challenges.category')}
           placeholder="Category"
           value={category}
+          disabled={disabled}
           onChange={setCategory}
           renderOption={ChallengeCategoryItem}
           data={ChallengeCategoryList.map((category) => {
@@ -96,6 +135,7 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
           description={t('admin.content.games.challenges.type.description')}
           placeholder="Type"
           value={type}
+          disabled={disabled}
           onChange={setType}
           renderOption={ChallengeTypeItem}
           data={Object.entries(ChallengeType).map((type) => {
@@ -103,7 +143,7 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
             return { value: type[1], label: data?.name, ...data } as ComboboxItem
           })}
         />
-        <Button fullWidth disabled={disabled || !title || !category || !type} onClick={onCreate}>
+        <Button type="submit" fullWidth disabled={disabled || !title || !category || !type}>
           {t('admin.button.challenges.new')}
         </Button>
       </Stack>

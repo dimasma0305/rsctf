@@ -1,254 +1,168 @@
-import {
-  Badge,
-  Box,
-  Card,
-  Center,
-  Code,
-  Divider,
-  Group,
-  Stack,
-  Text,
-  Tooltip,
-  alpha,
-  useMantineColorScheme,
-  useMantineTheme,
-} from '@mantine/core'
-import { mdiCrown, mdiFlag, mdiFlagOutline, mdiSwordCross, mdiThumbUp } from '@mdi/js'
+import { Card, Group, Text, Tooltip } from '@mantine/core'
+import { mdiCheckCircleOutline, mdiClockOutline, mdiCrown, mdiFlagOutline, mdiSwordCross, mdiThumbUp } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import cx from 'clsx'
 import dayjs from 'dayjs'
 import { FC, useMemo } from 'react'
-import { Trans, useTranslation } from 'react-i18next'
-import { ScrollingText } from '@Components/ScrollingText'
+import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router'
+import { DisclosureNeededBadge } from '@Components/DisclosureNeededBadge'
 import { useLanguage } from '@Utils/I18n'
+import { useServerNow } from '@Utils/ServerClock'
 import { BloodsTypes, PartialIconProps, useChallengeCategoryLabelMap } from '@Utils/Shared'
+import { buildSemanticAccentColors } from '@Utils/ThemeContrast'
 import { ChallengeInfo, ChallengeType, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengeCard.module.css'
-import misc from '@Styles/Misc.module.css'
 
 interface ChallengeCardProps {
   challenge: ChallengeInfo
   solved?: boolean
-  onClick?: () => void
-  /** Optional event context when this shared card is rendered outside an
-   * event page, such as the joined-event challenge catalog. */
+  href: string
   contextLabel?: string
   iconMap: Map<SubmissionType, PartialIconProps | undefined>
   colorMap: Map<SubmissionType, string | undefined>
   teamId?: number
   rating?: { likes: number; dislikes: number }
+  /** Solved, but the event still needs this team's AI chat disclosure. */
+  disclosurePending?: boolean
 }
 
-export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps) => {
-  const { challenge, solved, onClick, contextLabel, iconMap, teamId, colorMap, rating } = props
-  const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
-  const cateData = challengeCategoryLabelMap.get(challenge.category!)
-  const theme = useMantineTheme()
-  const { colorScheme } = useMantineColorScheme()
-  const { locale } = useLanguage()
+const ChallengeCardContent: FC<ChallengeCardProps & { deadlinePassed: boolean }> = ({
+  challenge,
+  solved,
+  href,
+  contextLabel,
+  iconMap,
+  teamId,
+  rating,
+  deadlinePassed,
+  disclosurePending,
+}) => {
   const { t } = useTranslation()
-  // A&D AND KotH both run on the live-scoring engine — neither has a static
-  // "challenge.score" worth showing. Without including KotH here, the card
-  // would print the default OriginalScore (e.g. "100 pts") which is meaningless
-  // for a hill (hold-credit scored, not first-blood scored).
-  // "AD engine" = both AttackDefense and KingOfTheHill — they share the
-  // live-scoring branch (no static challenge.score). `isAttackDefense` is
-  // kept separate from `isKoth` for the one place that needs the strict
-  // AttackDefense distinction (the top-right sword vs crown badge).
-  const isAdEngine = challenge.type === ChallengeType.AttackDefense || challenge.type === ChallengeType.KingOfTheHill
+  const { locale } = useLanguage()
+  const category = useChallengeCategoryLabelMap().get(challenge.category)
+  const categoryColor = category?.colors[6] ?? '#228be6'
+  const accent = useMemo(() => buildSemanticAccentColors(categoryColor), [categoryColor])
   const isKoth = challenge.type === ChallengeType.KingOfTheHill
-  const isAttackDefense = challenge.type === ChallengeType.AttackDefense
-
-  const isFaded = useMemo(() => {
-    if (!challenge.deadline) return false
-
-    return dayjs().isAfter(dayjs(challenge.deadline))
-  }, [challenge.deadline])
-
-  const ratingBadge = useMemo(() => {
-    if (!rating) return null
-    const total = rating.likes + rating.dislikes
-    if (total < 3) return null
-    const pct = Math.round((rating.likes / total) * 100)
-    const color = pct >= 70 ? 'teal' : pct >= 40 ? 'orange' : 'red'
-    return { pct, color }
-  }, [rating])
+  const isAd = challenge.type === ChallengeType.AttackDefense
+  const liveScoring = isKoth || isAd
+  const mode = isKoth ? 'King of the Hill' : isAd ? 'Attack & Defense' : 'Jeopardy'
+  const modeIcon = isKoth ? mdiCrown : isAd ? mdiSwordCross : mdiFlagOutline
+  const categoryIcon = category?.icon ?? modeIcon
+  const ratingTotal = (rating?.likes ?? 0) + (rating?.dislikes ?? 0)
 
   return (
     <Card
       component="article"
-      onClick={onClick}
-      shadow="sm"
-      className={cx(misc.hoverCard, classes.root)}
-      data-faded={solved || isFaded || undefined}
+      className={classes.root}
+      data-faded={solved || deadlinePassed || undefined}
+      data-solved={solved || undefined}
+      data-state={solved ? 'solved' : deadlinePassed ? 'closed' : 'open'}
       data-guide="challenge-card"
       data-no-move
+      __vars={{
+        '--card-category-light': accent[0],
+        '--card-category-dark': accent[1],
+        '--card-category-art': categoryColor,
+      }}
     >
-      <button
-        type="button"
-        className={classes.keyboardAction}
-        onClick={(event) => {
-          event.stopPropagation()
-          onClick?.()
-        }}
-      >
-        {t('challenge.button.open', 'Open challenge: {{title}}', { title: challenge.title })}
-      </button>
-      <Stack gap="xs" pos="relative" style={{ zIndex: 99 }}>
-        <Group mih="30px" wrap="nowrap" justify="space-between" gap={2}>
-          <Group gap={6} wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
-            {/* Category icon at the top-left, matching the ChallengeModal header
-                pattern (`[category icon] [title] [pts/LIVE]`). For jeopardy this
-                is the Web/Pwn/Crypto/Misc tier color; for A&D / KotH it's still
-                the per-challenge category (organizers tag hills too). Without
-                this the card had only the engine badge on the right — the modal
-                showed a colored category icon at top-left and players opening
-                a card expected the same visual cue on the tile. */}
-            {cateData && (
-              <Icon
-                path={cateData.icon}
-                size={0.9}
-                color={theme.colors[cateData.color][colorScheme === 'dark' ? 4 : 6]}
-                style={{ flexShrink: 0 }}
-              />
-            )}
-            <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
-              <ScrollingText text={challenge.title || ''} size="lg" />
-              {contextLabel && <ScrollingText text={contextLabel} size="xs" c="dimmed" />}
-            </Stack>
-          </Group>
-          <Group gap={4} wrap="nowrap">
-            {/* Engine badge — same slot for all three so the icon position is
-                stable across challenges; color matches the kind-switcher +
-                section dividers so the three are visually consistent. */}
-            {!isAdEngine && (
-              <Tooltip
-                label={t('challenge.tooltip.jeopardy_card', 'Jeopardy — submit the flag once for points')}
-                position="top"
-                withArrow
-              >
-                <Icon path={mdiFlagOutline} size={0.7} color="var(--mantine-color-blue-6)" />
-              </Tooltip>
-            )}
-            {isAttackDefense && (
-              <Tooltip
-                label={t('challenge.tooltip.ad_card', 'Attack & Defense — live scoring, submit via API')}
-                position="top"
-                withArrow
-              >
-                <Icon path={mdiSwordCross} size={0.7} color="var(--mantine-color-red-6)" />
-              </Tooltip>
-            )}
-            {isKoth && (
-              <Tooltip
-                label={t('challenge.tooltip.koth_card', 'King of the Hill — hold the marker to score')}
-                position="top"
-                withArrow
-              >
-                <Icon path={mdiCrown} size={0.7} color="var(--mantine-color-violet-6)" />
-              </Tooltip>
-            )}
-            {ratingBadge && (
-              <Tooltip label={`${rating!.likes}👍 / ${rating!.dislikes}👎`} position="top" withArrow>
-                <Badge
-                  size="xs"
-                  color={ratingBadge.color}
-                  variant="light"
-                  leftSection={<Icon path={mdiThumbUp} size={0.5} />}
-                  style={{ flexShrink: 0, cursor: 'default' }}
-                >
-                  {ratingBadge.pct}%
-                </Badge>
-              </Tooltip>
-            )}
-          </Group>
-        </Group>
-        <Divider size="sm" color={cateData?.color} />
-        <Group wrap="nowrap" justify={isAdEngine ? 'center' : 'space-between'} align="center" gap={2}>
-          {!isAdEngine && (
-            <Text ta="center" fw="bold" fz="lg" ff="monospace">
-              {challenge.score}&nbsp;pts
-            </Text>
-          )}
-          <Stack gap="xs">
-            {isAdEngine ? (
-              <Text component="p" size="sm" fw={700} ta="center" mt={`calc(${theme.spacing.xs} / 2)`} c="dimmed">
-                {isKoth
-                  ? t('challenge.content.koth_live_caption', 'Per-tick hold scoring')
-                  : t('challenge.content.ad_live_caption', 'Per-round scoring')}
-              </Text>
-            ) : (
-              <Text component="p" size="sm" fw={700} ta="center" mt={`calc(${theme.spacing.xs} / 2)`}>
-                <Trans
-                  i18nKey={'challenge.content.solved'}
-                  values={{
-                    solved: challenge.solved,
-                  }}
-                >
-                  _
-                  <Code fz="sm" fw="bolder" bg="transparent">
-                    _
-                  </Code>
-                  _
-                </Trans>
-              </Text>
-            )}
-            <Group justify="center" gap="md" h={20} wrap="nowrap">
-              {challenge.bloods &&
-                challenge.bloods.map((blood, idx) => {
-                  const iconProps = iconMap.get(BloodsTypes[idx])!
-                  return (
-                    <Tooltip.Floating
-                      key={idx}
-                      position="bottom"
-                      multiline
-                      label={
-                        <Stack gap={0}>
-                          <Text fw={500} size="sm">
-                            {blood?.name}
-                          </Text>
-                          <Text fw={500} size="xs" c="dimmed">
-                            {dayjs(blood?.submitTimeUtc).locale(locale).format('SLL LTS')}
-                          </Text>
-                        </Stack>
-                      }
-                    >
-                      <div style={{ position: 'relative', height: 20 }}>
-                        <div className={classes.blood}>
-                          <Icon {...iconProps} />
-                        </div>
-                        <Box
-                          className={classes.spike}
-                          data-blood={teamId === blood?.id || undefined}
-                          __vars={{
-                            '--blood-color': colorMap.get(BloodsTypes[idx]),
-                          }}
-                        />
-                      </div>
-                    </Tooltip.Floating>
-                  )
-                })}
-            </Group>
-          </Stack>
-        </Group>
-      </Stack>
-      {/* Big category watermark icon (the card's "visualizer") — identical for
-          all three engines: jeopardy, A&D and KotH all use the per-challenge
-          category icon + color, exactly like the jeopardy card always has. The
-          only per-engine cue is the top-right badge (flag / sword / crown). */}
-      {cateData && (
-        <Icon
-          size={4}
-          path={cateData.icon}
-          color={alpha(theme.colors[cateData.color][7], 0.3)}
-          className={classes.icon}
-        />
+      <Icon path={categoryIcon} className={classes.watermark} aria-hidden="true" />
+      <div className={classes.header}>
+        <Icon path={categoryIcon} size={1.2} className={classes.categoryIcon} aria-hidden="true" />
+        <Link
+          to={href}
+          preventScrollReset
+          className={classes.openButton}
+          aria-label={t('challenge.button.open', 'Open challenge: {{title}}', { title: challenge.title })}
+          aria-haspopup="dialog"
+        >
+          {challenge.title}
+        </Link>
+      </div>
+      <div className={classes.metadata}>
+        <div className={classes.kind}>
+          <span className={classes.category}>{category?.name ?? challenge.category}</span>
+          <span className={classes.mode}>{mode}</span>
+        </div>
+        {(solved || deadlinePassed) && (
+          <span className={classes.status}>
+            <Icon path={solved ? mdiCheckCircleOutline : mdiClockOutline} size={0.7} aria-hidden="true" />
+            {solved ? t('common.workspace.solved', 'Solved') : t('common.workspace.closed', 'Closed')}
+          </span>
+        )}
+      </div>
+      {disclosurePending && (
+        <div className={classes.context}>
+          <DisclosureNeededBadge />
+        </div>
       )}
-      {solved && (
-        <Center className={classes.flag}>
-          <Icon size={1} path={mdiFlag} />
-        </Center>
+      {contextLabel && (
+        <Text size="xs" c="dimmed" className={classes.context}>
+          {contextLabel}
+        </Text>
+      )}
+      {liveScoring ? (
+        <div className={classes.liveScore}>
+          <Text fw={600}>{t('common.workspace.live_scoring', 'Live scoring')}</Text>
+          <Text size="xs" c="dimmed">
+            {t('common.workspace.continuous_scoring', 'Scored during play')}
+          </Text>
+        </div>
+      ) : (
+        <dl className={classes.metrics}>
+          <div className={classes.points}>
+            <dt>{t('common.cards.points_short', 'pts')}</dt>
+            <dd>{challenge.score?.toLocaleString(locale) ?? '—'}</dd>
+          </div>
+          <div>
+            <dt>{t('common.cards.solves', 'solves')}</dt>
+            <dd>{challenge.solved?.toLocaleString(locale) ?? '—'}</dd>
+          </div>
+        </dl>
+      )}
+      {rating && ratingTotal >= 3 && (
+        <Text size="xs" c="dimmed" className={classes.rating} title={`${rating.likes} / ${ratingTotal}`}>
+          <Icon path={mdiThumbUp} size={0.65} aria-hidden="true" />
+          {Math.round((rating.likes / ratingTotal) * 100)}%
+        </Text>
+      )}
+      {!!challenge.bloods?.length && (
+        <div className={classes.bloods}>
+          <Text size="xs" c="dimmed" mb={4}>
+            {t('common.workspace.first_solves', 'First solves')}
+          </Text>
+          <Group gap="xs">
+            {challenge.bloods.slice(0, 3).map((blood, index) => {
+              const icon = iconMap.get(BloodsTypes[index])
+              const label = `${index + 1}. ${blood.name} · ${dayjs(blood.submitTimeUtc).locale(locale).format('L LTS')}`
+              return (
+                <Tooltip key={index} label={label} events={{ hover: true, focus: true, touch: false }}>
+                  <span
+                    tabIndex={0}
+                    aria-label={label}
+                    data-own={teamId === blood.id || undefined}
+                    className={classes.blood}
+                  >
+                    {icon && <Icon {...icon} aria-hidden="true" />}
+                    <span>{blood.name}</span>
+                  </span>
+                </Tooltip>
+              )
+            })}
+          </Group>
+        </div>
       )}
     </Card>
   )
 }
+
+const DeadlineAwareChallengeCard: FC<ChallengeCardProps> = (props) => {
+  const now = useServerNow()
+  return <ChallengeCardContent {...props} deadlinePassed={now.isAfter(dayjs(props.challenge.deadline))} />
+}
+
+export const ChallengeCard: FC<ChallengeCardProps> = (props) =>
+  props.challenge.deadline ? (
+    <DeadlineAwareChallengeCard {...props} />
+  ) : (
+    <ChallengeCardContent {...props} deadlinePassed={false} />
+  )

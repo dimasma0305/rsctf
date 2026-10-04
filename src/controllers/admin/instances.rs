@@ -1,6 +1,13 @@
 //! Admin container-instance listing + destroy + stats — split from admin/mod.rs.
 use super::*;
 use crate::models::data::container;
+use crate::services::container::{ContainerManager, ContainerStatus};
+use futures::{stream, StreamExt};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration as StdDuration;
+use tokio::sync::{RwLock, Semaphore};
+use tokio::time::Instant;
 
 /// RSCTF `ChallengeModel` (nested challenge reference).
 #[derive(Debug, Serialize)]
@@ -43,6 +50,248 @@ pub struct ContainerInstanceModel {
     pub ip: String,
     pub port: i32,
     pub is_proxy: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_stats: Option<ContainerRuntimeStatsModel>,
+}
+
+/// Whether the runtime returned a sample for this managed container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum ContainerRuntimeAvailability {
+    Available,
+    Unavailable,
+}
+
+/// A runtime sample attached to an admin inventory page.
+///
+/// Metrics that the selected backend cannot measure are `null`, never an
+/// authoritative-looking zero. A missing/stopped runtime is represented by an
+/// `Unavailable` sample so one stale row cannot fail or trigger retries for the
+/// whole page.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerRuntimeStatsModel {
+    pub availability: ContainerRuntimeAvailability,
+    pub cpu_percent: Option<f64>,
+    pub memory_used_bytes: Option<i64>,
+    pub memory_limit_bytes: Option<i64>,
+    pub net_rx_bytes: Option<i64>,
+    pub net_tx_bytes: Option<i64>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub sampled_at: DateTime<Utc>,
+}
+
+const INSTANCE_RUNTIME_BATCH_MAX: u64 = 50;
+const INSTANCE_RUNTIME_CONCURRENCY: usize = 8;
+const INSTANCE_RUNTIME_CACHE_CAPACITY: usize = 2_048;
+const INSTANCE_RUNTIME_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
+const INSTANCE_RUNTIME_QUERY_TIMEOUT: StdDuration = StdDuration::from_secs(2);
+const INSTANCE_FILTER_OPTION_MAX: u64 = 50;
+const INSTANCE_FILTER_SEARCH_MAX_CHARS: usize = 100;
+
+static INSTANCE_RUNTIME_SLOTS: Semaphore = Semaphore::const_new(INSTANCE_RUNTIME_CONCURRENCY);
+static INSTANCE_RUNTIME_CACHE: LazyLock<RuntimeSampleCache> = LazyLock::new(|| {
+    RuntimeSampleCache::new(INSTANCE_RUNTIME_CACHE_TTL, INSTANCE_RUNTIME_CACHE_CAPACITY)
+});
+
+#[derive(Clone)]
+struct CachedRuntimeSample {
+    sample: ContainerRuntimeStatsModel,
+    expires_at: Instant,
+}
+
+struct RuntimeSampleCache {
+    entries: RwLock<HashMap<String, CachedRuntimeSample>>,
+    ttl: StdDuration,
+    capacity: usize,
+}
+
+impl RuntimeSampleCache {
+    fn new(ttl: StdDuration, capacity: usize) -> Self {
+        Self {
+            entries: RwLock::new(HashMap::new()),
+            ttl,
+            capacity: capacity.max(1),
+        }
+    }
+
+    async fn get(&self, runtime_id: &str) -> Option<ContainerRuntimeStatsModel> {
+        let now = Instant::now();
+        let entries = self.entries.read().await;
+        entries
+            .get(runtime_id)
+            .filter(|entry| entry.expires_at > now)
+            .map(|entry| entry.sample.clone())
+    }
+
+    async fn insert(&self, runtime_id: String, sample: ContainerRuntimeStatsModel) {
+        let now = Instant::now();
+        let mut entries = self.entries.write().await;
+        entries.retain(|_, entry| entry.expires_at > now);
+        if entries.len() >= self.capacity && !entries.contains_key(&runtime_id) {
+            if let Some(oldest) = entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.expires_at)
+                .map(|(key, _)| key.clone())
+            {
+                entries.remove(&oldest);
+            }
+        }
+        entries.insert(
+            runtime_id,
+            CachedRuntimeSample {
+                sample,
+                expires_at: now + self.ttl,
+            },
+        );
+    }
+
+    async fn remove(&self, runtime_id: &str) {
+        self.entries.write().await.remove(runtime_id);
+    }
+}
+
+fn available_runtime_sample(
+    status: ContainerStatus,
+    sampled_at: DateTime<Utc>,
+) -> ContainerRuntimeStatsModel {
+    ContainerRuntimeStatsModel {
+        availability: ContainerRuntimeAvailability::Available,
+        cpu_percent: status
+            .cpu_usage
+            .map(|value| value * 100.0)
+            .filter(|value| value.is_finite() && *value >= 0.0),
+        memory_used_bytes: status
+            .memory_bytes
+            .and_then(|value| i64::try_from(value).ok()),
+        // ContainerStatus intentionally exposes neither the configured memory
+        // ceiling nor network counters. Keep those metrics explicitly absent.
+        memory_limit_bytes: None,
+        net_rx_bytes: None,
+        net_tx_bytes: None,
+        sampled_at,
+    }
+}
+
+fn unavailable_runtime_sample(sampled_at: DateTime<Utc>) -> ContainerRuntimeStatsModel {
+    ContainerRuntimeStatsModel {
+        availability: ContainerRuntimeAvailability::Unavailable,
+        cpu_percent: None,
+        memory_used_bytes: None,
+        memory_limit_bytes: None,
+        net_rx_bytes: None,
+        net_tx_bytes: None,
+        sampled_at,
+    }
+}
+
+async fn sample_runtime(
+    manager: &Arc<dyn ContainerManager>,
+    cache: &RuntimeSampleCache,
+    slots: &Semaphore,
+    runtime_id: &str,
+) -> ContainerRuntimeStatsModel {
+    if let Some(sample) = cache.get(runtime_id).await {
+        return sample;
+    }
+
+    // Concurrent tabs and overlapping in-process requests
+    // wait behind one key, then re-check the cache instead of dogpiling the
+    // runtime exactly when its sample expires.
+    let flight_key = format!("admin-instance-runtime:{runtime_id}");
+    let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
+    if let Some(sample) = cache.get(runtime_id).await {
+        return sample;
+    }
+
+    let sample = match slots.acquire().await {
+        Ok(_permit) => {
+            let sampled_at = Utc::now();
+            match tokio::time::timeout(INSTANCE_RUNTIME_QUERY_TIMEOUT, manager.query(runtime_id))
+                .await
+            {
+                Ok(Ok(status)) => available_runtime_sample(status, sampled_at),
+                Ok(Err(_)) | Err(_) => unavailable_runtime_sample(sampled_at),
+            }
+        }
+        Err(_) => unavailable_runtime_sample(Utc::now()),
+    };
+    cache.insert(runtime_id.to_owned(), sample.clone()).await;
+    sample
+}
+
+async fn sample_runtime_batch(
+    manager: &Arc<dyn ContainerManager>,
+    cache: &RuntimeSampleCache,
+    slots: &Semaphore,
+    instances: &[(Uuid, String)],
+) -> HashMap<Uuid, ContainerRuntimeStatsModel> {
+    stream::iter(instances.iter().cloned())
+        .map(|(guid, runtime_id)| async move {
+            let sample = sample_runtime(manager, cache, slots, &runtime_id).await;
+            (guid, sample)
+        })
+        .buffer_unordered(INSTANCE_RUNTIME_CONCURRENCY)
+        .collect()
+        .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceListQuery {
+    #[serde(default = "default_count")]
+    count: u64,
+    #[serde(default)]
+    skip: u64,
+    #[serde(default)]
+    include_runtime_stats: bool,
+    #[serde(default)]
+    team_id: Option<i32>,
+    #[serde(default)]
+    challenge_id: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub enum ContainerInstanceFilterKind {
+    Team,
+    Challenge,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceFilterOptionsQuery {
+    kind: ContainerInstanceFilterKind,
+    #[serde(default)]
+    search: String,
+    #[serde(default = "default_filter_option_count")]
+    count: u64,
+}
+
+fn default_filter_option_count() -> u64 {
+    30
+}
+
+fn instance_filter_option_count(query: &InstanceFilterOptionsQuery) -> i64 {
+    query.count.min(INSTANCE_FILTER_OPTION_MAX) as i64
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerInstanceFilterOptionModel {
+    pub id: i32,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<ChallengeCategory>,
+}
+
+fn instance_page_count(query: &InstanceListQuery) -> i64 {
+    let limit = if query.include_runtime_stats {
+        INSTANCE_RUNTIME_BATCH_MAX
+    } else {
+        500
+    };
+    query.count.min(limit) as i64
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -65,7 +314,16 @@ struct ContainerInstanceRow {
     is_proxy: bool,
 }
 
-const INSTANCE_PAGE_SQL: &str = r#"
+#[derive(Debug, sqlx::FromRow)]
+struct ContainerInstanceFilterOptionRow {
+    id: Option<i32>,
+    label: Option<String>,
+    avatar: Option<String>,
+    category: Option<i16>,
+    total: i64,
+}
+
+const INSTANCE_PROJECTION_SQL: &str = r#"
     SELECT COALESCE(game_team.id, service_team.id) AS team_id,
            COALESCE(game_team.name, service_team.name) AS team_name,
            COALESCE(game_team.avatar_hash, service_team.avatar_hash) AS team_avatar_hash,
@@ -167,9 +425,105 @@ const INSTANCE_PAGE_SQL: &str = r#"
         ON exercise_challenge.id = exercise_instance.exercise_id
  LEFT JOIN "AspNetUsers" exercise_user
         ON exercise_user.id = exercise_instance.user_id
-  ORDER BY container.started_at, container.id
-     LIMIT $1 OFFSET $2
 "#;
+
+static INSTANCE_COUNT_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        r#"
+        WITH projected AS ({INSTANCE_PROJECTION_SQL})
+        SELECT COUNT(*)
+          FROM projected
+         WHERE ($1::INTEGER IS NULL OR projected.team_id = $1)
+           AND ($2::INTEGER IS NULL OR projected.challenge_id = $2)
+        "#
+    )
+});
+
+static INSTANCE_PAGE_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        r#"
+        WITH projected AS ({INSTANCE_PROJECTION_SQL})
+        SELECT *
+          FROM projected
+         WHERE ($1::INTEGER IS NULL OR projected.team_id = $1)
+           AND ($2::INTEGER IS NULL OR projected.challenge_id = $2)
+         ORDER BY projected.started_at, projected.container_guid
+         LIMIT $3 OFFSET $4
+        "#
+    )
+});
+
+static INSTANCE_TEAM_FILTER_OPTIONS_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        r#"
+        WITH projected AS ({INSTANCE_PROJECTION_SQL}),
+        options AS (
+            SELECT DISTINCT team_id AS id,
+                            team_name AS label,
+                            CASE
+                                WHEN team_avatar_hash IS NULL THEN NULL
+                                ELSE '/assets/' || team_avatar_hash || '/avatar'
+                            END AS avatar,
+                            NULL::SMALLINT AS category
+              FROM projected
+             WHERE team_id IS NOT NULL
+               AND team_name IS NOT NULL
+        ),
+        filtered AS MATERIALIZED (
+            SELECT id, label, avatar, category
+              FROM options
+             WHERE $1 = ''
+                OR label ILIKE '%' || $1 || '%'
+                OR id::TEXT = $1
+        ),
+        page AS (
+            SELECT id, label, avatar, category
+              FROM filtered
+             ORDER BY LOWER(label), id
+             LIMIT $2
+        )
+        SELECT page.id, page.label, page.avatar, page.category, summary.total
+          FROM (SELECT COUNT(*)::BIGINT AS total FROM filtered) summary
+     LEFT JOIN page ON TRUE
+         ORDER BY LOWER(page.label) NULLS LAST, page.id NULLS LAST
+        "#
+    )
+});
+
+static INSTANCE_CHALLENGE_FILTER_OPTIONS_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        r#"
+        WITH projected AS ({INSTANCE_PROJECTION_SQL}),
+        options AS (
+            SELECT DISTINCT challenge_id AS id,
+                            challenge_title AS label,
+                            NULL::TEXT AS avatar,
+                            challenge_category AS category
+              FROM projected
+             WHERE challenge_id IS NOT NULL
+               AND challenge_title IS NOT NULL
+               AND challenge_category IS NOT NULL
+        ),
+        filtered AS MATERIALIZED (
+            SELECT id, label, avatar, category
+              FROM options
+             WHERE $1 = ''
+                OR label ILIKE '%' || $1 || '%'
+                OR id::TEXT = $1
+        ),
+        page AS (
+            SELECT id, label, avatar, category
+              FROM filtered
+             ORDER BY LOWER(label), id
+             LIMIT $2
+        )
+        SELECT page.id, page.label, page.avatar, page.category, summary.total
+          FROM (SELECT COUNT(*)::BIGINT AS total FROM filtered) summary
+     LEFT JOIN page ON TRUE
+         ORDER BY LOWER(page.label) NULLS LAST, page.id NULLS LAST
+        "#
+    )
+});
 
 fn owner_kind(value: &str) -> AppResult<ContainerOwnerKind> {
     match value {
@@ -224,7 +578,35 @@ fn project_instance(row: ContainerInstanceRow) -> AppResult<ContainerInstanceMod
         ip: row.ip,
         port: row.port,
         is_proxy: row.is_proxy,
+        runtime_stats: None,
     })
+}
+
+fn project_filter_option(
+    row: ContainerInstanceFilterOptionRow,
+) -> AppResult<Option<ContainerInstanceFilterOptionModel>> {
+    let (id, label) = match (row.id, row.label) {
+        (Some(id), Some(label)) => (id, label),
+        (None, None) => return Ok(None),
+        _ => return Err(AppError::internal("Incomplete instance filter option")),
+    };
+    Ok(Some(ContainerInstanceFilterOptionModel {
+        id,
+        label,
+        avatar: row.avatar,
+        category: row.category.map(challenge_category).transpose()?,
+    }))
+}
+
+fn filter_option_response(
+    rows: Vec<ContainerInstanceFilterOptionRow>,
+) -> AppResult<ArrayResponse<ContainerInstanceFilterOptionModel>> {
+    let total = rows.first().map(|row| row.total).unwrap_or(0);
+    let data = rows
+        .into_iter()
+        .filter_map(|row| project_filter_option(row).transpose())
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(ArrayResponse::new(data, total))
 }
 
 /// `GET /api/admin/instances` — paginated list of managed containers with their
@@ -232,26 +614,79 @@ fn project_instance(row: ContainerInstanceRow) -> AppResult<ContainerInstanceMod
 pub async fn instances(
     State(st): State<SharedState>,
     _admin: AdminUser,
-    Query(q): Query<ListQuery>,
+    Query(q): Query<InstanceListQuery>,
 ) -> AppResult<ArrayResponse<ContainerInstanceModel>> {
-    let count = q.count.clamp(0, 500) as i64;
+    let count = instance_page_count(&q);
     let skip = i64::try_from(q.skip).unwrap_or(i64::MAX);
-    let total = sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Containers""#)
-        .fetch_one(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let rows = sqlx::query_as::<_, ContainerInstanceRow>(INSTANCE_PAGE_SQL)
+    let total = if q.team_id.is_none() && q.challenge_id.is_none() {
+        sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Containers""#)
+            .fetch_one(st.pg())
+            .await
+    } else {
+        sqlx::query_scalar::<_, i64>(INSTANCE_COUNT_SQL.as_str())
+            .bind(q.team_id)
+            .bind(q.challenge_id)
+            .fetch_one(st.pg())
+            .await
+    }
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let rows = sqlx::query_as::<_, ContainerInstanceRow>(INSTANCE_PAGE_SQL.as_str())
+        .bind(q.team_id)
+        .bind(q.challenge_id)
         .bind(count)
         .bind(skip)
         .fetch_all(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let data = rows
+    let mut data = rows
         .into_iter()
         .map(project_instance)
         .collect::<AppResult<Vec<_>>>()?;
 
+    if q.include_runtime_stats && !data.is_empty() {
+        let identities = data
+            .iter()
+            .map(|instance| (instance.container_guid, instance.container_id.clone()))
+            .collect::<Vec<_>>();
+        let mut samples = sample_runtime_batch(
+            &st.containers,
+            &INSTANCE_RUNTIME_CACHE,
+            &INSTANCE_RUNTIME_SLOTS,
+            &identities,
+        )
+        .await;
+        for instance in &mut data {
+            instance.runtime_stats = samples.remove(&instance.container_guid);
+        }
+    }
+
     Ok(ArrayResponse::new(data, total))
+}
+
+/// `GET /api/admin/instances/filter-options` — bounded server-side discovery
+/// of teams or challenges that own at least one active managed container.
+pub async fn instance_filter_options(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Query(q): Query<InstanceFilterOptionsQuery>,
+) -> AppResult<ArrayResponse<ContainerInstanceFilterOptionModel>> {
+    let search = q.search.trim();
+    if search.chars().count() > INSTANCE_FILTER_SEARCH_MAX_CHARS {
+        return Err(AppError::bad_request("Filter search is too long"));
+    }
+
+    let count = instance_filter_option_count(&q);
+    let sql = match q.kind {
+        ContainerInstanceFilterKind::Team => INSTANCE_TEAM_FILTER_OPTIONS_SQL.as_str(),
+        ContainerInstanceFilterKind::Challenge => INSTANCE_CHALLENGE_FILTER_OPTIONS_SQL.as_str(),
+    };
+    let rows = sqlx::query_as::<_, ContainerInstanceFilterOptionRow>(sql)
+        .bind(search)
+        .bind(count)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    filter_option_response(rows)
 }
 
 /// `DELETE /api/admin/instances/{id}` — forcibly destroy a container.
@@ -266,6 +701,7 @@ pub async fn destroy_instance(
         .ok_or_else(|| AppError::not_found("Container instance not found"))?;
 
     crate::controllers::game::destroy_managed_container_row(&st, &c, false).await?;
+    INSTANCE_RUNTIME_CACHE.remove(&c.container_id).await;
     Ok(MessageResponse::ok(""))
 }
 
@@ -286,9 +722,8 @@ pub struct ContainerStatsModel {
 ///
 /// Mirrors RSCTF `AdminController.GetInstanceStats`: look up the container row by
 /// its database GUID, then sample the live runtime via `st.containers.query`,
-/// which reads the Docker stats API and returns a `ContainerStatus` with
-/// `memory_bytes` / `cpu_usage` populated. The coarse `ContainerStatus` sample
-/// carries CPU (as a fraction of one core) and memory (bytes); it does not expose
+/// which reads the Docker stats API and returns a `ContainerStatus` carrying
+/// CPU (as a fraction of one core) and memory (bytes); it does not expose
 /// a memory limit or per-interface network counters, so those DTO fields stay `0`
 /// (matching the "stats the backend can provide" contract). `cpu_usage` is scaled
 /// ×100 to the `cpuPercent` (0–100 × cores) the client renders.
@@ -302,38 +737,98 @@ pub async fn instance_stats(
     _admin: AdminUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<RequestResponse<ContainerStatsModel>> {
-    let c = container::Entity::find_by_id(id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Container instance not found"))?;
+    let runtime_id =
+        sqlx::query_scalar::<_, String>(r#"SELECT container_id FROM "Containers" WHERE id = $1"#)
+            .bind(id)
+            .fetch_optional(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+            .ok_or_else(|| AppError::not_found("Container instance not found"))?;
 
-    // Sample the live runtime. A backend error (Docker unreachable / no backend /
-    // container gone) degrades to a 404 "stats unavailable" rather than a 500,
-    // so the admin UI just shows the row without a stats overlay.
-    let status = st
-        .containers
-        .query(&c.container_id)
-        .await
-        .map_err(|_| AppError::not_found("Stats unavailable for this container."))?;
+    let sample = sample_runtime(
+        &st.containers,
+        &INSTANCE_RUNTIME_CACHE,
+        &INSTANCE_RUNTIME_SLOTS,
+        &runtime_id,
+    )
+    .await;
+    if sample.availability == ContainerRuntimeAvailability::Unavailable {
+        return Err(AppError::not_found("Stats unavailable for this container."));
+    }
 
     Ok(RequestResponse::ok(ContainerStatsModel {
-        cpu_percent: status.cpu_usage.map(|v| v * 100.0).unwrap_or(0.0),
-        memory_used_bytes: status.memory_bytes.map(|m| m as i64).unwrap_or(0),
+        cpu_percent: sample.cpu_percent.unwrap_or(0.0),
+        memory_used_bytes: sample.memory_used_bytes.unwrap_or(0),
         // The coarse ContainerStatus sample carries no memory limit or network
         // counters; leave them zero until the backend surfaces them.
         memory_limit_bytes: 0,
         net_rx_bytes: 0,
         net_tx_bytes: 0,
-        sampled_at: Utc::now(),
+        sampled_at: sample.sampled_at,
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use crate::services::container::{ContainerInfo, ContainerSpec};
+
+    struct TrackingRuntime {
+        calls: AtomicUsize,
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
+        missing: bool,
+    }
+
+    impl TrackingRuntime {
+        fn new(missing: bool) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                in_flight: AtomicUsize::new(0),
+                max_in_flight: AtomicUsize::new(0),
+                missing,
+            }
+        }
+    }
+
+    struct InFlight<'a>(&'a AtomicUsize);
+
+    impl Drop for InFlight<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl ContainerManager for TrackingRuntime {
+        async fn create(&self, _spec: ContainerSpec) -> AppResult<ContainerInfo> {
+            Err(AppError::bad_request("not used by runtime sampling test"))
+        }
+
+        async fn destroy(&self, _id: &str) -> AppResult<()> {
+            Err(AppError::bad_request("not used by runtime sampling test"))
+        }
+
+        async fn query(&self, id: &str) -> AppResult<ContainerStatus> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(current, Ordering::SeqCst);
+            let _in_flight = InFlight(&self.in_flight);
+            tokio::time::sleep(StdDuration::from_millis(15)).await;
+            if self.missing {
+                return Err(AppError::not_found("runtime missing"));
+            }
+            Ok(ContainerStatus {
+                id: id.to_owned(),
+                status: "running".to_owned(),
+                memory_bytes: Some(1_024),
+                cpu_usage: Some(0.5),
+            })
+        }
+    }
 
     #[test]
     fn ownership_projection_rejects_unknown_database_values() {
@@ -341,184 +836,121 @@ mod tests {
         assert!(owner_kind("LegacyMystery").is_err());
     }
 
+    #[test]
+    fn runtime_pages_and_inventory_pages_have_hard_size_bounds() {
+        assert_eq!(
+            instance_page_count(&InstanceListQuery {
+                count: 100,
+                skip: 0,
+                include_runtime_stats: true,
+                team_id: None,
+                challenge_id: None,
+            }),
+            50
+        );
+        assert_eq!(
+            instance_page_count(&InstanceListQuery {
+                count: 1_000,
+                skip: 0,
+                include_runtime_stats: false,
+                team_id: None,
+                challenge_id: None,
+            }),
+            500
+        );
+        assert_eq!(
+            instance_filter_option_count(&InstanceFilterOptionsQuery {
+                kind: ContainerInstanceFilterKind::Team,
+                search: String::new(),
+                count: 500,
+            }),
+            50
+        );
+        assert_eq!(
+            instance_filter_option_count(&InstanceFilterOptionsQuery {
+                kind: ContainerInstanceFilterKind::Challenge,
+                search: String::new(),
+                count: 0,
+            }),
+            0
+        );
+    }
+
+    #[test]
+    fn filter_option_discovery_retains_backend_admin_authentication() {
+        let source = include_str!("instances.rs");
+        let start = source
+            .find("pub async fn instance_filter_options")
+            .expect("filter-options handler exists");
+        let end = (start + 260).min(source.len());
+        assert!(source[start..end].contains("_admin: AdminUser"));
+    }
+
     #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn instance_projection_resolves_every_ownership_shape() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let admin = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .expect("connect test database");
-        let schema = format!("admin_instances_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-            .execute(&admin)
-            .await
-            .expect("create isolated schema");
-        let options = PgConnectOptions::from_str(&database_url)
-            .expect("parse test database URL")
-            .options([("search_path", schema.as_str())]);
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect_with(options)
-            .await
-            .expect("connect isolated pool");
+    async fn runtime_batch_caps_backend_concurrency() {
+        let tracked = Arc::new(TrackingRuntime::new(false));
+        let manager: Arc<dyn ContainerManager> = tracked.clone();
+        let cache = RuntimeSampleCache::new(StdDuration::from_secs(60), 128);
+        let slots = Semaphore::new(4);
+        let instances = (1_u128..=100)
+            .map(|value| (Uuid::from_u128(value), format!("runtime-{value}")))
+            .collect::<Vec<_>>();
 
-        sqlx::raw_sql(
-            r#"
-            CREATE TABLE "Containers" (
-              id UUID PRIMARY KEY,
-              image TEXT NOT NULL,
-              container_id TEXT NOT NULL,
-              started_at TIMESTAMPTZ NOT NULL,
-              expect_stop_at TIMESTAMPTZ NOT NULL,
-              is_proxy BOOLEAN NOT NULL,
-              ip TEXT NOT NULL,
-              port INTEGER NOT NULL,
-              public_ip TEXT,
-              public_port INTEGER,
-              game_instance_id INTEGER,
-              exercise_instance_id INTEGER,
-              ad_team_service_id INTEGER
-            );
-            CREATE TABLE "GameInstances" (
-              id INTEGER PRIMARY KEY,
-              challenge_id INTEGER NOT NULL,
-              participation_id INTEGER NOT NULL
-            );
-            CREATE TABLE "GameChallenges" (
-              id INTEGER PRIMARY KEY,
-              title TEXT NOT NULL,
-              category SMALLINT NOT NULL,
-              shared_container_id UUID,
-              test_container_id UUID
-            );
-            CREATE TABLE "Participations" (
-              id INTEGER PRIMARY KEY,
-              team_id INTEGER NOT NULL
-            );
-            CREATE TABLE "Teams" (
-              id INTEGER PRIMARY KEY,
-              name TEXT NOT NULL,
-              avatar_hash TEXT
-            );
-            CREATE TABLE "AdTeamServices" (
-              id INTEGER PRIMARY KEY,
-              participation_id INTEGER NOT NULL,
-              challenge_id INTEGER NOT NULL,
-              container_id TEXT
-            );
-            CREATE TABLE "ExerciseInstances" (
-              id INTEGER PRIMARY KEY,
-              exercise_id INTEGER NOT NULL,
-              user_id UUID NOT NULL,
-              container_id UUID
-            );
-            CREATE TABLE "ExerciseChallenges" (
-              id INTEGER PRIMARY KEY,
-              title TEXT NOT NULL,
-              category SMALLINT NOT NULL
-            );
-            CREATE TABLE "AspNetUsers" (
-              id UUID PRIMARY KEY,
-              user_name TEXT,
-              real_name TEXT NOT NULL
-            );
+        let samples = sample_runtime_batch(&manager, &cache, &slots, &instances).await;
 
-            INSERT INTO "Teams" VALUES (7, 'red', 'red-avatar');
-            INSERT INTO "Participations" VALUES (11, 7);
-            INSERT INTO "GameChallenges"
-                (id, title, category, shared_container_id, test_container_id)
-            VALUES
-                (20, 'per-team', 3, NULL, NULL),
-                (21, 'the-hill', 0, '00000000-0000-0000-0000-000000000002', NULL),
-                (22, 'admin-test', 0, NULL, '00000000-0000-0000-0000-000000000003');
-            INSERT INTO "GameInstances" VALUES (30, 20, 11);
-            INSERT INTO "AspNetUsers"
-            VALUES ('00000000-0000-0000-0000-000000000099', 'alice', 'Alice');
-            INSERT INTO "ExerciseChallenges" VALUES (40, 'practice-web', 3);
-            INSERT INTO "ExerciseInstances"
-            VALUES (
-                41,
-                40,
-                '00000000-0000-0000-0000-000000000099',
-                '00000000-0000-0000-0000-000000000004'
-            );
-            INSERT INTO "Containers"
-                (id, image, container_id, started_at, expect_stop_at, is_proxy,
-                 ip, port, public_ip, public_port, game_instance_id,
-                 exercise_instance_id, ad_team_service_id)
-            VALUES
-                ('00000000-0000-0000-0000-000000000001', 'team-image', 'runtime-1',
-                 now(), now() + interval '1 hour', TRUE, '10.0.0.1', 8080,
-                 NULL, NULL, 30, NULL, NULL),
-                ('00000000-0000-0000-0000-000000000002', 'hill-image', 'runtime-2',
-                 now(), now() + interval '1 hour', FALSE, '10.0.0.2', 8080,
-                 NULL, NULL, NULL, NULL, NULL),
-                ('00000000-0000-0000-0000-000000000003', 'test-image', 'runtime-3',
-                 now(), now() + interval '1 hour', FALSE, '10.0.0.3', 8080,
-                 NULL, NULL, NULL, NULL, NULL),
-                ('00000000-0000-0000-0000-000000000004', 'exercise-image', 'runtime-4',
-                 now(), now() + interval '1 hour', TRUE, '10.0.0.4', 8080,
-                 '203.0.113.4', 443, NULL, 41, NULL),
-                ('00000000-0000-0000-0000-000000000005', 'orphan-image', 'runtime-5',
-                 now(), now() + interval '1 hour', FALSE, '10.0.0.5', 8080,
-                 NULL, NULL, NULL, NULL, NULL);
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("seed ownership shapes");
+        assert_eq!(samples.len(), 100);
+        assert_eq!(tracked.calls.load(Ordering::SeqCst), 100);
+        assert!(tracked.max_in_flight.load(Ordering::SeqCst) <= 4);
+        assert!(samples.values().all(|sample| {
+            sample.availability == ContainerRuntimeAvailability::Available
+                && sample.cpu_percent == Some(50.0)
+                && sample.memory_limit_bytes.is_none()
+                && sample.net_rx_bytes.is_none()
+        }));
+    }
 
-        let rows = sqlx::query_as::<_, ContainerInstanceRow>(INSTANCE_PAGE_SQL)
-            .bind(100_i64)
-            .bind(0_i64)
-            .fetch_all(&pool)
-            .await
-            .expect("project instances");
-        let models = rows
-            .into_iter()
-            .map(project_instance)
-            .collect::<AppResult<Vec<_>>>()
-            .expect("decode projections");
+    #[tokio::test]
+    async fn missing_runtime_is_coalesced_and_negatively_cached() {
+        let tracked = Arc::new(TrackingRuntime::new(true));
+        let manager: Arc<dyn ContainerManager> = tracked.clone();
+        let cache = RuntimeSampleCache::new(StdDuration::from_secs(60), 128);
+        let slots = Semaphore::new(4);
+        let instances = (1_u128..=100)
+            .map(|value| (Uuid::from_u128(value), "missing-runtime".to_owned()))
+            .collect::<Vec<_>>();
 
-        let team = &models[0];
-        assert_eq!(team.owner_kind, ContainerOwnerKind::Team);
-        assert_eq!(
-            team.team.as_ref().map(|value| value.name.as_str()),
-            Some("red")
-        );
-        assert_eq!(
-            team.challenge.as_ref().map(|value| value.title.as_str()),
-            Some("per-team")
-        );
-        assert!(team.is_proxy);
+        let first = sample_runtime_batch(&manager, &cache, &slots, &instances).await;
+        let second = sample_runtime_batch(&manager, &cache, &slots, &instances).await;
 
-        let shared = &models[1];
-        assert_eq!(shared.owner_kind, ContainerOwnerKind::Shared);
-        assert!(shared.team.is_none());
-        assert_eq!(
-            shared.challenge.as_ref().map(|value| value.title.as_str()),
-            Some("the-hill")
-        );
-        assert!(!shared.is_proxy);
+        assert_eq!(first.len(), 100);
+        assert_eq!(second.len(), 100);
+        assert_eq!(tracked.calls.load(Ordering::SeqCst), 1);
+        assert!(first.values().chain(second.values()).all(|sample| {
+            sample.availability == ContainerRuntimeAvailability::Unavailable
+                && sample.cpu_percent.is_none()
+                && sample.memory_used_bytes.is_none()
+        }));
+    }
 
-        assert_eq!(models[2].owner_kind, ContainerOwnerKind::AdminTest);
-        assert_eq!(models[3].owner_kind, ContainerOwnerKind::Exercise);
-        assert_eq!(models[3].owner_name.as_deref(), Some("alice"));
-        assert_eq!(models[3].ip, "203.0.113.4");
-        assert_eq!(models[3].port, 443);
-        assert_eq!(models[4].owner_kind, ContainerOwnerKind::Unassigned);
+    #[tokio::test]
+    async fn runtime_sample_cache_has_a_hard_entry_bound() {
+        let cache = RuntimeSampleCache::new(StdDuration::from_secs(60), 2);
+        for runtime_id in ["runtime-a", "runtime-b", "runtime-c"] {
+            cache
+                .insert(
+                    runtime_id.to_owned(),
+                    unavailable_runtime_sample(Utc::now()),
+                )
+                .await;
+        }
 
-        pool.close().await;
-        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-            .execute(&admin)
-            .await
-            .expect("drop isolated schema");
-        admin.close().await;
+        assert_eq!(cache.entries.read().await.len(), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "instances/postgres_tests.rs"]
+mod postgres_tests;
 
 // ─── Files ─────────────────────────────────────────────────────────────────────
 

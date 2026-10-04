@@ -8,7 +8,7 @@ use rsctf_worker_protocol::{
 };
 use tokio::io::AsyncWrite;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{watch, OwnedSemaphorePermit};
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig};
@@ -20,9 +20,8 @@ use super::control_admission::ControlAdmission;
 use super::data::{drive_data_lane, DataConfig};
 use super::registry::{RegistryConfig, SessionRegistration, WorkerRegistry};
 use super::{SessionContext, WorkerError, WorkerResult};
-
 mod admission;
-use admission::{HandshakeAdmission, PeerHandshakePermit};
+use admission::{HandshakeAdmission, HandshakeSlots, PeerHandshakePermit};
 
 #[derive(Clone, Debug)]
 pub struct WorkerServerConfig {
@@ -138,7 +137,7 @@ impl WorkerService {
         mut shutdown: watch::Receiver<bool>,
     ) -> std::io::Result<()> {
         let acceptor = TlsAcceptor::from(tls_config);
-        let handshakes = Arc::new(Semaphore::new(self.config.max_concurrent_handshakes));
+        let handshakes = HandshakeSlots::new(self.config.max_concurrent_handshakes);
         let peer_handshakes = HandshakeAdmission::new(self.config.max_concurrent_handshakes_per_ip);
         let mut connections = tokio::task::JoinSet::new();
         loop {
@@ -151,18 +150,25 @@ impl WorkerService {
                 accepted = listener.accept() => {
                     let (socket, peer) = accepted?;
                     let Some(peer_permit) = peer_handshakes.try_admit(peer.ip()) else {
-                        tracing::warn!(%peer, "worker: peer handshake capacity exhausted");
+                        if let Some(rejections) = admission::sample_peer_rejection() {
+                            tracing::warn!(%peer, rejections, "worker: peer handshake capacity exhausted");
+                        }
                         continue;
                     };
-                    let Ok(permit) = handshakes.clone().try_acquire_owned() else {
-                        tracing::warn!(%peer, "worker: handshake capacity exhausted");
+                    let Some(permit) = handshakes.try_acquire(peer_handshakes.is_known_source(peer.ip())) else {
+                        if let Some(rejections) = admission::sample_global_rejection() {
+                            tracing::warn!(%peer, rejections, "worker: handshake capacity exhausted");
+                        }
                         continue;
                     };
                     let service = self.clone();
                     let acceptor = acceptor.clone();
+                    let peer_handshakes = peer_handshakes.clone();
                     connections.spawn(async move {
-                        if let Err(error) = service.accept(socket, acceptor, permit, peer_permit).await {
-                            tracing::warn!(%peer, %error, "worker: connection rejected");
+                        if let Err(error) = service.accept(socket, acceptor, permit, peer_permit, peer_handshakes).await {
+                            if let Some(rejections) = admission::sample_connection_rejection() {
+                                tracing::warn!(%peer, %error, rejections, "worker: connection rejected");
+                            }
                         }
                     });
                 }
@@ -197,6 +203,7 @@ impl WorkerService {
         acceptor: TlsAcceptor,
         handshake_permit: OwnedSemaphorePermit,
         peer_permit: PeerHandshakePermit,
+        handshake_admission: HandshakeAdmission,
     ) -> WorkerResult<()> {
         let tls = tokio::time::timeout(self.config.handshake_timeout, acceptor.accept(socket))
             .await
@@ -224,6 +231,10 @@ impl WorkerService {
         )
         .await
         .map_err(|_| WorkerError::Protocol("worker authentication timed out"))??;
+        if !handshake_admission.admit_worker(authenticated_peer.worker_id) {
+            return Err(WorkerError::Busy);
+        }
+        peer_permit.mark_authenticated();
         // Keep both admission permits through the application hello and
         // durable session setup. A valid but compromised certificate must not
         // be able to pipeline slow hellos from one address and occupy every

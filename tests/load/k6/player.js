@@ -177,7 +177,7 @@ export default function () {
   kothBoardInvalid.add(
     b[2].status !== 200 ||
       !Array.isArray(kothModel?.teams) ||
-      !kothModel.teams.every(validKothEventScoreBasis),
+      !kothModel.teams.every((team) => validKothEventScoreBasis(team, kothModel.hills)),
   );
   let combinedModel = null;
   try {

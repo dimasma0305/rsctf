@@ -10,15 +10,41 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
 
 jobs:
+  plan:
+    name: Select affected checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      server: ${{ steps.scope.outputs.server }}
+      byoc: ${{ steps.scope.outputs.byoc }}
+      worker: ${{ steps.scope.outputs.worker }}
+      web: ${{ steps.scope.outputs.web }}
+      docs: ${{ steps.scope.outputs.docs }}
+      deployment: ${{ steps.scope.outputs.deployment }}
+      security: ${{ steps.scope.outputs.security }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Plan complete PR diff or full publication gate
+        id: scope
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci-plan.mjs
+
   rust:
     name: Rust
+    needs: plan
+    if: needs.plan.outputs.server == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -42,6 +68,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          submodules: recursive
+
+      - name: Test challenge validation action wrapper
+        run: python3 github-action/test_run.py
 
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev
@@ -49,16 +79,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: 1.98.0
           components: clippy, rustfmt
 
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: server
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-
-      - name: Check all targets
-        run: cargo check --all-targets --all-features --locked
 
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
@@ -66,11 +97,49 @@ jobs:
       - name: Build
         run: cargo build --locked
 
+      - name: Test Docker idempotent retry lifecycle
+        run: |
+          docker build --tag rsctf-server-smoke:ci \
+            examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
+          image_id="$(docker image inspect rsctf-server-smoke:ci --format '{{.Id}}')"
+          RSCTF_DOCKER_SCOPE="ci-server-retry" \
+            RSCTF_REAL_DOCKER_RETRY_IMAGE="$image_id" \
+            cargo test --locked retryable_flag_adopts_one_real_docker_workload -- --nocapture
+
+      - name: Validate bundled challenge repository with rsctf
+        run: >-
+          ./target/debug/rsctf challenge check
+          --github
+          --deny-warnings
+          examples/challenge-repository
+
       - name: Run tests
         run: cargo test --all-targets --all-features --locked
 
+      - name: Stage same-run integration binaries
+        run: |
+          cargo test --lib --all-features --locked --no-run --message-format=json > "$RUNNER_TEMP/rsctf-test-artifacts.jsonl"
+          test_binary="$(jq -rs '[.[] | select(.reason == "compiler-artifact" and .target.name == "rsctf" and .profile.test == true and .executable != null)] | if length == 1 then .[0].executable else error("expected one rsctf library test binary") end' "$RUNNER_TEMP/rsctf-test-artifacts.jsonl")"
+          install -D -m 0755 "$test_binary" ci-artifacts/rsctf-tests
+          install -m 0755 target/debug/rsctf ci-artifacts/rsctf
+          # Keep symbols for backtraces, but do not transfer gigabytes of DWARF
+          # debug sections to jobs that only execute these already-tested files.
+          strip --strip-debug ci-artifacts/rsctf-tests ci-artifacts/rsctf
+          printf '%s\n' "$GITHUB_SHA" > ci-artifacts/source-sha
+
+      - name: Share tested binaries with isolated integration jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-server-${{ github.sha }}
+          path: ci-artifacts/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 1
+
   coverage:
     name: Rust coverage and database regressions
+    needs: plan
+    if: needs.plan.outputs.server == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -111,12 +180,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: 1.98.0
           components: llvm-tools-preview
 
       - name: Restore coverage build cache
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: coverage
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked --version 0.8.7
@@ -127,9 +198,9 @@ jobs:
       - name: Run database regressions and enforce coverage floor
         # Migration fixtures share database-scoped catalog state even though
         # their data lives in isolated schemas, so this half is deterministic
-        # only when serialized. Live S3 checks remain explicit environment
-        # tests rather than pretending to pass. The A&D scoring regressions
-        # provision their own fully migrated event fixture here.
+        # only when serialized. Live S3 and real-Docker checks remain explicit
+        # environment tests rather than pretending to pass. The A&D scoring
+        # regressions provision their own fully migrated event fixture here.
         run: >-
           cargo llvm-cov
           --no-clean
@@ -143,11 +214,20 @@ jobs:
           --ignored
           --test-threads=1
           --skip s3_round_trip
+          --skip stale_conditional_delete_cannot_destroy_a_real_replacement_runtime
+          --skip real_docker_large_file_and_fifo_are_bounded_without_exec
+          --skip live_daemon_response_is_streamed_and_decoded
           --skip target_fk_deletes_scoped_tokens
           --skip ownership_constraints_are_validated_cascades
+          --skip postgres_stamps_follow_commit_order_without_cross_source_deadlock
+          --skip postgres_sealed_source_six_and_nine_writes_do_not_redirty_the_game
+          --skip postgres_two_operations_share_active_and_completed_generation
+          --skip postgres_coalesces_retries_and_recovers_one_expired_lease
 
   byoc-agent:
     name: BYOC agent
+    needs: plan
+    if: needs.plan.outputs.byoc == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -162,6 +242,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: 1.98.0
           components: clippy, rustfmt
 
       - name: Restore BYOC agent build cache
@@ -169,12 +250,10 @@ jobs:
         with:
           workspaces: agents/byoc-agent -> target
           shared-key: byoc-agent
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-
-      - name: Check all targets
-        run: cargo check --all-targets --locked
 
       - name: Run Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
@@ -184,6 +263,8 @@ jobs:
 
   worker-plane-linux:
     name: Worker plane (Linux)
+    needs: plan
+    if: needs.plan.outputs.worker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -196,6 +277,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: 1.98.0
           components: clippy, rustfmt
           targets: x86_64-unknown-linux-musl
 
@@ -209,6 +291,7 @@ jobs:
             lib/worker-protocol -> target
             agents/worker-agent -> target
           shared-key: worker-plane-linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check protocol formatting
         run: cargo fmt --manifest-path lib/worker-protocol/Cargo.toml --all -- --check
@@ -218,9 +301,6 @@ jobs:
 
       - name: Check protocol
         run: cargo check --manifest-path lib/worker-protocol/Cargo.toml --all-targets --locked
-
-      - name: Check agent
-        run: cargo check --manifest-path agents/worker-agent/Cargo.toml --all-targets --locked
 
       - name: Build release worker artifact
         run: >-
@@ -240,7 +320,7 @@ jobs:
         shell: bash
         run: |
           docker build --tag rsctf-worker-smoke:ci \
-            examples/challenge-repository/Jeopardy/Web/static-flag-service/src
+            examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
           image_id="$(docker image inspect rsctf-worker-smoke:ci --format '{{.Id}}')"
           RSCTF_WORKER_TEST_IMAGE_ID="$image_id" \
             cargo test --manifest-path agents/worker-agent/Cargo.toml --locked \
@@ -248,6 +328,8 @@ jobs:
 
   worker-plane-windows:
     name: Worker compatibility (Windows)
+    needs: plan
+    if: needs.plan.outputs.worker == 'true'
     runs-on: windows-latest
     timeout-minutes: 25
     env:
@@ -261,6 +343,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: 1.98.0
           components: clippy, rustfmt
           targets: x86_64-pc-windows-msvc
 
@@ -271,15 +354,13 @@ jobs:
             lib/worker-protocol -> target
             agents/worker-agent -> target
           shared-key: worker-plane-windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check protocol formatting
         run: cargo fmt --manifest-path lib/worker-protocol/Cargo.toml --all -- --check
 
       - name: Check agent formatting
         run: cargo fmt --manifest-path agents/worker-agent/Cargo.toml --all -- --check
-
-      - name: Check Windows target
-        run: cargo check --manifest-path agents/worker-agent/Cargo.toml --all-targets --target x86_64-pc-windows-msvc --locked
 
       - name: Run Windows Clippy
         run: cargo clippy --manifest-path agents/worker-agent/Cargo.toml --all-targets --target x86_64-pc-windows-msvc --locked -- -D warnings
@@ -338,6 +419,8 @@ jobs:
 
   helm-chart:
     name: Helm chart
+    needs: plan
+    if: needs.plan.outputs.deployment == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -360,8 +443,57 @@ jobs:
       - name: Verify PlatformProxy host-firewall isolation
         run: sudo ./scripts/test-docker-proxy-firewall.sh
 
+  kubernetes-callback:
+    name: Kubernetes KotH callback isolation
+    needs: [plan, rust]
+    if: needs.plan.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev
+
+      - name: Download same-run tested binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ci-server-${{ github.sha }}
+          path: ci-artifacts
+
+      - name: Verify binary source
+        run: |
+          test "$(cat ci-artifacts/source-sha)" = "$GITHUB_SHA"
+          chmod 0755 ci-artifacts/rsctf-tests
+
+      - name: Install pinned Kubernetes tools
+        run: |
+          curl --fail --silent --show-error --location \
+            --output /tmp/rsctf-kind \
+            https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          echo '50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54  /tmp/rsctf-kind' \
+            | sha256sum --check --strict
+          curl --fail --silent --show-error --location \
+            --output /tmp/rsctf-kubectl \
+            https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl
+          echo '629d3f410e09bf49b64ae7079f7f0bda1191efed311f7d37fdbab0ad5b0ec2b7  /tmp/rsctf-kubectl' \
+            | sha256sum --check --strict
+          sudo install -m 0755 /tmp/rsctf-kind /usr/local/bin/kind
+          sudo install -m 0755 /tmp/rsctf-kubectl /usr/local/bin/kubectl
+
+      - name: Exercise callback DNS and NetworkPolicy
+        env:
+          RSCTF_K8S_TEST_BINARY: ${{ github.workspace }}/ci-artifacts/rsctf-tests
+        run: ./scripts/test-kubernetes-koth-callback.sh
+
   web:
     name: React client
+    needs: plan
+    if: needs.plan.outputs.web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -371,7 +503,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.8.0
           package_json_file: web/package.json
@@ -400,6 +532,8 @@ jobs:
 
   dependency-security:
     name: Dependency security
+    needs: plan
+    if: needs.plan.outputs.security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -410,6 +544,17 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.98.0
+
+      - name: Restore pinned audit tool
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: audit-0.22.2
+          cache-targets: false
+          # PRs can consume main's cache, without filling storage with a copy
+          # of this identical tool for every dependency-update merge ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
@@ -459,6 +604,8 @@ jobs:
 
   cheat-acceptance:
     name: Isolated anti-cheat acceptance
+    needs: [plan, rust]
+    if: needs.plan.outputs.server == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -512,22 +659,21 @@ jobs:
       - name: Install native and PostgreSQL client dependencies
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends iptables libpcap-dev postgresql-client
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-
-      - name: Restore anti-cheat acceptance build cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - name: Download same-run tested application
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          shared-key: cheat-acceptance
+          name: ci-server-${{ github.sha }}
+          path: target/debug
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
 
-      - name: Build and migrate the isolated application
+      - name: Verify and migrate the isolated application
         run: |
-          cargo build --locked
+          test "$(cat target/debug/source-sha)" = "$GITHUB_SHA"
+          chmod 0755 target/debug/rsctf
           RSCTF_ROLE=migrate ./target/debug/rsctf
 
       - name: Run compact anti-cheat acceptance
@@ -579,35 +725,24 @@ jobs:
 
   docs:
     name: Documentation
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    needs: plan
+    if: needs.plan.outputs.docs == 'true'
+    uses: ./.github/workflows/docs-build.yml
+
+  required:
+    name: Required CI checks
+    if: always()
+    needs: [plan, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, dependency-security, load-harness-contracts, cheat-acceptance, docs, repository-conventions]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 11.8.0
-          package_json_file: docs/package.json
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: docs/pnpm-lock.yaml
-
-      - name: Install documentation dependencies
-        run: pnpm --dir docs install --frozen-lockfile
-
-      - name: Generate journal PDFs
-        run: pnpm --dir docs pdf
-
-      - name: Build documentation
-        run: pnpm --dir docs build
+      - name: Reject failed or unexpectedly skipped gates
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci-plan.mjs verify
 
   repository-conventions:
     name: Repository conventions
@@ -705,7 +840,7 @@ jobs:
             echo "::error::Container publication must use native architecture runners, not QEMU."
             exit 1
           fi
-          test "$(grep -c 'docker/github-builder/.github/workflows/build.yml@a492c6d04fd3315f67230809b44d60cc0acd50b3' "$workflow")" -eq 2
+          test "$(grep -c 'docker/github-builder/.github/workflows/build.yml@58cb9f5b71b1836d6f690c1e95effdeb9b98cb8a' "$workflow")" -eq 2
           grep -q '^  workflow_dispatch:$' "$workflow"
           if grep -q '^    branches:' "$workflow" || grep -q '^  pull_request:' "$workflow"; then
             echo "::error::Native container builds must remain manual; normal pushes and pull requests use application CI only."

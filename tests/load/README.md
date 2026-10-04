@@ -10,15 +10,30 @@ scenarios. Run via npm:
 ```sh
 cd tests/load
       npm run admin-lifecycle # destructive, disposable-stack admin acceptance
+      npm run admin-dashboard # disposable 100k-submission fixed-rate dashboard read gate
       npm run edit-lifecycle  # destructive, disposable-stack organizer acceptance
       npm run multi-domain    # destructive 2×A&D + 2×KotH isolation/recovery acceptance
+      npm run managed-koth    # destructive managed TargetReporter 2k-roster acceptance
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      GAME=27 npm run arena-read # bounded public spectator/health acceptance, 2 req/s for 30s
+      npm run read-only-websocket-flood # read-only feed inbound-abuse gate
+      npm run proxy-traffic-admission # acknowledged line-rate proxy byte-work gate
+      npm run monitor-history # fixed-rate bounded monitor history + durable backfills
+      npm run monitor-evidence-inventory # fixed-rate traffic + anti-cheat bounded reads
+      npm run anticheat-reconciliation # large-history idle + manual/scheduled coalescing
+      npm run participation-review # fixed-rate bounded 12k-team organizer review
+      npm run details-read  # fixed-rate authenticated challenge-details poll
+      npm run challenge-modal-read # bounded detail + solver modal reads
       npm run donations     # fixed-rate, read-only cached donation-feed smoke
-      npm run asset-download # fixed-rate authenticated 1 MiB attachment ranges
+      npm run news-feed     # fixed-rate, conditional homepage-feed smoke
+      npm run asset-download # fixed-rate ranges + anonymous denial/304 admission
+      npm run monitor-exports # fixed-rate bounded monitor XLSX exports + health
       npm run event-security # destructive fixed-rate bounded telemetry/resource comparison
+      npm run honeypot-bounds # sampled HTTP flood + optional TCP slow-loris/resource gate
       npm run scoreboard-evidence # isolated fixed-rate canonical FirstSolve query benchmark
+      npm run scoreboard-conditional # read-only fixed-rate scoreboard encoding/304 benchmark
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
       npm run redis-outage  # disposable Redis failure/recovery micro-harness
@@ -28,10 +43,209 @@ FLEET=10 npm run worker      # trusted worker create/proxy/destroy + lease gate
 FLEET=5  npm run worker-local # isolated current-tree rsctf + native Linux agent
 ```
 
+The managed TargetReporter gate is documented in
+[managed-koth.md](./managed-koth.md). It is the isolated acceptance path for a
+real Leaderboard KotH challenge; the generic lifecycle remains the compatibility
+gate for the legacy external observer contract.
+
 Requires `k6`, `node`, and `docker exec <PG>` / `docker` access; the stack up with a
 running game (default `GAME=10`, BYOC challenge `CID=68`). BYOC runs require at least
 `N` distinct Accepted participations; the harness fails before spawning when fewer are
 available rather than fabricating participation IDs that production authorization rejects.
+
+### Read-only WebSocket admission
+
+The WebSocket gate drives raw and SignalR attack feeds at a fixed connection
+arrival rate. It distinguishes the exact 64-KiB application boundary from a
+one-byte-oversized transport rejection, covers burst and sustained frame quotas,
+and checks exact `healthz` on an independent lane. Preflight probes also cover an
+invalid handshake, the 128-connection client ceiling and permit reuse, and the
+90-second idle close. A tagged notice is created, observed over SignalR during the
+flood, and deleted before the gate exits.
+
+```sh
+READONLY_WS_FLOOD_ACK=1 WEBSOCKET_GAME=92001 RATE=20 DURATION=30s \
+  SUMMARY_JSON=/tmp/read-only-websocket-flood.json npm run read-only-websocket-flood
+```
+
+It refuses a non-live or hidden event and any non-loopback target. Run it against
+an isolated local stack: the runner samples the exact `RSCTF_CONTAINER` and fails
+when its CPU or memory exceeds the configured bounds.
+
+### Proxy traffic admission
+
+This gate opens authenticated platform-proxy streams at a constant arrival rate and
+writes bounded maximum-size frames on each established stream. It accepts only a normal
+close or the stable proxy-traffic policy close, while an independent lane requires an
+exact, responsive `healthz`. Point `TARGET` at the load balancer to exercise shared
+Redis byte credits and PostgreSQL live-session leases across replicas. The stream lane
+varies `X-Forwarded-For`; configure the disposable load balancer's address in
+`RSCTF_TRUSTED_PROXY_CIDRS` when exercising independent source buckets. Without that
+trust configuration, rsctf correctly ignores the header and the run exercises a
+many-account, single-NAT source bucket instead.
+
+Prepare a mode-`0600` JSON file containing between 1 and 512 real disposable endpoint
+objects. For the normal WSRX path, `url` is the complete scoped URL returned after
+capability minting, including `?capability=...`, for example
+`{"url":"wss://.../api/proxy/CONTAINER?capability=REDACTED"}`. Do not put that proxy capability in an
+`Authorization` header: it is query-bound. A fixture deliberately exercising ordinary
+session authentication may instead provide an optional `bearerToken` or exact
+`sessionCookie` (`RSCTF_Token=...`) alongside the uncredentialed URL. Every endpoint
+must use the same origin as `TARGET`; the runner rejects unauthenticated or duplicate rows, symlinks,
+oversized files, unacknowledged traffic, and remote targets without an exact-origin
+acknowledgement. It also verifies that the credential fixture is byte-identical after
+the run. The maximum accepted schedule is one hour, 512 arrivals per second, and 4,096
+VUs, so a typo cannot create unbounded local work.
+
+```sh
+PROXY_TRAFFIC_LOAD_ACK=1 \
+PROXY_TRAFFIC_ENDPOINTS_FILE=/tmp/proxy-traffic-endpoints.json \
+RATE=2 FRAME_BYTES=65536 FRAME_INTERVAL_MS=10 STREAM_MS=10000 DURATION=30s \
+SUMMARY_JSON=/tmp/proxy-traffic-admission.json npm run proxy-traffic-admission
+```
+
+For a non-loopback target, also set `ALLOW_REMOTE_PROXY_TRAFFIC_LOAD` to the exact
+HTTP(S) origin of `TARGET`. The acceptance baseline is zero server 5xx, health failures,
+and dropped arrivals; fewer than 0.1% handshake or unexpected-close failures; health
+p95 below 800 ms; and handshake p95 below 3 seconds. A valid byte-budget rejection is
+counted separately as `proxy_budget_closes`, and an HTTP 429 carrying a positive
+`Retry-After` is counted as `proxy_admission_rejections`; neither is a transport
+failure. Retain the full `SUMMARY_JSON` distribution and application/PostgreSQL CPU
+and RAM samples from the same fixture, host, replica count, rate, and duration for
+before/after claims.
+
+### Admin dashboard aggregates
+
+The focused dashboard gate seeds a tagged neutral submission history into an explicitly
+disposable database, exercises the summary, all four trend ranges, and the three
+activity feeds at a fixed arrival rate, then deletes every tagged row. Its PostgreSQL
+account must be allowed to use transaction-local `session_replication_role=replica`;
+this prevents disposable rows from enqueueing immutable anti-cheat evidence and makes
+exact cleanup possible without weakening production triggers. The gate also requires
+an Admin token (or a local Admin plus `RSCTF_JWT_SECRET`), exact healthy responses,
+fixed trend bucket counts, at most five popular games, at most ten activity rows,
+zero 5xx/dropped arrivals, and a responsive `healthz`:
+
+```sh
+ADMIN_DASHBOARD_DISPOSABLE=1 SUBMISSION_ROWS=100000 RATE=1 DURATION=30s \
+  RSCTF_LOAD_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1/rsctf_load_test \
+  SUMMARY_JSON=/tmp/admin-dashboard.json npm run admin-dashboard
+```
+
+The database name must contain `test`, `acceptance`, or `load`; a non-loopback
+target additionally requires `ALLOW_REMOTE_ADMIN_DASHBOARD` to equal the exact
+origin. Use identical row count, rate, duration, host, and summary settings for a
+before/after comparison. Retain the first reportable distributions alongside
+application/PostgreSQL resource samples in `REPORT.md`; do not compare peak rps.
+
+### Bounded monitor history
+
+`monitor-history` is read-only and requires a selected game with at least 10,000
+cursor-backed events and 10,000 cursor-backed submissions. It holds a fixed arrival rate across
+zero, minimum, maximum, oversized, literal-wildcard, and long-search history pages,
+plus event and submission cursor-only checkpoints and one/max/oversized reconnect
+backfill pages:
+
+```sh
+MONITOR_HISTORY_GAME=17 RATE=1 DURATION=20s npm run monitor-history
+```
+
+Its baseline gate is zero 5xx, 429, invalid responses, duplicate event/submission
+IDs or cursors, non-ascending backfill cursors, oversized bodies, row-limit violations, or dropped
+iterations, with p95 below 800 ms. Use a
+disposable/local stack when raising `RATE`; the Query policy deliberately limits
+sustained work per monitor identity.
+
+### Traffic and anti-cheat monitor inventory
+
+`monitor-evidence-inventory` holds one arrival schedule across traffic challenge,
+team, and file cursor pages plus the anti-cheat incident page/delta, cached report,
+event evidence, pair comparison, and one real PCAP's bounded flow summary/filter/detail
+contract. The runner tries at most eight of the smallest indexed PCAPs within the
+256 MiB inspector limit and seeds one TCP summary before load; empty, stale, or malformed
+captures do not become synthetic fixtures. It requires a prepared real-filesystem/PostgreSQL
+fixture (by default 20 capture challenges, 500 capture buckets, 5,000 indexed PCAPs,
+1,000 flag-sharing incidents, and 5,000 suspicion events) and at least four disposable
+Monitor/Admin identities:
+
+```sh
+MONITOR_EVIDENCE_GAME=92001 RATE=4 VUS=32 DURATION=30s \
+  SUMMARY_JSON=/tmp/monitor-evidence-inventory.json npm run monitor-evidence-inventory
+```
+
+The gate rotates identities and source IPs to measure bounded work instead of one
+limiter bucket. It also issues rapid concurrent valid flow filters, requires the last
+(newest) peer filter to win semantically, sends one invalid regex, and binds detail to
+the seeded `snapshotVersion`, `flowId`, and `connectionPort`. It rejects pages over 100
+rows, duplicate or unstable incident IDs, oversized bodies, malformed drill-downs,
+unexpected 5xx/429 responses, dropped arrivals, and any admitted-busy `503` without a
+numeric `Retry-After`. A separate fixed-rate probe requires the exact `healthz` body
+`ok` with p95 below 500 ms. The runner also samples the configured
+Docker application/PostgreSQL containers and PostgreSQL I/O counters once per second,
+then fails on excessive task/thread, memory, block-I/O, block-read, or temporary-I/O
+growth. Override `MONITOR_EVIDENCE_RESOURCE_CONTAINERS`, `MAX_MEMORY_DELTA_MIB`,
+`MAX_TASK_DELTA`, `MAX_BLOCK_IO_DELTA_MIB`, `MAX_PG_BLOCK_READ_DELTA`, or
+`MAX_PG_TEMP_DELTA_MIB` for a documented fixture. Resource evidence is written beside
+`SUMMARY_JSON` (or to `RESOURCE_JSON`); the runner deliberately does not fabricate
+PCAP files. It also counts regular PCAPs below `/data/files/capture` inside the
+application container; set `MONITOR_EVIDENCE_CAPTURE_ROOT` when the prepared stack
+mounts the capture root elsewhere.
+
+### Incremental anti-cheat reconciliation
+
+`anticheat-reconciliation` requires an active disposable game with at least 5,000
+completed/outstanding evidence-history rows and two Admin accounts. It first waits for
+the durable reconciliation queue to become clean, advances one explicitly acknowledged
+generation, and races 16 unique manual operation IDs from the two operators against the
+scheduled reconciler. Every operation must alias one control job and the reconciliation
+state must record exactly one effective pass.
+
+It then holds public scoreboard reads and exact `healthz` checks at fixed arrival rates
+for at least 35 seconds. No evidence is added in this phase. The queue generation,
+source cursors, job/operation counts, attempts, and last-started timestamp must remain
+unchanged, proving that a large but idle history causes no scheduled detector pass.
+The runner samples application/PostgreSQL CPU and memory, runtime tasks, PostgreSQL
+client-pool occupancy, active/idle-in-transaction/waiting backends, longest transaction,
+and block/temp-I/O counters once per second. Defaults reject a container above 400% CPU,
+more than 40 database clients or active clients, any idle-in-transaction client, more
+than 16 waiting clients, a transaction over 30 seconds, 100,000 block reads, or 64 MiB
+of temporary I/O. Document fixture-specific overrides with `MAX_CPU_PERCENT`,
+`MAX_PG_CONNECTIONS`, `MAX_PG_ACTIVE_CONNECTIONS`,
+`MAX_PG_IDLE_IN_TRANSACTION`, `MAX_PG_WAITING_CONNECTIONS`,
+`MAX_PG_LONGEST_TRANSACTION_SECONDS`, `MAX_PG_BLOCK_READ_DELTA`, and
+`MAX_PG_TEMP_DELTA_MIB`. The gate mutates one disposable queue generation and therefore
+fails closed without an exact acknowledgement:
+
+```bash
+cd tests/load
+GAME=10 ANTICHEAT_RECONCILIATION_STRESS_ACK=game:10 \
+  DURATION=65s RATE=20 SUMMARY_JSON=/tmp/anticheat-reconciliation.json \
+  npm run anticheat-reconciliation
+```
+
+For a remote origin, also set
+`ALLOW_REMOTE_ANTICHEAT_RECONCILIATION_STRESS` to the exact `TARGET` origin.
+
+### Bounded participation review
+
+`participation-review` is read-only and requires a disposable/local event with at
+least 12,000 participation rows plus one authorized game manager or Admin. It rotates
+through default, maximum, tail, status, division, literal-search, and lazy roster-detail
+reads while probing exact `healthz` independently:
+
+```sh
+PARTICIPATION_REVIEW_GAME=92001 RATE=2 DURATION=30s \
+  RSCTF_LOAD_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1/rsctf_load_test \
+  SUMMARY_JSON=/tmp/participation-review.json npm run participation-review
+```
+
+The gate rejects an oversized page, any undeclared/PII summary field, an undeclared
+detail field, 5xx, 429, invalid bodies, health failures, or dropped arrivals, and keeps
+read p95 below 1 second. A non-loopback target additionally requires
+`ALLOW_REMOTE_PARTICIPATION_REVIEW` to equal the exact origin. Retain the first live
+fixed-rate distributions and matching application/PostgreSQL resource samples in
+`REPORT.md` during the final performance gate; this contract-only batch does not claim
+an unmeasured runtime baseline.
 
 ### Bounded event-security telemetry
 
@@ -50,6 +264,31 @@ logical quota breach. It measures the bounded aggregate API/SQL path; it does
 not retain packet payloads, DNS names, public IP addresses, or flag plaintext.
 The current fixed-rate acceptance numbers and artifact hashes are retained in
 [REPORT.md](./REPORT.md#bounded-event-security-telemetry-fixed-rate-acceptance--20-august-2026).
+
+### Bounded honeypot telemetry
+
+`honeypot-bounds` holds an unauthenticated decoy flood at a fixed arrival rate
+while independently probing the exact `healthz` body. It requires an explicit
+acknowledgement because sampled observations are persisted. The runner rejects
+any response distinguishable from the ordinary decoy 404, dropped arrivals,
+unbounded aggregate rows or stored fields, excessive memory/task growth, or a
+health latency regression. It also samples configured-container CPU and PostgreSQL
+client-pool/activity/block/temp-I/O once per second and applies the same default CPU
+and database ceilings documented for incremental anti-cheat reconciliation above.
+`HONEYPOT_RESOURCE_CONTAINERS` must retain the configured application and PostgreSQL
+container names so an override cannot silently omit either required resource sample.
+Set `HONEYPOT_TCP_PORT` to one configured protocol decoy to add 256 silent sockets
+and require all of them to close within the absolute connection deadline.
+
+```sh
+HONEYPOT_STRESS_ACK=1 RATE=512 VUS=64 DURATION=20s \
+  HONEYPOT_TCP_PORT=2222 SUMMARY_JSON=/tmp/honeypot-bounds.json \
+  npm run honeypot-bounds
+```
+
+Remote runs additionally require `ALLOW_REMOTE_HONEYPOT_STRESS` to equal the
+exact target origin. Keep rate, duration, source count, replica set, and Docker
+resource-container list identical for before/after comparisons.
 
 ### Donation feed
 
@@ -73,6 +312,45 @@ releases. Sample the application and PostgreSQL containers with
 `docker stats --no-stream` during both runs; compare CPU at the held rate, never
 peak requests per second.
 
+### Homepage news feed
+
+The public homepage feed is capped at 20 projected rows and exposes a stable weak
+ETag. This scenario seeds that validator once, then holds a fixed conditional-request
+rate and requires every unchanged response to be HTTP 304 with an empty body. It also
+checks exact health before and after the run:
+
+```sh
+NEWS_FEED_STRESS_ACK=1 TARGET=https://ctf.example RATE=2 DURATION=30s \
+  SUMMARY_JSON=/tmp/news-feed.json npm run news-feed
+```
+
+Use the same retained post history, rate, and duration for before/after comparisons.
+The public-safe default stays below the anonymous-IP admission budget; higher rates
+belong on an isolated stack with the admission limit configured for the test.
+
+### Monitor spreadsheet exports
+
+Run this read-only scenario against a quiescent event so the PostgreSQL and XLSX
+row counts remain identical before and after the load. It downloads and inspects
+both workbook types, then holds a fixed export arrival rate while probing exact
+`/healthz`. Local runs also sample replica RSS and task/thread counts; HTTP 429
+and 503 are accepted only with a positive `Retry-After` header.
+
+```sh
+MONITOR_EXPORT_STRESS_ACK=1 GAME=92001 MONITOR_TOKEN=<monitor-jwt> \
+  RATE=2 VUS=4 DURATION=30s \
+  SUMMARY_JSON=/tmp/monitor-exports.json \
+  RESOURCE_JSON=/tmp/monitor-exports-resources.json \
+  npm run monitor-exports
+```
+
+The runner fails on a missing/duplicate worksheet row, a response outside the
+200/429/503 contract, an export timeout, dropped arrivals, health p95 above 500
+ms, a health failure, or resource growth beyond the declared bounds. Remote
+targets additionally require `ALLOW_REMOTE_MONITOR_EXPORT_STRESS` to equal the
+exact origin and explicit `EXPECTED_SCOREBOARD_ROWS` / `EXPECTED_SUBMISSION_ROWS`.
+Use the same event snapshot, rate, duration, and host for release comparisons.
+
 ### On-demand image storage
 
 `image-storage` targets one explicitly prepared, disposable challenge that is
@@ -82,8 +360,13 @@ starts at a fixed arrival rate over one second, and probes `/healthz` throughout
 the build. The run fails unless rsctf publishes exactly one `RuntimeStart` build,
 all player starts succeed, each participation receives a running container, the
 ownership lease is stamped, and there are no dropped arrivals or 5xx responses.
-It then invokes one bounded cleanup pass while resource sampling remains active;
-set `IMAGE_STORAGE_SKIP_CLEANUP=1` only when testing the build half in isolation.
+It then makes the installation's durable image-cleanup schedule due and starts a
+second fixed-arrival probe while the independently supervised pass runs. The
+runner requires one new durable start/finish, a cleared lease, an advanced
+15-minute cadence, at most 32 claimed candidates, coherent scanned/removed/backlog
+counts, no schedule error, and an unchanged cadence across later 30-second
+scheduler ticks. `/healthz` and resource sampling stay active throughout; set
+`IMAGE_STORAGE_SKIP_CLEANUP=1` only when testing the build half in isolation.
 
 ```sh
 IMAGE_STORAGE_STRESS_ACK=1 GAME=92001 CID=92002 N=8 \
@@ -91,6 +374,26 @@ IMAGE_STORAGE_STRESS_ACK=1 GAME=92001 CID=92002 N=8 \
   RESOURCE_JSON=/tmp/image-storage-resources.json \
   npm run image-storage
 ```
+
+To cover event-closeout responsiveness, provide an already-ended disposable A&D
+fixture with at least one round. The cleanup-phase k6 run then reads its final A&D
+scoreboard at the same fixed rate and fails on any non-200 response, 5xx, dropped
+arrival, or p95 above one second:
+
+```sh
+IMAGE_STORAGE_STRESS_ACK=1 GAME=92001 CID=92002 \
+  IMAGE_STORAGE_CLOSEOUT_GAME=92003 IMAGE_STORAGE_CLOSEOUT_ACK=92003 \
+  EXPECTED_CLEANUP_BACKLOG_MIN=1000 npm run image-storage
+```
+
+A genuinely stuck Docker daemon is not induced by this harness: pausing or killing
+the host daemon would make exact cleanup unsafe. For an externally configured,
+disposable Docker fault proxy that delays `df`, prune, list, or inspect calls, opt
+in with `IMAGE_STORAGE_HUNG_DOCKER_ACK=external-fault-proxy` and set
+`EXPECTED_CLEANUP_MIN_MS` to the injected lower bound. The probe runs for 125
+seconds, accepts only a timeout/deadline/budget failure (or a bounded successful
+pass), and still enforces health and optional closeout thresholds. The harness
+never installs, starts, or removes the proxy itself.
 
 The runner does not create or rewrite the challenge and refuses an ambient
 remote target. A remote disposable target additionally requires
@@ -106,9 +409,11 @@ tests/load/
   byoc-agents.mjs   BYOC tunnel fleet: seed rows, start/stop N relay agents, list listeners
   fixtures.mjs      materializes the exact checker + shared flag service used by lifecycle
   admin-fixtures.mjs focused SQL, HTTP, Docker-image, CSR, and recovery helpers for admin acceptance
-  admin-lifecycle.js pure 62-operation admin catalog, response contracts, and target-safety rules
+  admin-lifecycle.js pure 75-operation admin catalog, response contracts, and target-safety rules
   admin-lifecycle.mjs destructive disposable admin lifecycle (npm run admin-lifecycle)
-  edit-lifecycle.js exact 67-operation `/api/edit` catalog + wire validators
+  admin-dashboard.js bounded dashboard/trend/activity response contracts
+  admin-dashboard.mjs tagged large-history fixture and cleanup (npm run admin-dashboard)
+  edit-lifecycle.js exact 79-operation `/api/edit` catalog + wire validators
   edit-lifecycle.mjs future/A&D/KotH organizer lifecycle (npm run edit-lifecycle)
   multi-domain-acceptance.js pure two-service/two-hill isolation contracts
   multi-domain-acceptance.mjs focused multi-domain acceptance (npm run multi-domain)
@@ -121,11 +426,20 @@ tests/load/
   cheat-acceptance.mjs isolated small anti-cheat acceptance for a fresh CI database
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
   polled-read.mjs   read-only broad-token fixed-rate polling smoke
+  monitor-history.mjs read-only bounded history/event+submission backfill acceptance
+  realtime-recovery-model.js deterministic browser backfill request ceiling
   asset-download.mjs fixed-rate range/resume delivery benchmark
+  monitor-exports.mjs bounded XLSX row-integrity/resource acceptance
+  monitor-export-model.js shared export response and row-bound contracts
+  participation-review.mjs read-only 12k-team organizer review acceptance
+  participation-review.js bounded PII-free page and lazy-detail contracts
   event-security.mjs fixed-rate control-vs-telemetry CPU/RAM/storage benchmark
+  news-feed.mjs     fixed-rate conditional homepage-feed benchmark
   asset-download-model.js shared asset-path and deterministic range rules
   scoreboard-evidence.mjs isolated accepted-history versus FirstSolves DB benchmark
+  scoreboard-conditional.mjs read-only standard/KotH encoding, validator, CPU/RAM benchmark
   player.mjs        → runs k6/player.js         (npm run player)
+  proxy-traffic-admission.mjs → bounded authenticated proxy byte-work gate
   ad-submit-batch.mjs → runs k6/ad-submit-batch.js (npm run ad-submit-batch)
   redis-outage.mjs  → stops/restores one acknowledged disposable Redis + runs k6/redis-outage.js
   image-storage.mjs → validates a queued fixture + runs k6/image-storage.js
@@ -135,12 +449,19 @@ tests/load/
   worker-plane-local.mjs → isolated native-agent acceptance wrapper (npm run worker-local)
   k6/
     admin-lifecycle.js fixed-rate admin reads, SignalR connection, replica/control health
+    admin-dashboard.js fixed-rate bounded dashboard/trend/activity reads plus health
     edit-lifecycle.js  fixed-rate organizer reads across future/A&D/KotH fixtures
     organizer-hubs.js  fixed-rate privileged negotiate, WebSocket, and exec traffic
     polled-read.js     one read per iteration across the dominant polled endpoints
-    asset-download.js  one authenticated deterministic attachment range per iteration
+    monitor-history.js one bounded history, event checkpoint/backfill, or submission checkpoint/backfill read per iteration
+    scoreboard-conditional.js conditional standard/KotH spectators at a fixed arrival rate
+    asset-download.js  fixed-rate ranges, rotating unknown hashes, public 304s, and health
+    monitor-exports.js fixed-rate monitor exports plus independent health arrivals
+    participation-review.js fixed-rate bounded organizer review plus independent health arrivals
     event-security.js  fixed-rate empty-control and aggregate sensor-ingest phases
+    news-feed.js     fixed-rate conditional homepage-feed reads
     player.js         A&D + KotH player: poll format/Overall boards, tokens/state, submit flags
+    proxy-traffic-admission.js fixed-rate maximum-frame proxy streams plus health
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable
     image-storage.js  fixed-rate first-demand build burst + continuous health probes
@@ -173,6 +494,57 @@ TARGET=https://ctf.example JEO_GAME=162 AD_GAME=163 RATE=300 \
   DURATION=60s npm run polled-read
 ```
 
+`scoreboard-conditional` focuses on the maximum-roster standard and KotH
+fixtures. Each VU retains the validator returned by each authorized endpoint,
+advertises Brotli/gzip, and sends `If-None-Match` on later polls. The gate accepts
+only compressed 200 or empty 304 responses, requires the ETag/version on both
+and an exact encoded `Content-Length` on 200, then reports encoded bytes, JSON
+parse time, 304 ratio, latency, dropped arrivals, and sampled application/PostgreSQL
+CPU and RAM. It is read-only and uses a broad
+disposable-user cohort; use the same fixture, rate, VUs, duration, and container
+set for before/after comparisons. The runner caps the direct and orchestrated
+scenario at 2,000 requests/s, 500 preallocated VUs, 4,000 credentials, and ten
+minutes so retained samples and accidental load stay bounded.
+
+```sh
+TARGET=https://ctf.example STANDARD_GAME=162 KOTH_GAME=163 RATE=200 \
+  VUS=100 DURATION=60s SUMMARY_JSON=/tmp/scoreboard-conditional.json \
+  npm run scoreboard-conditional
+```
+
+The k6 summary is written to `SUMMARY_JSON`; resource samples are written beside
+it as `SUMMARY_JSON.resources.json`. Override `SCOREBOARD_RESOURCE_CONTAINERS`
+with a comma-separated list when the selected stack uses different container
+names.
+
+`details-read` is the focused companion for the authenticated ten-second player
+challenge poll. It uses only accepted-participation users from the selected event,
+checks exact health before and after, and verifies that `challengeCount`, the visible
+challenge IDs, and the caller's solved projection agree. It performs no mutations:
+
+```sh
+TARGET=https://ctf.example GAME=162 RATE=10 DURATION=30s \
+  SUMMARY_JSON=/tmp/details-read.json npm run details-read
+```
+
+Set `REQUIRE_FIXED_PROJECTION=0` only when collecting a before-fix baseline; the
+projection mismatch remains visible in the exported metric but does not fail that
+baseline run.
+
+`challenge-modal-read` opens the real challenge-detail and compact solver-page
+reads as one fixed-rate cycle. It discovers the enabled challenge with the largest
+solver roster, caps the visible solver response at 20 rows/64 KiB, and fails on
+non-JSON, authorization, 5xx, dropped-iteration, or pagination-contract errors.
+Each resource carries a bounded support identifier and requires the server to echo
+it, proving a failing browser request can be correlated with its redacted request
+span without logging a credential or raw URL.
+It performs no mutations:
+
+```sh
+TARGET=https://ctf.example GAME=162 RATE=10 DURATION=30s \
+  SUMMARY_JSON=/tmp/challenge-modal-read.json npm run challenge-modal-read
+```
+
 `scoreboard-evidence` isolates the database work behind a Jeopardy scoreboard
 cache fill. Its default disposable fixture contains 100 teams, 20 challenges,
 20 accepted-history rows per solve, and one canonical `FirstSolves` row per
@@ -192,26 +564,32 @@ SUMMARY_JSON=/tmp/scoreboard-evidence.json npm run scoreboard-evidence
 PostgreSQL target. This is a focused SQL scalability comparison; use
 `polled-read` and `lifecycle` for HTTP and whole-event acceptance.
 
-`asset-download` measures large-file delivery at a fixed request and byte rate.
-It sends one exact, authenticated range per iteration and fails on malformed
-resume headers, authorization rejection, 5xx responses, or dropped iterations.
-Use the same attachment, range, rate, duration, and host for before/after data:
+`asset-download` measures asset authorization and delivery at fixed arrival
+rates. In parallel it sends exact authenticated ranges, rotating anonymous
+unknown hashes, anonymous public `304` revalidations, and independent health
+probes. It fails on malformed ranges, unexpected authorization results,
+non-retryable 5xx responses, missing `Retry-After`, unhealthy probes, or dropped
+iterations. Use the same attachment, rates, duration, and host for before/after
+data:
 
 ```sh
 TARGET=https://ctf.example \
 ASSET_URL=/assets/<sha256>/challenge.zip \
-RATE=20 RANGE_BYTES=1048576 DURATION=30s \
+RATE=20 UNKNOWN_RATE=32 CONDITIONAL_RATE=20 \
+RANGE_BYTES=1048576 DURATION=30s \
 SUMMARY_JSON=/tmp/asset-download.json npm run asset-download
 ```
 
-The runner reads the referenced size and accepted-participant security stamps
-from the selected PostgreSQL container, keeps generated tokens in a mode-0600
-temporary file, and removes it after k6 exits. It calls no mutation endpoint;
-RSCTF still performs its normal deduplicated attachment-download audit write.
-`RSCTF_JWT_SECRET` is required for local token minting.
+The runner reads the referenced size, accepted-participant security stamps, and
+one real public avatar/poster/branding hash from the selected PostgreSQL
+container. It keeps generated tokens in a mode-0600 temporary file and removes
+it after k6 exits. It calls no mutation endpoint; RSCTF still performs its
+normal deduplicated attachment-download audit write. `RSCTF_JWT_SECRET` is
+required for local token minting.
 
-Every knob is env-overridable: `TARGET`, `GAME`, `CID`, `VUS`, `RATE`, `DURATION`, `N`,
-`RSCTF_JWT_SECRET`, `PG_CONTAINER`, `RSCTF_CONTAINER`, `NET`, `AD_NET`,
+Every knob is env-overridable: `TARGET`, `GAME`, `CID`, `VUS`, `RATE`, `UNKNOWN_RATE`,
+`CONDITIONAL_RATE`, `DURATION`, `N`, `RSCTF_JWT_SECRET`, `PG_CONTAINER`,
+`RSCTF_CONTAINER`, `NET`, `AD_NET`,
 `LOAD_FIXTURE_ROOT`. The standalone player scenario also accepts
 `THINK_MIN_SECONDS` / `THINK_MAX_SECONDS` (defaults 3–5 seconds) and sends each
 real player session on its public-board polls. This keeps a normal reverse proxy's
@@ -366,7 +744,7 @@ update and a bind-mounted debug binary even when its image metadata still matche
 Three external integrations must be ready before the run:
 
 - Repository scan needs outbound HTTPS from the server to a read-only fixture containing
-  one `.gzevent` and `Jeopardy/Misc/static-handout/challenge.yaml`.
+  one `.gzevent` and `challenges/Jeopardy/Misc/static-handout/challenge.yaml`.
   `ADMIN_REPOSITORY_URL` defaults to
   `https://github.com/dimasma0305/rsctf-challenges.git`; set `ADMIN_REPOSITORY_REF`
   to override its `main` ref. Reportable runs must set the full 40-character
@@ -463,7 +841,8 @@ Use the same isolated Compose topology, marker, direct replica origins, confirma
 JWT secret, PostgreSQL/Redis/container variables, and safety acknowledgements shown for
 `admin-lifecycle` above. The two runners share both host and PostgreSQL advisory locks and
 cannot overlap. The GitHub challenge-import route defaults to the public
-`dimasma0305/rsctf-challenges` repository's `Jeopardy/Misc/static-handout` example (the
+`dimasma0305/rsctf-challenges` repository's
+`challenges/Jeopardy/Misc/static-handout` example (the
 main repository only stores that repository as a Git submodule); override it with
 `EDIT_GITHUB_REPOSITORY`, `EDIT_GITHUB_REF`, and `EDIT_GITHUB_SUBPATH`. Runtime knobs are
 `EDIT_CONTAINER_IMAGE`, `EDIT_AD_IMAGE`,
@@ -479,7 +858,7 @@ the manifest records that residual TOCTOU limitation.
 ```sh
 export EDIT_GITHUB_REPOSITORY=https://github.com/dimasma0305/rsctf-challenges.git
 export EDIT_GITHUB_REF=main
-export EDIT_GITHUB_SUBPATH=Jeopardy/Misc/static-handout
+export EDIT_GITHUB_SUBPATH=challenges/Jeopardy/Misc/static-handout
 export EDIT_GITHUB_EXPECTED_COMMIT="$(
   git ls-remote "$EDIT_GITHUB_REPOSITORY" "refs/heads/$EDIT_GITHUB_REF" |
     awk 'NR == 1 { print $1 }'
@@ -1089,6 +1468,28 @@ and the live ownership assertion are in
 
 ### Optimization ledger
 
+The 3 October globe comparison uses production frontend builds, the same host,
+Chromium, 49-team/12-island fixture, 12-second observation windows and two island
+selections per second. Browser frame cadence is separate from server throughput.
+Run the browser workload through the bounded frontend wrapper:
+
+```sh
+RSCTF_ANIMATION_OUTPUT=visual-audit-output/arena-animation-candidate \
+  scripts/bounded-frontend.sh exec bash -c 'cd .. && exec node tests/visual/arena-animation.mjs'
+```
+
+`tests/visual/arena-animation.mjs` requires a loopback production frontend build
+(default `http://127.0.0.1:18080`), intercepts all game APIs with the same read-only
+fixture, and exports avg/p50/p90/p95/p99/max frame intervals, camera steps,
+long tasks, renderer task time, heap use and roster integrity. The browser is
+software-rendered; these measurements do not promise an FPS on every device.
+The `arena-read` companion uses k6's `constant-arrival-rate` at 2 requests/s for
+30 seconds, with no credentials or mutations. `TARGET`, `GAME`, `SUMMARY_JSON`
+and optional `ARENA_RESOURCE_CONTAINERS` choose the scoped acceptance target.
+It checks exact `healthz`, public-board identities and duplicate-free rosters
+before/after, and saves application/PostgreSQL CPU/RAM samples beside the k6
+summary. This is a production health guardrail, not a server optimization claim.
+
 All 16 July rows compare adjacent images with the common workload above. The
 max-batch 19 July row is a frozen pre-submit-fence campaign using the isolated
 A&D harness documented in
@@ -1105,6 +1506,10 @@ flag-publication lag rather than aggregate closed-loop request throughput.
 The 4 August capability row uses the same-runtime adjacent player harness in
 [`REPORT.md`](REPORT.md#event-stable-leaderboard-capability-rollout--4-august-2026);
 both sides completed the same 301 scheduled iterations after a cold Redis start.
+The 3 September client row uses the same-host Chromium harness, ten cold-cache
+documents per build, 180 ms latency, and 200 Kbit/s throughput. Its paired
+fixed-rate HTTP run is a production health guardrail; no backend CPU reduction
+is inferred from a frontend-only route-module change.
 Their held throughput and CPU windows are not comparable to the replicated
 player-load rows. App CPU is both web replicas plus control for the 16 July
 campaign and the single web-only rsctf container for the 19 July campaign;
@@ -1115,6 +1520,11 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 
 | Date | Change | Held-rate throughput | Direct work reduction | App CPU-s | Stack CPU-s | Relevant p95 | Result |
 | --- | --- | ---: | --- | ---: | ---: | ---: | --- |
+| 2026-10-04 | Immersive scenery / cached world meshes and ocean | 2 → 2 country selections/s | One baseline / two final trials; lower renderer task time in all phases, no server throughput claim | — | — | Desktop rotation frame p95 33.30 → 16.80 ms in final 1; mobile focus p95 16.80 ms in both final trials | 0 browser/integrity errors; desktop worst-frame regressions, heap variation and pre-detail-limit attempt disclosed in REPORT.md |
+| 2026-10-04 | Detailed terrain / coordinated towns, shared lighting palette and early face culling | 2 → 2 country selections/s | One baseline / two final trials; added detail increases renderer work, no speed claim | — | — | Mobile frame p95 16.80 ms; desktop 33.30–33.40 ms in both final trials | 0 browser/integrity errors; pre-culling failure and final slow-frame/heap tradeoffs retained in REPORT.md |
+| 2026-10-04 | Spherical limb clipping / borders / settlements (visual acceptance) | 2 → 2 country selections/s | No optimization claim; maximum 24 settlements / 120 buildings | — | — | Desktop rotation frame p95 16.80 → 33.30 ms; mobile focus max 33.50 → 100.00 ms | 0 browser/integrity errors; extra render cost and worse tails disclosed in REPORT.md; 313,776 independent surface checks pass |
+| 2026-10-04 | Procedural category continents / challenge countries (visual acceptance) | 2 → 2 country selections/s | No optimization claim; membership-keyed geometry, richer coastlines and labels | — | — | Rotation frame p95 16.80 → 16.80 ms; desktop focus 16.80 → 33.30 ms | 0 browser/integrity errors; worse focus tail, task cost and heap variation disclosed in REPORT.md |
+| 2026-10-03 | Smooth arena camera and bounded globe rendering | 2 → 2 island selections/s | Canvas allocation on each repaint → only on size change; retained geometry/routes | — | — | Desktop steady globe updates 66.70 → 16.80 ms; 390px 33.40 → 16.80 ms | 0 browser/integrity errors; extra focus task time and heap variation disclosed in REPORT.md |
 | 2026-07-16 | Batch authenticated limiter policies | 429.20 → 429.72 req/s | Redis commands −12.01% | 157.47 → 155.20 | 345.88 → 339.48 | HTTP 9.13 → 9.17 ms | 0 5xx; clean |
 | 2026-07-16 | Cache KotH lifecycle with round fencing | 429.72 → 429.34 req/s | SQL calls −98.52% | 155.20 → 151.51 | 339.48 → 316.10 | KotH State 9.20 → 7.83 ms | 0 5xx; clean |
 | 2026-07-16 | Set-based closing-SLA evidence query | 429.34 → 429.11 req/s | Snapshot median −57.31% | 151.51 → 150.92 | 316.10 → 309.80 | HTTP 9.32 → 8.97 ms | 0 5xx; clean |
@@ -1130,6 +1540,7 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 | 2026-08-02 | Start A&D publication concurrently with the independent KotH transition | Same 400-VU/4-tunnel/300-s shape; 3,796.390 → 3,840.847 req/s observed | Unpublished/late rounds 1 → 0 | — | — | Publication 9.638 → 5.662 s (-41.3%) | Maximum 10.453 → 5.703 s; 0 5xx/integrity failures after |
 | 2026-08-04 | Event-stable Leaderboard capabilities with a primary-key token read | 10 → 10 iterations/s target; 301 → 301 completed | API token fill: crown/target join → PK lookup; 20/20 values preserved | 7.435 → 8.133 (+9.4%) | 31.299 → 21.454 (-31.5%) | KotH token 179.49 → 46.28 ms (-74.2%) | App CPU regression disclosed; DB -45.7%, Redis -40.5%; 0 errors/5xx/invalid boards |
 | 2026-08-13 | Weight Overall by locked challenge counts; allocation-free semantic validation | 100.010 → 99.994 req/s | Server query count unchanged; validator per-team arrays 4 → 0 | 11.328 → 9.960 | — | Overall 41.145 → 32.786 ms | 0 failures/drops; RSS +4.636 MiB disclosed; shared-host observation |
+| 2026-09-03 | Bounded lazy route-module prefetch | 10 → 10 controlled browser trials | `/games` route ready before activation; at most 2 sequential background modules | — | — | Click-ready p50 784.2 → 64.1 ms (-91.8%) | p95 804.9 → 108.1 ms; +1.61 KiB gzip entry; fixed-rate feed 0 drops/5xx |
 
 At the same one-batch/s load, the 100-distinct-known case also improved: p95
 790.76 → 367.97 ms and stack CPU 21.644 → 10.811 CPU-seconds. The

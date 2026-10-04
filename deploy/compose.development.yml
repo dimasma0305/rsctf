@@ -31,9 +31,11 @@ services:
       - ./postgres/init/00-pg-stat-statements.sql:/docker-entrypoint-initdb.d/00-pg-stat-statements.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rsctf_dev -d rsctf_dev"]
-      interval: 2s
+      interval: 30s
       timeout: 3s
-      retries: 30
+      retries: 5
+      start_period: 30s
+      start_interval: 5s
     logging: *development-logging
 
   redis:
@@ -53,9 +55,11 @@ services:
       - "127.0.0.1:${RSCTF_DEV_REDIS_PORT:-56379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 2s
+      interval: 30s
       timeout: 2s
-      retries: 30
+      retries: 5
+      start_period: 30s
+      start_interval: 5s
     logging: *development-logging
 
 volumes:

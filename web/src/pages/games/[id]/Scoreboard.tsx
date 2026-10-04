@@ -3,11 +3,12 @@ import { useLocalStorage } from '@mantine/hooks'
 import { mdiCrown, mdiFlagOutline, mdiScaleBalance, mdiSnowflake, mdiSwordCross } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { AdScoreboardTable } from '@Components/AdScoreboardTable'
 import { CombinedScoreboardTable } from '@Components/CombinedScoreboardTable'
+import { GameStatus } from '@Components/GameCard'
 import { KothScoreboardTable } from '@Components/KothScoreboardTable'
 import { ScoreboardTable } from '@Components/ScoreboardTable'
 import { TeamRank } from '@Components/TeamRank'
@@ -17,14 +18,16 @@ import { ScoreTimeLine } from '@Components/charts/ScoreTimeLine'
 import { MobileScoreboardTable } from '@Components/mobile/ScoreboardTable'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import {
-  getGameStatus,
   useAdScoreboard,
   useCombinedScoreboard,
   useGame,
-  useGameScoreboard,
+  useGameScoreboardPoll,
+  useGameScoreboardRead,
   useGameTeamInfo,
+  useGameStatus,
   useKothScoreboard,
 } from '@Hooks/useGame'
+import { useScoreboardLiveRefresh } from '@Hooks/useScoreboardLiveRefresh'
 import classes from '@Styles/GameScoreboard.module.css'
 
 type ScoreboardTab = 'overall' | 'jeopardy' | 'ad' | 'koth'
@@ -38,15 +41,17 @@ const Scoreboard: FC = () => {
   const numId = parseInt(id ?? '-1')
   // These two general-game reads are needed once for tab discovery. The visible
   // A&D/KotH board owns live polling, so do not keep unrelated endpoints hot.
-  const { teamInfo, error } = useGameTeamInfo(numId, false)
+  const teamState = useGameTeamInfo(numId, false)
+  const { teamInfo, error: teamInfoError } = teamState
   const { t } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
   // Keep the public catalog loaded even on direct #ad/#koth links. Anonymous
   // visitors cannot rely on the user-gated /Details response for tab discovery.
-  const { scoreboard } = useGameScoreboard(numId, false)
+  const scoreboardQuery = useGameScoreboardRead(numId)
+  const { scoreboard, error: scoreboardError, mutate: mutateJeopardyScoreboard } = scoreboardQuery
   const { game } = useGame(numId)
-  const { finished } = getGameStatus(game)
+  const { finished, status } = useGameStatus(game)
 
   const [divisionId, setDivisionId] = useState<number | null>(null)
   const isMobile = useIsMobile(1080)
@@ -118,6 +123,8 @@ const Scoreboard: FC = () => {
     (preferredTab === 'koth' && !hasKothChallenges)
       ? defaultTab
       : preferredTab
+  const standardBoardActive = scoreboard === undefined || (hasJeopardyChallenges && effectiveTab === 'jeopardy')
+  useGameScoreboardPoll(numId, status, standardBoardActive, scoreboardQuery)
 
   // Single click handler: update BOTH storage and URL in one go. No useEffect
   // round-trip; clicking 'A&D' immediately renders A&D and writes #ad.
@@ -145,16 +152,41 @@ const Scoreboard: FC = () => {
     }
   }, [effectiveTab, location.pathname, location.search, navigate, requestedTab, setStoredTab, storedTab, tabsResolved])
 
-  // Each live board freezes independently (separate endpoints) — read the
-  // freeze state from whichever board we're currently showing.
-  // These duplicate the table-level reads intentionally: SWR dedupes each key,
-  // while the page needs freeze metadata before rendering its shared banner.
-  const { adScoreboard } = useAdScoreboard(numId, hasAdChallenges && effectiveTab === 'ad')
-  const { kothScoreboard } = useKothScoreboard(numId, hasKothChallenges && effectiveTab === 'koth')
-  const { combinedScoreboard } = useCombinedScoreboard(numId, showTabs && effectiveTab === 'overall')
+  // The route owns each selected board snapshot. Banner and table consumers
+  // receive that snapshot as props instead of mounting drifting timers.
+  const {
+    adScoreboard,
+    error: adScoreboardError,
+    mutate: mutateAdScoreboard,
+  } = useAdScoreboard(numId, hasAdChallenges && effectiveTab === 'ad')
+  const {
+    kothScoreboard,
+    error: kothScoreboardError,
+    mutate: mutateKothScoreboard,
+  } = useKothScoreboard(numId, hasKothChallenges && effectiveTab === 'koth')
+  const {
+    combinedScoreboard,
+    error: combinedScoreboardError,
+    mutate: mutateCombinedScoreboard,
+  } = useCombinedScoreboard(numId, showTabs && effectiveTab === 'overall')
   const onOverallTab = effectiveTab === 'overall' && showTabs
   const onAdTab = effectiveTab === 'ad' && hasAdChallenges
   const onKothTab = effectiveTab === 'koth' && hasKothChallenges
+  const refreshActiveScoreboard = useCallback(async () => {
+    if (onOverallTab) return mutateCombinedScoreboard()
+    if (onAdTab) return mutateAdScoreboard()
+    if (onKothTab) return mutateKothScoreboard()
+    return mutateJeopardyScoreboard()
+  }, [
+    mutateAdScoreboard,
+    mutateCombinedScoreboard,
+    mutateKothScoreboard,
+    mutateJeopardyScoreboard,
+    onAdTab,
+    onKothTab,
+    onOverallTab,
+  ])
+  useScoreboardLiveRefresh(numId, status === GameStatus.OnGoing, refreshActiveScoreboard)
   const frozenView = onOverallTab
     ? combinedScoreboard?.isFrozenView
     : onAdTab
@@ -193,7 +225,7 @@ const Scoreboard: FC = () => {
           {
             value: 'overall',
             label: (
-              <Center style={{ gap: 4 }} aria-label={t('game.content.scoreboard.tab.overall', 'Overall')}>
+              <Center style={{ gap: 4 }}>
                 <Icon path={mdiScaleBalance} size={0.8} color="var(--mantine-color-yellow-7)" aria-hidden="true" />
                 <span>{t('game.content.scoreboard.tab.overall', 'Overall')}</span>
               </Center>
@@ -204,7 +236,7 @@ const Scoreboard: FC = () => {
                 {
                   value: 'jeopardy',
                   label: (
-                    <Center style={{ gap: 4 }} aria-label={t('game.content.scoreboard.tab.jeopardy', 'Jeopardy')}>
+                    <Center style={{ gap: 4 }}>
                       <Icon path={mdiFlagOutline} size={0.8} color="var(--mantine-color-blue-6)" aria-hidden="true" />
                       <span>{t('game.content.scoreboard.tab.jeopardy', 'Jeopardy')}</span>
                     </Center>
@@ -217,7 +249,7 @@ const Scoreboard: FC = () => {
                 {
                   value: 'ad',
                   label: (
-                    <Center style={{ gap: 4 }} aria-label={t('game.content.scoreboard.tab.ad', 'Attack & Defense')}>
+                    <Center style={{ gap: 4 }}>
                       <Icon path={mdiSwordCross} size={0.8} color="var(--mantine-color-red-6)" aria-hidden="true" />
                       <span className={classes.fullBoardLabel}>
                         {t('game.content.scoreboard.tab.ad', 'Attack & Defense')}
@@ -235,7 +267,7 @@ const Scoreboard: FC = () => {
                 {
                   value: 'koth',
                   label: (
-                    <Center style={{ gap: 4 }} aria-label={t('game.content.scoreboard.tab.koth', 'King of the Hill')}>
+                    <Center style={{ gap: 4 }}>
                       <Icon path={mdiCrown} size={0.8} color="var(--mantine-color-violet-6)" aria-hidden="true" />
                       <span className={classes.fullBoardLabel}>
                         {t('game.content.scoreboard.tab.koth', 'King of the Hill')}
@@ -259,21 +291,25 @@ const Scoreboard: FC = () => {
   const showOverall = effectiveTab === 'overall' && showTabs
 
   return (
-    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
-      <WithGameTab>
+    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH} competition>
+      <WithGameTab summary={teamInfo && !teamInfoError ? <TeamRank teamState={teamState} compact /> : undefined}>
         {isMobile ? (
-          <Stack pt="md">
+          <Stack>
             {freezeBanner}
-            {teamInfo && !error && showJeopardy && <TeamRank />}
             {tabNavbar}
             {showOverall ? (
-              <CombinedScoreboardTable numId={numId} />
+              <CombinedScoreboardTable numId={numId} scoreboard={combinedScoreboard} error={combinedScoreboardError} />
             ) : showAd ? (
-              <AdScoreboardTable numId={numId} />
+              <AdScoreboardTable numId={numId} scoreboard={adScoreboard} error={adScoreboardError} />
             ) : showKoth ? (
-              <KothScoreboardTable numId={numId} />
+              <KothScoreboardTable numId={numId} scoreboard={kothScoreboard} error={kothScoreboardError} />
             ) : (
-              <MobileScoreboardTable divisionId={divisionId} setDivisionId={setDivisionId} />
+              <MobileScoreboardTable
+                divisionId={divisionId}
+                setDivisionId={setDivisionId}
+                scoreboard={scoreboard}
+                error={scoreboardError}
+              />
             )}
           </Stack>
         ) : (
@@ -281,15 +317,20 @@ const Scoreboard: FC = () => {
             {freezeBanner}
             {tabNavbar}
             {showOverall ? (
-              <CombinedScoreboardTable numId={numId} />
+              <CombinedScoreboardTable numId={numId} scoreboard={combinedScoreboard} error={combinedScoreboardError} />
             ) : showAd ? (
-              <AdScoreboardTable numId={numId} />
+              <AdScoreboardTable numId={numId} scoreboard={adScoreboard} error={adScoreboardError} />
             ) : showKoth ? (
-              <KothScoreboardTable numId={numId} />
+              <KothScoreboardTable numId={numId} scoreboard={kothScoreboard} error={kothScoreboardError} />
             ) : (
               <>
-                {showJeopardy && <ScoreTimeLine divisionId={divisionId} />}
-                <ScoreboardTable divisionId={divisionId} setDivisionId={setDivisionId} />
+                {showJeopardy && <ScoreTimeLine divisionId={divisionId} scoreboard={scoreboard} />}
+                <ScoreboardTable
+                  divisionId={divisionId}
+                  setDivisionId={setDivisionId}
+                  scoreboard={scoreboard}
+                  error={scoreboardError}
+                />
               </>
             )}
           </Stack>

@@ -203,7 +203,7 @@ pub(super) async fn existing_team_participation_locked(
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
-pub(super) fn participation_status(value: i16) -> AppResult<ParticipationStatus> {
+pub(crate) fn participation_status(value: i16) -> AppResult<ParticipationStatus> {
     match value {
         value if value == ParticipationStatus::Pending as i16 => Ok(ParticipationStatus::Pending),
         value if value == ParticipationStatus::Accepted as i16 => Ok(ParticipationStatus::Accepted),
@@ -364,33 +364,38 @@ pub(super) async fn resolve_join_policy_locked(
     })
 }
 
-pub(super) struct JoinMutation<'a> {
-    pub(super) user_id: Uuid,
-    pub(super) game_id: i32,
-    pub(super) team_id: i32,
-    pub(super) division_id: Option<i32>,
-    pub(super) target_status: ParticipationStatus,
-    pub(super) token: &'a str,
-    pub(super) member_limit: i32,
-    pub(super) scoring_started: bool,
+pub(crate) struct JoinMutation<'a> {
+    pub(crate) user_id: Uuid,
+    pub(crate) game_id: i32,
+    pub(crate) team_id: i32,
+    pub(crate) division_id: Option<i32>,
+    pub(crate) target_status: ParticipationStatus,
+    pub(crate) token: &'a str,
+    pub(crate) member_limit: i32,
+    pub(crate) scoring_started: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct PersistedGameJoin {
-    pub(super) participation_id: i32,
-    pub(super) status: ParticipationStatus,
+pub(crate) struct PersistedGameJoin {
+    pub(crate) participation_id: i32,
+    pub(crate) status: ParticipationStatus,
+    pub(crate) created_participation: bool,
 }
 
 impl PersistedGameJoin {
     pub(super) fn is_accepted(self) -> bool {
         self.status == ParticipationStatus::Accepted
     }
+
+    pub(super) fn created_participation(self) -> bool {
+        self.created_participation
+    }
 }
 
 /// Persist the participation and its user link in the transaction that owns the
 /// ordered user/game + team advisory locks. Any conflict therefore rolls back a
 /// newly-created participation instead of leaving a scoring-visible orphan.
-pub(super) async fn persist_game_join_locked(
+pub(crate) async fn persist_game_join_locked(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     mutation: JoinMutation<'_>,
 ) -> AppResult<PersistedGameJoin> {
@@ -415,16 +420,6 @@ pub(super) async fn persist_game_join_locked(
         Some((participation_id, _)) => Some(participation_id),
         None => None,
     };
-
-    // Once the first A&D/KotH epoch is official, the set of people attached
-    // to each scored participation is immutable. This also covers linking a
-    // newly joined teammate to an already Accepted or Suspended participation
-    // and replacing a rejected link with a different team's participation.
-    if mutation.scoring_started {
-        return Err(AppError::bad_request(
-            "Game membership cannot change after A&D/KotH epoch scoring has started",
-        ));
-    }
 
     // Resolve and lock the destination before deciding whether the historical
     // rejected link can be replaced. An evidence-bearing link is durable actor
@@ -515,7 +510,21 @@ pub(super) async fn persist_game_join_locked(
         return Ok(PersistedGameJoin {
             participation_id: part_id,
             status: persisted_status,
+            created_participation: false,
         });
+    }
+
+    let created_participation = existing.is_none();
+    if created_participation
+        && mutation.scoring_started
+        && persisted_status == ParticipationStatus::Accepted
+    {
+        crate::services::ad::late_roster::admit_late_koth_participation(
+            transaction,
+            mutation.game_id,
+            part_id,
+        )
+        .await?;
     }
 
     // Also repair a legacy dangling rejected link, but only after the exact
@@ -580,6 +589,7 @@ pub(super) async fn persist_game_join_locked(
     Ok(PersistedGameJoin {
         participation_id: part_id,
         status: persisted_status,
+        created_participation,
     })
 }
 
@@ -590,3 +600,7 @@ mod tests;
 #[cfg(test)]
 #[path = "membership_leave_tests.rs"]
 mod leave_tests;
+
+#[cfg(test)]
+#[path = "membership_late_team_tests.rs"]
+mod late_team_tests;

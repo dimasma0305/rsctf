@@ -8,7 +8,11 @@ export const RSCTF_DOCUMENTATION = `${RSCTF_REPOSITORY}/tree/main/docs`
 
 export const OnceSWRConfig: SWRConfiguration = {
   refreshInterval: 0,
+  refreshWhenHidden: false,
+  refreshWhenOffline: false,
   revalidateOnFocus: false,
+  revalidateOnReconnect: false,
+  shouldRetryOnError: false,
 }
 
 const fallbackConfig: ClientConfig = {
@@ -23,7 +27,9 @@ const fallbackConfig: ClientConfig = {
   enableBrowserFingerprint: false,
   allowRegister: true,
   allowPasswordRegistration: true,
+  allowTeamCreation: true,
   emailConfirmationRequired: false,
+  allowCompetitionHistoryPurge: false,
   donationsEnabled: false,
   donationProvider: null,
   donationUrl: null,

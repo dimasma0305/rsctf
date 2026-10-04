@@ -215,6 +215,28 @@ pub struct CheckerVerdict {
     pub stolen_flags: Vec<String>,
 }
 
+/// Long-lived services shared by both checker passes. Keeping these runtime
+/// dependencies together leaves the round-specific inputs explicit.
+pub(crate) struct CheckerDependencies<'a> {
+    db: &'a DatabaseConnection,
+    containers: &'a dyn crate::services::container::ContainerManager,
+    cache: &'a dyn crate::services::cache::Cache,
+}
+
+impl<'a> CheckerDependencies<'a> {
+    pub(crate) fn new(
+        db: &'a DatabaseConnection,
+        containers: &'a dyn crate::services::container::ContainerManager,
+        cache: &'a dyn crate::services::cache::Cache,
+    ) -> Self {
+        Self {
+            db,
+            containers,
+            cache,
+        }
+    }
+}
+
 /// Run the A&D SLA checker tick for one round. Custom checkers execute as
 /// resource-limited local subprocesses; the built-in fallback is an in-process
 /// TCP probe.
@@ -237,14 +259,18 @@ pub struct CheckerVerdict {
 /// Only a clean checker exit may report `Offline`/`Mumble`, and a checker wall
 /// timeout is `Offline`.
 pub(crate) async fn run_checker(
-    db: &DatabaseConnection,
-    containers: &dyn crate::services::container::ContainerManager,
+    dependencies: CheckerDependencies<'_>,
     game_id: i32,
     round_id: i32,
     lease: &RoundFinishLease,
     pipeline_deadline: tokio::time::Instant,
     delivery_receipts: tokio::sync::mpsc::UnboundedReceiver<FlagDeliveryReceipt>,
 ) -> AppResult<()> {
+    let CheckerDependencies {
+        db,
+        containers,
+        cache,
+    } = dependencies;
     // Resolve the round; it must belong to this game. An unknown/foreign round
     // has nothing to check (warmup / bad id) — no-op rather than error.
     let round = match ad_round::Entity::find_by_id(round_id).one(db).await? {
@@ -335,6 +361,7 @@ pub(crate) async fn run_checker(
     let koth_pass = koth::check_hills(
         db,
         containers,
+        cache,
         game_id,
         &round,
         &checker_dirs,
@@ -370,6 +397,7 @@ pub(crate) async fn validate_koth_functional_readiness(
     port: i32,
     round_number: i32,
     challenge_id: i32,
+    timeout: std::time::Duration,
 ) -> (AdCheckStatus, Option<String>) {
     let (status, message) = run_check(
         checker_dir,
@@ -379,7 +407,7 @@ pub(crate) async fn validate_koth_functional_readiness(
         0,
         challenge_id,
         None,
-        std::time::Duration::from_secs(checker_timeout_secs()),
+        timeout,
         false,
     )
     .await;
@@ -687,6 +715,8 @@ mod scheduling_tests {
     fn pending_roster_requires_unresolved_identity_matched_delivery() {
         assert!(ad::PENDING_AD_SERVICES_SQL.contains("result.sla_credit IS NULL"));
         assert!(ad::PENDING_AD_SERVICES_SQL.contains("delivery.delivered = TRUE"));
+        assert!(ad::PENDING_AD_SERVICES_SQL.contains("OCTET_LENGTH(flag.flag) = 38"));
+        assert!(ad::PENDING_AD_SERVICES_SQL.contains("[A-Za-z0-9_-]{32}"));
         assert!(ad::PENDING_AD_SERVICES_SQL
             .contains("delivery.container_id IS NOT DISTINCT FROM service.container_id"));
     }
@@ -759,7 +789,8 @@ mod scheduling_tests {
               sla_credit DOUBLE PRECISION
             );
             CREATE TEMP TABLE "AdFlags" (
-              round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL
+              round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
+              flag TEXT NOT NULL
             );
             CREATE TEMP TABLE "AdFlagDeliveryResults" (
               round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
@@ -773,7 +804,14 @@ mod scheduling_tests {
               (1,7,'one'), (2,7,'two'), (3,7,'replacement'), (4,7,NULL), (5,7,'five');
             INSERT INTO "AdCheckResults" VALUES
               (101,1,NULL), (101,2,1.0), (101,3,NULL), (101,4,NULL), (101,5,NULL);
-            INSERT INTO "AdFlags" VALUES (101,1), (101,2), (101,3), (101,4);
+            INSERT INTO "AdFlags" VALUES
+              (101,1,'flag{AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}'),
+              (101,2,'flag{BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB}'),
+              (101,3,'flag{CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC}'),
+              (101,4,'flag{DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD}'),
+              (101,5,'legacy-invalid');
+            INSERT INTO "AdFlagDeliveryResults" VALUES
+              (101,5,'Managed','five',TRUE,clock_timestamp());
             INSERT INTO "AdFlagDeliveryResults" VALUES
               (101,1,'Managed','one',TRUE,clock_timestamp()),
               (101,2,'Managed','two',TRUE,clock_timestamp()),

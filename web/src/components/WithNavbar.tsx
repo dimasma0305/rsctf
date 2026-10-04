@@ -6,7 +6,7 @@ import { AppFooter } from '@Components/AppFooter'
 import { AppHeader } from '@Components/AppHeader'
 import { AppNavbar } from '@Components/AppNavbar'
 import { CustomColorModal } from '@Components/CustomColorModal'
-import { IconHeader } from '@Components/IconHeader'
+import { WorkspaceBar } from '@Components/WorkspaceBar'
 import {
   deserializeNavigationRailPreference,
   getNavigationRailWidth,
@@ -28,9 +28,10 @@ interface WithNavBarProps extends React.PropsWithChildren {
   withFooter?: boolean
   withHeader?: boolean
   stickyHeader?: boolean
+  competition?: boolean
 }
 
-export const GAME_PAGE_CONTENT_WIDTH = '1800px'
+export const GAME_PAGE_CONTENT_WIDTH = '1440px'
 
 export interface AppControlProps {
   openColorModal: () => void
@@ -41,8 +42,7 @@ export const WithNavBar: FC<WithNavBarProps> = ({
   width,
   isLoading,
   withFooter = false,
-  withHeader,
-  stickyHeader = false,
+  competition = false,
 }) => {
   const isMobile = useIsMobile()
   const { t } = useTranslation()
@@ -69,6 +69,7 @@ export const WithNavBar: FC<WithNavBarProps> = ({
       </a>
       <AppShell
         p={0}
+        transitionDuration={0}
         header={{ height: 68, collapsed: !isMobile }}
         navbar={{
           width: getNavigationRailWidth(navigationCompact),
@@ -78,8 +79,10 @@ export const WithNavBar: FC<WithNavBarProps> = ({
           },
         }}
       >
-        <AppHeader openColorModal={openColorModal} />
-        <AppNavbar openColorModal={openColorModal} compact={navigationCompact} onToggleCompact={toggleNavigation} />
+        {isMobile && <AppHeader openColorModal={openColorModal} />}
+        {!isMobile && (
+          <AppNavbar openColorModal={openColorModal} compact={navigationCompact} onToggleCompact={toggleNavigation} />
+        )}
         <AppShell.Main
           component="main"
           id="main-content"
@@ -90,9 +93,9 @@ export const WithNavBar: FC<WithNavBarProps> = ({
         >
           <Stack data-mobile={isMobile || undefined} data-pb={withFooter || undefined} className={classes.main}>
             <LoadingOverlay visible={isLoading ?? false} overlayProps={DEFAULT_LOADING_OVERLAY} />
-            {withHeader && <IconHeader px={isMobile ? '2%' : '10%'} sticky={stickyHeader} />}
             <Box
               data-page-content
+              data-motion={competition ? undefined : 'page'}
               className={classes.content}
               style={
                 {
@@ -101,6 +104,7 @@ export const WithNavBar: FC<WithNavBarProps> = ({
                 } as React.CSSProperties
               }
             >
+              {!competition && <WorkspaceBar />}
               {children}
             </Box>
             <CustomColorModal opened={colorModalOpened} onClose={() => setColorModalOpened(false)} />

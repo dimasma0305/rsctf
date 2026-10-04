@@ -6,36 +6,107 @@ use sea_orm::DatabaseTransaction;
 
 use super::*;
 
+/// Identifiers created by one definition import, for callers that restore
+/// dependent rows inside the same transaction.
+pub(in crate::controllers::edit) struct ImportedDefinition {
+    pub(in crate::controllers::edit) game_id: i32,
+    pub(in crate::controllers::edit) private_key: String,
+    /// Source challenge id -> imported challenge id.
+    pub(in crate::controllers::edit) challenge_ids: BTreeMap<i32, i32>,
+    /// Imported division ids in the archive's `divisions` order.
+    pub(in crate::controllers::edit) division_ids: Vec<i32>,
+}
+
+/// A transaction-scoped continuation that runs after the definition rows exist
+/// and before the import commits.
+pub(in crate::controllers::edit) type DefinitionContinuation<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<T>> + Send + 'a>>;
+
 pub(super) async fn persist_game_import(
     st: &SharedState,
     entries: &BTreeMap<String, Vec<u8>>,
     export_game: &ExportGameModel,
     export_challenges: &[ExportChallengeModel],
 ) -> AppResult<i32> {
+    let (definition, ()) =
+        persist_game_import_with(st, entries, export_game, export_challenges, |_, _| {
+            Box::pin(async { Ok(()) })
+        })
+        .await?;
+    Ok(definition.game_id)
+}
+
+/// Persist a definition and run `continuation` on the same transaction. The
+/// whole import commits or rolls back as one unit; staged blobs are published
+/// only on commit.
+pub(in crate::controllers::edit) async fn persist_game_import_with<T, F>(
+    st: &SharedState,
+    entries: &BTreeMap<String, Vec<u8>>,
+    export_game: &ExportGameModel,
+    export_challenges: &[ExportChallengeModel],
+    continuation: F,
+) -> AppResult<(ImportedDefinition, T)>
+where
+    F: for<'a> FnOnce(
+        &'a DatabaseTransaction,
+        &'a ImportedDefinition,
+    ) -> DefinitionContinuation<'a, T>,
+{
+    // Reject invalid domain data before writing any immutable bytes. The same
+    // checks remain in the transaction as the authoritative publication gate.
+    for challenge in export_challenges {
+        if let Some(storage_limit) = challenge.storage_limit {
+            crate::services::container::validate_storage_limit_value(storage_limit)?;
+        }
+        if let Some(workload_spec) = challenge.workload_spec.clone() {
+            crate::services::challenge_workloads::validate_json_for_challenge(
+                challenge.challenge_type,
+                workload_spec,
+            )?;
+        }
+    }
+    let prepared_attachments = prepare_import_attachments(st, entries, export_challenges).await?;
+    let published_hashes = prepared_attachments
+        .iter()
+        .filter_map(|attachment| match attachment {
+            PreparedImportAttachment::Local(stage) => Some(stage.blob.hash.clone()),
+            PreparedImportAttachment::None | PreparedImportAttachment::Remote(_) => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let mut prepared_attachments = prepared_attachments.into_iter();
     let transaction = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
-    let mut stored_hashes = BTreeSet::new();
     let result = persist_game_import_locked(
-        st,
         &transaction,
-        entries,
         export_game,
         export_challenges,
-        &mut stored_hashes,
+        &mut prepared_attachments,
     )
     .await;
 
+    let result = match result {
+        Ok(definition) => match continuation(&transaction, &definition).await {
+            Ok(extra) => Ok((definition, extra)),
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(error),
+    };
     match result {
-        Ok(game_id) => {
+        Ok(imported) => {
+            if prepared_attachments.next().is_some() {
+                let _ = transaction.rollback().await;
+                return Err(AppError::internal(
+                    "game import attachment manifest was not fully consumed",
+                ));
+            }
             transaction.commit().await?;
-            Ok(game_id)
+            for hash in published_hashes {
+                crate::controllers::assets::invalidate_asset_gate(st, &hash).await;
+            }
+            Ok(imported)
         }
         Err(error) => {
-            match transaction.rollback().await {
-                Ok(()) => purge_rolled_back_blobs(st, stored_hashes).await,
-                Err(rollback_error) => tracing::error!(
-                    %rollback_error,
-                    "game import transaction rollback failed; skipping ambiguous blob cleanup"
-                ),
+            if let Err(rollback_error) = transaction.rollback().await {
+                tracing::error!(%rollback_error, "game import transaction rollback failed");
             }
             Err(error)
         }
@@ -43,32 +114,41 @@ pub(super) async fn persist_game_import(
 }
 
 async fn persist_game_import_locked(
-    st: &SharedState,
     transaction: &DatabaseTransaction,
-    entries: &BTreeMap<String, Vec<u8>>,
     export_game: &ExportGameModel,
     export_challenges: &[ExportChallengeModel],
-    stored_hashes: &mut BTreeSet<String>,
-) -> AppResult<i32> {
+    prepared_attachments: &mut std::vec::IntoIter<PreparedImportAttachment>,
+) -> AppResult<ImportedDefinition> {
     let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
-    let new_game = imported_game_model(export_game, public_key, private_key)
+    let new_game = imported_game_model(export_game, public_key, private_key.clone())
         .insert(transaction)
         .await?;
+    let mut division_ids = Vec::with_capacity(export_game.divisions.len());
     let mut challenge_id_map = BTreeMap::new();
 
     for src in export_challenges {
+        if src.challenge_type == ChallengeType::DynamicContainer {
+            if let Some(template) = src
+                .flag_template
+                .as_deref()
+                .filter(|template| !crate::utils::flag_policy::is_blank(template))
+            {
+                crate::utils::flag_policy::validate_dynamic_template(template)
+                    .map_err(|error| AppError::bad_request(error.to_string()))?;
+            }
+        }
+        for flag in &src.flags {
+            crate::utils::flag_policy::validate_normal(&flag.flag)
+                .map_err(|error| AppError::bad_request(error.to_string()))?;
+        }
         if let Some(storage_limit) = src.storage_limit {
             crate::services::container::validate_storage_limit_value(storage_limit)?;
         }
         let challenge_attachment_id = import_attachment(
-            st,
             transaction,
-            entries,
-            src.attachment_type,
-            src.attachment_file_hash.as_deref(),
-            src.attachment_remote_url.as_deref(),
-            src.attachment_file_name.as_deref(),
-            stored_hashes,
+            prepared_attachments
+                .next()
+                .ok_or_else(|| AppError::internal("game import attachment manifest ended early"))?,
         )
         .await?;
         let workload_spec = match src.workload_spec.clone() {
@@ -88,14 +168,10 @@ async fn persist_game_import_locked(
 
         for flag in &src.flags {
             let attachment_id = import_attachment(
-                st,
                 transaction,
-                entries,
-                flag.attachment_type,
-                flag.file_hash.as_deref(),
-                flag.remote_url.as_deref(),
-                flag.file_name.as_deref(),
-                stored_hashes,
+                prepared_attachments.next().ok_or_else(|| {
+                    AppError::internal("game import attachment manifest ended early")
+                })?,
             )
             .await?;
             flag_context::ActiveModel {
@@ -120,6 +196,7 @@ async fn persist_game_import_locked(
         }
         .insert(transaction)
         .await?;
+        division_ids.push(imported.id);
 
         for config in &source.challenge_configs {
             let Some(&challenge_id) = challenge_id_map.get(&config.challenge_id) else {
@@ -135,7 +212,12 @@ async fn persist_game_import_locked(
         }
     }
 
-    Ok(new_game.id)
+    Ok(ImportedDefinition {
+        game_id: new_game.id,
+        private_key,
+        challenge_ids: challenge_id_map,
+        division_ids,
+    })
 }
 
 fn imported_game_model(
@@ -154,9 +236,14 @@ fn imported_game_model(
         accept_without_review: Set(source.accept_without_review),
         allow_user_submissions: Set(source.allow_user_submissions),
         writeup_required: Set(source.writeup_required),
+        ai_chat_links_enabled: Set(source.ai_chat_links_enabled),
+        ai_chat_links_required: Set(source.ai_chat_links_required),
+        solver_uploads_enabled: Set(source.solver_uploads_enabled),
         invite_code: Set(None),
         team_member_count_limit: Set(source.team_member_count_limit),
-        discord_webhook: Set(source.discord_webhook.clone()),
+        // Webhooks are deployment-local outbound credentials. Old archives may
+        // still deserialize the field, but an import must never activate it.
+        discord_webhook: Set(None),
         container_count_limit: Set(source.container_count_limit),
         start_time_utc: Set(source.start_time_utc),
         end_time_utc: Set(source.end_time_utc),
@@ -213,7 +300,11 @@ fn imported_challenge_model(
         category: Set(source.category),
         challenge_type: Set(source.challenge_type),
         hints: Set(source.hints.clone()),
-        flag_template: Set(source.flag_template.clone()),
+        released_hint_count: Set(0),
+        flag_template: Set(source
+            .flag_template
+            .clone()
+            .filter(|template| !crate::utils::flag_policy::is_blank(template))),
         file_name: Set(source.file_name.clone()),
         container_image: Set(source.container_image.clone()),
         network_mode: Set(Some(source.network_mode.unwrap_or(NetworkMode::Open))),
@@ -265,44 +356,102 @@ fn imported_challenge_model(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn import_attachment(
+enum PreparedImportAttachment {
+    None,
+    Remote(String),
+    Local(crate::services::blob_refs::StagedBlob),
+}
+
+async fn prepare_import_attachments(
     st: &SharedState,
-    transaction: &DatabaseTransaction,
+    entries: &BTreeMap<String, Vec<u8>>,
+    challenges: &[ExportChallengeModel],
+) -> AppResult<Vec<PreparedImportAttachment>> {
+    let mut prepared = Vec::new();
+    for challenge in challenges {
+        let ordinal = prepared.len();
+        prepared.push(
+            prepare_import_attachment(
+                st,
+                entries,
+                challenge.attachment_type,
+                challenge.attachment_file_hash.as_deref(),
+                challenge.attachment_remote_url.as_deref(),
+                challenge.attachment_file_name.as_deref(),
+                ordinal,
+            )
+            .await?,
+        );
+        for flag in &challenge.flags {
+            let ordinal = prepared.len();
+            prepared.push(
+                prepare_import_attachment(
+                    st,
+                    entries,
+                    flag.attachment_type,
+                    flag.file_hash.as_deref(),
+                    flag.remote_url.as_deref(),
+                    flag.file_name.as_deref(),
+                    ordinal,
+                )
+                .await?,
+            );
+        }
+    }
+    Ok(prepared)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_import_attachment(
+    st: &SharedState,
     entries: &BTreeMap<String, Vec<u8>>,
     file_type: Option<FileType>,
     file_hash: Option<&str>,
     remote_url: Option<&str>,
     file_name: Option<&str>,
-    stored_hashes: &mut BTreeSet<String>,
-) -> AppResult<Option<i32>> {
-    let (file_type, remote_url, local_file_id) = match file_type.unwrap_or(FileType::None) {
-        FileType::None => return Ok(None),
-        FileType::Remote => (
-            FileType::Remote,
-            Some(validate_remote_attachment_url(
-                remote_url.unwrap_or_default(),
-            )?),
-            None,
-        ),
+    ordinal: usize,
+) -> AppResult<PreparedImportAttachment> {
+    match file_type.unwrap_or(FileType::None) {
+        FileType::None => Ok(PreparedImportAttachment::None),
+        FileType::Remote => Ok(PreparedImportAttachment::Remote(
+            validate_remote_attachment_url(remote_url.unwrap_or_default())?,
+        )),
         FileType::Local => {
             let Some(hash) = file_hash.filter(|hash| !hash.is_empty()) else {
-                return Ok(None);
+                return Ok(PreparedImportAttachment::None);
             };
             let Some(bytes) = valid_bundled_blob(entries, hash) else {
                 // Never link an attachment to an unavailable deployment-local
                 // blob merely because another database happens to know its hash.
-                return Ok(None);
+                return Ok(PreparedImportAttachment::None);
             };
             let name = file_name.unwrap_or(hash);
-            // Record cleanup intent before storage runs: a metadata-upsert
-            // failure happens after the physical content-addressed write.
-            stored_hashes.insert(hash.to_owned());
-            let (_, file_id) = crate::services::blob_refs::store_and_acquire_in_seaorm_transaction(
+            let stage = crate::services::blob_refs::stage_blob(
+                st.pg(),
                 st.storage.as_ref(),
-                transaction,
+                uuid::Uuid::new_v4(),
+                &format!("game-import:{ordinal}"),
+                None,
                 name,
                 bytes,
+            )
+            .await?;
+            Ok(PreparedImportAttachment::Local(stage))
+        }
+    }
+}
+
+async fn import_attachment(
+    transaction: &DatabaseTransaction,
+    prepared: PreparedImportAttachment,
+) -> AppResult<Option<i32>> {
+    let (file_type, remote_url, local_file_id) = match prepared {
+        PreparedImportAttachment::None => return Ok(None),
+        PreparedImportAttachment::Remote(url) => (FileType::Remote, Some(url), None),
+        PreparedImportAttachment::Local(stage) => {
+            let file_id = crate::services::blob_refs::publish_staged_blob_in_seaorm_transaction(
+                transaction,
+                &stage,
             )
             .await?;
             (FileType::Local, None, Some(file_id))
@@ -327,17 +476,6 @@ fn valid_bundled_blob<'a>(entries: &'a BTreeMap<String, Vec<u8>>, hash: &str) ->
         .map(Vec::as_slice)
 }
 
-async fn purge_rolled_back_blobs(st: &SharedState, hashes: BTreeSet<String>) {
-    for hash in hashes {
-        if let Err(error) =
-            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
-                .await
-        {
-            tracing::warn!(%error, %hash, "could not clean a rolled-back game-import blob");
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use sea_orm::ActiveValue::Set;
@@ -347,11 +485,13 @@ mod tests {
     #[test]
     fn import_clears_unbundled_direct_hash_and_executable_references() {
         let game: ExportGameModel = serde_json::from_value(serde_json::json!({
-            "posterHash": "deployment-a-poster"
+            "posterHash": "deployment-a-poster",
+            "discordWebhook": "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz_1234567890"
         }))
         .unwrap();
         let imported_game = imported_game_model(&game, "public".into(), "private".into());
         assert_eq!(imported_game.poster_hash, Set(None));
+        assert_eq!(imported_game.discord_webhook, Set(None));
 
         let challenge: ExportChallengeModel = serde_json::from_value(serde_json::json!({
             "type": "DynamicContainer",

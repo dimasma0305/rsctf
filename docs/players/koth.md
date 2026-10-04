@@ -43,8 +43,8 @@ and reliability constrains the entire result.
 
 Use the application's published gameplay mechanic. Your current per-hill
 capability identifies the team to the challenge; players never call RSCTF's
-signed referee endpoint. An independent organizer-controlled referee converts
-verified challenge events into bounded evidence.
+managed evidence endpoints. The authoritative arena converts verified
+challenge events into bounded native evidence.
 
 For team `i` in finalized wave `t`:
 
@@ -94,10 +94,12 @@ transient sessions and unsettled snapshots.
 
 Provisioning, recovery, readiness, incomplete capability issuance, and
 platform-attributed failures are void rather than charged to teams. Several
-ticks form an epoch. Complete evidence-bearing epochs have equal weight. A
-shortened final epoch has proportional weight, and a wholly field-void hill is
-omitted from hill normalization. Bounded hill weights never raise the epoch
-ceiling above 100.
+ticks form an epoch. Complete evidence-bearing epochs have equal weight, and a
+shortened final epoch has proportional weight. Each hill's event-average score
+is then scaled so the field's best team on that hill counts 100, capped at four
+times the absolute value, before bounded hill weights combine the hills. A
+wholly field-void hill is omitted from that aggregate, and the event score
+never exceeds 100.
 
 ## Get and protect your capability
 
@@ -153,7 +155,7 @@ For Boot2Root:
 
 For Leaderboard:
 
-- automate the documented challenge interaction, not the trusted referee;
+- automate the documented challenge interaction, not the managed reporter;
 - complete a fresh verified run in every wave you want to score;
 - reconnect after a health-recovery notice with the same event token;
 - optimize the published official result relative to the current field;

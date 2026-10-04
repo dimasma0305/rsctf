@@ -6,6 +6,7 @@ import {
   Button,
   CopyButton,
   Divider,
+  Drawer,
   Group,
   Modal,
   ModalProps,
@@ -19,12 +20,15 @@ import {
   Input,
   Textarea,
   Tooltip,
+  useComputedColorScheme,
 } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import {
   mdiAlertCircleOutline,
   mdiArrowRight,
   mdiCheck,
+  mdiClose,
+  mdiCircleOutline,
   mdiContentCopy,
   mdiDownload,
   mdiFlag,
@@ -35,24 +39,38 @@ import {
   mdiOpenInNew,
   mdiThumbUp,
   mdiThumbDown,
+  mdiVpn,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import duration from 'dayjs/plugin/duration'
 import relativeTime from 'dayjs/plugin/relativeTime'
-import { FC, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  FC,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdChallengePanel } from '@Components/AdChallengePanel'
-import { FlagVerdictOverlay } from '@Components/FlagVerdictOverlay'
+import type { AdStateOwner } from '@Components/AdChallengePanel'
+import { ChallengeDeadlineNotice } from '@Components/ChallengeDeadlineNotice'
+import { FlagVerdictDialog } from '@Components/FlagVerdictOverlay'
 import { InstanceEntry } from '@Components/InstanceEntry'
 import { KothChallengePanel } from '@Components/KothChallengePanel'
 import { ContentPlaceholder, InlineMarkdown, Markdown } from '@Components/MarkdownRenderer'
 import { ScrollingText } from '@Components/ScrollingText'
-import { abbreviatedSha256, attachmentDownloadInfo } from '@Utils/AttachmentDownload'
+import { abbreviatedSha256, attachmentDownloadInfo, attachmentDownloadMode } from '@Utils/AttachmentDownload'
+import { attachmentGrantErrorMessage, downloadGrantedAttachment } from '@Utils/AttachmentGrant'
+import { challengeCloseBlock } from '@Utils/ChallengeCloseGate'
 import { FlagVerdictKind, FlagVerdictState } from '@Utils/FlagVerdict'
 import { useLanguage } from '@Utils/I18n'
+import { getServerNowMilliseconds, useServerClockTimeout } from '@Utils/ServerClock'
 import { ChallengeCategoryItemProps, HunamizeSize } from '@Utils/Shared'
-import { useTicker } from '@Hooks/useTicker'
 import { ChallengeDetailModel, ChallengeType, ReviewRating, SolveReceiptMode, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengeModal.module.css'
 import misc from '@Styles/Misc.module.css'
@@ -60,62 +78,32 @@ import misc from '@Styles/Misc.module.css'
 dayjs.extend(relativeTime)
 
 export interface SolverInfo {
-  rank: number
   teamName: string
   teamAvatar: string | null
   userName: string | null
   type: SubmissionType
   time: number
-  score: number
 }
 
-dayjs.extend(duration)
-
-interface ChallengeDeadlineNoticeProps {
-  deadline: dayjs.Dayjs
-  onExpiredChange: (expired: boolean) => void
-}
-
-const ChallengeDeadlineNotice: FC<ChallengeDeadlineNoticeProps> = ({ deadline, onExpiredChange }) => {
-  const { t } = useTranslation()
-  // Shared 1s ticker so multiple deadline widgets share one interval.
-  const now = useTicker()
-  const { locale } = useLanguage()
-
-  useEffect(() => {
-    onExpiredChange(now.isAfter(deadline))
-  }, [now, deadline, onExpiredChange])
-
-  if (now.isAfter(deadline)) {
-    return null
-  }
-
-  const formattedDeadline = useMemo(() => deadline.locale(locale).format('L LTS'), [deadline, locale])
-
-  const diff = deadline.diff(now)
-  const duration = dayjs.duration(diff)
-  const countdownText = `${Math.floor(duration.asHours())}:${duration.format('mm:ss')}`
-
-  return (
-    <Group gap="xs" justify="space-between" wrap="nowrap">
-      <Text fw="bold" size="sm">
-        {t('challenge.content.deadline.remaining')}&nbsp;
-        <Text span ff="monospace" fw="bold" size="sm" c="brand">
-          {countdownText}
-        </Text>
-      </Text>
-      <Text fw="bold" size="xs" c="dimmed">
-        {t('challenge.content.deadline.label')}&nbsp;
-        <Text span ff="monospace" c="dimmed" fw="bold" size="xs">
-          {formattedDeadline}
-        </Text>
-      </Text>
-    </Group>
-  )
-}
-
-export interface ChallengeModalProps extends ModalProps {
+export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stackId' | 'title'> {
+  /** Same content/actions in the desktop competition workspace; mobile keeps the modal. */
+  embedded?: boolean
+  drawer?: boolean
   challenge?: ChallengeDetailModel
+  loading?: boolean
+  loadError?: string
+  /** True when challenge material is withheld because the caller is outside
+   * the event VPN. The modal presents setup before any internal target. */
+  eventVpnDisconnected?: boolean
+  eventVpnDownloading?: boolean
+  onDownloadEventVpn?: () => void | Promise<void>
+  /** The event requires VPN proof. Local attachment downloads then mint a
+   * short-lived grant through the proof-aware client before navigating,
+   * because a browser download cannot carry the proof header itself. */
+  eventVpnRequired?: boolean
+  /** A failed refresh after usable challenge material was already loaded. */
+  refreshError?: string
+  onRetryLoad?: () => void
   cateData: ChallengeCategoryItemProps
   solved?: boolean
   disabled?: boolean
@@ -136,7 +124,7 @@ export interface ChallengeModalProps extends ModalProps {
   receiptProof: string
   setReceiptProof: (value: string | React.ChangeEvent<any> | null | undefined) => void
   onCreate: () => void
-  onExtend?: () => void
+  onExtend?: () => void | Promise<void>
   onDestroy: () => void
   onSubmitFlag: () => void
   onDownload?: () => void
@@ -144,16 +132,41 @@ export interface ChallengeModalProps extends ModalProps {
   /** True only when the flag was accepted in this browser session (not a pre-existing solve). */
   justSolved?: boolean
   solvers?: SolverInfo[]
+  solverTotal?: number
+  solverError?: string
   /** When set, the modal is rendering an A&D challenge — switches the footer
    *  from the flag-submit form to the AdChallengePanel (status + API docs). */
   gameId?: number
   flagVerdict?: FlagVerdictState | null
   onDismissFlagVerdict?: () => void
+  adStateOwner?: AdStateOwner
+  /** Caller-owned content rendered below the review block once solved. It
+   * never takes focus by itself; only `closeRequirement` can gate closing. */
+  solvedExtras?: ReactNode
+  /** Caller-owned requirement that also blocks closing while set (for example
+   * a required disclosure). `focus` moves focus to where it can be completed. */
+  closeRequirement?: ChallengeCloseRequirement | null
+}
+
+export interface ChallengeCloseRequirement {
+  /** Short noun phrase naming what is left, e.g. "AI chat disclosure". */
+  label: string
+  focus: () => void
 }
 
 export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const {
     challenge,
+    embedded = false,
+    drawer = false,
+    loading,
+    loadError,
+    eventVpnDisconnected,
+    eventVpnDownloading,
+    onDownloadEventVpn,
+    eventVpnRequired,
+    refreshError,
+    onRetryLoad,
     cateData,
     solved,
     justSolved,
@@ -175,9 +188,18 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     onSubmitFlag,
     onReviewSubmit,
     solvers,
+    solverTotal,
+    solverError,
     gameId,
     flagVerdict,
     onDismissFlagVerdict,
+    adStateOwner,
+    solvedExtras,
+    closeRequirement,
+    withOverlay = true,
+    overlayProps,
+    withCloseButton = true,
+    closeButtonProps,
     ...modalProps
   } = props
   // A&D and KotH both run on the live engine — neither has a static challenge
@@ -193,6 +215,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const readOnlyArchive = !!gameEnded && !practiceMode
   const { t } = useTranslation()
   const theme = useMantineTheme()
+  const colorScheme = useComputedColorScheme('dark')
+  const reviewOutlineShade = colorScheme === 'dark' ? 4 : 9
   const { locale } = useLanguage()
 
   const placeholders = t('challenge.content.flag_placeholders', {
@@ -208,30 +232,49 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const [comment, setComment] = useState('')
   const [isSubmittingReview, setIsSubmittingReview] = useState(false)
   const [reviewSubmitted, setReviewSubmitted] = useState(false)
+  const reviewSubmittingRef = useRef(false)
+  const reviewChallengeIdRef = useRef<number | undefined>((challenge as any)?.id)
   const flagInputRef = useRef<HTMLInputElement>(null)
   const reviewStartRef = useRef<HTMLButtonElement>(null)
+  const reviewCommentRef = useRef<HTMLTextAreaElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
-  const focusAfterVerdictRef = useRef<FlagVerdictKind | null>(null)
+  const panelHeadingRef = useRef<HTMLHeadingElement>(null)
+  const [focusAfterVerdict, setFocusAfterVerdict] = useState<FlagVerdictKind | null>(null)
+  // This component is also mounted already-open from a challenge card. Give
+  // Mantine's portal a closed first frame so its entrance can run in that case.
+  // Only presentation waits; the caller's data/request ownership is unchanged.
+  const [presentationMounted, setPresentationMounted] = useState(false)
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setPresentationMounted(true))
+    return () => window.cancelAnimationFrame(frame)
+  }, [])
+  useEffect(() => {
+    setFocusAfterVerdict(null)
+  }, [challenge?.id, modalProps.opened])
+  useEffect(() => {
+    if (embedded && modalProps.opened) panelHeadingRef.current?.focus({ preventScroll: true })
+  }, [embedded, modalProps.opened, challenge?.id])
 
   const dismissFlagVerdict = () => {
     if (!flagVerdict || !onDismissFlagVerdict) return
-    focusAfterVerdictRef.current = flagVerdict.kind
+    setFocusAfterVerdict(flagVerdict.kind)
     onDismissFlagVerdict()
   }
 
   useEffect(() => {
-    if (flagVerdict || !focusAfterVerdictRef.current) return
+    reviewChallengeIdRef.current = (challenge as any)?.id
+    if (flagVerdict || !focusAfterVerdict) return
 
-    const kind = focusAfterVerdictRef.current
-    focusAfterVerdictRef.current = null
+    // The underlying dialog reactivates its focus trap after the result closes.
+    // Its autofocus target and explicit focus restoration must agree.
     const frame = window.requestAnimationFrame(() => {
-      const preferredTarget = kind === 'success' ? reviewStartRef.current : flagInputRef.current
+      const preferredTarget = focusAfterVerdict === 'success' ? reviewStartRef.current : flagInputRef.current
       const target = preferredTarget && !preferredTarget.disabled ? preferredTarget : closeButtonRef.current
       target?.focus({ preventScroll: true })
     })
 
     return () => window.cancelAnimationFrame(frame)
-  }, [flagVerdict])
+  }, [flagVerdict, focusAfterVerdict])
 
   // Reset review state only when a fresh in-session solve occurs
   useEffect(() => {
@@ -243,21 +286,46 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   // Keyed on the challenge id — otherwise submitting one review leaves
   // reviewSubmitted=true and blocks the review UI on every OTHER challenge.
   useEffect(() => {
+    reviewSubmittingRef.current = false
+    setIsSubmittingReview(false)
     setRating((challenge as any)?.userRating ?? ReviewRating.None)
     setComment((challenge as any)?.userComment ?? '')
     setReviewSubmitted(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [(challenge as any)?.id])
 
-  // Block close only for challenges solved in this session that haven't been reviewed yet
+  // The review submit resolves asynchronously; read the caller's latest gate then.
+  const closeRequirementRef = useRef(closeRequirement)
+  closeRequirementRef.current = closeRequirement
+
+  // Block close for a fresh in-session solve that hasn't been reviewed yet, and
+  // while the caller reports an unmet requirement. One message names what is
+  // left; focus goes to the review first, then to the caller's requirement.
   const handleClose = () => {
-    if (justSolved && !reviewSubmitted) {
+    const requirement = closeRequirementRef.current
+    const block = challengeCloseBlock(Boolean(justSolved && !reviewSubmitted), Boolean(requirement))
+    if (block) {
       showNotification({
         color: 'orange',
-        message: t('challenge.review.required_to_close', 'Please rate this challenge before closing'),
+        message:
+          block === 'review'
+            ? t('challenge.review.required_to_close', 'Please rate this challenge before closing')
+            : block === 'both'
+              ? t(
+                  'challenge.close_blocked.both',
+                  'Rate this challenge and complete the {{requirement}} before closing',
+                  {
+                    requirement: requirement?.label,
+                  }
+                )
+              : t('challenge.close_blocked.requirement', 'Complete the {{requirement}} before closing', {
+                  requirement: requirement?.label,
+                }),
         icon: <Icon path={mdiAlertCircleOutline} size={1} />,
         autoClose: 3000,
       })
+      if (block === 'requirement') requirement?.focus()
+      else reviewStartRef.current?.focus()
       return
     }
     setFlag('')
@@ -265,11 +333,12 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   }
 
   const deadlineTime = useMemo(() => (challenge?.deadline ? dayjs(challenge.deadline) : null), [challenge?.deadline])
-  const [isDeadlinePassed, setIsDeadlinePassed] = useState(() => (deadlineTime ? dayjs().isAfter(deadlineTime) : false))
-
-  useEffect(() => {
-    setIsDeadlinePassed(deadlineTime ? dayjs().isAfter(deadlineTime) : false)
-  }, [deadlineTime])
+  // ChallengePanel retains this component after close. Keep the full modal off
+  // the one-second ticker and wake it only at an active deadline boundary.
+  const [, setDeadlineRevision] = useState(0)
+  const requestDeadlineCheck = useCallback(() => setDeadlineRevision((revision) => revision + 1), [])
+  useServerClockTimeout(requestDeadlineCheck, modalProps.opened && deadlineTime ? deadlineTime.valueOf() : null)
+  const isDeadlinePassed = deadlineTime ? dayjs(getServerNowMilliseconds()).isAfter(deadlineTime) : false
 
   const isLimitReached = (challenge?.limit && (challenge.attempts ?? 0) >= challenge.limit) || false
 
@@ -313,8 +382,58 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   ])
 
   const content = (
-    <ScrollAreaAutosize mah="52vh" maw="100%" scrollbars="y" scrollbarSize={6} type="scroll">
-      {challenge?.content === undefined ? (
+    <ScrollAreaAutosize
+      mah={embedded || drawer ? undefined : '52vh'}
+      maw="100%"
+      scrollbars="y"
+      scrollbarSize={6}
+      type="scroll"
+      data-guide="challenge-material"
+    >
+      {loadError ? (
+        <Alert
+          color={eventVpnDisconnected ? 'cyan' : 'red'}
+          icon={<Icon path={eventVpnDisconnected ? mdiVpn : mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+          title={
+            eventVpnDisconnected
+              ? t('challenge.vpn.required.title', 'Connect to the event VPN first')
+              : t('challenge.content.load_failed.title', 'Challenge could not be loaded')
+          }
+          role="alert"
+        >
+          <Stack gap="sm">
+            <Text size="sm">{loadError}</Text>
+            {eventVpnDisconnected && (
+              <Text size="sm">
+                {t(
+                  'challenge.vpn.required.instructions',
+                  'Download and import your personal WireGuard profile, connect it, then retry. Challenge targets stay hidden until the VPN connection is verified.'
+                )}
+              </Text>
+            )}
+            <Group gap="sm" wrap="wrap">
+              {eventVpnDisconnected && onDownloadEventVpn && (
+                <Button
+                  variant="filled"
+                  onClick={() => void onDownloadEventVpn()}
+                  loading={eventVpnDownloading}
+                  leftSection={<Icon path={mdiVpn} size={0.8} aria-hidden="true" />}
+                  data-guide="event-vpn-download"
+                >
+                  {t('game.button.event_vpn', 'Download event VPN')}
+                </Button>
+              )}
+              {onRetryLoad && (
+                <Button variant="outline" onClick={onRetryLoad}>
+                  {eventVpnDisconnected
+                    ? t('challenge.vpn.retry', 'I’m connected — retry')
+                    : t('common.button.retry', 'Retry')}
+                </Button>
+              )}
+            </Group>
+          </Stack>
+        </Alert>
+      ) : loading || challenge?.content === undefined ? (
         <ContentPlaceholder />
       ) : (
         <>
@@ -326,7 +445,25 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
               )}
             </Alert>
           )}
-          <Markdown source={challenge.content ?? ''} />
+          {refreshError && (
+            <Alert
+              mb="md"
+              color="orange"
+              variant="light"
+              icon={<Icon path={mdiAlertCircleOutline} size={0.8} aria-hidden="true" />}
+              role="status"
+            >
+              <Stack gap="xs">
+                <Text size="sm">{refreshError}</Text>
+                {onRetryLoad && (
+                  <Button size="compact-xs" variant="outline" onClick={onRetryLoad}>
+                    {t('common.button.retry', 'Retry')}
+                  </Button>
+                )}
+              </Stack>
+            </Alert>
+          )}
+          <Markdown key={challenge.id ?? 'challenge-material'} source={challenge.content ?? ''} />
           {challenge.hints && challenge.hints.length > 0 && (
             <Stack gap={2} pt="sm">
               {challenge.hints.map((hint) => (
@@ -343,7 +480,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
               <Divider
                 label={
                   <Text size="xs" c="dimmed" fw={500}>
-                    Solved by {solvers.length} {solvers.length === 1 ? 'team' : 'teams'}
+                    Solved by {solverTotal ?? solvers.length} {(solverTotal ?? solvers.length) === 1 ? 'team' : 'teams'}
                   </Text>
                 }
                 labelPosition="left"
@@ -389,7 +526,26 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
                   })}
                 </Stack>
               </ScrollArea>
+              {typeof solverTotal === 'number' && solverTotal > solvers.length && (
+                <Text size="xs" c="dimmed">
+                  {t('challenge.content.earliest_solvers', 'Showing the earliest {{count}} solves.', {
+                    count: solvers.length,
+                  })}
+                </Text>
+              )}
             </Stack>
+          )}
+          {solverError && (
+            <Alert mt="md" color="yellow" variant="light" icon={<Icon path={mdiAlertCircleOutline} size={0.8} />}>
+              <Stack gap="xs">
+                <Text size="sm">{solverError}</Text>
+                {onRetryLoad && (
+                  <Button size="compact-xs" variant="subtle" onClick={onRetryLoad}>
+                    {t('common.button.retry', 'Retry')}
+                  </Button>
+                )}
+              </Stack>
+            </Alert>
           )}
         </>
       )}
@@ -397,8 +553,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   )
 
   const withDeadline = deadlineTime && !isDeadlinePassed
-  const deadline = withDeadline && (
-    <ChallengeDeadlineNotice deadline={deadlineTime} onExpiredChange={setIsDeadlinePassed} />
+  const deadline = modalProps.opened && withDeadline && (
+    <ChallengeDeadlineNotice deadline={deadlineTime} locale={locale} onExpiredChange={requestDeadlineCheck} />
   )
 
   const withAttachment = !!challenge?.context?.url || onDownload
@@ -407,9 +563,46 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const downloadInfo = attachmentDownloadInfo(link, challenge?.context?.sha256)
   const local = downloadInfo.isLocal
   const attachmentSize = challenge?.context?.fileSize
+  const downloadMode = attachmentDownloadMode(downloadInfo, {
+    hasCustomDownload: Boolean(onDownload),
+    eventVpnRequired,
+    gameId,
+  })
+  const [attachmentGranting, setAttachmentGranting] = useState(false)
+  const [attachmentError, setAttachmentError] = useState<string>()
+  const attachmentErrorId = useId()
+  useEffect(() => {
+    setAttachmentError(undefined)
+  }, [challenge?.id, link])
+
+  const onGrantedDownload = async () => {
+    if (attachmentGranting || !link || !gameId || !downloadInfo.sha256) return
+    setAttachmentGranting(true)
+    setAttachmentError(undefined)
+    try {
+      await downloadGrantedAttachment(gameId, downloadInfo.sha256, link, downloadInfo.filename)
+    } catch (error) {
+      setAttachmentError(attachmentGrantErrorMessage(error, t))
+    } finally {
+      setAttachmentGranting(false)
+    }
+  }
+
+  const onAttachmentClick =
+    downloadMode === 'custom'
+      ? (e: ReactMouseEvent<HTMLAnchorElement>) => {
+          e.preventDefault()
+          onDownload?.()
+        }
+      : downloadMode === 'granted'
+        ? (e: ReactMouseEvent<HTMLAnchorElement>) => {
+            e.preventDefault()
+            void onGrantedDownload()
+          }
+        : undefined
 
   const attachment = withAttachment && (
-    <Stack className={classes.attachment} gap={6}>
+    <Stack className={classes.attachment} gap={6} data-guide="challenge-attachment">
       <Group gap="sm" justify="space-between" align="flex-start" wrap="wrap">
         <Stack gap={1} style={{ flex: '1 1 14rem', minWidth: 0 }}>
           <Text fw={700} size="sm">
@@ -424,23 +617,35 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         <Button
           component="a"
           href={link ?? '#'}
+          data-guide="challenge-attachment-download"
+          data-download-mode={downloadMode}
           variant="light"
           size="compact-sm"
-          target={local || onDownload ? undefined : '_blank'}
-          rel={local || onDownload ? undefined : 'noreferrer'}
+          target={downloadMode === 'external' ? '_blank' : undefined}
+          rel={downloadMode === 'external' ? 'noreferrer' : undefined}
           download={local ? (downloadInfo.filename ?? true) : undefined}
           leftSection={<Icon path={local ? mdiDownload : mdiOpenInNew} size={0.8} />}
-          onClick={
-            onDownload &&
-            ((e: ReactMouseEvent<HTMLAnchorElement>) => {
-              e.preventDefault()
-              onDownload()
-            })
-          }
+          loading={attachmentGranting}
+          aria-busy={attachmentGranting || undefined}
+          aria-describedby={attachmentError ? attachmentErrorId : undefined}
+          onClick={onAttachmentClick}
         >
           {local ? t('challenge.button.download.now', 'Download now') : t('common.content.external_link')}
         </Button>
       </Group>
+
+      {attachmentError && (
+        <Alert
+          id={attachmentErrorId}
+          color="cyan"
+          variant="light"
+          icon={<Icon path={mdiVpn} size={0.8} aria-hidden="true" />}
+          role="alert"
+          data-guide="challenge-attachment-error"
+        >
+          <Text size="sm">{attachmentError}</Text>
+        </Alert>
+      )}
 
       {local && (
         <Group gap={6} align="center" wrap="wrap">
@@ -527,7 +732,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
 
   // Allow submission if deadline not passed OR (game ended AND practice mode enabled)
   const canSubmitDespiteDeadline = !isDeadlinePassed || (gameEnded && practiceMode)
-  const inputDisabled = disabled || solved || isLimitReached || !canSubmitDespiteDeadline
+  const inputDisabled =
+    disabled || loading || Boolean(loadError) || solved || isLimitReached || !canSubmitDespiteDeadline
 
   // Any SOLVED challenge can be rated/edited (matches the backend upsert), not only
   // one solved in this browser session, and the controls stay visible after
@@ -548,6 +754,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       <Group grow>
         <Button
           ref={reviewStartRef}
+          data-autofocus={focusAfterVerdict === 'success' || undefined}
           variant={rating === ReviewRating.Like ? 'filled' : 'default'}
           color="teal"
           radius="md"
@@ -556,8 +763,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           onClick={() => setRating(ReviewRating.Like)}
           styles={(theme) => ({
             root: {
-              borderColor: rating === ReviewRating.Like ? undefined : theme.colors.teal[6],
-              color: rating === ReviewRating.Like ? undefined : theme.colors.teal[6],
+              borderColor: rating === ReviewRating.Like ? undefined : theme.colors.teal[reviewOutlineShade],
+              color: rating === ReviewRating.Like ? undefined : theme.colors.teal[reviewOutlineShade],
               borderWidth: rating === ReviewRating.Like ? undefined : '1px',
             },
           })}
@@ -573,8 +780,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           onClick={() => setRating(ReviewRating.Dislike)}
           styles={(theme) => ({
             root: {
-              borderColor: rating === ReviewRating.Dislike ? undefined : theme.colors.red[6],
-              color: rating === ReviewRating.Dislike ? undefined : theme.colors.red[6],
+              borderColor: rating === ReviewRating.Dislike ? undefined : theme.colors.red[reviewOutlineShade],
+              color: rating === ReviewRating.Dislike ? undefined : theme.colors.red[reviewOutlineShade],
               borderWidth: rating === ReviewRating.Dislike ? undefined : '1px',
             },
           })}
@@ -585,6 +792,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
 
       <Stack gap={4}>
         <Textarea
+          ref={reviewCommentRef}
           label={t('challenge.review.comment', 'Comment')}
           placeholder={t('challenge.review.placeholder', 'Leave a comment...')}
           value={comment}
@@ -609,23 +817,38 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           loading={isSubmittingReview}
           disabled={rating === ReviewRating.None}
           onClick={async () => {
-            if (onReviewSubmit) {
-              setIsSubmittingReview(true)
+            if (!onReviewSubmit || reviewSubmittingRef.current) return
+            const reviewChallengeId = (challenge as any)?.id as number | undefined
+            reviewSubmittingRef.current = true
+            setIsSubmittingReview(true)
+            try {
               await onReviewSubmit(rating, comment)
-              setIsSubmittingReview(false)
+              if (reviewChallengeIdRef.current !== reviewChallengeId) return
               setReviewSubmitted(true)
               // Fresh-solve nudge: submit then close. When editing an existing
-              // review, keep the modal open so it stays editable (onReviewSubmit
-              // already shows a "saved" toast).
-              if (justSolved) {
+              // review, keep the modal open so it stays editable. A pending
+              // caller requirement keeps it open and receives focus instead.
+              const requirement = closeRequirementRef.current
+              if (justSolved && requirement) {
+                window.requestAnimationFrame(() => requirement.focus())
+              } else if (justSolved) {
                 setFlag('')
                 modalProps.onClose()
+              }
+            } catch {
+              window.requestAnimationFrame(() => reviewCommentRef.current?.focus({ preventScroll: true }))
+            } finally {
+              if (reviewChallengeIdRef.current === reviewChallengeId) {
+                reviewSubmittingRef.current = false
+                setIsSubmittingReview(false)
               }
             }
           }}
         >
           {justSolved
-            ? t('challenge.review.submit_and_close', 'Submit & Close')
+            ? closeRequirement
+              ? t('challenge.review.submit_and_continue', 'Submit & continue')
+              : t('challenge.review.submit_and_close', 'Submit & Close')
             : hasExistingReview
               ? t('challenge.review.update', 'Update review')
               : t('challenge.review.save', 'Save review')}
@@ -655,7 +878,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   )
 
   const footer =
-    isAd && gameId && !isPracticeContainer && !readOnlyArchive ? (
+    loading || loadError ? null : isAd && gameId && !isPracticeContainer && !readOnlyArchive ? (
       <Stack gap="xs" className={classes.footer}>
         <Divider />
         {/* A&D/KotH challenges can ship a downloadable attachment (e.g. the
@@ -666,9 +889,15 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           misleading "no service for your team yet" alert. Route to the
           KotH-specific panel that knows about the hill + per-tick token. */}
         {isKoth ? (
-          <KothChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} />
+          <KothChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} active={Boolean(modalProps.opened)} />
         ) : (
-          <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} />
+          <AdChallengePanel
+            gameId={gameId}
+            challengeId={challenge?.id ?? 0}
+            active={Boolean(modalProps.opened)}
+            selfHosted={challenge?.adSelfHosted === true}
+            stateOwner={adStateOwner}
+          />
         )}
         {eventAction}
       </Stack>
@@ -685,7 +914,14 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         {/* A&D/KotH shown as a post-end practice container: keep the team's
           defended-service backup (snapshot) download available here. */}
         {isPracticeContainer && gameId && (
-          <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} snapshotOnly />
+          <AdChallengePanel
+            gameId={gameId}
+            challengeId={challenge?.id ?? 0}
+            active={Boolean(modalProps.opened)}
+            stateOwner={adStateOwner}
+            selfHosted={challenge?.adSelfHosted === true}
+            snapshotOnly
+          />
         )}
         {!readOnlyArchive && (
           <>
@@ -720,9 +956,15 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
                     styles={{ input: { fontFamily: 'monospace', fontSize: 'var(--mantine-font-size-xs)' } }}
                   />
                 )}
-                <Group justify="space-between" gap="sm" align="flex-end">
+                <Group
+                  justify="space-between"
+                  gap="sm"
+                  align="flex-end"
+                  className={embedded ? classes.inlineSubmit : undefined}
+                >
                   <TextInput
                     ref={flagInputRef}
+                    data-autofocus={(focusAfterVerdict === 'wrong' && !inputDisabled) || undefined}
                     label={t('challenge.label.flag', 'Flag')}
                     placeholder={placeholder}
                     value={inputValue}
@@ -739,42 +981,143 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           </>
         )}
         {reviewSection}
+        {solved && solvedExtras}
         {eventAction}
       </Stack>
     )
 
+  // A verdict is a separate layer, never a replacement for the challenge tree.
+  // Keep Markdown, form state, scroll position and workspace geometry intact.
+  let presentation
+  if (drawer) {
+    presentation = (
+      <Drawer
+        opened={modalProps.opened && presentationMounted}
+        onClose={handleClose}
+        position="right"
+        size="min(38rem, 100vw)"
+        title={title}
+        closeButtonProps={{ 'aria-label': t('common.button.close', 'Close'), ref: closeButtonRef }}
+        trapFocus={!flagVerdict}
+        closeOnEscape={flagVerdict ? false : modalProps.closeOnEscape}
+        closeOnClickOutside={flagVerdict ? false : modalProps.closeOnClickOutside}
+        inert={!!flagVerdict}
+      >
+        {content}
+        {footer}
+      </Drawer>
+    )
+  } else if (embedded) {
+    presentation = modalProps.opened ? (
+      <section
+        className={classes.inlinePanel}
+        aria-labelledby="competition-challenge-title"
+        data-challenge-detail
+        data-motion="surface"
+        inert={!!flagVerdict}
+      >
+        <header className={classes.inlineHeader}>
+          <div className={classes.orbitArt} aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </div>
+          <Group justify="space-between" wrap="nowrap" pos="relative">
+            <Group gap="xs" wrap="nowrap">
+              {cateData && <Icon path={cateData.icon} size={1.1} aria-hidden="true" />}
+              <Text size="sm">
+                {cateData?.name} · {isKoth ? 'KoTH' : isAd ? 'A&D' : 'Jeopardy'}
+              </Text>
+            </Group>
+            <ActionIcon
+              variant="subtle"
+              color="gray"
+              size="lg"
+              onClick={handleClose}
+              ref={closeButtonRef}
+              aria-label={t('common.button.close', 'Close')}
+            >
+              <Icon path={mdiClose} size={1} />
+            </ActionIcon>
+          </Group>
+          <Title
+            ref={panelHeadingRef}
+            tabIndex={-1}
+            id="competition-challenge-title"
+            order={2}
+            className={classes.inlineTitle}
+          >
+            {challenge?.title ?? ''}
+          </Title>
+          <Group gap="lg" mt="sm" pos="relative">
+            <Text fw={650}>
+              {readOnlyArchive
+                ? t('challenge.content.archived', 'ARCHIVED')
+                : isAd
+                  ? t('common.workspace.live_scoring', 'Live scoring')
+                  : t('game.arena.point_count', '{{count}} points', { count: challenge?.score ?? 0 })}
+            </Text>
+            {!isAd && typeof solverTotal === 'number' && (
+              <Text size="sm" c="dimmed">
+                {t('game.arena.solve_count', '{{count}} solves', { count: solverTotal })}
+              </Text>
+            )}
+          </Group>
+          {!isAd && (
+            <Group gap={5} mt="xs" pos="relative">
+              <Icon path={solved ? mdiCheck : mdiCircleOutline} size={0.8} aria-hidden="true" />
+              <Text size="sm">
+                {solved ? t('common.workspace.solved', 'Solved') : t('game.arena.unsolved', 'Unsolved')}
+              </Text>
+            </Group>
+          )}
+        </header>
+        <div className={classes.inlineBody}>{content}</div>
+        {footer}
+      </section>
+    ) : null
+  } else {
+    presentation = (
+      <Modal.Root
+        size="min(46rem, calc(100vw - 1.5rem))"
+        {...modalProps}
+        opened={modalProps.opened && presentationMounted}
+        onClose={handleClose}
+        closeOnEscape={flagVerdict ? false : modalProps.closeOnEscape}
+        closeOnClickOutside={flagVerdict ? false : modalProps.closeOnClickOutside}
+        trapFocus={flagVerdict ? false : modalProps.trapFocus}
+        centered
+        classNames={classes}
+      >
+        {withOverlay && <Modal.Overlay {...overlayProps} />}
+        <Modal.Content inert={!!flagVerdict}>
+          <div className={classes.header}>
+            <Modal.Title>{title}</Modal.Title>
+            {withCloseButton && (
+              <Modal.CloseButton
+                {...closeButtonProps}
+                ref={closeButtonRef}
+                aria-label={closeButtonProps?.['aria-label'] ?? t('common.button.close', 'Close')}
+              />
+            )}
+          </div>
+          <Modal.Body>{content}</Modal.Body>
+          {footer}
+        </Modal.Content>
+      </Modal.Root>
+    )
+  }
+
   return (
-    <Modal.Root
-      size="min(46rem, calc(100vw - 1.5rem))"
-      {...modalProps}
-      onClose={handleClose}
-      closeOnEscape={flagVerdict ? false : modalProps.closeOnEscape}
-      closeOnClickOutside={flagVerdict ? false : modalProps.closeOnClickOutside}
-      zIndex={flagVerdict ? 6000 : modalProps.zIndex}
-      centered
-      classNames={classes}
-    >
-      <Modal.Overlay />
-      <Modal.Content className={flagVerdict ? classes.verdictContent : undefined}>
-        {flagVerdict ? (
-          <FlagVerdictOverlay
-            key={flagVerdict.sequence}
-            verdict={flagVerdict}
-            challengeTitle={challenge?.title ?? ''}
-            score={flagVerdict.kind === 'success' && !gameEnded ? challenge?.score : undefined}
-            onDismiss={dismissFlagVerdict}
-          />
-        ) : (
-          <>
-            <div className={classes.header}>
-              <Modal.Title>{title}</Modal.Title>
-              <Modal.CloseButton ref={closeButtonRef} aria-label={t('common.button.close', 'Close')} />
-            </div>
-            <Modal.Body>{content}</Modal.Body>
-            {footer}
-          </>
-        )}
-      </Modal.Content>
-    </Modal.Root>
+    <>
+      {presentation}
+      <FlagVerdictDialog
+        key={challenge?.id}
+        verdict={modalProps.opened ? (flagVerdict ?? null) : null}
+        challengeTitle={challenge?.title ?? ''}
+        score={!gameEnded ? challenge?.score : undefined}
+        onDismiss={dismissFlagVerdict}
+      />
+    </>
   )
 }

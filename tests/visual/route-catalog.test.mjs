@@ -16,11 +16,12 @@ const context = { gameId: 67, challengeId: 326, postId: 'ffac23df' }
 const routes = discoverPageRoutes(context)
 
 test('visual route catalog covers every React page component exactly once', () => {
-  assert.equal(routes.length, 53)
+  assert.equal(routes.length, 56)
   assert.deepEqual(validatePageRoutes(routes), [])
   assert.ok(routes.every((route) => route.sourceFile.endsWith('.tsx')))
   assert.ok(routes.some((route) => route.sourceFile === '[...all].tsx'))
   assert.ok(routes.some((route) => route.path === '/admin/games/67/challenges/326/flags'))
+  assert.ok(routes.some((route) => route.path === '/admin/games/67/readiness'))
   assert.ok(routes.some((route) => route.path === '/posts/ffac23df/edit'))
   assert.ok(pagesRoot.endsWith(join('web', 'src', 'pages')))
 })
@@ -36,6 +37,7 @@ test('visual routes select the least privileged useful browser identity', () => 
   assert.equal(routes.find((route) => route.path === '/challenges')?.auth, 'player')
   assert.equal(routes.find((route) => route.path === '/guide')?.auth, 'anonymous')
   assert.equal(routes.find((route) => route.path === '/games/67/submit')?.auth, 'player')
+  assert.equal(routes.find((route) => route.path === '/games/67/attack')?.auth, 'anonymous')
   assert.equal(routes.find((route) => route.path === '/games/67/monitor/events')?.auth, 'admin')
   assert.equal(routes.find((route) => route.path === '/account/stats')?.expectedPath, '/account/profile')
 })
@@ -49,6 +51,8 @@ test('game workspace routes share one visual layout group', () => {
     '/games/67/monitor/submissions',
     '/games/67/monitor/cheatcheck',
     '/games/67/monitor/traffic',
+    '/games/67/monitor/ai-chats',
+    '/games/67/monitor/solvers',
   ]
   for (const path of workspacePaths) {
     assert.equal(routes.find((route) => route.path === path)?.layoutGroup, 'game-workspace', path)
@@ -67,10 +71,14 @@ test('game workspace uses one bounded width and container-sized challenge cards'
   for (const source of sources) {
     const contents = readFileSync(join(repositoryRoot, source), 'utf8')
     assert.match(contents, /width=\{GAME_PAGE_CONTENT_WIDTH\}/, source)
+    assert.match(contents, /width=\{GAME_PAGE_CONTENT_WIDTH\} competition/, source)
   }
 
   const navbar = readFileSync(join(repositoryRoot, 'web/src/components/WithNavbar.tsx'), 'utf8')
-  assert.match(navbar, /GAME_PAGE_CONTENT_WIDTH = '1800px'/)
+  assert.match(navbar, /GAME_PAGE_CONTENT_WIDTH = '1440px'/)
+  assert.match(navbar, /transitionDuration=\{0\}/)
+  const viewport = readFileSync(join(repositoryRoot, 'web/src/utils/ThemeOverride.ts'), 'utf8')
+  assert.match(viewport.slice(viewport.indexOf('export const useIsMobile')), /getInitialValueInEffect: false/)
   assert.match(navbar, /data-page-content/)
 
   const challengeGrid = readFileSync(
@@ -78,6 +86,25 @@ test('game workspace uses one bounded width and container-sized challenge cards'
     'utf8'
   )
   assert.match(challengeGrid, /repeat\(auto-fill, minmax\(min\(15rem, 100%\), 1fr\)\)/)
+
+  assert.match(challengeGrid, /@container \(max-width: 40rem\)/)
+  assert.match(challengeGrid, /\.desktopSort,\s*\.tabRoot\s*\{\s*display: none/)
+  assert.match(challengeGrid, /grid-template-columns: minmax\(0, 1fr\) auto/)
+})
+
+test('compact categories use a touch- and keyboard-tested filter disclosure', () => {
+  const toolbar = readFileSync(join(repositoryRoot, 'web/src/components/competition/ChallengeToolbar.tsx'), 'utf8')
+  const audit = readFileSync(join(repositoryRoot, 'tests/visual/audit.mjs'), 'utf8')
+  const fixture = readFileSync(join(repositoryRoot, 'tests/visual/competition-workspace.mjs'), 'utf8')
+  assert.match(toolbar, /data-challenge-category-tabs/)
+  assert.match(toolbar, /data-challenge-filters/)
+  assert.match(toolbar, /id="challenge-category-filter"/)
+  assert.match(audit, /auditCompactChallengeFilters/)
+  assert.match(audit, /Input\.dispatchTouchEvent/)
+  assert.match(audit, /await key\('ArrowDown'\)/)
+  assert.match(audit, /focusRestored: true/)
+  assert.match(fixture, /auditChallengeCategoryScroller\(cdp/)
+  assert.match(fixture, /a complete challenge should be visible/)
 })
 
 test('cheat analysis separates its sections and keeps evidence tabs on one row', () => {
@@ -112,8 +139,8 @@ test('visual audit covers ultrawide, desktop, intermediate, and compact breakpoi
 test('visual route shards cover every route exactly once', () => {
   const first = selectRouteShard(routes, parseRouteShard('1/2'))
   const second = selectRouteShard(routes, parseRouteShard('2/2'))
-  assert.equal(first.length, 26)
-  assert.equal(second.length, 27)
+  assert.equal(first.length, 28)
+  assert.equal(second.length, 28)
   assert.deepEqual([...first, ...second], routes)
   assert.throws(() => parseRouteShard('0/2'), /INDEX\/TOTAL/)
   assert.throws(() => parseRouteShard('3/2'), /cannot exceed/)
@@ -136,14 +163,18 @@ test('visual audit enforces compact and usable interactive guide budgets', () =>
   assert.match(auditSource, /result\.guide\.targetVisibleRatio < 0\.9/)
   assert.match(auditSource, /guide target is not pointer-accessible/)
   assert.match(auditSource, /guide controls are outside the viewport/)
+  assert.match(auditSource, /guide overlaps persistent UI/)
   assert.match(auditSource, /budget is 280/)
 })
 
 test('profile identity header shrinks without escaping compact viewports', () => {
   const profile = readFileSync(join(repositoryRoot, 'web/src/pages/account/Profile.tsx'), 'utf8')
-  assert.match(profile, /<Group wrap="nowrap" w="100%">/)
-  assert.match(profile, /<Box miw=\{0\} style=\{\{ flex: 1 \}\}>/)
-  assert.match(profile, /<Text size="sm" c="dimmed" truncate title=\{user\?\.email \?\? undefined\}>/)
+  const styles = readFileSync(join(repositoryRoot, 'web/src/styles/pages/Profile.module.css'), 'utf8')
+  assert.match(profile, /className=\{classes.identityCopy\}/)
+  assert.match(profile, /className=\{classes.email\}/)
+  assert.match(styles, /\.identityCopy\s*\{\s*min-width: 0/)
+  assert.match(styles, /\.email\s*\{[^}]*overflow-wrap: anywhere/)
+  assert.match(styles, /grid-template-areas: 'identity' 'editor' 'security'/)
 })
 
 test('visual audit artifacts are excluded from source control and Docker contexts', () => {
@@ -151,4 +182,11 @@ test('visual audit artifacts are excluded from source control and Docker context
   const dockerIgnore = readFileSync(join(repositoryRoot, '.dockerignore'), 'utf8')
   assert.match(gitIgnore, /^\/visual-audit-output\/?$/m)
   assert.match(dockerIgnore, /^\/visual-audit-output\/?$/m)
+})
+
+test('visual audit detects error recovery independently of translated copy and collapsed details', () => {
+  const fallback = readFileSync(join(repositoryRoot, 'web/src/components/ErrorFallback.tsx'), 'utf8')
+  const audit = readFileSync(join(repositoryRoot, 'tests/visual/audit.mjs'), 'utf8')
+  assert.match(fallback, /data-error-fallback/)
+  assert.match(audit, /Boolean\(document\.querySelector\('\[data-error-fallback\]'\)\)/)
 })

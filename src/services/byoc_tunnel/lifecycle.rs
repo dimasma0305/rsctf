@@ -11,16 +11,24 @@ use crate::models::data::ad_team_service;
 use crate::utils::error::{AppError, AppResult};
 
 const LATEST_DURABLE_FLAG_SQL: &str = r#"
-    SELECT flag.round_id, flag.flag
-      FROM "AdTeamServices" service
-      JOIN "AdFlags" flag ON flag.team_service_id = service.id
-      JOIN "AdRounds" round
-        ON round.id = flag.round_id AND round.game_id = service.game_id
-     WHERE service.game_id = $1
-       AND service.participation_id = $2
-       AND service.challenge_id = $3
-     ORDER BY round.number DESC, round.id DESC
-     LIMIT 1
+    WITH latest AS (
+        SELECT flag.round_id,
+               CASE WHEN OCTET_LENGTH(flag.flag) = 38
+                          AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'
+                    THEN flag.flag END AS flag,
+               NOT (OCTET_LENGTH(flag.flag) = 38
+                    AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$') AS invalid
+          FROM "AdTeamServices" service
+          JOIN "AdFlags" flag ON flag.team_service_id = service.id
+          JOIN "AdRounds" round
+            ON round.id = flag.round_id AND round.game_id = service.game_id
+         WHERE service.game_id = $1
+           AND service.participation_id = $2
+           AND service.challenge_id = $3
+         ORDER BY round.number DESC, round.id DESC
+         LIMIT 1
+    )
+    SELECT round_id, flag, invalid FROM latest
 "#;
 
 async fn load_latest_durable_flag(
@@ -29,18 +37,29 @@ async fn load_latest_durable_flag(
     pid: i32,
     cid: i32,
 ) -> AppResult<Option<(u64, String)>> {
-    let row: Option<(i32, String)> = sqlx::query_as(LATEST_DURABLE_FLAG_SQL)
+    let row: Option<(i32, Option<String>, bool)> = sqlx::query_as(LATEST_DURABLE_FLAG_SQL)
         .bind(game_id)
         .bind(pid)
         .bind(cid)
         .fetch_optional(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    row.map(|(round_id, flag)| {
+    row.map(|(round_id, flag, invalid)| {
+        if invalid {
+            tracing::warn!(
+                game_id,
+                pid,
+                cid,
+                "invalid durable BYOC flag blocked during hydration"
+            );
+            return Err(AppError::unavailable(
+                "The current BYOC flag is invalid; ask an administrator to repair it",
+            ));
+        }
         u64::try_from(round_id)
             .ok()
             .filter(|sequence| *sequence > 0)
-            .map(|sequence| (sequence, flag))
+            .zip(flag)
             .ok_or_else(|| AppError::internal("durable BYOC flag has an invalid round identity"))
     })
     .transpose()
@@ -355,6 +374,8 @@ mod tests {
         ] {
             assert!(LATEST_DURABLE_FLAG_SQL.contains(predicate));
         }
+        assert!(LATEST_DURABLE_FLAG_SQL.contains("CASE WHEN OCTET_LENGTH(flag.flag) = 38"));
+        assert!(LATEST_DURABLE_FLAG_SQL.contains("[A-Za-z0-9_-]{32}"));
         assert!(!LATEST_DURABLE_FLAG_SQL.contains("AdFlagDeliveryResults"));
     }
 
@@ -385,8 +406,10 @@ mod tests {
             INSERT INTO "AdRounds" VALUES
               (70, 7, 4), (91, 7, 5), (92, 8, 99);
             INSERT INTO "AdFlags" VALUES
-              (70, 1, 'old-exact'), (91, 1, 'current-exact'),
-              (91, 2, 'wrong-participation'), (92, 3, 'wrong-game');
+              (70, 1, 'flag{AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}'),
+              (91, 1, 'flag{BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB}'),
+              (91, 2, 'flag{CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC}'),
+              (92, 3, 'flag{DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD}');
             "#,
         )
         .execute(&pool)
@@ -394,7 +417,10 @@ mod tests {
         .unwrap();
 
         let durable = load_latest_durable_flag(&pool, 7, 11, 21).await.unwrap();
-        assert_eq!(durable, Some((91, "current-exact".to_string())));
+        assert_eq!(
+            durable,
+            Some((91, "flag{BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB}".to_string()))
+        );
         assert_eq!(
             load_latest_durable_flag(&pool, 7, 11, 22).await.unwrap(),
             None
@@ -421,5 +447,14 @@ mod tests {
         assert_eq!(endpoint.current().await.unwrap().id, 1);
         assert!(endpoint.revoke().await.is_some());
         endpoint.wait_closed().await;
+
+        sqlx::query(
+            r#"UPDATE "AdFlags" SET flag = $1 WHERE round_id = 91 AND team_service_id = 1"#,
+        )
+        .bind("x".repeat(4_096))
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(load_latest_durable_flag(&pool, 7, 11, 21).await.is_err());
     }
 }

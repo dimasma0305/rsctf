@@ -1,7 +1,7 @@
 //! Player-facing Attack & Defense endpoints, ported from RSCTF's
 //! `Controllers/GameController.cs` A&D surface. All routes live under the
-//! `/api/Game/{id}/Ad/...` prefix (mixed-case, matching the documented frontend
-//! contract — axum matches paths case-sensitively).
+//! canonical lowercase `/api/game/{id}/ad/...` prefix. Historical mixed-case
+//! aliases remain for downloaded clients and external integrations.
 //!
 //! # Attack & Defense engine — flow overview
 //!
@@ -24,7 +24,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::scoreboard_encoding;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::Router;
@@ -39,12 +39,10 @@ use sha2::{Digest, Sha256};
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};
 use crate::middlewares::rate_limiter::{limited, Policy};
-use crate::models::data::{
-    ad_ssh_key, ad_team_api_token, ad_team_service, game, game_challenge, participation,
-};
+use crate::models::data::{ad_team_service, game, game_challenge, participation};
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
-use crate::utils::shared::{MessageResponse, RequestResponse};
+use crate::utils::shared::RequestResponse;
 
 // ---------------------------------------------------------------------------
 // Router — paths match Api.ts verbatim (mixed case, case-sensitive).
@@ -52,10 +50,19 @@ use crate::utils::shared::{MessageResponse, RequestResponse};
 
 fn common_router() -> Router<SharedState> {
     Router::new()
+        .route("/api/game/{id}/ad/scoreboard", get(scoreboard))
         .route("/api/Game/{id}/Ad/Scoreboard", get(scoreboard))
         .route(
             "/api/Game/{id}/Ad/Services/{adTeamServiceId}/Reset",
-            post(reset_service),
+            limited(Policy::Container, post(reset_service)),
+        )
+        .route(
+            "/api/Game/{id}/Ad/ResetJobs/Operations/{operationId}",
+            get(reset_job_by_operation),
+        )
+        .route(
+            "/api/Game/{id}/Ad/ResetJobs/{jobId}",
+            get(reset_job_status).post(cancel_reset_job),
         )
         .route(
             "/api/Game/{id}/Ad/Services/{adTeamServiceId}/Snapshot",
@@ -63,11 +70,22 @@ fn common_router() -> Router<SharedState> {
         )
         .route(
             "/api/Game/{id}/Ad/Ssh/Key",
-            get(get_ssh_key).post(upload_ssh_key).delete(delete_ssh_key),
+            get(get_ssh_key)
+                .merge(limited(Policy::CredentialMutation, post(upload_ssh_key)))
+                .merge(limited(
+                    Policy::CredentialMutation,
+                    axum::routing::delete(delete_ssh_key),
+                )),
         )
-        .route("/api/Game/{id}/Ad/Ssh/Key/Generate", post(generate_ssh_key))
+        .route(
+            "/api/Game/{id}/Ad/Ssh/Key/Generate",
+            limited(Policy::CredentialMutation, post(generate_ssh_key)),
+        )
         .route("/api/Game/{id}/Ad/State", get(state))
-        .route("/api/Game/{id}/Ad/Submit", post(submit))
+        .route(
+            "/api/Game/{id}/Ad/Submit",
+            post(submit).layer(DefaultBodyLimit::max(submit::AD_SUBMIT_BODY_BYTES)),
+        )
         .route("/api/Game/{id}/Ad/Targets", get(targets))
         // Lowercase alias the KotH panel calls (KothChallengePanel.tsx hits
         // `/api/game/{id}/ad/targets`; axum matches case-sensitively so the
@@ -102,7 +120,12 @@ fn common_router() -> Router<SharedState> {
         )
         .route(
             "/api/Game/{id}/Ad/Token",
-            get(get_token).post(rotate_token).delete(revoke_token),
+            get(get_token)
+                .merge(limited(Policy::CredentialMutation, post(rotate_token)))
+                .merge(limited(
+                    Policy::CredentialMutation,
+                    axum::routing::delete(revoke_token),
+                )),
         )
         .route("/api/Game/{id}/Ad/Vpn/Config", get(download_vpn_config))
         .route(
@@ -493,7 +516,7 @@ fn fill_random(buf: &mut [u8]) {
 mod byoc;
 mod byoc_authorization;
 mod scoreboard;
-mod snapshot_download;
+pub(crate) mod snapshot_download;
 mod ssh;
 mod state_tail;
 mod submit;

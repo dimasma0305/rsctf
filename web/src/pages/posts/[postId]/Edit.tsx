@@ -3,11 +3,14 @@ import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiContentSaveOutline, mdiDeleteOutline, mdiFileCheckOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
+import { useSWRConfig } from 'swr'
 import { WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
+import { invalidatePostPageCaches } from '@Utils/PostFeed'
+import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import api, { PostEditModel, Role } from '@Api'
@@ -15,6 +18,7 @@ import api, { PostEditModel, Role } from '@Api'
 const PostEdit: FC = () => {
   const { postId } = useParams()
   const navigate = useNavigate()
+  const { mutate: mutateCache } = useSWRConfig()
 
   const { t } = useTranslation()
 
@@ -45,19 +49,45 @@ const PostEdit: FC = () => {
   const [tags, setTags] = useState<string[]>([])
   const [disabled, setDisabled] = useState(false)
   const [hasChanged, setHasChanged] = useState(false)
+  const createOwner = useRef(new RetryableMutationOwner())
+  const saveInFlight = useRef(false)
 
   const modals = useModals()
 
   const isMobile = useIsMobile()
 
-  const onUpdate = async () => {
+  useEffect(() => {
+    createOwner.current.cancel()
+    saveInFlight.current = false
+    setDisabled(false)
+    return () => createOwner.current.cancel()
+  }, [postId])
+
+  const publishPostCaches = async () => {
+    await Promise.all([
+      api.info.mutateInfoGetLatestPosts(),
+      api.info.mutateInfoGetPosts(),
+      invalidatePostPageCaches(mutateCache),
+    ])
+  }
+
+  const onUpdate = async (): Promise<boolean> => {
     if (postId === 'new') {
+      const digest = JSON.stringify({
+        title: post.title ?? '',
+        summary: post.summary ?? '',
+        content: post.content ?? '',
+        tags: post.tags ?? [],
+        isPinned: post.isPinned ?? false,
+      })
+      const lease = createOwner.current.claim(digest)
+      if (!lease) return false
       setDisabled(true)
 
       try {
-        const res = await api.edit.editAddPost(post)
-        api.info.mutateInfoGetLatestPosts()
-        api.info.mutateInfoGetPosts()
+        const res = await api.edit.editAddPost(post, lease.operationId, { signal: lease.signal })
+        await publishPostCaches()
+        if (!createOwner.current.settle(lease, true)) return false
         showNotification({
           color: 'teal',
           message: t('post.notification.created'),
@@ -65,12 +95,16 @@ const PostEdit: FC = () => {
         })
         setHasChanged(false)
         navigate(`/posts/${res.data}/edit`)
+        return true
       } catch (e) {
+        if (!createOwner.current.settle(lease, false)) return false
         showErrorMsg(e, t)
-      } finally {
         setDisabled(false)
+        return false
       }
     } else if (postId?.length === 8) {
+      if (saveInFlight.current) return false
+      saveInFlight.current = true
       setDisabled(true)
 
       try {
@@ -80,20 +114,23 @@ const PostEdit: FC = () => {
 
         const res = await api.edit.editUpdatePost(postId, postWithoutPin)
         api.info.mutateInfoGetPost(postId, res.data)
-        api.info.mutateInfoGetLatestPosts()
-        api.info.mutateInfoGetPosts()
+        await publishPostCaches()
         showNotification({
           color: 'teal',
           message: t('post.notification.saved'),
           icon: <Icon path={mdiCheck} size={24} />,
         })
         setHasChanged(false)
+        return true
       } catch (e) {
         showErrorMsg(e, t)
+        return false
       } finally {
+        saveInFlight.current = false
         setDisabled(false)
       }
     }
+    return false
   }
 
   const onDelete = async () => {
@@ -104,6 +141,7 @@ const PostEdit: FC = () => {
       await api.edit.editDeletePost(postId)
       api.info.mutateInfoGetPosts()
       api.info.mutateInfoGetLatestPosts()
+      void invalidatePostPageCaches(mutateCache)
       navigate('/posts')
     } catch (e) {
       showErrorMsg(e, t)
@@ -141,6 +179,7 @@ const PostEdit: FC = () => {
       <TextInput
         label={t('post.label.title')}
         value={post.title ?? ''}
+        disabled={disabled}
         onChange={(e) => setPost({ ...post, title: e.currentTarget.value })}
       />
       <TagsInput
@@ -151,6 +190,7 @@ const PostEdit: FC = () => {
         onChange={(values) => setPost({ ...post, tags: values })}
         styles={{ inputField: { minHeight: 28 } }}
         clearable
+        disabled={disabled}
       />
     </>
   )
@@ -196,9 +236,8 @@ const PostEdit: FC = () => {
                         modals.openConfirmModal({
                           title: t('post.content.updated.title'),
                           children: <Text size="sm">{t('post.content.updated.content')}</Text>,
-                          onConfirm: () => {
-                            onUpdate()
-                            navigate(`/posts/${postId}`)
+                          onConfirm: async () => {
+                            if (await onUpdate()) navigate(`/posts/${postId}`)
                           },
                         })
                       } else {
@@ -213,7 +252,7 @@ const PostEdit: FC = () => {
               <Button
                 disabled={disabled}
                 leftSection={<Icon path={mdiContentSaveOutline} size={1} />}
-                onClick={onUpdate}
+                onClick={() => void onUpdate()}
               >
                 {postId === 'new' ? t('post.button.new') : t('post.button.save')}
               </Button>
@@ -230,6 +269,7 @@ const PostEdit: FC = () => {
               </Group>
             }
             autosize
+            disabled={disabled}
             value={post.summary ?? ''}
             onChange={(e) => setPost({ ...post, summary: e.currentTarget.value })}
             minRows={5}
@@ -245,6 +285,7 @@ const PostEdit: FC = () => {
               </Group>
             }
             autosize
+            disabled={disabled}
             value={post.content ?? ''}
             onChange={(e) => setPost({ ...post, content: e.currentTarget.value })}
             minRows={isMobile ? 14 : 16}

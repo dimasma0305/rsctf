@@ -400,6 +400,16 @@ const INSERT_SUSPICION_EVENT_SQL: &str = r#"
              score_delta, created_at)
         SELECT $1, participant.id, $3, $4, $5, $6, $7
           FROM participant
+         -- The reconciliation stamp is a BEFORE INSERT trigger. Filter a
+         -- steady replay by the exact unique key before that trigger runs;
+         -- ON CONFLICT remains the final guard for concurrent races.
+         WHERE NOT EXISTS (
+               SELECT 1 FROM "SuspicionEvents" existing
+                WHERE existing.game_id = $1
+                  AND existing.participation_id = participant.id
+                  AND existing.kind = $4
+                  AND existing.evidence_key = $5
+         )
         ON CONFLICT (game_id, participation_id, kind, evidence_key) DO NOTHING
         RETURNING id
     )
@@ -527,6 +537,41 @@ pub(super) async fn record_with_dedup_at(
         codes.push(kind);
     }
     Ok(())
+}
+
+/// Record a scan-driven agent-artifact rule. The event is keyed by the file
+/// content (or challenge, for a contradiction), so rescans are idempotent.
+pub(crate) async fn record_agent_artifact_event(
+    db: &DatabaseConnection,
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: Option<i32>,
+    ty: SuspicionType,
+    evidence_key: &str,
+    observed_at: chrono::DateTime<chrono::Utc>,
+) -> AppResult<bool> {
+    if !matches!(
+        ty,
+        SuspicionType::AgentArtifact | SuspicionType::AiDeclarationContradiction
+    ) {
+        return Err(AppError::internal(
+            "only agent-artifact rules use the scan event writer",
+        ));
+    }
+    let (weight, description) = resolve_entry(db, ty).await?;
+    persist_suspicion_event_with_weight_guarded(
+        db.get_postgres_connection_pool(),
+        game_id,
+        participation_id,
+        challenge_id,
+        ty,
+        evidence_key,
+        weight,
+        description,
+        observed_at,
+        None,
+    )
+    .await
 }
 
 /// Persist a mature HighWrongRate incident after rechecking the shared

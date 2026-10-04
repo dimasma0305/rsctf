@@ -66,6 +66,13 @@ pub mod api_token {
         pub expires_at: Option<DateTime<Utc>>,
         pub last_used_at: Option<DateTime<Utc>>,
         pub is_revoked: bool,
+        /// Managed bearer grammar version. Version zero rows are explicitly
+        /// disabled legacy metadata and are never accepted for authentication.
+        pub token_version: i16,
+        pub audience: String,
+        pub scopes: Vec<String>,
+        #[serde(skip_serializing)]
+        pub owner_security_stamp_digest: Option<Vec<u8>>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   Center,
+  Code,
   CopyButton,
   Divider,
   Group,
@@ -12,13 +13,13 @@ import {
   List as MList,
   Loader,
   Menu,
-  Modal,
   Paper,
-  RingProgress,
+  Skeleton,
   ScrollArea,
   SegmentedControl,
   Select,
   Stack,
+  Switch,
   Table,
   Text,
   TextInput,
@@ -38,10 +39,8 @@ import {
   mdiCheckCircle,
   mdiChevronDown,
   mdiChevronRight,
-  mdiClose,
   mdiCloseCircle,
   mdiConsole,
-  mdiDownload,
   mdiFileOutline,
   mdiFileTree,
   mdiFolderOutline,
@@ -56,27 +55,43 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
+import { AccessibleModal } from '@Components/AccessibleModal'
+import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { KothOpsPanel } from '@Components/admin/KothOpsPanel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { filterAdOpsTeams, type AdOpsHealthFilter } from '@Utils/AdOpsPresentation'
+import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
+import { httpErrorStatus } from '@Utils/HttpError'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
+import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
-import { useIsMobile } from '@Utils/ThemeOverride'
+import { parseUrlFragment, updateUrlFragment } from '@Utils/UrlFragment'
 import { highlight } from '@Utils/marked/ShikiExtension'
 import { sanitizeMarkdownHtml } from '@Utils/sanitize'
-import { useAdminAdState, useAdminKothState, type AdminKothHill } from '@Hooks/useGame'
-import { useTicker } from '@Hooks/useTicker'
+import {
+  adminOperatorPolling,
+  adminOperatorView,
+  useAdminAdState,
+  useAdminKothState,
+  useAdminOperatorEngines,
+  type AdminKothHill,
+} from '@Hooks/useGame'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import api, {
   AdCheckStatus,
   AdFileBlob,
   AdFileViewModel,
+  AdGameStateModel,
   AdSnapshotChange,
   AdSnapshotPointModel,
   AdSnapshotTimeDiffModel,
   AdTeamCellModel,
 } from '@Api'
+import ops from '@Styles/AdOperations.module.css'
 import tableClasses from '@Styles/AdOpsTable.module.css'
 import misc from '@Styles/Misc.module.css'
 
@@ -161,16 +176,32 @@ const langFromPath = (p: string): string => {
 
 // Shiki-highlighted code block. Shiki escapes the code, so the rendered HTML
 // is safe even though the content comes from a team's container.
+const MAX_HIGHLIGHT_CHARACTERS = 64 * 1024
+
 const ShikiBlock: FC<{ code: string; lang: string }> = ({ code, lang }) => (
-  <ScrollArea h={400} type="auto">
-    <div
-      style={{ fontSize: 12 }}
-      // Shiki escapes source text; DOMPurify remains the final sink boundary.
-      // eslint-disable-next-line react/no-danger
-      dangerouslySetInnerHTML={{ __html: sanitizeMarkdownHtml(highlight(code, lang)) }}
-    />
+  <ScrollArea h={400} type="auto" viewportProps={{ tabIndex: 0, 'aria-label': 'File preview' }}>
+    {code.length > MAX_HIGHLIGHT_CHARACTERS ? (
+      <Code block style={{ fontSize: 12, whiteSpace: 'pre' }}>
+        {code}
+      </Code>
+    ) : (
+      <div
+        style={{ fontSize: 12 }}
+        // Shiki escapes source text; DOMPurify remains the final sink boundary.
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{ __html: sanitizeMarkdownHtml(highlight(code, lang)) }}
+      />
+    )}
   </ScrollArea>
 )
+
+const forensicsErrorMessage = (error: unknown): string => {
+  const status = (error as { response?: { status?: number } })?.response?.status
+  if (status === 429 || status === 503) return 'Inspection is busy or timed out. Retry in a moment.'
+  if (status === 413) return 'This item is too large to inspect safely.'
+  if (status === 400) return 'This path cannot be previewed safely. Use the shell if necessary.'
+  return 'Could not read live filesystem evidence.'
+}
 
 // ---- changed-files folder tree ----
 interface TreeNode {
@@ -291,26 +322,34 @@ const FileDetail: FC<{ gameId: number; sid: number; path: string; onBack: () => 
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<AdFileViewModel | null>(null)
   const [view, setView] = useState<'diff' | 'current' | 'original'>('diff')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [retryGeneration, setRetryGeneration] = useState(0)
+  const requestGeneration = useRef(0)
 
   useEffect(() => {
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++requestGeneration.current
     setLoading(true)
     setData(null)
+    setLoadError(null)
     api.edit
-      .editAdFile(gameId, sid, { path })
+      .editAdFile(gameId, sid, { path }, { signal: controller.signal })
       .then(({ data }) => {
-        if (cancelled) return
+        if (controller.signal.aborted || generation !== requestGeneration.current) return
         setData(data)
         setView(data.unifiedDiff ? 'diff' : data.current ? 'current' : 'original')
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted && generation === requestGeneration.current)
+          setLoadError(forensicsErrorMessage(error))
+      })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted && generation === requestGeneration.current) setLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
-  }, [gameId, sid, path])
+  }, [gameId, sid, path, retryGeneration])
 
   const lang = langFromPath(path)
 
@@ -333,8 +372,8 @@ const FileDetail: FC<{ gameId: number; sid: number; path: string; onBack: () => 
     return (
       <Stack gap={4}>
         {blob.truncated && (
-          <Text size="xs" c="orange">
-            {t('admin.content.ad_ops.file.truncated', 'Showing the first 256 KiB (truncated).')}
+          <Text size="xs" className={ops.warning}>
+            {t('admin.content.ad_ops.file.truncated', 'Showing a bounded preview (truncated).')}
           </Text>
         )}
         <ShikiBlock code={blob.text ?? ''} lang={lang} />
@@ -379,10 +418,17 @@ const FileDetail: FC<{ gameId: number; sid: number; path: string; onBack: () => 
         <Center h={200}>
           <Loader size="sm" />
         </Center>
-      ) : !data ? (
-        <Text size="sm" c="dimmed">
-          {t('admin.content.ad_ops.file.load_failed', 'Could not read this file from the container.')}
-        </Text>
+      ) : loadError || !data ? (
+        <Alert color="orange" title={t('admin.content.ad_ops.file.load_failed', 'File preview unavailable')}>
+          <Stack gap="xs">
+            <Text size="sm">
+              {loadError ?? t('admin.content.ad_ops.file.load_failed', 'Could not read this file.')}
+            </Text>
+            <Button variant="light" size="xs" onClick={() => setRetryGeneration((value) => value + 1)}>
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Stack>
+        </Alert>
       ) : view === 'diff' ? (
         data.unifiedDiff ? (
           <ShikiBlock code={data.unifiedDiff} lang="diff" />
@@ -423,14 +469,17 @@ const SnapshotHistory: FC<{ gameId: number; sid: number; onSelect: (path: string
   const [toId, setToId] = useState<string | null>(null)
   const [diff, setDiff] = useState<AdSnapshotTimeDiffModel | null>(null)
   const [diffLoading, setDiffLoading] = useState(false)
+  const pointsGeneration = useRef(0)
+  const diffGeneration = useRef(0)
 
   useEffect(() => {
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++pointsGeneration.current
     setLoading(true)
     api.edit
-      .editAdServiceSnapshots(gameId, sid)
+      .editAdServiceSnapshots(gameId, sid, { signal: controller.signal })
       .then(({ data }) => {
-        if (cancelled) return
+        if (controller.signal.aborted || generation !== pointsGeneration.current) return
         setPoints(data)
         if (data.length >= 2) {
           setFromId(String(data[0].id))
@@ -439,28 +488,34 @@ const SnapshotHistory: FC<{ gameId: number; sid: number; onSelect: (path: string
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted && generation === pointsGeneration.current) setLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
   }, [gameId, sid])
 
   useEffect(() => {
     if (!fromId || !toId) return
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++diffGeneration.current
     setDiffLoading(true)
     api.edit
-      .editAdSnapshotTimeDiff(gameId, sid, { fromId: Number(fromId), toId: Number(toId) })
+      .editAdSnapshotTimeDiff(
+        gameId,
+        sid,
+        { fromId: Number(fromId), toId: Number(toId) },
+        { signal: controller.signal }
+      )
       .then(({ data }) => {
-        if (!cancelled) setDiff(data)
+        if (!controller.signal.aborted && generation === diffGeneration.current) setDiff(data)
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) setDiffLoading(false)
+        if (!controller.signal.aborted && generation === diffGeneration.current) setDiffLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
   }, [gameId, sid, fromId, toId])
 
@@ -526,7 +581,7 @@ const SnapshotHistory: FC<{ gameId: number; sid: number; onSelect: (path: string
           <Loader size="sm" />
         </Center>
       ) : diff && (diff.added.length > 0 || diff.removed.length > 0) ? (
-        <ScrollArea h={280} type="auto">
+        <ScrollArea h={280} type="auto" viewportProps={{ tabIndex: 0, 'aria-label': 'Snapshot history' }}>
           <Stack gap={2}>
             {diff.added.map((ch) => row(ch, 'teal', '+'))}
             {diff.removed.map((ch) => row(ch, 'red', '−'))}
@@ -554,11 +609,16 @@ const SnapshotModal: FC<{
   const [changes, setChanges] = useState<AdSnapshotChange[]>([])
   const [live, setLive] = useState(false)
   const [filteredCats, setFilteredCats] = useState<string[]>([])
+  const [changesTruncated, setChangesTruncated] = useState(false)
+  const [observedChanges, setObservedChanges] = useState(0)
+  const [changesError, setChangesError] = useState<string | null>(null)
+  const [changesRetry, setChangesRetry] = useState(0)
+  const changesGeneration = useRef(0)
   const [fileSearch, setFileSearch] = useState('')
   const [debouncedFileSearch] = useDebouncedValue(fileSearch, 200)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [spawning, setSpawning] = useState(false)
-  const [tab, setTab] = useState<'changes' | 'history'>('changes')
+  const [tab, setTab] = useUrlTab('snapshotTab', ['changes', 'history'], 'changes')
   const sid = target?.cell.adTeamServiceId
   const hasSnapshot = !!target?.cell.snapshotAvailable
   const containerGuid = target?.cell.containerGuid
@@ -597,29 +657,36 @@ const SnapshotModal: FC<{
 
   useEffect(() => {
     if (sid === undefined) return
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++changesGeneration.current
     setLoading(true)
     setChanges([])
     setLive(false)
+    setChangesError(null)
+    setChangesTruncated(false)
+    setObservedChanges(0)
     api.edit
-      .editAdSnapshotChanges(gameId, sid)
+      .editAdSnapshotChanges(gameId, sid, { signal: controller.signal })
       .then(({ data }) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted && generation === changesGeneration.current) {
           setChanges(data.changes ?? [])
           setLive(!!data.live)
           setFilteredCats(data.filteredCategories ?? [])
+          setChangesTruncated(!!data.truncated)
+          setObservedChanges(data.observedChanges ?? data.changes?.length ?? 0)
         }
       })
-      .catch(() => {
-        // changes are best-effort; the tarball download is the source of truth
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted && generation === changesGeneration.current)
+          setChangesError(forensicsErrorMessage(error))
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted && generation === changesGeneration.current) setLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
-  }, [gameId, sid])
+  }, [gameId, sid, changesRetry])
 
   const downloadUrl = target ? api.edit.editAdSnapshotUrl(gameId, target.cell.adTeamServiceId) : '#'
   const filename = target
@@ -627,7 +694,7 @@ const SnapshotModal: FC<{
     : 'snapshot.tar.gz'
 
   return (
-    <Modal
+    <AccessibleModal
       opened={target !== null}
       onClose={onClose}
       size="xl"
@@ -645,15 +712,13 @@ const SnapshotModal: FC<{
         <Group justify="space-between" wrap="wrap" gap="sm">
           <Group gap="sm" wrap="nowrap">
             {hasSnapshot && (
-              <Button
-                component="a"
-                href={downloadUrl}
-                download={filename}
+              <SnapshotDownloadButton
+                url={downloadUrl}
+                filename={filename}
+                downloadKey={`admin:snapshot:${gameId}:${target.cell.adTeamServiceId}`}
+                label={t('admin.button.ad_ops.snapshot.download', 'Download .tar.gz')}
                 variant="default"
-                leftSection={<Icon path={mdiDownload} size={0.9} />}
-              >
-                {t('admin.button.ad_ops.snapshot.download', 'Download .tar.gz')}
-              </Button>
+              />
             )}
             <Tooltip
               label={
@@ -683,7 +748,7 @@ const SnapshotModal: FC<{
           <Group gap={6} wrap="nowrap">
             <Text size="sm" c="dimmed">
               {t('admin.content.ad_ops.snapshot.changed_count', {
-                count: changes.length,
+                count: observedChanges,
                 defaultValue: '{{count}} file(s) changed vs original image',
               })}
             </Text>
@@ -730,7 +795,7 @@ const SnapshotModal: FC<{
                       <MList.Item key={c}>{c}</MList.Item>
                     ))}
                   </MList>
-                  <Text size="xs" c="orange">
+                  <Text size="xs" className={ops.warning}>
                     {t(
                       'admin.content.ad_ops.snapshot.filter_warn',
                       'A foothold dropped into a hidden path won’t appear here — use the shell to inspect.'
@@ -766,8 +831,9 @@ const SnapshotModal: FC<{
             <SegmentedControl
               size="xs"
               aria-label={t('admin.label.ad_ops.snapshot_view', 'Snapshot view')}
+              styles={{ label: { whiteSpace: 'normal' } }}
               value={tab}
-              onChange={(v) => setTab(v as 'changes' | 'history')}
+              onChange={setTab}
               data={[
                 { value: 'changes', label: t('admin.content.ad_ops.snapshot.tab_changes', 'Current changes') },
                 {
@@ -784,6 +850,15 @@ const SnapshotModal: FC<{
               <Center h={120}>
                 <Loader size="sm" />
               </Center>
+            ) : changesError ? (
+              <Alert color="orange" title={t('admin.content.ad_ops.snapshot.load_failed', 'Changes unavailable')}>
+                <Stack gap="xs">
+                  <Text size="sm">{changesError}</Text>
+                  <Button variant="light" size="xs" onClick={() => setChangesRetry((value) => value + 1)}>
+                    {t('common.button.retry', 'Retry')}
+                  </Button>
+                </Stack>
+              </Alert>
             ) : changes.length === 0 ? (
               <Text size="sm" c="dimmed">
                 {t(
@@ -793,6 +868,15 @@ const SnapshotModal: FC<{
               </Text>
             ) : (
               <>
+                {changesTruncated && (
+                  <Alert color="orange" title={t('admin.content.ad_ops.snapshot.bounded', 'Bounded result')}>
+                    {t(
+                      'admin.content.ad_ops.snapshot.bounded_detail',
+                      'The container reported {{observed}} changes. Only a safe bounded subset is shown; narrow the investigation with the shell if needed.',
+                      { observed: observedChanges }
+                    )}
+                  </Alert>
+                )}
                 <TextInput
                   size="xs"
                   aria-label={t('admin.placeholder.ad_ops.search_file', 'Filter files')}
@@ -801,7 +885,7 @@ const SnapshotModal: FC<{
                   value={fileSearch}
                   onChange={(e) => setFileSearch(e.currentTarget.value)}
                 />
-                <ScrollArea h={320} type="auto">
+                <ScrollArea h={320} type="auto" viewportProps={{ tabIndex: 0, 'aria-label': 'Changed files' }}>
                   {filtered.length === 0 ? (
                     <Text size="sm" c="dimmed">
                       {t('admin.content.ad_ops.snapshot.no_match', 'No files match the filter.')}
@@ -828,7 +912,7 @@ const SnapshotModal: FC<{
           </>
         )}
       </Stack>
-    </Modal>
+    </AccessibleModal>
   )
 }
 
@@ -840,13 +924,14 @@ const HealthChip: FC<{ icon: string; color: string; count: number; label: string
   label,
 }) => (
   <Tooltip label={label} withArrow>
-    <Group gap={4} align="center" wrap="nowrap" style={{ opacity: count ? 1 : 0.45 }}>
+    <Group gap={6} align="center" wrap="nowrap" className={ops.health}>
       <ThemeIcon size="sm" radius="xl" variant="light" color={color}>
         <Icon path={icon} size={0.62} />
       </ThemeIcon>
       <Text fw={700} size="sm">
         {count}
       </Text>
+      <Text size="xs">{label}</Text>
     </Group>
   </Tooltip>
 )
@@ -856,13 +941,39 @@ const AdOps: FC = () => {
   const numId = parseInt(id ?? '-1', 10)
   const { t } = useTranslation()
   const modals = useModals()
-  const { adminAdState: state, error, mutate } = useAdminAdState(numId)
-  const { adminKothState: koth, error: kothError, mutate: mutateKoth } = useAdminKothState(numId)
   const [busy, setBusy] = useState(false)
-  const [busyHill, setBusyHill] = useState<number | null>(null)
+  const [pendingHillStates, setPendingHillStates] = useState<Map<number, boolean>>(new Map())
+  const [pendingScoringPaused, setPendingScoringPaused] = useState<boolean | null>(null)
+  const resetJobsRef = useRef(new Map<number, Promise<void>>())
+  const resetAbortRef = useRef(new Map<number, AbortController>())
+  const [resettingServices, setResettingServices] = useState<Set<number>>(new Set())
+  const hillCommandRef = useRef(new Map<number, Promise<void>>())
+  const scoringCommandRef = useRef<Promise<void> | null>(null)
+  const ensureJobRef = useRef<Promise<void> | null>(null)
+  const ensureAbortRef = useRef(new AbortController())
+  const ensureContainersKey = useRef<{ gameId: number; owner: RetryableOperationKey } | null>(null)
+  if (ensureContainersKey.current?.gameId !== numId) {
+    ensureContainersKey.current = {
+      gameId: numId,
+      owner: new RetryableOperationKey(undefined, `rsctf:ad-ensure-containers:${numId}`),
+    }
+  }
+  useEffect(() => () => ensureAbortRef.current.abort(), [])
+  useEffect(() => {
+    const owner = ensureContainersKey.current?.owner
+    return () => owner?.release()
+  }, [numId])
   // Which side of the console is showing. A&D vs KotH challenges are disjoint
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
-  const [view, setView] = useState<'ad' | 'koth'>('ad')
+  const [view, setView] = useUrlTab('view', ['ad', 'koth'], 'ad')
+  const now = useServerNow()
+  const { engineMetadata, error: engineError, mutate: mutateEngines } = useAdminOperatorEngines(numId)
+  const activeView = adminOperatorView(view, engineMetadata)
+  const polling = adminOperatorPolling(engineMetadata, now.valueOf())
+  const fetchAd = engineMetadata?.hasAttackDefense === true && activeView === 'ad'
+  const fetchKoth = engineMetadata?.hasKoth === true && activeView === 'koth'
+  const { adminAdState: state, error, mutate } = useAdminAdState(numId, fetchAd, polling)
+  const { adminKothState: koth, error: kothError, mutate: mutateKoth } = useAdminKothState(numId, fetchKoth, polling)
   // inspectorSid set ⇒ a throwaway inspector container we must destroy on close.
   const [execTarget, setExecTarget] = useState<{
     guid: string
@@ -884,16 +995,20 @@ const AdOps: FC = () => {
   //   #snapshot=<id>&file=<urlencoded path>  → + that file's content/diff
   const location = useLocation()
   const navigate = useNavigate()
-  const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''))
+  const hashParams = parseUrlFragment(location.hash).params
   const rawSnap = hashParams.get('snapshot')
   const snapSid = rawSnap !== null && rawSnap !== '' ? parseInt(rawSnap, 10) : null
   const selectedPath = hashParams.get('file') // URLSearchParams already decodes it
 
-  const setHash = (frag: string) => navigate(`${location.pathname}${location.search}${frag ? `#${frag}` : ''}`)
-  const openSnapshot = (cell: AdTeamCellModel) => setHash(`snapshot=${cell.adTeamServiceId}`)
-  const closeSnapshot = () => setHash('')
+  const setHash = (changes: Record<string, string | null>) =>
+    navigate(
+      { pathname: location.pathname, search: location.search, hash: updateUrlFragment(location.hash, changes) },
+      { preventScrollReset: true, state: location.state }
+    )
+  const openSnapshot = (cell: AdTeamCellModel) => setHash({ snapshot: String(cell.adTeamServiceId), file: null })
+  const closeSnapshot = () => setHash({ snapshot: null, file: null })
   const selectFile = (path: string | null) =>
-    setHash(snapSid == null ? '' : `snapshot=${snapSid}${path ? `&file=${encodeURIComponent(path)}` : ''}`)
+    setHash({ snapshot: snapSid == null ? null : String(snapSid), file: snapSid == null ? null : path })
 
   // Rebuild the modal's target from the service id in the hash.
   const snapTarget = useMemo<SnapTarget | null>(() => {
@@ -908,54 +1023,91 @@ const AdOps: FC = () => {
     return null
   }, [snapSid, state])
   const [search, setSearch] = useState('')
+  const [challengeFilter, setChallengeFilter] = useState('')
+  const [healthFilter, setHealthFilter] = useState<AdOpsHealthFilter>('')
+  const [showFlags, setShowFlags] = useState(false)
   const [debouncedSearch] = useDebouncedValue(search, 200)
-  const now = useTicker()
-  const isMobile = useIsMobile(1080)
 
-  // Wait for BOTH consoles' first load — the A&D state always resolves (even
-  // empty) for any game, and the KotH state resolves to an object too, so a
-  // KotH-only game doesn't flash the "no A&D challenges" empty state.
-  const isLoading = (!state && !error) || (koth === undefined && !kothError)
-
-  // A&D and KotH challenges are disjoint within a game. Derive which sides
-  // exist + which to render. showKoth is flash-free (doesn't wait for an
-  // effect): a KotH-only game renders KotH immediately even before any toggle.
-  const hasAd = (state?.challenges.length ?? 0) > 0
-  const hasKoth = (koth?.hills.length ?? 0) > 0
+  const hasAd = engineMetadata?.hasAttackDefense === true
+  const hasKoth = engineMetadata?.hasKoth === true
   const showViewSwitch = hasAd && hasKoth
-  const showKoth = hasKoth && (view === 'koth' || !hasAd)
+  const showKoth = hasKoth && activeView === 'koth'
+  const isLoading =
+    (!engineMetadata && !engineError) ||
+    (fetchAd && !state && !error) ||
+    (fetchKoth && koth === undefined && !kothError)
 
   const toggleHill = async (hill: AdminKothHill) => {
-    setBusyHill(hill.challengeId)
-    try {
-      await api.edit.editAdToggleChallenge(numId, hill.challengeId)
-      await mutateKoth()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBusyHill(null)
-    }
+    const active = hillCommandRef.current.get(hill.challengeId)
+    if (active) return active
+    const desiredEnabled = !hill.isEnabled
+    const command = (async () => {
+      setPendingHillStates((current) => new Map(current).set(hill.challengeId, desiredEnabled))
+      try {
+        await api.edit.editAdToggleChallenge(numId, hill.challengeId, {
+          enabled: desiredEnabled,
+          revision: hill.controlRevision,
+        })
+        await mutateKoth()
+      } catch (e) {
+        await mutateKoth()
+        showErrorMsg(e, t)
+      } finally {
+        setPendingHillStates((current) => {
+          const next = new Map(current)
+          next.delete(hill.challengeId)
+          return next
+        })
+        hillCommandRef.current.delete(hill.challengeId)
+      }
+    })()
+    hillCommandRef.current.set(hill.challengeId, command)
+    return command
   }
 
   const ensureContainers = async () => {
-    setBusy(true)
-    try {
-      await api.edit.editAdEnsureContainers(numId)
-      showNotification({
-        color: 'teal',
-        icon: <Icon path={mdiCheck} size={1} />,
-        title: t('admin.notification.ad_ops.ensure_queued.title', 'Container reconcile queued'),
-        message: t('admin.notification.ad_ops.ensure_queued.message', 'Missing A&D containers will spin up shortly.'),
-      })
-      setTimeout(() => {
-        mutate()
-        mutateKoth()
-      }, 3_000)
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBusy(false)
-    }
+    if (ensureJobRef.current) return ensureJobRef.current
+    const operationOwner = ensureContainersKey.current!.owner
+    const operationId = operationOwner.claim()
+    const task = (async () => {
+      setBusy(true)
+      try {
+        let job
+        try {
+          job = (await api.edit.editAdEnsureContainers(numId, operationId)).data
+        } catch (startError) {
+          if (httpErrorStatus(startError) === 409) throw startError
+          try {
+            job = (await api.eventSecurity.getControlJobByOperation(operationId)).data
+          } catch {
+            throw startError
+          }
+        }
+        const completed = await waitForControlJob(job, ensureAbortRef.current.signal)
+        operationOwner.complete(operationId)
+        const launched = controlJobResultCount(completed, 'launched')
+        const failures = controlJobResultCount(completed, 'failures')
+        showNotification({
+          color: failures === 0 ? 'teal' : 'orange',
+          icon: <Icon path={failures === 0 ? mdiCheck : mdiAlertCircleOutline} size={1} />,
+          title: t('admin.notification.ad_ops.ensure_queued.title', 'Container reconcile completed'),
+          message: t(
+            'admin.notification.ad_ops.ensure_completed.message',
+            '{{launched}} launched, {{failures}} failed.',
+            { launched, failures }
+          ),
+        })
+        await Promise.all([mutate(), mutateKoth()])
+      } catch (e) {
+        if (httpErrorStatus(e) === 409) operationOwner.complete(operationId)
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      } finally {
+        setBusy(false)
+        ensureJobRef.current = null
+      }
+    })()
+    ensureJobRef.current = task
+    return task
   }
 
   // Reset = destroy the running container and recreate it from the challenge
@@ -964,6 +1116,7 @@ const AdOps: FC = () => {
   const resetCell = (cell: AdTeamCellModel) => {
     modals.openConfirmModal({
       title: t('admin.content.ad_ops.reset_confirm.title', 'Reset container to base image?'),
+      closeButtonProps: { 'aria-label': t('common.button.close', 'Close') },
       children: (
         <Text size="sm">
           {t(
@@ -978,44 +1131,93 @@ const AdOps: FC = () => {
         cancel: t('admin.content.ad_ops.reset_confirm.cancel', 'Cancel'),
       },
       confirmProps: { color: 'red' },
-      onConfirm: async () => {
-        try {
-          await api.edit.editAdForceRestart(numId, cell.adTeamServiceId)
-          showNotification({
-            color: 'teal',
-            icon: <Icon path={mdiRestart} size={1} />,
-            title: t('admin.notification.ad_ops.restart_queued.title', 'Reset queued'),
-            message: t(
-              'admin.notification.ad_ops.restart_queued.message',
-              'Container will be recreated from the base image in seconds.'
-            ),
-          })
-          setTimeout(() => mutate(), 3_000)
-        } catch (e) {
-          showErrorMsg(e, t)
-        }
+      onConfirm: () => {
+        if (resetJobsRef.current.has(cell.adTeamServiceId)) return
+        const operationId = createOperationId()
+        const controller = new AbortController()
+        resetAbortRef.current.set(cell.adTeamServiceId, controller)
+        setResettingServices((current) => new Set(current).add(cell.adTeamServiceId))
+        const request = (async () => {
+          try {
+            let job
+            try {
+              job = (
+                await api.edit.editAdForceRestart(numId, cell.adTeamServiceId, operationId, {
+                  signal: controller.signal,
+                })
+              ).data
+            } catch (error) {
+              if (controller.signal.aborted) throw error
+              job = (await api.eventSecurity.getControlJobByOperation(operationId, { signal: controller.signal })).data
+            }
+            await waitForControlJob(job, controller.signal)
+            showNotification({
+              color: 'teal',
+              icon: <Icon path={mdiRestart} size={1} />,
+              title: t('admin.notification.ad_ops.restart_queued.title', 'Reset queued'),
+              message: t(
+                'admin.notification.ad_ops.restart_queued.message',
+                'Container will be recreated from the base image in seconds.'
+              ),
+            })
+            await mutate()
+          } catch (e) {
+            if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+          } finally {
+            resetJobsRef.current.delete(cell.adTeamServiceId)
+            resetAbortRef.current.delete(cell.adTeamServiceId)
+            setResettingServices((current) => {
+              const next = new Set(current)
+              next.delete(cell.adTeamServiceId)
+              return next
+            })
+          }
+        })()
+        resetJobsRef.current.set(cell.adTeamServiceId, request)
       },
     })
   }
 
+  useEffect(
+    () => () => {
+      resetAbortRef.current.forEach((controller) => controller.abort())
+      resetAbortRef.current.clear()
+    },
+    []
+  )
+
   const toggleScoringPause = async () => {
-    setBusy(true)
-    try {
-      const { data } = await api.edit.editAdToggleScoringPause(numId)
-      showNotification({
-        color: data.scoringPaused ? 'orange' : 'teal',
-        icon: <Icon path={data.scoringPaused ? mdiPauseCircleOutline : mdiCheck} size={1} />,
-        message: data.scoringPaused
-          ? t('admin.notification.ad_ops.scoring_paused', 'Scoring paused — rounds + checks frozen.')
-          : t('admin.notification.ad_ops.scoring_resumed', 'Scoring resumed.'),
-      })
-      mutate()
-      mutateKoth()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBusy(false)
-    }
+    if (scoringCommandRef.current) return scoringCommandRef.current
+    const snapshot = showKoth ? koth : state
+    if (!snapshot) return
+    const desiredPaused = !snapshot.scoringPaused
+    const command = (async () => {
+      setBusy(true)
+      setPendingScoringPaused(desiredPaused)
+      try {
+        const { data } = await api.edit.editAdToggleScoringPause(numId, {
+          paused: desiredPaused,
+          revision: snapshot.controlRevision,
+        })
+        showNotification({
+          color: data.scoringPaused ? 'orange' : 'teal',
+          icon: <Icon path={data.scoringPaused ? mdiPauseCircleOutline : mdiCheck} size={1} />,
+          message: data.scoringPaused
+            ? t('admin.notification.ad_ops.scoring_paused', 'Scoring paused — rounds + checks frozen.')
+            : t('admin.notification.ad_ops.scoring_resumed', 'Scoring resumed.'),
+        })
+        await Promise.all([mutate(), mutateKoth()])
+      } catch (e) {
+        await Promise.all([mutate(), mutateKoth()])
+        showErrorMsg(e, t)
+      } finally {
+        setBusy(false)
+        setPendingScoringPaused(null)
+        scoringCommandRef.current = null
+      }
+    })()
+    scoringCommandRef.current = command
+    return command
   }
 
   const overrideCheck = async (checkId: number, newStatus: AdCheckStatus) => {
@@ -1037,21 +1239,21 @@ const AdOps: FC = () => {
 
   if (isLoading) {
     return (
-      <WithGameEditTab isLoading>
-        <Center h="40vh">
-          <Loader />
-        </Center>
+      <WithGameEditTab>
+        <Stack role="status" aria-label={t('admin.operations.loading')} data-ad-loading>
+          <Skeleton h={150} animate={false} radius="md" />
+          <Skeleton h={320} animate={false} radius="md" />
+        </Stack>
       </WithGameEditTab>
     )
   }
 
-  // A transient fetch error must not masquerade as "no challenges". The A&D /state
-  // is required for the shared header; if it failed — or both states are empty only
-  // because the KotH fetch failed — show an error + retry rather than the empty card.
-  if (!state || (!hasAd && !hasKoth && (error || kothError))) {
+  // A transient fetch error must not masquerade as "no challenges". Only the
+  // selected engine is mounted, so an inactive engine cannot fail this view.
+  if (engineError || (fetchAd && !state && error) || (fetchKoth && !koth && kothError)) {
     return (
       <WithGameEditTab>
-        <Center h="40vh">
+        <Center className={ops.empty} role="alert" data-ad-error>
           <Stack align="center" gap="sm">
             <Icon path={mdiAlertCircleOutline} size={2.5} color="var(--mantine-color-red-6)" />
             <Text fw="bold" c="dimmed">
@@ -1061,6 +1263,7 @@ const AdOps: FC = () => {
               variant="default"
               leftSection={<Icon path={mdiRefresh} size={0.9} />}
               onClick={() => {
+                mutateEngines()
                 mutate()
                 mutateKoth()
               }}
@@ -1076,7 +1279,7 @@ const AdOps: FC = () => {
   if (!hasAd && !hasKoth) {
     return (
       <WithGameEditTab>
-        <Center h="40vh">
+        <Center className={ops.empty}>
           <Stack align="center" gap="xs">
             <Icon path={mdiSwordCross} size={2.5} color="var(--mantine-color-dimmed)" />
             <Text fw="bold" c="dimmed">
@@ -1094,34 +1297,40 @@ const AdOps: FC = () => {
     )
   }
 
+  const adState: AdGameStateModel = state ?? {
+    currentRound: null,
+    roundStartedAt: null,
+    roundEndsAt: null,
+    scoringPaused: false,
+    controlRevision: 1,
+    scoringPausedAt: null,
+    challenges: [],
+    teams: [],
+  }
+
   // While paused, freeze the countdown at the pause instant — the round isn't
   // burning time (resume shifts its end forward), so the timer must stop too.
-  const timerRef = state.scoringPaused && state.scoringPausedAt ? dayjs(state.scoringPausedAt) : now
-  const roundEndsIn = state.roundEndsAt ? Math.max(0, dayjs(state.roundEndsAt).diff(timerRef, 'second')) : null
-  const roundTotal =
-    state.roundStartedAt && state.roundEndsAt
-      ? Math.max(1, dayjs(state.roundEndsAt).diff(state.roundStartedAt, 'second'))
-      : null
-  const roundPct =
-    roundTotal && roundEndsIn !== null ? Math.min(100, Math.max(3, ((roundTotal - roundEndsIn) / roundTotal) * 100)) : 0
-  const ringColor =
-    roundEndsIn === 0
-      ? 'red'
-      : roundTotal && roundEndsIn !== null && roundEndsIn / roundTotal < 0.25
-        ? 'orange'
-        : 'teal'
-  const ringLabel =
-    state.currentRound == null
-      ? '—'
-      : roundEndsIn === null
-        ? '∞'
-        : roundEndsIn === 0
-          ? t('admin.content.ad_ops.round_ended_short', 'end')
-          : `${roundEndsIn}s`
-
+  const scoringPaused = showKoth ? (koth?.scoringPaused ?? false) : adState.scoringPaused
+  const displayedScoringPaused = pendingScoringPaused ?? scoringPaused
+  const scoringPausedAt = showKoth ? koth?.scoringPausedAt : adState.scoringPausedAt
+  const currentRound = showKoth ? koth?.latestRound : adState.currentRound
+  const roundEndsAt = showKoth ? koth?.currentRoundEndsAt : adState.roundEndsAt
+  const timerRef = scoringPaused && scoringPausedAt ? dayjs(scoringPausedAt) : now
+  const roundEndsIn = roundEndsAt ? Math.max(0, dayjs(roundEndsAt).diff(timerRef, 'second')) : null
+  const eventEnded = engineMetadata != null && now.valueOf() >= engineMetadata.end
+  const eventUpcoming = engineMetadata != null && now.valueOf() < engineMetadata.start
+  const phaseLabel = eventEnded
+    ? t('admin.ad_console.ended')
+    : eventUpcoming
+      ? t('admin.ad_console.upcoming')
+      : scoringPaused
+        ? t('admin.content.ad_ops.scoring_paused', 'Scoring paused')
+        : currentRound == null
+          ? t('admin.ad_console.awaiting')
+          : t('admin.content.ad_ops.live', 'Live')
   // Aggregate every (team × challenge) cell into a fleet-wide health summary.
   const counts = { Ok: 0, Mumble: 0, Offline: 0, InternalError: 0, unchecked: 0 }
-  state.teams.forEach((r) =>
+  adState.teams.forEach((r) =>
     r.services.forEach((c) => {
       const k = c.lastCheckStatus
       if (k === 'Ok' || k === 'Mumble' || k === 'Offline' || k === 'InternalError') counts[k]++
@@ -1129,9 +1338,15 @@ const AdOps: FC = () => {
     })
   )
 
-  const enabledChallenges = state.challenges.filter((c) => c.isEnabled).length
-  const visibleTeams = state.teams.filter(
-    (r) => debouncedSearch === '' || r.teamName.toLowerCase().includes(debouncedSearch.toLowerCase())
+  const enabledChallenges = adState.challenges.filter((c) => c.isEnabled).length
+  const visibleChallenges = adState.challenges.filter(
+    (c) => !challengeFilter || String(c.challengeId) === challengeFilter
+  )
+  const visibleTeams = filterAdOpsTeams(
+    adState.teams,
+    visibleChallenges.map((c) => c.challengeId),
+    debouncedSearch,
+    healthFilter
   )
 
   // KotH equivalents for the header stats when the KotH view is active. Health
@@ -1147,8 +1362,8 @@ const AdOps: FC = () => {
   // View-aware header values (A&D grid vs KotH hills).
   const headerCounts = showKoth ? kothCounts : counts
   const headerEnabled = showKoth ? kothEnabledHills : enabledChallenges
-  const headerTotal = showKoth ? kothHills.length : state.challenges.length
-  const tickSeconds = state.challenges[0]?.tickSeconds ?? koth?.tickSeconds ?? 60
+  const headerTotal = showKoth ? kothHills.length : adState.challenges.length
+  const tickSeconds = showKoth ? (koth?.tickSeconds ?? 60) : (adState.challenges[0]?.tickSeconds ?? 60)
 
   return (
     <WithGameEditTab>
@@ -1167,119 +1382,86 @@ const AdOps: FC = () => {
         opened={execTarget != null}
         onClose={closeShell}
       />
-      <Stack gap="md">
-        {/* Mission-control bar: round timing, scoring state, fleet health, actions */}
-        <Paper p="md" withBorder radius="md">
-          <Group justify="space-between" align="center" wrap="wrap" gap="lg">
-            <Group gap="xl" wrap="wrap" align="center">
-              {/* Round progress ring + number */}
-              <Group gap="sm" wrap="nowrap" align="center">
-                <RingProgress
-                  size={76}
-                  thickness={8}
-                  roundCaps
-                  sections={[{ value: roundPct, color: ringColor }]}
-                  label={
-                    <Text ta="center" fw={700} size="sm" c={ringColor === 'teal' ? undefined : ringColor}>
-                      {ringLabel}
-                    </Text>
-                  }
-                />
-                <Stack gap={2}>
-                  <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-                    {t('admin.content.ad_ops.current_round', 'Round')}
-                  </Text>
-                  <Group gap={6} align="center" wrap="nowrap">
-                    <Text fw="bold" size="xl" lh={1}>
-                      {state.currentRound ?? '—'}
-                    </Text>
-                    {state.scoringPaused ? (
-                      <Badge
-                        color="orange"
-                        variant="light"
-                        leftSection={<Icon path={mdiPauseCircleOutline} size={0.6} />}
-                      >
-                        {t('admin.content.ad_ops.scoring_paused', 'Scoring paused')}
-                      </Badge>
-                    ) : (
-                      // Stay "Live" between ticks too (countdown hitting 0 is a
-                      // ~5s gap before the scheduler advances) — toggling the
-                      // badge there reflowed the whole header row.
-                      state.currentRound != null && (
-                        <Badge color="teal" variant="dot">
-                          {t('admin.content.ad_ops.live', 'Live')}
-                        </Badge>
-                      )
-                    )}
-                  </Group>
-                </Stack>
-              </Group>
-
-              {/* Challenges / hills enabled */}
-              <Stack gap={2}>
-                <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
+      <Stack gap="md" className={ops.workspace} data-ad-workspace>
+        <Group justify="space-between" align="center" className={ops.toolbar}>
+          <Group gap="sm" wrap="wrap">
+            <Text fw={700}>{t('admin.ad_console.title')}</Text>
+            <Badge variant="light" color={eventEnded || eventUpcoming ? 'gray' : scoringPaused ? 'orange' : 'teal'}>
+              {phaseLabel}
+            </Badge>
+          </Group>
+          {showViewSwitch && (
+            <SegmentedControl
+              aria-label={t('admin.label.ad_ops.game_mode', 'Game mode')}
+              value={showKoth ? 'koth' : 'ad'}
+              onChange={setView}
+              data={[
+                { value: 'ad', label: t('admin.content.ad_ops.view_ad', 'A&D') },
+                { value: 'koth', label: t('admin.content.ad_ops.view_koth', 'KotH') },
+              ]}
+            />
+          )}
+        </Group>
+        {(showKoth ? kothError : error) && (
+          <Alert color="orange" role="alert" title={t('admin.ad_console.stale')}>
+            {t('admin.ad_console.stale_hint')}
+          </Alert>
+        )}
+        <Paper p="md" withBorder className={ops.surface}>
+          <Stack gap="md">
+            <div className={ops.summary}>
+              <div>
+                <Text className={ops.label}>{t('admin.content.ad_ops.current_round', 'Round')}</Text>
+                <Text className={ops.value}>{currentRound ?? '—'}</Text>
+                <Text size="xs" c="dimmed">
+                  {eventEnded || eventUpcoming
+                    ? phaseLabel
+                    : t('admin.ad_console.next_tick', { time: roundEndsIn == null ? '—' : roundEndsIn + 's' })}
+                </Text>
+              </div>
+              <div>
+                <Text className={ops.label}>{t('admin.ad_console.enabled')}</Text>
+                <Text className={ops.value}>
+                  {headerEnabled} / {headerTotal}
+                </Text>
+                <Text size="xs" c="dimmed">
                   {showKoth
                     ? t('admin.content.ad_ops.hills_active', 'Hills')
                     : t('admin.content.ad_ops.challenges_active', 'Challenges')}
                 </Text>
-                <Text fw="bold" size="xl" lh={1}>
-                  {headerEnabled}/{headerTotal}
-                </Text>
-              </Stack>
-
-              {/* Flag cycle (A&D) / pristine crown-cycle reset (KotH) — game-global tick */}
-              <Stack gap={2}>
-                <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-                  {showKoth
-                    ? t('admin.content.ad_ops.hill_cycle', 'Hill cycle')
-                    : t('admin.content.ad_ops.flag_cycle', 'Flag cycle')}
-                </Text>
-                <Text fw={600} size="sm" lh={1.3}>
-                  {showKoth
-                    ? t('admin.content.ad_ops.koth.tick_summary', {
-                        tick: tickSeconds,
-                        cycle: koth?.cycleTicks ?? 3,
-                        defaultValue: 'tick {{tick}}s · pristine reset every {{cycle}} ticks',
-                      })
-                    : t('admin.content.ad_ops.tick_summary', {
-                        tick: tickSeconds,
-                        lifetime: state.challenges[0]?.flagLifetimeTicks ?? 5,
-                        defaultValue: 'tick {{tick}}s · lifetime {{lifetime}} ticks',
-                      })}
-                </Text>
-              </Stack>
-
-              {/* Fleet-wide health — A&D services or KotH hills */}
-              <Stack gap={4}>
-                <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
+              </div>
+              <div>
+                <Text className={ops.label}>
                   {showKoth
                     ? t('admin.content.ad_ops.hill_health', 'Hill health')
                     : t('admin.content.ad_ops.service_health', 'Service health')}
                 </Text>
-                <Group gap="md" wrap="nowrap">
+                <Group gap="xs" wrap="wrap">
                   <HealthChip icon={mdiCheckCircle} color="teal" count={headerCounts.Ok} label="Ok" />
                   <HealthChip icon={mdiAlertCircle} color="yellow" count={headerCounts.Mumble} label="Mumble" />
                   <HealthChip icon={mdiCloseCircle} color="red" count={headerCounts.Offline} label="Offline" />
-                  <HealthChip icon={mdiHelpCircle} color="gray" count={headerCounts.InternalError} label="Error" />
-                  {headerCounts.unchecked > 0 && (
-                    <HealthChip
-                      icon={mdiHelpCircle}
-                      color="dark"
-                      count={headerCounts.unchecked}
-                      label={t('admin.content.ad_ops.health_unchecked', 'Unchecked')}
-                    />
-                  )}
+                  <HealthChip
+                    icon={mdiHelpCircle}
+                    color="gray"
+                    count={headerCounts.InternalError}
+                    label={t('admin.ad_console.checker_error')}
+                  />
+                  <HealthChip
+                    icon={mdiHelpCircle}
+                    color="gray"
+                    count={headerCounts.unchecked}
+                    label={t('admin.content.ad_ops.health_unchecked', 'Unchecked')}
+                  />
                 </Group>
-              </Stack>
-            </Group>
-
-            <Group gap="sm" wrap="wrap" justify={isMobile ? 'flex-end' : undefined}>
+              </div>
+            </div>
+            <Group gap="sm" wrap="wrap" className={ops.toolbar}>
               <Button
                 leftSection={<Icon path={mdiRefresh} size={0.9} />}
                 variant="default"
-                size={isMobile ? 'xs' : 'sm'}
                 disabled={busy}
                 onClick={() => {
+                  mutateEngines()
                   mutate()
                   mutateKoth()
                 }}
@@ -1289,53 +1471,54 @@ const AdOps: FC = () => {
               <Button
                 leftSection={<Icon path={mdiPlayCircle} size={0.9} />}
                 variant="default"
-                size={isMobile ? 'xs' : 'sm'}
                 disabled={busy}
                 onClick={ensureContainers}
               >
                 {t('admin.button.ad_ops.ensure_containers', 'Ensure containers')}
               </Button>
               <Button
-                leftSection={<Icon path={state.scoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
+                leftSection={<Icon path={displayedScoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
                 variant="default"
-                color={state.scoringPaused ? 'teal' : 'orange'}
-                size={isMobile ? 'xs' : 'sm'}
+                color={displayedScoringPaused ? 'teal' : 'orange'}
                 disabled={busy}
+                aria-busy={pendingScoringPaused !== null}
                 onClick={toggleScoringPause}
               >
-                {state.scoringPaused
-                  ? t('admin.button.ad_ops.resume_scoring', 'Resume scoring')
-                  : t('admin.button.ad_ops.pause_scoring', 'Pause scoring')}
+                {pendingScoringPaused === true
+                  ? t('admin.button.ad_ops.pausing_scoring', 'Pausing scoring…')
+                  : pendingScoringPaused === false
+                    ? t('admin.button.ad_ops.resuming_scoring', 'Resuming scoring…')
+                    : scoringPaused
+                      ? t('admin.button.ad_ops.resume_scoring', 'Resume scoring')
+                      : t('admin.button.ad_ops.pause_scoring', 'Pause scoring')}
               </Button>
             </Group>
-          </Group>
-          <Alert mt="md" color="cyan" variant="light" icon={<Icon path={mdiInformationOutline} size={0.9} />}>
-            <Text size="sm">
-              {t(
-                'admin.content.ad_ops.automatic_scoring_rounds',
-                'Official epoch rounds advance automatically through flag delivery and the checker pipeline. Manual advance is disabled so every scored round has complete evidence.'
-              )}
-            </Text>
-          </Alert>
+            <details className={ops.help}>
+              <summary>{t('admin.ad_console.scoring_help')}</summary>
+              <Text size="sm">
+                {showKoth
+                  ? t('admin.ad_console.koth_cadence', { tick: tickSeconds, cycle: koth?.cycleTicks ?? 3 })
+                  : t('admin.content.ad_ops.tick_summary', {
+                      tick: tickSeconds,
+                      lifetime: adState.challenges[0]?.flagLifetimeTicks ?? 5,
+                      defaultValue: 'tick {{tick}}s · lifetime {{lifetime}} ticks',
+                    })}
+              </Text>
+              <Text size="sm">
+                {t(
+                  'admin.content.ad_ops.automatic_scoring_rounds',
+                  'Official epoch rounds advance automatically through flag delivery and the checker pipeline. Manual advance is disabled so every scored round has complete evidence.'
+                )}
+              </Text>
+            </details>
+          </Stack>
         </Paper>
 
         {/* Team × challenge grid */}
-        <Paper p="md" withBorder radius="md">
+        <Paper p="md" withBorder className={ops.surface}>
           <Group justify="space-between" mb="sm" wrap="wrap" gap="sm">
             <Group gap="sm" align="center">
-              {showViewSwitch && (
-                <SegmentedControl
-                  size="xs"
-                  aria-label={t('admin.label.ad_ops.game_mode', 'Game mode')}
-                  value={showKoth ? 'koth' : 'ad'}
-                  onChange={(v) => setView(v as 'ad' | 'koth')}
-                  data={[
-                    { value: 'ad', label: t('admin.content.ad_ops.view_ad', 'A&D') },
-                    { value: 'koth', label: t('admin.content.ad_ops.view_koth', 'KotH') },
-                  ]}
-                />
-              )}
-              <Title order={4}>
+              <Title order={2} size="h4">
                 {showKoth
                   ? t('admin.content.ad_ops.koth.grid_title', 'Hills')
                   : t('admin.content.ad_ops.grid_title', 'Team status')}
@@ -1353,19 +1536,73 @@ const AdOps: FC = () => {
                     })}
               </Badge>
             </Group>
-            {!showKoth && (
-              <TextInput
-                size="xs"
-                w={260}
-                maw="100%"
-                aria-label={t('admin.placeholder.ad_ops.search_team', 'Filter teams')}
-                leftSection={<Icon path={mdiMagnify} size={0.8} />}
-                placeholder={t('admin.placeholder.ad_ops.search_team', 'Filter teams…')}
-                value={search}
-                onChange={(e) => setSearch(e.currentTarget.value)}
-              />
-            )}
           </Group>
+          {!showKoth && (
+            <Stack gap="sm" mb="md">
+              <div className={ops.filters}>
+                <TextInput
+                  data-ad-search
+                  label={t('admin.ad_console.team_search')}
+                  leftSection={<Icon path={mdiMagnify} size={0.8} />}
+                  placeholder={t('admin.placeholder.ad_ops.search_team', 'Filter teams…')}
+                  value={search}
+                  onChange={(e) => setSearch(e.currentTarget.value)}
+                />
+                <Select
+                  label={t('admin.ad_console.challenge')}
+                  value={challengeFilter}
+                  data={[
+                    { value: '', label: t('admin.ad_console.all_challenges') },
+                    ...adState.challenges.map((c) => ({ value: String(c.challengeId), label: c.title })),
+                  ]}
+                  onChange={(value) => setChallengeFilter(value ?? '')}
+                  searchable
+                  allowDeselect={false}
+                />
+                <Select
+                  label={t('admin.ad_console.team_health')}
+                  value={healthFilter}
+                  allowDeselect={false}
+                  data={[
+                    { value: '', label: t('admin.ad_console.any_status') },
+                    { value: 'attention', label: t('admin.ad_console.attention') },
+                    { value: 'Ok', label: 'Ok' },
+                    { value: 'Mumble', label: 'Mumble' },
+                    { value: 'Offline', label: 'Offline' },
+                    { value: 'InternalError', label: t('admin.ad_console.checker_error') },
+                    { value: 'unchecked', label: t('admin.content.ad_ops.health_unchecked', 'Unchecked') },
+                  ]}
+                  onChange={(value) => setHealthFilter((value ?? '') as AdOpsHealthFilter)}
+                />
+              </div>
+              <Group justify="space-between" gap="sm">
+                <Text className={ops.scope} role="status">
+                  {t('admin.ad_console.filtered', { count: visibleTeams.length, total: adState.teams.length })}
+                </Text>
+                <Group gap="sm">
+                  <Switch
+                    label={t('admin.ad_console.show_flags')}
+                    checked={showFlags}
+                    onChange={(e) => setShowFlags(e.currentTarget.checked)}
+                  />
+                  {(search || challengeFilter || healthFilter) && (
+                    <Button
+                      size="xs"
+                      variant="default"
+                      onClick={() => {
+                        setSearch('')
+                        setChallengeFilter('')
+                        setHealthFilter('')
+                      }}
+                    >
+                      {t('admin.ad_console.clear')}
+                    </Button>
+                  )}
+                </Group>
+              </Group>
+              <Text className={ops.scope}>{t('admin.ad_console.scope')}</Text>
+            </Stack>
+          )}
 
           {showKoth && koth ? (
             <KothOpsPanel
@@ -1373,10 +1610,10 @@ const AdOps: FC = () => {
               koth={koth}
               onShell={openShell}
               onToggleHill={toggleHill}
-              busyHill={busyHill}
+              pendingHillStates={pendingHillStates}
               onMutate={() => mutateKoth()}
             />
-          ) : state.teams.length === 0 ? (
+          ) : adState.teams.length === 0 ? (
             <Alert color="orange" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
               {t(
                 'admin.content.ad_ops.no_teams',
@@ -1384,8 +1621,15 @@ const AdOps: FC = () => {
               )}
             </Alert>
           ) : (
-            <ScrollArea.Autosize mah="55vh" type="auto">
-              <Table verticalSpacing="xs" striped highlightOnHover withColumnBorders>
+            <ScrollArea.Autosize
+              mah="70vh"
+              type="auto"
+              viewportProps={{
+                tabIndex: 0,
+                'aria-label': t('admin.content.ad_ops.table_caption', 'Attack-defense team service status'),
+              }}
+            >
+              <Table verticalSpacing="xs" striped highlightOnHover withColumnBorders className={ops.matrix}>
                 <Table.Caption>
                   {t('admin.content.ad_ops.table_caption', 'Attack-defense team service status')}
                 </Table.Caption>
@@ -1394,11 +1638,12 @@ const AdOps: FC = () => {
                     <Table.Th scope="col" className={tableClasses.corner}>
                       {t('admin.content.ad_ops.column_team', 'Team')}
                     </Table.Th>
-                    {state.challenges.map((c) => (
+                    {visibleChallenges.map((c) => (
                       <Table.Th scope="col" key={c.challengeId}>
                         <Group gap={6} wrap="nowrap" justify="space-between">
                           <Text
-                            truncate
+                            className={ops.teamName}
+                            title={c.title}
                             fw="bold"
                             size="sm"
                             c={c.isEnabled ? undefined : 'dimmed'}
@@ -1438,20 +1683,20 @@ const AdOps: FC = () => {
                 </Table.Thead>
                 <Table.Tbody>
                   {visibleTeams.map((row) => (
-                    <Table.Tr key={row.participationId}>
+                    <Table.Tr key={row.participationId} data-ad-team={row.participationId}>
                       <Table.Td className={tableClasses.left}>
-                        <Text truncate fw="bold" size="sm" maw="12rem">
+                        <Text fw="bold" size="sm" className={ops.teamName}>
                           {row.teamName}
                         </Text>
                       </Table.Td>
-                      {state.challenges.map((c) => {
+                      {visibleChallenges.map((c) => {
                         const cell = row.services.find((s) => s.challengeId === c.challengeId)
                         const sm = statusMeta(cell?.lastCheckStatus)
                         return (
-                          <Table.Td key={c.challengeId}>
+                          <Table.Td key={c.challengeId} data-ad-cell={cell?.adTeamServiceId}>
                             {cell ? (
                               <Stack gap={6}>
-                                <Group justify="space-between" wrap="nowrap" gap={4}>
+                                <Group justify="space-between" wrap="wrap" gap={4}>
                                   <Menu
                                     shadow="md"
                                     position="bottom-start"
@@ -1468,12 +1713,16 @@ const AdOps: FC = () => {
                                         })}
                                       >
                                         <Badge
+                                          className={ops.healthBadge}
                                           size="sm"
                                           color={sm.color}
                                           variant={cell.lastCheckStatus ? 'light' : 'outline'}
                                           leftSection={<Icon path={sm.icon} size={0.55} />}
                                         >
-                                          {cell.lastCheckStatus ?? '—'}
+                                          {cell.lastCheckStatus === 'InternalError'
+                                            ? t('admin.ad_console.checker_error')
+                                            : (cell.lastCheckStatus ??
+                                              t('admin.content.ad_ops.health_unchecked', 'Unchecked'))}
                                         </Badge>
                                       </UnstyledButton>
                                     </Menu.Target>
@@ -1501,7 +1750,7 @@ const AdOps: FC = () => {
                                     </Menu.Dropdown>
                                   </Menu>
                                   <Group gap={2} wrap="nowrap">
-                                    {cell.containerGuid && (
+                                    {cell.containerGuid && !cell.selfHosted && (
                                       <Tooltip
                                         label={t('admin.tooltip.ad_ops.shell', 'Open a shell in this container')}
                                         withArrow
@@ -1522,27 +1771,31 @@ const AdOps: FC = () => {
                                         </ActionIcon>
                                       </Tooltip>
                                     )}
-                                    <Tooltip
-                                      label={t(
-                                        'admin.tooltip.ad_ops.restart',
-                                        'Reset to base image — wipes the team’s changes (bypasses player cooldown)'
-                                      )}
-                                      withArrow
-                                    >
-                                      <ActionIcon
-                                        size={44}
-                                        variant="subtle"
-                                        color="gray"
-                                        aria-label={t(
-                                          'admin.tooltip.ad_ops.reset',
-                                          'Reset container to its base image'
+                                    {!cell.selfHosted && (
+                                      <Tooltip
+                                        label={t(
+                                          'admin.tooltip.ad_ops.restart',
+                                          'Reset to base image — wipes the team’s changes (bypasses player cooldown)'
                                         )}
-                                        onClick={() => resetCell(cell)}
+                                        withArrow
                                       >
-                                        <Icon path={mdiRestart} size={0.7} />
-                                      </ActionIcon>
-                                    </Tooltip>
-                                    {(cell.snapshotAvailable || cell.containerGuid) && (
+                                        <ActionIcon
+                                          size={44}
+                                          variant="subtle"
+                                          color="gray"
+                                          loading={resettingServices.has(cell.adTeamServiceId)}
+                                          disabled={resettingServices.has(cell.adTeamServiceId)}
+                                          aria-label={t(
+                                            'admin.tooltip.ad_ops.reset',
+                                            'Reset container to its base image'
+                                          )}
+                                          onClick={() => resetCell(cell)}
+                                        >
+                                          <Icon path={mdiRestart} size={0.7} />
+                                        </ActionIcon>
+                                      </Tooltip>
+                                    )}
+                                    {!cell.selfHosted && (cell.snapshotAvailable || cell.containerGuid) && (
                                       <Tooltip
                                         label={
                                           cell.snapshotAvailable
@@ -1610,7 +1863,7 @@ const AdOps: FC = () => {
                                     )}
                                   </CopyButton>
                                 )}
-                                {cell.currentFlag && (
+                                {showFlags && cell.currentFlag && (
                                   <CopyButton value={cell.currentFlag}>
                                     {({ copied, copy }) => (
                                       <Tooltip
@@ -1635,9 +1888,9 @@ const AdOps: FC = () => {
                                 )}
                               </Stack>
                             ) : (
-                              <Center>
-                                <Icon path={mdiClose} size={0.8} color="var(--mantine-color-dimmed)" />
-                              </Center>
+                              <Text size="xs" c="dimmed">
+                                {t('admin.ad_console.no_service')}
+                              </Text>
                             )}
                           </Table.Td>
                         )
@@ -1646,7 +1899,7 @@ const AdOps: FC = () => {
                   ))}
                   {visibleTeams.length === 0 && (
                     <Table.Tr>
-                      <Table.Td colSpan={state.challenges.length + 1}>
+                      <Table.Td colSpan={visibleChallenges.length + 1}>
                         <Text ta="center" c="dimmed" py="md" size="sm">
                           {t('admin.content.ad_ops.no_team_match', 'No teams match the filter.')}
                         </Text>

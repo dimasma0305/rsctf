@@ -24,9 +24,12 @@ KotH = 2 / 3
 Challenge eligibility, review state, and enabled state are locked once
 competition scoring begins. The counts therefore remain constant for the
 event. A challenge added later is disabled and cannot enter the score. There is
-no version selector, separate Overall-weight setting, leader-relative scaling,
-or dependence on live solve counts. A leader joining, leaving, or improving
-cannot rescale another team's outer format budget.
+no version selector, separate Overall-weight setting, leader-relative scaling of
+the outer budgets, or dependence on live solve counts. A leader joining,
+leaving, or improving cannot rescale another team's outer format budget. Inside
+the A&D and KotH formats, each service or hill is scaled to its capped field
+best before the format total is formed; that belongs to each format's own
+contract and never changes the outer budget.
 
 RSCTF calculates in fixed units of `0.0001` point. Ratios and the weighted mean
 are rounded to the nearest unit, keeping replicas deterministic.
@@ -75,16 +78,18 @@ not score-eligible cannot alter that tie-break.
 
 ## Attack & Defense component
 
-`A_i` is the official settled A&D epoch total, already bounded to `[0, 100]`.
-Its live value is shown only as a projection. A&D rank sorts by settled total,
+`A_i` is the official settled A&D epoch total, already bounded to `[0, 100]`
+and already including the per-service field-best normalization described in the
+[A&D handbook](./attack-defense). Its live value is shown only as a projection. A&D rank sorts by settled total,
 projected total, offense, defense, SLA, then stable participation ID; ranks are
 ordinal.
 
 ## King of the Hill component
 
-`K_i` is the official settled KotH epoch total, already bounded to `[0, 100]`,
-whether a hill uses Boot2Root control or Leaderboard evidence. Its live value
-is shown only as a projection. The fixed formulas are documented in the
+`K_i` is the official settled KotH epoch total, already bounded to `[0, 100]`
+and already including the per-hill field-best normalization, whether a hill
+uses Boot2Root control or Leaderboard evidence. Its live value is shown only as
+a projection. The fixed formulas are documented in the
 [KotH guide](./koth) and [KotH scoring handbook](./koth-scoring-handbook).
 
 KotH official ties never use the live projection. They sort by settled total,

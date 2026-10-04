@@ -1,4 +1,254 @@
 {
+  "schedule": {
+    "reopen_title": "Reopen this competition?",
+    "change_title": "Change the competition schedule?",
+    "confirm": "Save schedule",
+    "confirm_description": "Scoring will use the revised time window. Earlier practice submissions inside that window can count. Existing evidence and findings are retained; anti-cheat resumes and finalizes again at the new deadline. Missing telemetry from the closed period cannot be recovered.",
+    "end_description": "Extend even after the event ends to resume competition. You can also move a live deadline earlier if it stays in the future. Check the freeze time and writeup deadline below."
+  },
+  "readiness": {
+    "title": "Readiness",
+    "intro": "Review saved event configuration and follow the links to resolve issues before players arrive.",
+    "refresh": "Refresh checks",
+    "refreshing": "Refreshing saved configuration…",
+    "loading": "Loading saved event configuration…",
+    "load_failed": "Readiness could not be refreshed",
+    "stale": "Showing previous data. Current readiness is unverified.",
+    "sign_in": "Sign in again",
+    "hidden": "Unlisted event",
+    "public": "Public event",
+    "practice": "Practice mode",
+    "competition": "Competition mode",
+    "snapshot_note": "This is a manual snapshot of saved settings and challenge metadata, not a launch guarantee. Refresh after making changes. Hidden events are valid for rehearsals.",
+    "schedule_label": "Schedule:",
+    "runtime_reminder": "Configuration only. Work through “Still to verify” below before players arrive.",
+    "verdict": {
+      "attention_one": "{{count}} of {{total}} checks needs attention",
+      "attention_other": "{{count}} of {{total}} checks need attention",
+      "unverified_one": "{{count}} check could not be confirmed yet",
+      "unverified_other": "{{count}} checks could not be confirmed yet",
+      "checked": "All {{total}} configuration checks look good"
+    },
+    "duration": {
+      "days": "{{days}} d {{hours}} h",
+      "hours": "{{hours}} h {{minutes}} min",
+      "days_only": "{{days}} d",
+      "hours_only": "{{hours}} h",
+      "minutes": "{{minutes}} min"
+    },
+    "counts_label": "Check results",
+    "snapshot_time": "Loaded at {{time}}.",
+    "manual_progress": "{{done}} of {{total}} confirmed",
+    "manual_local": "Tick each item once you have checked it yourself; ticks are saved in this browser only.",
+    "open_check": "Review {{check}} settings",
+    "runtime_title": "Still to verify",
+    "runtime_note": "Not tested by this page. No services are started, scores changed, or settings saved by these checks.",
+    "states": { "checked": "Checked", "attention": "Needs attention", "unverified": "Unverified", "info": "Information" },
+    "checks": { "schedule": "Event schedule", "freeze": "Scoreboard freeze", "writeup": "Writeup deadline", "challenges": "Enabled challenges", "builds": "Latest build results" },
+    "reasons": {
+      "schedule_ok": "The saved start time is before the end time. Confirm the intended date and timezone in Information.",
+      "schedule_invalid": "Set a valid start time and an end time after it.",
+      "freeze_off": "No scoreboard freeze is configured.",
+      "freeze_ok": "The saved freeze time falls inside the event window.",
+      "freeze_invalid": "Set the freeze time strictly between the start and end times, or clear it.",
+      "writeup_off": "Writeups are not required for this event.",
+      "writeup_ok": "Writeups are required, with a deadline at or after the event ends.",
+      "writeup_review": "Writeups are required. Review the deadline: it is missing, invalid, or before the event ends.",
+      "challenges_review": "Enabled challenges awaiting confirmed approval: {{count}}. Review their status before relying on player visibility.",
+      "challenges_empty": "No enabled, approved challenges were found. Enable approved challenges when you are ready to make them available.",
+      "challenges_ok": "Enabled and approved challenges: {{count}}. Player access still depends on the event, division, and participation rules.",
+      "builds_failed": "Enabled, approved challenges with a failed latest build or missing Dockerfile: {{count}}. Review the build logs; this does not prove that an existing instance is down.",
+      "builds_running": "Enabled, approved challenges with queued or running builds: {{count}}. Refresh after they finish, then verify the deployed service.",
+      "builds_unknown": "Enabled, approved challenges without a conclusive build result: {{count}}. A prebuilt image may already be configured; inspect the challenge before starting a build.",
+      "builds_recorded": "No failed or pending builds are recorded for enabled, approved challenges. Successful builds and tasks that need no build do not prove runtime health."
+    },
+    "manual": {
+      "teams": "Participation: confirm that the intended teams are accepted and assigned to the correct divisions.",
+      "attachments": "Player experience: check challenge descriptions, downloads, flags, and container access using an authorized test player.",
+      "services": "A&D / KoTH: verify the scoring roster, checker status, instance readiness, and any reset in progress in the operator console.",
+      "vpn": "VPN access is required: verify configuration download and challenge connectivity from a real player VPN connection."
+    },
+    "actions": { "info": "Open information", "challenges": "Open challenges", "teams": "Review teams", "attachments": "Review challenges", "services": "Open operator console", "vpn": "Review VPN settings" },
+    "errors": {
+      "session": "Your session may have expired. Sign in again, then return to this event.",
+      "permission": "You do not have access to this event’s administration. Ask an administrator to check your event-manager assignment.",
+      "missing": "This event could not be found. Return to All events and check that it still exists.",
+      "busy": "Too many requests are in progress. Wait briefly, then use Refresh checks.",
+      "service": "The server could not complete a readiness read. Try Refresh checks; if it continues, check the platform logs and service health.",
+      "request": "The request did not complete. Check your connection, then use Refresh checks. If it continues, ask the platform operator to inspect the request."
+    },
+    "preflight": {
+      "title": "Image preflight",
+      "intro": "Pull every enabled, approved challenge image and smoke-start one temporary instance per distinct image, then remove it. Runs on the server as a durable job; nothing is exposed to players.",
+      "run": "Run image preflight",
+      "running": "Preflight running…",
+      "loading": "Loading the latest preflight…",
+      "none": "No preflight has run for this event yet.",
+      "empty": "No enabled, approved challenge with a container image was found.",
+      "progress": "{{state}}: {{current}} of {{total}} images finished.",
+      "summary": "{{succeeded}} succeeded, {{failed}} failed, {{skipped}} skipped across {{images}} distinct images and {{challenges}} challenges.",
+      "started": "Started {{time}}",
+      "finished": "finished {{time}}",
+      "load_failed": "The preflight status could not be loaded",
+      "load_failed_note": "Use Refresh checks or reload the page. The job itself keeps running on the server.",
+      "job_failed": "The preflight job did not complete",
+      "list_label": "Per-challenge preflight results",
+      "no_image": "No immutable image",
+      "error_label": "Detail:",
+      "job": {
+        "Queued": "Queued",
+        "Running": "Running",
+        "Succeeded": "Completed",
+        "Failed": "Failed",
+        "Cancelled": "Cancelled"
+      },
+      "states": {
+        "pending": "Pending",
+        "running": "Running",
+        "succeeded": "Ready",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      },
+      "step": {
+        "Pending": "pending",
+        "Running": "running",
+        "Succeeded": "ok",
+        "Failed": "failed",
+        "Skipped": "skipped"
+      },
+      "steps": {
+        "pull": "Pull",
+        "start": "Start"
+      },
+      "capacity": {
+        "title": "Requested capacity",
+        "basis": "Totals assume {{teams}} accepted team(s) and {{instances}} simultaneous instance(s) at the saved limits.",
+        "requested": "requested {{value}}",
+        "available": "free {{value}}",
+        "cpu": "CPU",
+        "memory": "Memory",
+        "storage": "Storage",
+        "replicas": "Replicas",
+        "instances": "Instances",
+        "worker_note": "Free capacity is summed over {{workers}} connected worker(s); the worker plane would schedule {{cpu}} and {{memory}} of the total.",
+        "unavailable": "No capacity comparison is available: the local Docker or Kubernetes backend does not report aggregate capacity."
+      }
+    }
+  },
+  "grading": {
+    "title": "Writeup review & private ranking",
+    "private": "Admin only",
+    "refresh": "Refresh scores & grades",
+    "explanation": "Graded points = earned points × writeup grade. Ungraded challenges retain 100%. Public scores never change.",
+    "formats": "Overall uses the event’s format weights. Jeopardy includes solve bonuses; A&D and KoTH use finalized challenge contributions. Equal projected scores share a rank.",
+    "snapshot": "Score snapshot: {{time}}",
+    "failed": "Writeup grading could not be loaded",
+    "retry": "Administrator access is required. Try refreshing; existing grades have not been changed.",
+    "loading": "Loading scores and writeups…",
+    "unsettled": "Some rounds are not finalized yet. These results are provisional; refresh after scoring settles.",
+    "division": "Division",
+    "score_view": "Score view",
+    "overall": "Overall · 0–100",
+    "review": "Review a team",
+    "ranking": "Projected scoreboard",
+    "team": "Team to review",
+    "no_teams": "No matching teams",
+    "score_change": "{{original}} → {{score}} points",
+    "rank": "Projected rank #{{rank}}",
+    "unranked": "Unranked",
+    "progress": "{{reviewed}} of {{total}} challenges graded",
+    "review_progress": "Review progress",
+    "earned": "Scored challenges",
+    "no_scores": "No scored challenges to grade yet.",
+    "saved": "Grade saved. The private ranking has been updated.",
+    "document": "Submitted writeup",
+    "pdf_pages": "Writeup pages",
+    "pdf_page": "Page {{page}}",
+    "pdf_previous": "Previous writeup page",
+    "pdf_next": "Next writeup page",
+    "pdf_page_of": "Page {{page}} of {{total}}",
+    "open": "Open / download writeup",
+    "missing": "No writeup submitted. You can still grade a challenge 0% if its writeup is missing.",
+    "private_caption": "Private projection from saved writeup grades. Competition scores are unchanged.",
+    "rank_label": "Rank",
+    "team_label": "Team",
+    "original": "Original",
+    "projected": "Graded",
+    "reviewed": "Reviewed",
+    "pages": "Ranking pages",
+    "save_error": "Grade not confirmed. Retry, or refresh scores & grades if another admin edited this challenge.",
+    "earned_points": "{{points}} earned points",
+    "ungraded": "Ungraded · retains 100%",
+    "recorded": "Saved grade: {{percentage}}%",
+    "retained": "{{points}} points retained",
+    "percentage": "Writeup grade (%)",
+    "percentage_for": "Writeup grade (%) for {{challenge}}",
+    "valid_percentage": "Enter a whole number from 0 to 100.",
+    "save": "Save grade",
+    "clear": "Mark ungraded"
+  },
+  "navigation": {
+    "player_view": "Player view",
+    "all_events": "All events",
+    "all_challenges": "All challenges",
+    "challenge_settings": "Challenge settings",
+    "challenge_reviews": "Challenge reviews",
+    "flags_files": "Flags & files",
+    "challenge_id": "Challenge #{{id}}",
+    "switch_challenge": "Jump to challenge",
+    "groups": { "setup": "Event setup", "competition": "Competition", "people": "Teams & communication" }
+  },
+  "ad_console": {
+    "title": "Live operations",
+    "ended": "Event ended",
+    "upcoming": "Not started",
+    "awaiting": "Awaiting round",
+    "enabled": "Enabled",
+    "next_tick": "Next tick · {{time}}",
+    "checker_error": "Checker error",
+    "scoring_help": "Timing and scoring behavior",
+    "koth_cadence": "Tick {{tick}}s. Marker hills reset every {{cycle}} ticks; Leaderboard arenas recover when unhealthy, without scheduled cycle resets.",
+    "team_search": "Team name",
+    "challenge": "Challenge",
+    "all_challenges": "All challenges",
+    "team_health": "Teams with",
+    "any_status": "Any service status",
+    "attention": "Services needing attention",
+    "show_flags": "Show current flags",
+    "clear": "Clear filters",
+    "filtered": "{{count}} of {{total}} teams shown",
+    "scope": "Filters apply to the loaded team grid; health totals cover all loaded service records. Scroll the grid sideways to reach more challenges and controls.",
+    "hill_scope": "Review hill health and lifecycle before using recovery controls. Scroll sideways for endpoints, receipts, and enable controls. Leaderboard scores below are settled values, with live projections shown separately.",
+    "no_service": "No service registered",
+    "stale": "Status could not be refreshed",
+    "stale_hint": "Showing the last loaded snapshot. Use Refresh to retry; these values may be out of date."
+  },
+  "operations": {
+    "images_error": "Image inventory could not be refreshed",
+    "storage_error": "Storage status could not be refreshed",
+    "repo_scope": "Manage repository syncs and open their linked events. Counts below cover this page.",
+    "repo_overview": "Repository overview for this page",
+    "repositories": "Repositories",
+    "active": "Active",
+    "paused": "Paused",
+    "scanning": "Scanning now",
+    "connected_repositories": "Connected repositories",
+    "latest_result": "Latest scan result",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "loading": "Loading…",
+    "build_scope": "Search and filter the latest 200 build records. Active jobs are tracked separately.",
+    "build_sections": "Build views",
+    "build_overview": "Build status filters",
+    "search_builds": "Find a build",
+    "search_placeholder": "Challenge, event ID, image, or trigger",
+    "activity_error": "Active build status could not be refreshed",
+    "build_history": "Build history",
+    "matches": "{{count}} matching / {{total}} loaded",
+    "history_error": "Build history could not be refreshed",
+    "stale_history": "Showing the last loaded records. Retry to get the latest status.",
+    "retry_hint": "Check your connection and retry. Other admin pages remain available."
+  },
   "button": {
     "back": "Go Back",
     "ad_ops": {
@@ -37,7 +287,10 @@
       },
       "flush_scoreboard": "Refresh Scoreboard",
       "hint": {
-        "add": "Add Hint"
+        "add": "Add Hint",
+        "delete": "Delete hint {{number}}",
+        "release": "Release hint {{number}}",
+        "unrelease": "Unrelease hint {{number}}"
       },
       "import": "Import",
       "new": "New Challenge",
@@ -73,7 +326,9 @@
       "copy_public_key": "Copy Public Key",
       "delete": "Delete",
       "export": "Export Game",
+      "export_data": "Export Data",
       "import": "Import Game",
+      "import_data": "Import Data",
       "new": "New Game"
     },
     "notices": {
@@ -181,6 +436,13 @@
       }
     },
     "games": {
+      "export_data": {
+        "attachments_too_large": {
+          "title": "Attachments exceed the bundle limit",
+          "body": "The challenge attachment files of this game are larger than the 128 MiB bundle limit. Export the competition data without attachment files? Scores, submissions, rosters, and every record are still included; attachments will be empty after a restore.",
+          "confirm": "Export without attachments"
+        }
+      },
       "challenges": {
         "attachment": {
           "clear": {
@@ -266,6 +528,10 @@
           }
         },
         "hints": "Hints",
+        "hint_number": "Hint {{number}}",
+        "hint_released": "Released",
+        "hint_draft": "Draft",
+        "hints_release_description": "Release hints in order, or return the latest released hint to draft.",
         "memory_limit": {
           "description": "RAM limitation of containers",
           "label": "Memory Limit (MB)"
@@ -320,7 +586,7 @@
           "editor_description": "Enter camelCase JSON. Registry images require immutable sha256 digests; replace the example digest. Static and dynamic container workloads require flagTarget. V1 injects RSCTF_FLAG only into flagTarget.service; flagTarget.path is validated and reserved but is not written. The server validates the specification again before saving.",
           "save_and_rollout": "Save and roll out",
           "rollout_requires_stateless": "Live rollout is unavailable because these services are stateful: {{services}}. Save the definition for future launches, then drain and recreate existing instances deliberately.",
-          "rollout_result": "Rollout matched {{matched}} workload(s): {{updated}} updated, {{stale}} stale, {{incompatible}} incompatible, {{insufficientCapacity}} without capacity, {{failed}} failed.",
+          "rollout_result": "Rollout matched {{matched}} workload(s): {{updated}} updated, {{alreadyCurrent}} already current, {{stale}} stale, {{incompatible}} incompatible, {{insufficientCapacity}} without capacity, {{failed}} failed.",
           "load_example": "Load Linux example",
           "clear": "Clear workload",
           "invalid": "Workload JSON is invalid: {{message}}"
@@ -486,6 +752,19 @@
           "description": "Let logged-in users submit challenges (admin reviews before they go live)",
           "label": "Allow User Submissions"
         },
+        "ai_chat_links": {
+          "label": "AI chat links",
+          "description": "Let teams attach AI chat share links to solved challenges for organizer review. Off by default."
+        },
+        "ai_chat_links_required": {
+          "label": "Require disclosure after every solve",
+          "description": "Teams must add AI chat links or declare \"No AI used\" for each solved challenge. The challenge dialog stays open until they do; scoring is unaffected.",
+          "needs_links": "Turn on AI chat links first; the requirement only applies while they are enabled."
+        },
+        "solver_uploads": {
+          "label": "Solver uploads",
+          "description": "Let teams upload the solver they used for a solved challenge so organizers can verify it. Optional for teams; off by default."
+        },
         "start_date": "Start Date",
         "start_time": "Start Time",
         "summary": {
@@ -578,7 +857,12 @@
     },
     "instances": {
       "destroy": "Are you sure you want to destroy instance {{name}}?",
-      "note": "Note: Container statistics do not include admin test container and destroyed container",
+      "filter_help": "Searches include every active instance, not only the visible page.",
+      "filter_option_status": "{{teams}} team options and {{challenges}} challenge options found.",
+      "filter_options_unavailable": "Filter options are temporarily unavailable.",
+      "filtered_stats": " <1>{{count}}</1> matching distributed instances",
+      "no_filtered_results": "No active instances match these filters.",
+      "note": "Live runtime metrics are sampled in one bounded batch. Metrics the runtime cannot report are shown as unavailable.",
       "stats": " <1>{{count}}</1> distributed instances in total"
     },
     "markdown_inline_support": "Styling with inline Markdown is supported",
@@ -604,7 +888,96 @@
         "registry_pull": "Pull creds",
         "build_registry": "Build push",
         "donations": "Donations",
+        "ai_links": "AI links",
+        "agent_signatures": "Agent signatures",
         "diagnostics": "Diagnostics"
+      },
+      "ai_links": {
+        "delete_title": "Delete {{provider}}?",
+        "delete_message": "Teams can no longer add links from this provider. Saved links stay visible to organizers, marked as blocked.",
+        "delete": "Delete",
+        "deleted": "Provider deleted",
+        "key_format": "Use 1–40 lowercase letters, digits, or hyphens, starting with a letter or digit.",
+        "key_builtin": "This key belongs to a built-in provider.",
+        "key_duplicate": "A custom provider already uses this key.",
+        "label_invalid": "Enter a label of 1–64 characters.",
+        "pattern_prefix": "The pattern must start with https:// and an escaped host.",
+        "pattern_alternation": "Wrap alternatives in a group such as (?:a|b); a top-level | would match other sites.",
+        "pattern_syntax": "The pattern is not a valid regular expression.",
+        "pattern_length": "Enter a pattern of 1–512 characters.",
+        "updated": "Provider updated",
+        "created": "Provider added",
+        "test_reason": {
+          "invalid": "Not an absolute URL.",
+          "https_required": "Only https:// links are accepted.",
+          "credentials": "Links with a username or password are rejected.",
+          "port": "Links with a custom port are rejected.",
+          "too_long": "The link is longer than 2048 characters."
+        },
+        "test_match": "Matches {{provider}} ({{key}}): {{url}}",
+        "test_no_match": "No enabled provider matches {{url}}",
+        "enabled": "Enabled",
+        "enabled_for": "Enabled: {{provider}}",
+        "examples": "Examples",
+        "edit_named": "Edit {{provider}}",
+        "edit": "Edit",
+        "delete_named": "Delete {{provider}}",
+        "title": "AI chat links",
+        "description": "Choose which AI chat providers teams may link from solved challenges. Events opt in from their Information page.",
+        "builtin_title": "Built-in providers",
+        "custom_title": "Custom providers",
+        "custom_count": "{{count}} of {{max}}",
+        "custom_empty": "No custom providers yet.",
+        "edit_title": "Edit {{key}}",
+        "add_title": "Add provider",
+        "custom_limit": "The custom provider limit is reached.",
+        "key": "Key",
+        "key_description": "Lowercase, e.g. copilot",
+        "label": "Label",
+        "label_description": "Shown to players and organizers",
+        "pattern": "URL pattern",
+        "pattern_description": "Regular expression matched against the whole normalized link, e.g. https://copilot\\.microsoft\\.com/shares/[A-Za-z0-9]{8,64}",
+        "save": "Save provider",
+        "add": "Add provider",
+        "test_label": "Test a link",
+        "test_description": "Checked in this browser against the enabled providers, in server match order."
+      },
+      "agent_signatures": {
+        "title": "Agent signatures",
+        "description": "Traces that AI agent tools leave in files, such as a coding agent’s session scratchpad path. Uploaded solvers and writeups are scanned for them (never executed); a match is added to the cheat report for review, and a match on a challenge the team declared “No AI used” is flagged as a contradiction. A match shows which tool touched the file, not that a rule was broken.",
+        "builtin_title": "Built-in signatures",
+        "custom_title": "Custom signatures",
+        "custom_count": "{{count}} of {{max}}",
+        "custom_empty": "No custom signatures yet.",
+        "custom_limit": "The custom signature limit is reached.",
+        "enabled": "Enabled",
+        "enabled_for": "Enabled: {{signature}}",
+        "examples": "Examples",
+        "edit": "Edit",
+        "edit_named": "Edit {{signature}}",
+        "edit_title": "Edit {{key}}",
+        "delete": "Delete",
+        "delete_named": "Delete {{signature}}",
+        "delete_title": "Delete {{signature}}?",
+        "delete_message": "New uploads are no longer checked for this trace. Evidence already recorded stays in the cheat report.",
+        "deleted": "Signature deleted",
+        "updated": "Signature updated",
+        "created": "Signature added",
+        "add_title": "Add signature",
+        "add": "Add signature",
+        "save": "Save signature",
+        "key": "Key",
+        "key_description": "Lowercase, e.g. my-agent",
+        "key_format": "Use 1–40 lowercase letters, digits, or hyphens, starting with a letter or digit.",
+        "key_builtin": "This key belongs to a built-in signature.",
+        "key_duplicate": "A custom signature already uses this key.",
+        "label": "Label",
+        "label_description": "Shown to organizers in the cheat report",
+        "label_invalid": "Enter a label of 1–64 characters.",
+        "pattern": "Pattern",
+        "pattern_description": "Regular expression searched for anywhere in the file, e.g. /opt/my-agent/runs/[0-9]+. It must not match ordinary solver or writeup text.",
+        "pattern_length": "Enter a pattern of 1–512 characters.",
+        "rescan_hint": "Changes apply to new uploads. To check files uploaded earlier, use “Rescan uploads” on an event’s cheat detection page."
       },
       "account": {
         "allow_register": {
@@ -968,9 +1341,18 @@
       "attempt": "attempt {{n}}",
       "log_modal_title": "Build log",
       "no_log": "No log captured for this attempt.",
+      "status": {
+        "None": "No build",
+        "Success": "Built",
+        "Failed": "Failed",
+        "Building": "Building",
+        "Queued": "Queued",
+        "MissingDockerfile": "No Dockerfile",
+        "NotApplicable": "Not required"
+      },
       "confirm_delete": "Delete the audit row for {{challenge}}? The challenge itself and its built image are not affected.",
       "confirm_bulk_delete": "Delete the {{count}} selected audit row(s)? The challenges and their built images are not affected.",
-      "confirm_prune_failed": "Delete {{count}} Failed audit row(s)? Successful builds, in-progress builds, and the challenges themselves are preserved.",
+      "confirm_prune_failed": "Delete all Failed audit records, including older records outside this view? {{count}} are currently loaded. Missing-Dockerfile records, successful builds, active builds, images, and challenges are preserved.",
       "select_all": "Select all rows on this page",
       "confirm_prune_images": {
         "line1": "Untag every rsctf/* image on the local Docker daemon that no current challenge references.",
@@ -1146,7 +1528,10 @@
   },
   "label": {
     "games": {
-      "hide": "Hide",
+      "hide": "Unlisted",
+      "hidden_state": "Unlisted · accessible by link",
+      "visible_state": "Listed publicly",
+      "toggle_hidden": "Hide {{name}} from the public event list",
       "summary": "Summary",
       "notices": {
         "schedule": "Schedule for later",
@@ -1163,13 +1548,16 @@
       "cpu": "CPU",
       "memory": "Memory",
       "network": "Network",
+      "limit_unavailable": "Limit unavailable",
       "owner": {
         "admin_test": "Admin test",
         "exercise": "Exercise",
         "shared": "Shared (all teams)",
         "unassigned": "Unassigned"
       },
-      "live_stats": "Live stats"
+      "live_stats": "Live stats",
+      "stats_disabled": "Live statistics disabled",
+      "stats_unavailable": "Runtime metric unavailable"
     },
     "logs": {
       "message": "Message",
@@ -1235,6 +1623,8 @@
           "flag_submitted": "Flag submitted!"
         },
         "updated": "Challenge updated",
+        "hint_released": "Hint released to players.",
+        "hint_unreleased": "Hint returned to draft.",
         "batch_deleted": "Deleted {{count}} challenge(s)",
         "batch_deleted_partial": "Deleted {{ok}}, {{failed}} failed",
         "batch_enabled": "Activated {{count}} challenge(s)",
@@ -1256,6 +1646,10 @@
       "import": {
         "imported": "Game imported successfully",
         "importing": "Importing game..."
+      },
+      "import_data": {
+        "importing": "Importing data...",
+        "success": "Restored {{rows}} rows into a new hidden game ({{teamsCreated}} teams created, {{teamsMatched}} matched; {{usersCreated}} users created, {{usersMatched}} matched)"
       },
       "info": {
         "deleted": "Game deleted",

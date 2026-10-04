@@ -1,10 +1,16 @@
 //! edit: divisions (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
+use sha2::{Digest, Sha256};
+
+const MAX_DIVISIONS: i64 = 256;
+const MAX_DIVISION_CONFIGS: usize = 512;
+const MAX_DIVISION_NAME_BYTES: usize = 128;
+const MAX_DIVISION_INVITE_BYTES: usize = 256;
 
 /// RSCTF `Division` (Api.ts) — camelCase wire shape. The raw `division::Model`
 /// is snake_case and leaks the `gameId` column (`[JsonIgnore]` in RSCTF), so
 /// every division handler maps through this DTO instead.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionDetailModel {
     pub id: i32,
@@ -12,39 +18,169 @@ pub struct DivisionDetailModel {
     pub invite_code: Option<String>,
     /// `GamePermission` bit-flags (numeric, matching Api.ts `GamePermission`).
     pub default_permissions: i32,
+    pub revision: i64,
+    pub policy_revision: i64,
     pub challenge_configs: Vec<DivisionChallengeConfigModel>,
 }
 
 /// RSCTF `DivisionChallengeConfig` (Api.ts) — a per-challenge permission override.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionChallengeConfigModel {
     pub challenge_id: i32,
     pub permissions: i32,
 }
 
-impl DivisionDetailModel {
-    /// Build the wire DTO for a division, loading its persisted challenge configs.
-    async fn from_model(st: &SharedState, d: division::Model) -> AppResult<Self> {
-        let challenge_configs = division_challenge_config::Entity::find()
-            .filter(division_challenge_config::Column::DivisionId.eq(d.id))
-            .order_by_asc(division_challenge_config::Column::ChallengeId)
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .map(|c| DivisionChallengeConfigModel {
-                challenge_id: c.challenge_id,
-                permissions: c.permissions,
-            })
-            .collect();
+#[derive(sqlx::FromRow)]
+struct DivisionDetailRow {
+    id: i32,
+    name: String,
+    invite_code: Option<String>,
+    default_permissions: i32,
+    revision: i64,
+    policy_revision: i64,
+    config_count: i64,
+    challenge_configs: JsonValue,
+}
+
+impl TryFrom<DivisionDetailRow> for DivisionDetailModel {
+    type Error = AppError;
+
+    fn try_from(row: DivisionDetailRow) -> AppResult<Self> {
+        if row.config_count as usize > MAX_DIVISION_CONFIGS {
+            return Err(AppError::payload_too_large(format!(
+                "A division exposes more than {MAX_DIVISION_CONFIGS} challenge overrides"
+            )));
+        }
         Ok(Self {
-            id: d.id,
-            name: d.name,
-            invite_code: d.invite_code,
-            default_permissions: d.default_permissions,
-            challenge_configs,
+            id: row.id,
+            name: row.name,
+            invite_code: row.invite_code,
+            default_permissions: row.default_permissions,
+            revision: row.revision,
+            policy_revision: row.policy_revision,
+            challenge_configs: serde_json::from_value(row.challenge_configs)
+                .map_err(|error| AppError::internal(error.to_string()))?,
         })
     }
+}
+
+const DIVISION_DETAIL_SQL: &str = r#"
+    SELECT division.id, division.name, division.invite_code,
+           division.default_permissions, division.revision,
+           division.policy_revision,
+           COUNT(config.challenge_id)::bigint AS config_count,
+           COALESCE(
+               jsonb_agg(jsonb_build_object(
+                   'challengeId', config.challenge_id,
+                   'permissions', config.permissions
+               ) ORDER BY config.challenge_id)
+                   FILTER (WHERE config.challenge_id IS NOT NULL),
+               '[]'::jsonb
+           ) AS challenge_configs
+      FROM "Divisions" division
+      LEFT JOIN LATERAL (
+          SELECT challenge_id, permissions
+            FROM "DivisionChallengeConfigs"
+           WHERE division_id = division.id
+           ORDER BY challenge_id
+           LIMIT 513
+      ) config ON TRUE
+     WHERE division.game_id = $1 AND ($2::integer IS NULL OR division.id = $2)
+     GROUP BY division.id
+     ORDER BY division.id
+     LIMIT $3
+"#;
+
+async fn load_division_details(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    division_id: Option<i32>,
+) -> AppResult<Vec<DivisionDetailModel>> {
+    let rows = sqlx::query_as::<_, DivisionDetailRow>(DIVISION_DETAIL_SQL)
+        .bind(game_id)
+        .bind(division_id)
+        .bind(if division_id.is_some() {
+            1
+        } else {
+            MAX_DIVISIONS + 1
+        })
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if division_id.is_none() && rows.len() as i64 > MAX_DIVISIONS {
+        return Err(AppError::payload_too_large(format!(
+            "An event may expose at most {MAX_DIVISIONS} divisions"
+        )));
+    }
+    rows.into_iter().map(TryInto::try_into).collect()
+}
+
+async fn load_division_detail_locked(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+    division_id: i32,
+) -> AppResult<DivisionDetailModel> {
+    let row = sqlx::query_as::<_, DivisionDetailRow>(DIVISION_DETAIL_SQL)
+        .bind(game_id)
+        .bind(Some(division_id))
+        .bind(1_i64)
+        .fetch_optional(connection)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::not_found("Division not found"))?;
+    row.try_into()
+}
+
+fn valid_permission_mask(value: i32) -> bool {
+    const KNOWN: i32 = GamePermission::JOIN_GAME
+        | GamePermission::RANK_OVERALL
+        | GamePermission::REQUIRE_REVIEW
+        | GamePermission::VIEW_CHALLENGE
+        | GamePermission::SUBMIT_FLAGS
+        | GamePermission::GET_SCORE
+        | GamePermission::GET_BLOOD
+        | GamePermission::AFFECT_DYNAMIC_SCORE;
+    value == GamePermission::ALL || (value >= 0 && value & !KNOWN == 0)
+}
+
+fn normalize_division_invite_code(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn validate_division_input(
+    name: Option<&str>,
+    invite_code: Option<&str>,
+    default_permissions: Option<i32>,
+    configs: Option<&[DivisionChallengeConfigInput]>,
+) -> AppResult<()> {
+    if name.is_some_and(|value| value.trim().is_empty() || value.len() > MAX_DIVISION_NAME_BYTES)
+        || invite_code.is_some_and(|value| value.len() > MAX_DIVISION_INVITE_BYTES)
+        || default_permissions.is_some_and(|value| !valid_permission_mask(value))
+    {
+        return Err(AppError::bad_request(
+            "Invalid division field or permission mask",
+        ));
+    }
+    let Some(configs) = configs else {
+        return Ok(());
+    };
+    if configs.len() > MAX_DIVISION_CONFIGS {
+        return Err(AppError::payload_too_large(format!(
+            "A division may override at most {MAX_DIVISION_CONFIGS} challenges"
+        )));
+    }
+    let mut ids = std::collections::HashSet::with_capacity(configs.len());
+    for config in configs {
+        if !ids.insert(config.challenge_id)
+            || !valid_permission_mask(config.permissions.unwrap_or(GamePermission::ALL))
+        {
+            return Err(AppError::bad_request(
+                "Division challenge overrides must be unique and use valid permission masks",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Apply a division's inbound `challengeConfigs`, mirroring RSCTF
@@ -53,8 +189,8 @@ impl DivisionDetailModel {
 /// - `Some([])` → remove every per-challenge config for the division;
 /// - `Some([...])` → delete the rows for challenges NOT in the set, then upsert
 ///   each provided `(challengeId, permissions)` (permissions default `All`).
-async fn validate_challenge_configs(
-    st: &SharedState,
+async fn validate_challenge_configs_locked(
+    connection: &mut sqlx::PgConnection,
     game_id: i32,
     configs: Option<&[DivisionChallengeConfigInput]>,
 ) -> AppResult<()> {
@@ -71,7 +207,7 @@ async fn validate_challenge_configs(
         )
         .bind(game_id)
         .bind(&ids)
-        .fetch_one(st.pg())
+        .fetch_one(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if valid != ids.len() as i64 {
@@ -114,19 +250,27 @@ async fn apply_challenge_configs(
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
 
-    // Upsert each provided (challenge, permissions) row.
-    for c in configs {
-        let permissions = c.permissions.unwrap_or(GamePermission::ALL);
+    if !configs.is_empty() {
+        let challenge_ids = configs
+            .iter()
+            .map(|config| config.challenge_id)
+            .collect::<Vec<_>>();
+        let permissions = configs
+            .iter()
+            .map(|config| config.permissions.unwrap_or(GamePermission::ALL))
+            .collect::<Vec<_>>();
         sqlx::query(
             r#"INSERT INTO "DivisionChallengeConfigs"
                  (division_id, challenge_id, permissions)
-               VALUES ($1, $2, $3)
+               SELECT $1, desired.challenge_id, desired.permissions
+                 FROM UNNEST($2::integer[], $3::integer[])
+                      AS desired(challenge_id, permissions)
                ON CONFLICT (division_id, challenge_id) DO UPDATE
                  SET permissions = EXCLUDED.permissions"#,
         )
         .bind(division_id)
-        .bind(c.challenge_id)
-        .bind(permissions)
+        .bind(&challenge_ids)
+        .bind(&permissions)
         .execute(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -170,10 +314,7 @@ fn ensure_scored_division_policy_unchanged(
     Ok(())
 }
 
-/// Lock and validate the scoring-affecting half of a division update while the
-/// caller owns the per-game engine fence. Round preparation takes the same
-/// distributed lock before publishing either official scoring boundary, so an
-/// update linearizes wholly before that boundary or observes it and is rejected.
+#[cfg(test)]
 async fn guard_division_policy_update(
     connection: &mut sqlx::PgConnection,
     game_id: i32,
@@ -182,25 +323,20 @@ async fn guard_division_policy_update(
     requested_challenge_configs: Option<&[DivisionChallengeConfigInput]>,
 ) -> AppResult<()> {
     let scoring_started = competition_scoring_started_locked(connection, game_id).await?;
-    let current_default_permissions: Option<i32> = sqlx::query_scalar(
+    let current_default_permissions: i32 = sqlx::query_scalar(
         r#"SELECT default_permissions FROM "Divisions"
-            WHERE id = $1 AND game_id = $2
-            FOR UPDATE"#,
+            WHERE id = $1 AND game_id = $2 FOR UPDATE"#,
     )
     .bind(division_id)
     .bind(game_id)
     .fetch_optional(&mut *connection)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let current_default_permissions =
-        current_default_permissions.ok_or_else(|| AppError::not_found("Division not found"))?;
-
-    let current_challenge_configs = if scoring_started && requested_challenge_configs.is_some() {
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Division not found"))?;
+    let current_configs = if requested_challenge_configs.is_some() {
         sqlx::query_as::<_, (i32, i32)>(
-            r#"SELECT challenge_id, permissions
-                 FROM "DivisionChallengeConfigs"
-                WHERE division_id = $1
-                ORDER BY challenge_id"#,
+            r#"SELECT challenge_id, permissions FROM "DivisionChallengeConfigs"
+                WHERE division_id = $1 ORDER BY challenge_id"#,
         )
         .bind(division_id)
         .fetch_all(&mut *connection)
@@ -214,7 +350,7 @@ async fn guard_division_policy_update(
     ensure_scored_division_policy_unchanged(
         scoring_started,
         current_default_permissions,
-        &current_challenge_configs,
+        &current_configs,
         requested_default_permissions,
         requested_challenge_configs,
     )
@@ -233,19 +369,6 @@ async fn invalidate_division_caches(
     ] {
         st.cache.remove(&key).await;
     }
-    let challenge_ids: Vec<i32> =
-        sqlx::query_scalar(r#"SELECT id FROM "GameChallenges" WHERE game_id = $1"#)
-            .bind(game_id)
-            .fetch_all(st.pg())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    for challenge_id in challenge_ids {
-        st.cache
-            .remove(&format!(
-                "effperm:v3:{game_id}:{division_id}:{challenge_id}"
-            ))
-            .await;
-    }
     flush_game_scoreboards(st, game_id).await;
     Ok(())
 }
@@ -258,16 +381,9 @@ pub async fn get_divisions(
 ) -> AppResult<RequestResponse<Vec<DivisionDetailModel>>> {
     manager_or_admin(&st, &user, id).await?;
     load_game(&st, id).await?;
-    let divisions = division::Entity::find()
-        .filter(division::Column::GameId.eq(id))
-        .order_by_asc(division::Column::Id)
-        .all(&st.db)
-        .await?;
-    let mut dtos = Vec::with_capacity(divisions.len());
-    for d in divisions {
-        dtos.push(DivisionDetailModel::from_model(&st, d).await?);
-    }
-    Ok(RequestResponse::ok(dtos))
+    Ok(RequestResponse::ok(
+        load_division_details(st.pg(), id, None).await?,
+    ))
 }
 
 /// `POST /api/edit/games/{id}/divisions`
@@ -279,7 +395,12 @@ pub async fn create_division(
 ) -> AppResult<RequestResponse<DivisionDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
     load_game(&st, id).await?;
-    validate_challenge_configs(&st, id, model.challenge_configs.as_deref()).await?;
+    validate_division_input(
+        Some(&model.name),
+        model.invite_code.as_deref(),
+        model.default_permissions,
+        model.challenge_configs.as_deref(),
+    )?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     require_game_mutable(control.transaction_mut(), id).await?;
     if competition_scoring_started_locked(control.transaction_mut(), id).await? {
@@ -287,13 +408,32 @@ pub async fn create_division(
             "Divisions cannot be added after competition scoring has started.",
         ));
     }
+    validate_challenge_configs_locked(
+        control.transaction_mut(),
+        id,
+        model.challenge_configs.as_deref(),
+    )
+    .await?;
+    let division_count = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*)::bigint FROM "Divisions" WHERE game_id = $1"#,
+    )
+    .bind(id)
+    .fetch_one(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if division_count >= MAX_DIVISIONS {
+        return Err(AppError::payload_too_large(format!(
+            "An event may contain at most {MAX_DIVISIONS} divisions"
+        )));
+    }
+    let normalized_invite_code = normalize_division_invite_code(model.invite_code.as_deref());
     let created_id: i32 = sqlx::query_scalar(
         r#"INSERT INTO "Divisions" (game_id, name, invite_code, default_permissions)
            VALUES ($1, $2, $3, $4) RETURNING id"#,
     )
     .bind(id)
-    .bind(&model.name)
-    .bind(&model.invite_code)
+    .bind(model.name.trim())
+    .bind(normalized_invite_code)
     .bind(model.default_permissions.unwrap_or(GamePermission::ALL))
     .fetch_one(&mut **control.transaction_mut())
     .await
@@ -308,14 +448,13 @@ pub async fn create_division(
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let created = division::Entity::find_by_id(created_id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::internal("Created division disappeared"))?;
     invalidate_division_caches(&st, id, created_id).await?;
-    Ok(RequestResponse::ok(
-        DivisionDetailModel::from_model(&st, created).await?,
-    ))
+    let created = load_division_details(st.pg(), id, Some(created_id))
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::internal("Created division disappeared"))?;
+    Ok(RequestResponse::ok(created))
 }
 
 /// `PUT /api/edit/games/{id}/divisions/{divisionId}`
@@ -326,54 +465,188 @@ pub async fn update_division(
     Json(model): Json<DivisionEditModel>,
 ) -> AppResult<RequestResponse<DivisionDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
-    validate_challenge_configs(&st, id, model.challenge_configs.as_deref()).await?;
-    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-    require_game_mutable(control.transaction_mut(), id).await?;
-    guard_division_policy_update(
-        control.transaction_mut(),
-        id,
-        division_id,
+    if model.operation_id.is_nil() || model.expected_revision < 1 {
+        return Err(AppError::bad_request(
+            "Division update requires an operation ID and observed revision",
+        ));
+    }
+    validate_division_input(
+        model.name.as_deref(),
+        model
+            .invite_code
+            .as_ref()
+            .and_then(|invite_code| invite_code.as_deref()),
         model.default_permissions,
         model.challenge_configs.as_deref(),
+    )?;
+    let request_digest = Sha256::digest(
+        serde_json::to_vec(&model).map_err(|error| AppError::internal(error.to_string()))?,
     )
-    .await?;
-    // This exclusive parent lock is the authorization linearization point.
-    // In-flight submissions hold FOR SHARE on the same row until commit.
-    let updated_id: Option<i32> = sqlx::query_scalar(
-        r#"UPDATE "Divisions" SET
-               name = COALESCE($3, name),
-               invite_code = COALESCE($4, invite_code),
-               default_permissions = COALESCE($5, default_permissions)
-             WHERE id = $1 AND game_id = $2
-         RETURNING id"#,
+    .to_vec();
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    let stored = sqlx::query_as::<_, (Uuid, Vec<u8>, JsonValue)>(
+        r#"SELECT actor_user_id, request_digest, result_snapshot
+             FROM "DivisionUpdateOperations"
+            WHERE division_id = $1 AND operation_id = $2"#,
     )
     .bind(division_id)
-    .bind(id)
-    .bind(&model.name)
-    .bind(&model.invite_code)
-    .bind(model.default_permissions)
+    .bind(model.operation_id)
     .fetch_optional(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let updated_id = updated_id.ok_or_else(|| AppError::not_found("Division not found"))?;
-    apply_challenge_configs(
+    if let Some((actor, digest, result_snapshot)) = stored {
+        if actor != user.id || digest != request_digest {
+            return Err(AppError::conflict(
+                "The operation ID is already bound to another division update",
+            ));
+        }
+        let detail: DivisionDetailModel = serde_json::from_value(result_snapshot)
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        control
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(RequestResponse::ok(detail));
+    }
+    require_game_mutable(control.transaction_mut(), id).await?;
+    validate_challenge_configs_locked(
         control.transaction_mut(),
-        updated_id,
-        model.challenge_configs,
+        id,
+        model.challenge_configs.as_deref(),
     )
     .await?;
+    let current = sqlx::query_as::<_, (String, Option<String>, i32, i64, i64)>(
+        r#"SELECT name, invite_code, default_permissions, revision, policy_revision
+             FROM "Divisions"
+            WHERE id = $1 AND game_id = $2 FOR UPDATE"#,
+    )
+    .bind(division_id)
+    .bind(id)
+    .fetch_optional(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Division not found"))?;
+    if model.expected_revision != current.3 {
+        return Err(AppError::conflict(format!(
+            "Division changed; current revision is {}",
+            current.3
+        )));
+    }
+    let current_configs = sqlx::query_as::<_, (i32, i32)>(
+        r#"SELECT challenge_id, permissions FROM "DivisionChallengeConfigs"
+            WHERE division_id = $1 ORDER BY challenge_id"#,
+    )
+    .bind(division_id)
+    .fetch_all(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
+    let requested_configs = model
+        .challenge_configs
+        .as_deref()
+        .map(normalized_challenge_configs);
+    let name_changed = model
+        .name
+        .as_deref()
+        .is_some_and(|value| value.trim() != current.0.as_str());
+    let requested_invite_code = model
+        .invite_code
+        .as_ref()
+        .map(|value| normalize_division_invite_code(value.as_deref()));
+    let invite_changed = requested_invite_code
+        .as_ref()
+        .is_some_and(|value| *value != current.1.as_deref());
+    let metadata_changed = name_changed || invite_changed;
+    let configs_changed = requested_configs
+        .as_ref()
+        .is_some_and(|configs| configs != &current_configs);
+    let policy_changed = model
+        .default_permissions
+        .is_some_and(|value| value != current.2)
+        || configs_changed;
+    let scoring_started = competition_scoring_started_locked(control.transaction_mut(), id).await?;
+    ensure_scored_division_policy_unchanged(
+        scoring_started,
+        current.2,
+        &current_configs,
+        model.default_permissions,
+        model.challenge_configs.as_deref(),
+    )?;
+    let result_revision = current.3 + i64::from(metadata_changed || policy_changed);
+    let policy_revision = current.4 + i64::from(policy_changed);
+    if metadata_changed || policy_changed {
+        sqlx::query(
+            r#"UPDATE "Divisions" SET
+                   name = COALESCE($3, name),
+                   invite_code = CASE WHEN $4 THEN $5 ELSE invite_code END,
+                   default_permissions = COALESCE($6, default_permissions),
+                   revision = $7, policy_revision = $8
+                 WHERE id = $1 AND game_id = $2"#,
+        )
+        .bind(division_id)
+        .bind(id)
+        .bind(model.name.as_deref().map(str::trim))
+        .bind(requested_invite_code.is_some())
+        .bind(requested_invite_code.flatten())
+        .bind(model.default_permissions)
+        .bind(result_revision)
+        .bind(policy_revision)
+        .execute(&mut **control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if configs_changed {
+            apply_challenge_configs(
+                control.transaction_mut(),
+                division_id,
+                model.challenge_configs,
+            )
+            .await?;
+        }
+    }
+    let result = load_division_detail_locked(control.transaction_mut(), id, division_id).await?;
+    let result_snapshot =
+        serde_json::to_value(&result).map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(
+        r#"INSERT INTO "DivisionUpdateOperations"
+             (division_id, operation_id, actor_user_id, request_digest,
+              expected_revision, result_revision, result_snapshot)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+    )
+    .bind(division_id)
+    .bind(model.operation_id)
+    .bind(user.id)
+    .bind(&request_digest)
+    .bind(model.expected_revision)
+    .bind(result_revision)
+    .bind(sqlx::types::Json(result_snapshot))
+    .execute(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(
+        r#"WITH expired AS (
+               SELECT division_id, operation_id
+                 FROM "DivisionUpdateOperations"
+                WHERE created_at_utc < clock_timestamp() - INTERVAL '30 days'
+                ORDER BY created_at_utc, division_id, operation_id
+                LIMIT 128
+           )
+           DELETE FROM "DivisionUpdateOperations" operation
+            USING expired
+            WHERE operation.division_id = expired.division_id
+              AND operation.operation_id = expired.operation_id"#,
+    )
+    .execute(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     control
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let updated = division::Entity::find_by_id(updated_id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::internal("Updated division disappeared"))?;
-    invalidate_division_caches(&st, id, updated_id).await?;
-    Ok(RequestResponse::ok(
-        DivisionDetailModel::from_model(&st, updated).await?,
-    ))
+    if policy_changed || name_changed {
+        invalidate_division_caches(&st, id, division_id).await?;
+    }
+    Ok(RequestResponse::ok(result))
 }
 
 /// `DELETE /api/edit/games/{id}/divisions/{divisionId}` — void.

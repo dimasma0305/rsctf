@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { GameColorMap, GameStatus, getGameStatusLabel } from '@Components/GameCard'
 import { useLanguage } from '@Utils/I18n'
-import { getGameStatus, toLimitTag } from '@Hooks/useGame'
+import { toLimitTag, useGameStatus } from '@Hooks/useGame'
 import { BasicGameInfoModel } from '@Api'
 import classes from '@Styles/RecentGame.module.css'
 
@@ -19,7 +19,7 @@ export const RecentGame: FC<RecentGameProps> = ({ game, ...others }) => {
   const { locale } = useLanguage()
   const theme = useMantineTheme()
   const { title, poster, limit } = game
-  const { startTime, endTime, status, progress } = getGameStatus(game)
+  const { startTime, endTime, status, progress } = useGameStatus(game)
   const color = GameColorMap.get(status)
   const referenceTime = status === GameStatus.Coming ? startTime : endTime
   const statusText = getGameStatusLabel(t, status)
@@ -67,9 +67,13 @@ export const RecentGame: FC<RecentGameProps> = ({ game, ...others }) => {
               ? t('game.content.starts_compact', 'Starts {{time}}', {
                   time: referenceTime.locale(locale).format('MMM D · LT'),
                 })
-              : t('game.content.ends_compact', 'Ends {{time}}', {
-                  time: referenceTime.locale(locale).format('MMM D · LT'),
-                })}
+              : t(
+                  status === GameStatus.Ended ? 'game.content.ended_compact' : 'game.content.ends_compact',
+                  status === GameStatus.Ended ? 'Ended {{time}}' : 'Ends {{time}}',
+                  {
+                    time: referenceTime.locale(locale).format('MMM D · LT'),
+                  }
+                )}
           </Text>
 
           {status === GameStatus.OnGoing && (

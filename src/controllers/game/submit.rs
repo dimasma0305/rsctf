@@ -7,6 +7,12 @@ mod observations;
 use observations::{
     load_first_positive_interactions, lock_game_timing_at_grade, lock_submit_scope_at_grade,
 };
+#[path = "submit_idempotency.rs"]
+mod idempotency;
+use idempotency::{
+    complete_attempt, find_completed_attempt, reserve_attempt, submission_request_fingerprint,
+    AttemptReservation,
+};
 #[path = "submit_review.rs"]
 mod review;
 pub use review::{review_challenge, status};
@@ -35,45 +41,6 @@ const FINALIZE_SUBMISSION_SQL: &str = r#"
        AND variant_mode = $11
 "#;
 
-async fn grade_variant_answer(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    game_id: i32,
-    challenge_id: i32,
-    participation_id: i32,
-    answer: &str,
-) -> AppResult<(AnswerResult, Option<i32>)> {
-    let variants = sqlx::query_as::<_, (i32, String)>(
-        r#"SELECT participation_id, manifest->>'flag'
-             FROM "ChallengeVariants"
-            WHERE game_id = $1 AND challenge_id = $2
-              AND frozen_at_utc IS NOT NULL
-            ORDER BY participation_id"#,
-    )
-    .bind(game_id)
-    .bind(challenge_id)
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if !variants
-        .iter()
-        .any(|(candidate, _)| *candidate == participation_id)
-    {
-        return Err(AppError::unavailable(
-            "This participation's deterministic challenge variant is not ready",
-        ));
-    }
-    for (owner, flag) in variants {
-        if ct_eq(&flag, answer) {
-            return if owner == participation_id {
-                Ok((AnswerResult::Accepted, None))
-            } else {
-                Ok((AnswerResult::CheatDetected, Some(owner)))
-            };
-        }
-    }
-    Ok((AnswerResult::WrongAnswer, None))
-}
-
 fn normal_flag_submit_type_allowed(
     challenge_type: i16,
     practice_mode: bool,
@@ -90,6 +57,36 @@ fn normal_flag_submit_type_allowed(
     let uses_live_engine = challenge_type == ChallengeType::AttackDefense as i16
         || challenge_type == ChallengeType::KingOfTheHill as i16;
     uses_live_engine && practice_mode && submit_time >= game_end
+}
+
+fn blood_recognition_eligible(
+    submit_time: DateTime<Utc>,
+    game_start: DateTime<Utc>,
+    game_end: DateTime<Utc>,
+    deadline: Option<DateTime<Utc>>,
+    permissions: GamePermission,
+) -> bool {
+    submit_time >= game_start
+        && submit_time < game_end
+        && deadline.is_none_or(|deadline| submit_time <= deadline)
+        && permissions.contains(GamePermission::GET_BLOOD)
+        && permissions.contains(GamePermission::GET_SCORE)
+}
+
+fn blood_notice_type(
+    claimed_first_solve: bool,
+    blood_eligible: bool,
+    prior: i64,
+) -> Option<NoticeType> {
+    if !claimed_first_solve || !blood_eligible {
+        return None;
+    }
+    match prior {
+        0 => Some(NoticeType::FirstBlood),
+        1 => Some(NoticeType::SecondBlood),
+        2 => Some(NoticeType::ThirdBlood),
+        _ => None,
+    }
 }
 
 /// Count prior first solves that are eligible to consume a blood slot. Called
@@ -258,11 +255,16 @@ pub async fn submit(
     axum::Json(model): axum::Json<FlagSubmitModel>,
 ) -> AppResult<RequestResponse<i32>> {
     let answer = model.flag.trim().to_string();
-    if answer.is_empty() {
-        return Err(AppError::bad_request("A flag is required"));
+    crate::utils::flag_policy::validate_normal(&answer)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    if model.attempt_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid submission attempt ID is required",
+        ));
     }
-    if answer.len() > MAX_FLAG_LENGTH {
-        return Err(AppError::bad_request("Flag is too long"));
+    let proof = model.proof.as_deref();
+    if proof.is_some_and(|proof| proof.len() > 4096) {
+        return Err(AppError::bad_request("Solve receipt is too large"));
     }
     let submit_remote_ip_hash = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()))
         .and_then(|ip| {
@@ -270,15 +272,76 @@ pub async fn submit(
                 .map(|identity| identity.exact)
         });
 
-    let ctx = context_info(&st, &user, id, true).await?;
+    // An exact committed replay is a read of the caller's own durable result,
+    // not a second submit. Resolve accepted membership without the end-time
+    // mutation gate so a response lost at the deadline remains recoverable.
+    let ctx = context_info(&st, &user, id, false).await?;
+    let request_fingerprint = submission_request_fingerprint(user.id, &answer, proof);
+    if ctx.archived {
+        if let Some(replay) = find_completed_attempt(
+            st.pg(),
+            ctx.participation.id,
+            challenge_id,
+            model.attempt_id,
+            &request_fingerprint,
+        )
+        .await?
+        {
+            tracing::debug!(
+                submission_id = replay.submission_id,
+                status = replay.status,
+                "recovered post-event idempotent flag submission"
+            );
+            return Ok(RequestResponse::ok(replay.submission_id));
+        }
+        return Err(AppError::game_ended());
+    }
 
-    let challenge = load_playable_challenge(&st, id, challenge_id).await?;
+    let challenge = match load_playable_challenge(&st, id, challenge_id).await {
+        Ok(challenge) => challenge,
+        Err(error @ AppError::NotFound(_)) => {
+            if let Some(replay) = find_completed_attempt(
+                st.pg(),
+                ctx.participation.id,
+                challenge_id,
+                model.attempt_id,
+                &request_fingerprint,
+            )
+            .await?
+            {
+                tracing::debug!(
+                    submission_id = replay.submission_id,
+                    status = replay.status,
+                    "recovered disabled-challenge idempotent flag submission"
+                );
+                return Ok(RequestResponse::ok(replay.submission_id));
+            }
+            return Err(error);
+        }
+        Err(error) => return Err(error),
+    };
 
     // Division may restrict viewing/submitting this challenge (RSCTF Submit gate).
     let perm = effective_permission(&st, &ctx.participation, challenge_id).await?;
     if !perm.contains(GamePermission::VIEW_CHALLENGE)
         || !perm.contains(GamePermission::SUBMIT_FLAGS)
     {
+        if let Some(replay) = find_completed_attempt(
+            st.pg(),
+            ctx.participation.id,
+            challenge_id,
+            model.attempt_id,
+            &request_fingerprint,
+        )
+        .await?
+        {
+            tracing::debug!(
+                submission_id = replay.submission_id,
+                status = replay.status,
+                "recovered permission-changed idempotent flag submission"
+            );
+            return Ok(RequestResponse::ok(replay.submission_id));
+        }
         return Err(AppError::Forbidden);
     }
 
@@ -315,6 +378,30 @@ pub async fn submit(
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+
+    match reserve_attempt(
+        &mut transaction,
+        ctx.participation.id,
+        challenge_id,
+        model.attempt_id,
+        &request_fingerprint,
+    )
+    .await?
+    {
+        AttemptReservation::Fresh => {}
+        AttemptReservation::Replay(replay) => {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            tracing::debug!(
+                submission_id = replay.submission_id,
+                status = replay.status,
+                "recovered concurrent idempotent flag submission"
+            );
+            return Ok(RequestResponse::ok(replay.submission_id));
+        }
+    }
 
     // Read the authoritative grading policy after the per-team lock. Deliberately
     // do not lock the challenge row here: the late conditional counter UPDATE is
@@ -432,7 +519,7 @@ pub async fn submit(
     let receipt = crate::services::event_security::validate_receipt_for_submission(
         &mut transaction,
         &st.config.event_vpn_credential_key,
-        model.proof.as_deref(),
+        proof,
         solve_receipt_mode,
         id,
         challenge_id,
@@ -466,6 +553,9 @@ pub async fn submit(
     crate::utils::scoring::lock_jeopardy_flags_shared(&mut transaction, challenge_id).await?;
     let is_static = challenge_type == ChallengeType::StaticAttachment as i16
         || challenge_type == ChallengeType::StaticContainer as i16;
+    if variant_mode == ChallengeVariantMode::Disabled as i16 {
+        super::submit_flag_policy::ensure_flag_contexts(&mut transaction, challenge_id).await?;
+    }
     let own_instance: Option<(Option<Uuid>, bool, DateTime<Utc>)> = sqlx::query_as(
         r#"SELECT container_id, is_loaded, last_container_operation
              FROM "GameInstances"
@@ -500,7 +590,7 @@ pub async fn submit(
         .await?;
     let (mut result, cheat_source_participation_id) =
         if variant_mode == ChallengeVariantMode::PerParticipation as i16 {
-            grade_variant_answer(
+            super::submit_flag_policy::grade_variant_answer(
                 &mut transaction,
                 id,
                 challenge_id,
@@ -598,6 +688,20 @@ pub async fn submit(
     .fetch_one(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let flag_event_id = crate::services::game_event_feed::insert_flag_submission_on(
+        &mut transaction,
+        id,
+        result,
+        &answer,
+        &challenge.title,
+        sub_id,
+        submit_time,
+        user.id,
+        ctx.participation.team_id,
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut committed_event_ids = vec![flag_event_id];
 
     if let Some(receipt) = receipt {
         crate::services::event_security::consume_receipt(&mut transaction, receipt, sub_id).await?;
@@ -634,20 +738,17 @@ pub async fn submit(
         .map_err(|error| AppError::internal(error.to_string()))?;
 
         let values = serde_json::json!([challenge.title, team_name, source_team_name,]);
-        sqlx::query(
-            r#"INSERT INTO "GameEvents"
-                 (game_id, "Type", "values", publish_time_utc, user_id, team_id)
-               VALUES ($1, $2, $3, $4, $5, $6)"#,
+        let cheat_event_id = crate::services::game_event_feed::insert_cheat_detected_on(
+            &mut transaction,
+            id,
+            &values,
+            submit_time,
+            user.id,
+            ctx.participation.team_id,
         )
-        .bind(id)
-        .bind(crate::utils::enums::EventType::CheatDetected as i16)
-        .bind(sqlx::types::Json(&values))
-        .bind(submit_time)
-        .bind(user.id)
-        .bind(ctx.participation.team_id)
-        .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+        committed_event_ids.push(cheat_event_id);
     }
 
     // The submission and its replay intent are one commit. Control may crash at
@@ -683,12 +784,16 @@ pub async fn submit(
         .map_err(|error| AppError::internal(error.to_string()))?;
 
         if !already_solved {
-            let blood_eligible = submit_time >= game_start
-                && submit_time < game_end
-                && current_deadline.is_none_or(|deadline| submit_time <= deadline)
-                && !disable_blood_bonus
-                && live_permissions.contains(GamePermission::GET_BLOOD)
-                && live_permissions.contains(GamePermission::GET_SCORE);
+            // `disable_blood_bonus` controls score multiplication only. Blood
+            // recognition, in-platform notices, and Discord announcements stay
+            // available when organizers choose a zero-bonus competition.
+            let blood_eligible = blood_recognition_eligible(
+                submit_time,
+                game_start,
+                game_end,
+                current_deadline,
+                live_permissions,
+            );
 
             // Serialize only the rare first-three eligible solves globally for this
             // challenge. The per-team lock is always acquired first, so lock order is
@@ -731,17 +836,16 @@ pub async fn submit(
                 claim_first_solve(&mut transaction, ctx.participation.id, challenge_id, sub_id)
                     .await?;
 
-            let notice_type = if claimed_first_solve && blood_eligible {
-                match prior {
-                    0 => Some(NoticeType::FirstBlood),
-                    1 => Some(NoticeType::SecondBlood),
-                    2 => Some(NoticeType::ThirdBlood),
-                    _ => None,
-                }
-            } else {
-                None
-            };
+            let notice_type = blood_notice_type(claimed_first_solve, blood_eligible, prior);
             if let Some(notice_type) = notice_type {
+                // Allocate the canonical notice id only after the per-game lock.
+                // Otherwise a higher id from another challenge can commit and be
+                // delivered while its lower-id predecessor remains invisible.
+                crate::services::discord_webhook::lock_game_blood_notice_order(
+                    &mut transaction,
+                    id,
+                )
+                .await?;
                 let values = serde_json::json!([team_name, challenge.title]);
                 let publish_time = Utc::now();
                 let notice_id: i32 = sqlx::query_scalar(
@@ -757,6 +861,13 @@ pub async fn submit(
                 .fetch_one(&mut *transaction)
                 .await
                 .map_err(|error| AppError::internal(error.to_string()))?;
+                crate::services::discord_webhook::enqueue_blood_notice(
+                    &mut transaction,
+                    notice_id,
+                    id,
+                    publish_time,
+                )
+                .await?;
                 notice_to_broadcast = Some((notice_type, notice_id, values, publish_time));
             }
         }
@@ -790,27 +901,33 @@ pub async fn submit(
         ));
     }
 
+    complete_attempt(
+        &mut transaction,
+        ctx.participation.id,
+        challenge_id,
+        model.attempt_id,
+        &request_fingerprint,
+        sub_id,
+    )
+    .await?;
+
     transaction
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    crate::services::feed_publication::enqueue_submission(&st, id, sub_id, committed_event_ids);
 
-    st.publish_event(
-        "ReceivedSubmissions",
-        Some(id),
-        serde_json::json!({
-            "answer": answer,
-            "status": result,
-            "time": submit_time,
-            "user": user.name,
-            "team": team_name,
-            "challenge": challenge.title,
-        })
-        .to_string(),
-    );
+    let broadcast_now = Utc::now();
+    let refresh_is_safe =
+        super::scoreboard_refresh_is_publicly_safe(freeze_time, game_end, broadcast_now);
+    if claimed_first_solve {
+        super::invalidate_standard_scoreboard(&st, id).await;
+        if refresh_is_safe {
+            super::publish_scoreboard_changed(&st, id, "jeopardy");
+        }
+    }
 
     if let Some((notice_type, notice_id, values, publish_time)) = notice_to_broadcast {
-        let broadcast_now = Utc::now();
         let in_freeze =
             freeze_time.is_some_and(|freeze| broadcast_now >= freeze && broadcast_now < game_end);
         if !in_freeze {
@@ -832,99 +949,4 @@ pub async fn submit(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        normal_flag_submit_type_allowed, ChallengeType, FINALIZE_SUBMISSION_SQL,
-        LOAD_GRADING_POLICY_SQL,
-    };
-    use chrono::{Duration, Utc};
-
-    #[test]
-    fn challenge_policy_read_does_not_hold_the_hot_row() {
-        assert!(
-            !LOAD_GRADING_POLICY_SQL.contains("FOR UPDATE"),
-            "authoritative policy reads must rely on the late optimistic fence"
-        );
-    }
-
-    #[test]
-    fn finalization_fences_every_authoritative_challenge_input() {
-        for predicate in [
-            "AND game_id = $3",
-            "AND is_enabled",
-            "AND review_status = $4",
-            "AND submission_limit = $5",
-            "AND deadline_utc IS NOT DISTINCT FROM $6",
-            "AND disable_blood_bonus = $7",
-            "AND \"Type\" = $8",
-        ] {
-            assert!(
-                FINALIZE_SUBMISSION_SQL.contains(predicate),
-                "missing optimistic grading fence predicate: {predicate}"
-            );
-        }
-    }
-
-    #[test]
-    fn live_engine_types_cannot_enter_jeopardy_scoring() {
-        let end = Utc::now() + Duration::hours(1);
-        let live = end - Duration::minutes(30);
-        for challenge_type in [
-            ChallengeType::StaticAttachment,
-            ChallengeType::StaticContainer,
-            ChallengeType::DynamicAttachment,
-            ChallengeType::DynamicContainer,
-        ] {
-            assert!(normal_flag_submit_type_allowed(
-                challenge_type as i16,
-                false,
-                live,
-                end
-            ));
-        }
-        for challenge_type in [ChallengeType::AttackDefense, ChallengeType::KingOfTheHill] {
-            assert!(!normal_flag_submit_type_allowed(
-                challenge_type as i16,
-                false,
-                live,
-                end
-            ));
-            assert!(!normal_flag_submit_type_allowed(
-                challenge_type as i16,
-                true,
-                live,
-                end
-            ));
-        }
-    }
-
-    #[test]
-    fn post_game_practice_keeps_the_normal_container_fallback() {
-        let end = Utc::now();
-        let after_end = end + Duration::seconds(1);
-        for challenge_type in [ChallengeType::AttackDefense, ChallengeType::KingOfTheHill] {
-            assert!(!normal_flag_submit_type_allowed(
-                challenge_type as i16,
-                false,
-                after_end,
-                end
-            ));
-            assert!(normal_flag_submit_type_allowed(
-                challenge_type as i16,
-                true,
-                after_end,
-                end
-            ));
-        }
-        assert!(!normal_flag_submit_type_allowed(
-            i16::MAX,
-            true,
-            after_end,
-            end
-        ));
-    }
-}
-
-#[cfg(test)]
-#[path = "submit_evidence_tests.rs"]
-mod evidence_tests;
+mod tests;

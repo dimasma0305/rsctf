@@ -5,6 +5,7 @@ import { check, sleep } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import { validKothEventScoreBasis } from '../koth-score-basis.js';
+import { submitAttemptId } from '../submit-attempt-id.js';
 import {
   attackPlan,
   boundedPlatformRetryDelay,
@@ -786,7 +787,7 @@ function validKothScoreboard(model) {
       team.settledTotal >= 0 &&
       Number.isFinite(team.projectedTotal) &&
       team.projectedTotal >= 0 &&
-      validKothEventScoreBasis(team) &&
+      validKothEventScoreBasis(team, model.hills) &&
       boundedRate(team.acquisitionRate) &&
       boundedRate(team.controlRate) &&
       boundedRate(team.reliabilityRate) &&
@@ -1136,7 +1137,12 @@ function attemptJeopardySolve(progress, currentRound) {
       : `flag{ordinary_wrong_${CONFIG.teamIndex}_${challenge.challengeId}_${previous.attempts}}`;
   const response = http.post(
     `${CONFIG.target}/api/game/${CONFIG.jeoGame}/challenges/${challenge.challengeId}`,
-    JSON.stringify({ flag: submitFlag }),
+    JSON.stringify({
+      flag: submitFlag,
+      attemptId: submitAttemptId(
+        `team-event:${CONFIG.teamIndex}:${challenge.challengeId}:${previous.attempts}:${currentRound}:${submitFlag}`
+      ),
+    }),
     {
       ...authParams(CONFIG.jeoJwt, 'jeopardy_submit'),
       headers: {

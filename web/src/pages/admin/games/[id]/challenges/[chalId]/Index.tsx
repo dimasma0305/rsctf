@@ -45,6 +45,9 @@ import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithChallengeEdit } from '@Components/admin/WithChallengeEdit'
 import { ScoreFunc } from '@Components/charts/ScoreFunc'
+import { challengeRevision, ChallengeMutationOperation, prepareChallengeMutation } from '@Utils/ChallengeMutation'
+import { controlJobResultCount, createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
+import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { getInputNumber, NetworkModeItem, NetworkModeList, showErrorMsg, useNetworkModeMap } from '@Utils/Shared'
 import {
   ChallengeCategoryItem,
@@ -54,8 +57,9 @@ import {
   ChallengeCategoryList,
 } from '@Utils/Shared'
 import { createDefaultJeopardyWorkloadSpec, formatWorkloadSpec, parseJeopardyWorkloadSpec } from '@Utils/WorkloadSpec'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import { useEditChallenge, useEditChallenges } from '@Hooks/useEdit'
-import { useAdminGame } from '@Hooks/useGame'
+import { useAdminGame, useGameStatus } from '@Hooks/useGame'
 import api, {
   ChallengeBuildStatus,
   ChallengeCategory,
@@ -133,6 +137,7 @@ const GameChallengeEdit: FC = () => {
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
 
   const { game } = useAdminGame(numId)
+  const { started: eventSecurityFrozen } = useGameStatus(game)
   const { challenge, mutate } = useEditChallenge(numId, numCId)
   const { challenges, mutate: mutateChals } = useEditChallenges(numId)
 
@@ -142,6 +147,11 @@ const GameChallengeEdit: FC = () => {
   )
 
   const [disabled, setDisabled] = useState(false)
+  const [releasingHint, setReleasingHint] = useState(false)
+  const [unreleasingHint, setUnreleasingHint] = useState(false)
+  const hintPublicationInFlight = useRef(false)
+  const rolloutPromiseRef = useRef<Promise<void> | null>(null)
+  const rolloutAbortRef = useRef<AbortController | null>(null)
 
   const [minRate, setMinRate] = useState((challenge?.minScoreRate ?? DEFAULT_JEOPARDY_MIN_SCORE_RATE) * 100)
   const [category, setCategory] = useState<string | null>(challenge?.category ?? ChallengeCategory.Misc)
@@ -154,7 +164,6 @@ const GameChallengeEdit: FC = () => {
   const isContainerType = isAdEngine || isJeopardyContainer
   const isKoth = type === ChallengeType.KingOfTheHill
   const adScoringStarted = type === ChallengeType.AttackDefense && game?.adScoringStartRound != null
-  const eventSecurityFrozen = !!game?.start && dayjs().isAfter(dayjs(game.start))
   const [workloadEditorEnabled, setWorkloadEditorEnabled] = useState(challenge?.workloadSpec != null)
   const [workloadJson, setWorkloadJson] = useState(
     challenge?.workloadSpec ? formatWorkloadSpec(challenge.workloadSpec) : ''
@@ -163,6 +172,8 @@ const GameChallengeEdit: FC = () => {
   const [rollingWorkload, setRollingWorkload] = useState(false)
   const workloadToggleRef = useRef<HTMLInputElement>(null)
   const workloadInputRef = useRef<HTMLTextAreaElement>(null)
+  const updateOperation = useRef<ChallengeMutationOperation | null>(null)
+  const updateRequestOwner = useRef(new RetryableMutationOwner())
   const [currentAcceptCount, setCurrentAcceptCount] = useState(0)
   const [previewOpened, setPreviewOpened] = useState(false)
   const [execOpened, setExecOpened] = useState(false)
@@ -173,6 +184,13 @@ const GameChallengeEdit: FC = () => {
   const networkModeLabelMap = useNetworkModeMap()
 
   const { t } = useTranslation()
+
+  useEffect(() => {
+    updateRequestOwner.current.cancel()
+    updateOperation.current = null
+    setDisabled(false)
+    return () => updateRequestOwner.current.cancel()
+  }, [id, chalId])
 
   // Unsaved-changes guard. A stable serialization of the editable state is captured as
   // the "saved" baseline whenever the challenge (re)loads — including right after a save,
@@ -303,14 +321,28 @@ const GameChallengeEdit: FC = () => {
       }
     }
 
-    setDisabled(true)
-
-    try {
-      const res = await api.edit.editUpdateGameChallenge(numId, numCId, {
+    const expectedRevision = challengeRevision(challenge)
+    if (expectedRevision === undefined) return null
+    const prepared = prepareChallengeMutation(
+      {
         ...update,
         deadlineUtc: deadline ? deadline.valueOf() : 0,
         isEnabled: undefined,
+      },
+      expectedRevision,
+      updateOperation.current
+    )
+    const lease = updateRequestOwner.current.claim(prepared.operation.digest, prepared.operation.id)
+    if (!lease) return null
+    updateOperation.current = prepared.operation
+    setDisabled(true)
+
+    try {
+      const res = await api.edit.editUpdateGameChallenge(numId, numCId, prepared.payload, {
+        signal: lease.signal,
       })
+      if (!updateRequestOwner.current.settle(lease, true)) return null
+      updateOperation.current = null
       if (!noFeedback) {
         showNotification({
           color: 'teal',
@@ -318,21 +350,79 @@ const GameChallengeEdit: FC = () => {
           icon: <Icon path={mdiCheck} size={1} />,
         })
       }
-      mutate(res.data)
-      mutateChals()
+      await Promise.all([mutate(res.data), mutateChals()])
+      if (!noFeedback) setDisabled(false)
       return res.data
     } catch (e) {
+      if (!updateRequestOwner.current.settle(lease, false)) return null
       showErrorMsg(e, t)
-      if (noFeedback) setDisabled(false)
+      setDisabled(false)
       return null
+    }
+  }
+
+  const onReleaseHint = async (index: number) => {
+    if (!challenge || dirty || hintPublicationInFlight.current || index !== challenge.releasedHintCount) return
+    const expectedRevision = challengeRevision(challenge)
+    if (expectedRevision === undefined) return
+    hintPublicationInFlight.current = true
+    setReleasingHint(true)
+    try {
+      const res = await api.edit.editReleaseNextChallengeHint(numId, numCId, {
+        operationId: createOperationId(),
+        expectedRevision,
+      })
+      showNotification({
+        color: 'teal',
+        message: t('admin.notification.games.challenges.hint_released', 'Hint released to players.'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+      await Promise.all([mutate(res.data), mutateChals()])
+    } catch (e) {
+      showErrorMsg(e, t)
+      await mutate().catch(() => undefined)
     } finally {
-      if (!noFeedback) {
-        setDisabled(false)
-      }
+      hintPublicationInFlight.current = false
+      setReleasingHint(false)
+    }
+  }
+
+  const onUnreleaseHint = async (index: number) => {
+    if (
+      !challenge ||
+      dirty ||
+      hintPublicationInFlight.current ||
+      challenge.releasedHintCount <= 0 ||
+      index !== challenge.releasedHintCount - 1
+    )
+      return
+    const expectedRevision = challengeRevision(challenge)
+    if (expectedRevision === undefined) return
+    hintPublicationInFlight.current = true
+    setUnreleasingHint(true)
+    try {
+      const res = await api.edit.editUnreleaseLastChallengeHint(numId, numCId, {
+        operationId: createOperationId(),
+        expectedRevision,
+      })
+      showNotification({
+        color: 'teal',
+        message: t('admin.notification.games.challenges.hint_unreleased', 'Hint returned to draft.'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+      await Promise.all([mutate(res.data), mutateChals()])
+    } catch (e) {
+      showErrorMsg(e, t)
+      await mutate().catch(() => undefined)
+    } finally {
+      hintPublicationInFlight.current = false
+      setUnreleasingHint(false)
     }
   }
 
   const [building, setBuilding] = useState(false)
+  const buildFlight = useRef<Promise<void> | null>(null)
+  const buildAbort = useRef(new AbortController())
   const inFlightBuild = challenge?.buildStatus === 'Queued' || challenge?.buildStatus === 'Building'
   const isBuildable =
     (challenge?.type === 'StaticContainer' ||
@@ -341,33 +431,74 @@ const GameChallengeEdit: FC = () => {
       challenge?.type === 'KingOfTheHill') &&
     challenge?.buildStatus !== 'NotApplicable'
 
-  // While a build is in flight, the worker streams the docker output
-  // to Challenge.LastBuildLog every ~2s. Re-fetch on the same cadence
-  // so the inline log section below updates live.
-  useEffect(() => {
-    if (!inFlightBuild) return
-    const timer = window.setInterval(() => {
-      mutate()
-    }, 2000)
-    return () => window.clearInterval(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inFlightBuild])
+  const buildStatusQuery = api.edit.useEditGetChallengeBuildStatus(
+    numId,
+    numCId,
+    CompletionPollSWRConfig,
+    inFlightBuild
+  )
+  useCompletionPolling({
+    key: inFlightBuild ? `/api/edit/games/${numId}/challenges/${numCId}/buildstatus` : '',
+    phase: `challenge:${numId}:${numCId}`,
+    enabled: inFlightBuild,
+    data: buildStatusQuery.data,
+    error: buildStatusQuery.error,
+    isValidating: buildStatusQuery.isValidating,
+    mutate: buildStatusQuery.mutate,
+    successDelay: () => 2_000,
+  })
 
-  const onBuildNow = async () => {
-    setBuilding(true)
-    try {
-      await api.edit.editRebuildChallengeImage(numId, numCId)
-      showNotification({
-        color: 'teal',
-        message: t('admin.notification.builds.enqueued'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      mutate()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBuilding(false)
-    }
+  useEffect(() => {
+    const status = buildStatusQuery.data
+    if (!status) return
+    void mutate(
+      (current) =>
+        current ? { ...current, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog ?? null } : current,
+      { revalidate: false }
+    )
+    void mutateChals(
+      (current) =>
+        current?.map((item) =>
+          item.id === numCId
+            ? { ...item, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog ?? null }
+            : item
+        ),
+      { revalidate: false }
+    )
+  }, [buildStatusQuery.data, mutate, mutateChals, numCId])
+
+  useEffect(() => () => buildAbort.current.abort(), [])
+
+  const onBuildNow = () => {
+    if (buildFlight.current) return buildFlight.current
+    const operationId = createOperationId()
+    const task = (async () => {
+      setBuilding(true)
+      try {
+        const job = await startControlJob(
+          operationId,
+          () =>
+            api.edit.editRebuildChallengeImage(numId, numCId, operationId, {
+              signal: buildAbort.current.signal,
+            }),
+          buildAbort.current.signal
+        )
+        showNotification({
+          color: 'teal',
+          message: t('admin.notification.builds.enqueued'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        await waitForControlJob(job, buildAbort.current.signal)
+        await Promise.all([mutate(), mutateChals(), buildStatusQuery.mutate()])
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      } finally {
+        setBuilding(false)
+        buildFlight.current = null
+      }
+    })()
+    buildFlight.current = task
+    return task
   }
 
   const onConfirmDelete = async () => {
@@ -452,37 +583,66 @@ const GameChallengeEdit: FC = () => {
     }
   }
 
+  useEffect(() => () => rolloutAbortRef.current?.abort(), [])
+
   const onRolloutWorkloads = async () => {
     if (rolloutBlockedByStatefulService) return
+    if (rolloutPromiseRef.current) return rolloutPromiseRef.current
+    const operationId = createOperationId()
+    const controller = new AbortController()
+    rolloutAbortRef.current?.abort()
+    rolloutAbortRef.current = controller
     setRollingWorkload(true)
-    const saved = await onUpdate(
-      {
-        ...challengeInfo,
-        category: category as ChallengeCategory,
-        minScoreRate: minRate / 100,
-      },
-      true
-    )
-    if (!saved) {
-      setRollingWorkload(false)
-      return
-    }
-
+    const request = (async () => {
+      const saved = await onUpdate(
+        {
+          ...challengeInfo,
+          category: category as ChallengeCategory,
+          minScoreRate: minRate / 100,
+        },
+        true
+      )
+      if (!saved) return
+      try {
+        let job
+        try {
+          job = (
+            await api.edit.editRolloutChallengeWorkloads(numId, numCId, operationId, {
+              headers: { 'X-RSCTF-Expected-Workload': saved.workloadIdentity ?? '' },
+              signal: controller.signal,
+            })
+          ).data
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          job = (await api.eventSecurity.getControlJobByOperation(operationId, { signal: controller.signal })).data
+        }
+        const completed = await waitForControlJob(job, controller.signal)
+        const result = {
+          matched: controlJobResultCount(completed, 'matched'),
+          updated: controlJobResultCount(completed, 'updated'),
+          alreadyCurrent: controlJobResultCount(completed, 'alreadyCurrent'),
+          stale: controlJobResultCount(completed, 'stale'),
+          incompatible: controlJobResultCount(completed, 'incompatible'),
+          insufficientCapacity: controlJobResultCount(completed, 'insufficientCapacity'),
+          failed: controlJobResultCount(completed, 'failed'),
+        }
+        const incomplete = result.stale + result.incompatible + result.insufficientCapacity + result.failed
+        showNotification({
+          color: incomplete === 0 ? 'teal' : 'orange',
+          message: t('admin.content.games.challenges.workload_spec.rollout_result', { ...result }),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        mutate()
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      }
+    })()
+    rolloutPromiseRef.current = request
     try {
-      const response = await api.edit.editRolloutChallengeWorkloads(numId, numCId, {
-        headers: { 'X-RSCTF-Expected-Workload': saved.workloadIdentity ?? '' },
-      })
-      const result = response.data
-      const incomplete = result.stale + result.incompatible + result.insufficientCapacity + result.failed
-      showNotification({
-        color: incomplete === 0 ? 'teal' : 'orange',
-        message: t('admin.content.games.challenges.workload_spec.rollout_result', { ...result }),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      mutate()
-    } catch (e) {
-      showErrorMsg(e, t)
+      await request
     } finally {
+      if (rolloutPromiseRef.current === request) rolloutPromiseRef.current = null
+      if (rolloutAbortRef.current === controller) rolloutAbortRef.current = null
       setRollingWorkload(false)
       setDisabled(false)
     }
@@ -524,7 +684,7 @@ const GameChallengeEdit: FC = () => {
       backUrl={`/admin/games/${id}/challenges`}
       head={
         <>
-          <Title order={2} lineClamp={1} className={misc.wordBreakAll}>
+          <Title order={2} className={misc.wordBreakAll}>
             # {challengeInfo?.title}
           </Title>
           <Group wrap="wrap" justify="right" w={{ base: '100%', lg: 'auto' }}>
@@ -534,6 +694,7 @@ const GameChallengeEdit: FC = () => {
               color="red"
               leftSection={<Icon path={mdiDeleteOutline} size={1} />}
               variant="outline"
+              style={{ color: 'light-dark(var(--mantine-color-red-8), var(--mantine-color-red-3))' }}
               onClick={() =>
                 modals.openConfirmModal({
                   title: t('admin.button.challenges.delete'),
@@ -719,8 +880,18 @@ const GameChallengeEdit: FC = () => {
                   </Group>
                 }
                 hints={challengeInfo?.hints ?? []}
-                disabled={disabled}
-                height={180}
+                disabled={disabled || releasingHint || unreleasingHint}
+                description={t(
+                  'admin.content.games.challenges.hints_release_description',
+                  'Release hints in order, or return the latest released hint to draft.'
+                )}
+                height={240}
+                releasedHintCount={challenge?.releasedHintCount ?? 0}
+                releaseDisabled={dirty}
+                releasingHint={releasingHint}
+                unreleasingHint={unreleasingHint}
+                onReleaseHint={onReleaseHint}
+                onUnreleaseHint={onUnreleaseHint}
                 onChangeHint={(hints) => setChallengeInfo({ ...challengeInfo, hints })}
               />
             </Stack>
@@ -1014,6 +1185,7 @@ const GameChallengeEdit: FC = () => {
                 disabled={disabled}
                 context={{
                   closeTime: challenge?.testContainer?.expectStopAt,
+                  instanceId: challenge?.testContainer?.id,
                   instanceEntry: challenge?.testContainer?.entry,
                 }}
               />
@@ -1390,6 +1562,7 @@ const GameChallengeEdit: FC = () => {
         }}
         context={{
           closeTime: challenge?.testContainer?.expectStopAt ?? null,
+          instanceId: challenge?.testContainer?.id ?? null,
           instanceEntry: challenge?.testContainer?.entry ?? null,
           url:
             challenge?.attachment?.url ??

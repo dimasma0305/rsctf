@@ -23,16 +23,24 @@ import {
   mdiWeatherSunny,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, Fragment, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useLocation } from 'react-router'
 import { LogoHeader } from '@Components/LogoHeader'
 import { AppControlProps } from '@Components/WithNavbar'
-import { PRIMARY_NAVIGATION, canAccessNavigationItem, isNavigationItemActive } from '@Components/navigation'
+import { WsrxManager } from '@Components/WsrxManager'
+import {
+  PRIMARY_NAVIGATION,
+  canAccessNavigationItem,
+  getWorkspaceNavigation,
+  isNavigationItemActive,
+  navigationGroup,
+} from '@Components/navigation'
 import { clearLocalCache } from '@Utils/Cache'
 import { LanguageMap, SupportedLanguages, useLanguage } from '@Utils/I18n'
 import { useConfig } from '@Hooks/useConfig'
 import { useLogOut, useUser } from '@Hooks/useUser'
+import { ContainerPortMappingType } from '@Api'
 import classes from '@Styles/AppHeader.module.css'
 
 export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
@@ -47,12 +55,20 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
   const loggedIn = Boolean(user && !error)
 
   const close = () => setOpened(false)
-  const navItems = PRIMARY_NAVIGATION.filter((item) => canAccessNavigationItem(item, user, config.donationsEnabled))
-  const dockItems = navItems.filter((item) => !item.admin).slice(0, 4)
+  const navItems = getWorkspaceNavigation(location.pathname, user, config.donationsEnabled)
+  const adminWorkspace =
+    location.pathname.startsWith('/admin/') && navItems.some((item) => item.link.startsWith('/admin/'))
+  const dockItems = adminWorkspace
+    ? navItems.filter((item) =>
+        ['/admin/dashboard', '/admin/games', '/admin/users', '/admin/builds'].includes(item.link)
+      )
+    : PRIMARY_NAVIGATION.filter((item) => !item.admin && canAccessNavigationItem(item, user, config.donationsEnabled))
+        .filter((item) => ['/games', '/challenges', '/teams', '/'].includes(item.link))
+        .slice(0, 4)
 
   return (
     <>
-      <AppShell.Header className={classes.header}>
+      <AppShell.Header className={classes.header} data-guide-boundary="top-shell">
         <Group h="100%" px="md" justify="space-between" wrap="nowrap">
           <Link to="/" className={classes.brandLink}>
             <LogoHeader />
@@ -84,150 +100,181 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
         </Group>
       </AppShell.Header>
 
-      <Drawer
+      <Drawer.Root
         opened={opened}
         onClose={close}
         position="right"
         size="min(92vw, 360px)"
-        title={t('common.tab.navigation', 'Navigation')}
-        closeButtonProps={{ 'aria-label': t('common.button.close', 'Close menu') }}
         classNames={{ body: classes.drawerBody, header: classes.drawerHeader }}
       >
-        <Stack gap="lg">
-          <nav aria-label={t('common.tab.navigation', 'Primary navigation')}>
-            <Stack gap={4}>
-              {navItems.map((item) => (
-                <UnstyledButton
-                  key={item.label}
-                  component={Link}
-                  to={item.link}
-                  onClick={close}
-                  aria-current={isNavigationItemActive(item, location.pathname) ? 'page' : undefined}
-                  data-active={isNavigationItemActive(item, location.pathname) || undefined}
-                  data-guide={
-                    item.link === '/games'
-                      ? 'games-navigation'
-                      : item.link === '/challenges'
-                        ? 'challenge-navigation'
-                        : item.link === '/teams'
-                          ? 'team-navigation'
-                          : item.link === '/guide'
-                            ? 'guide-navigation'
-                            : undefined
-                  }
-                  className={classes.navLink}
-                >
-                  <span className={classes.navIcon} aria-hidden="true">
-                    <Icon path={item.icon} size={0.95} />
-                  </span>
-                  <Text component="span" fw={650}>
-                    {t(item.label)}
-                  </Text>
-                </UnstyledButton>
-              ))}
-            </Stack>
-          </nav>
+        <Drawer.Overlay />
+        <Drawer.Content>
+          <Drawer.Header role="presentation">
+            <Drawer.Title>{t('common.tab.navigation', 'Navigation')}</Drawer.Title>
+            <Drawer.CloseButton aria-label={t('common.button.close', 'Close menu')} />
+          </Drawer.Header>
+          <Drawer.Body>
+            <Stack gap="lg">
+              <nav aria-label={t('common.tab.navigation', 'Primary navigation')}>
+                <Stack gap={4}>
+                  {location.pathname.startsWith('/admin/') && (
+                    <UnstyledButton component={Link} to="/games" onClick={close} className={classes.navLink}>
+                      {t('common.workspace.back_to_player', 'Back to player workspace')}
+                    </UnstyledButton>
+                  )}
+                  {navItems.map((item, index) => (
+                    <Fragment key={item.link}>
+                      {(index === 0 || navigationGroup(item) !== navigationGroup(navItems[index - 1])) && (
+                        <Text size="xs" fw={650} c="dimmed" mt="md" px="sm">
+                          {t(`common.workspace.groups.${navigationGroup(item)}`, navigationGroup(item))}
+                        </Text>
+                      )}
+                      <UnstyledButton
+                        key={item.label}
+                        component={Link}
+                        to={item.link}
+                        onClick={close}
+                        aria-current={isNavigationItemActive(item, location.pathname) ? 'page' : undefined}
+                        data-active={isNavigationItemActive(item, location.pathname) || undefined}
+                        data-guide={
+                          item.link === '/games'
+                            ? 'games-navigation'
+                            : item.link === '/challenges'
+                              ? 'challenge-navigation'
+                              : item.link === '/teams'
+                                ? 'team-navigation'
+                                : item.link === '/guide'
+                                  ? 'guide-navigation'
+                                  : undefined
+                        }
+                        className={classes.navLink}
+                      >
+                        <span className={classes.navIcon} aria-hidden="true">
+                          <Icon path={item.icon} size={0.95} />
+                        </span>
+                        <Text component="span" fw={650}>
+                          {t(item.label)}
+                        </Text>
+                      </UnstyledButton>
+                    </Fragment>
+                  ))}
+                </Stack>
+              </nav>
 
-          <Divider label={t('common.tab.account.title', 'Account')} labelPosition="left" />
-          <Stack gap={4}>
-            {loggedIn ? (
-              <>
-                <UnstyledButton component={Link} to="/account/profile" onClick={close} className={classes.accountCard}>
-                  <Avatar src={user?.avatar} radius="md" size={42}>
-                    {user?.userName?.slice(0, 1) ?? 'U'}
-                  </Avatar>
-                  <Stack gap={0} className={classes.accountText}>
-                    <Text fw={700} truncate>
-                      {user?.userName}
+              <Divider label={t('common.tab.account.title', 'Account')} labelPosition="left" />
+              <Stack gap={4}>
+                {loggedIn ? (
+                  <>
+                    <UnstyledButton
+                      component={Link}
+                      to="/account/profile"
+                      onClick={close}
+                      className={classes.accountCard}
+                      data-guide="account-profile"
+                    >
+                      <Avatar src={user?.avatar} radius="md" size={42}>
+                        {user?.userName?.slice(0, 1) ?? 'U'}
+                      </Avatar>
+                      <Stack gap={0} className={classes.accountText}>
+                        <Text fw={700} truncate>
+                          {user?.userName}
+                        </Text>
+                        <Text size="xs" c="dimmed">
+                          {t('common.tab.account.profile')}
+                        </Text>
+                      </Stack>
+                    </UnstyledButton>
+                    <UnstyledButton
+                      className={classes.navLink}
+                      onClick={() => {
+                        close()
+                        void logout()
+                      }}
+                    >
+                      <span className={classes.navIcon} aria-hidden="true">
+                        <Icon path={mdiLogout} size={0.95} />
+                      </span>
+                      <Text component="span" fw={650}>
+                        {t('common.tab.account.logout')}
+                      </Text>
+                    </UnstyledButton>
+                  </>
+                ) : (
+                  <UnstyledButton
+                    component={Link}
+                    to={`/account/login?from=${encodeURIComponent(location.pathname + location.search + location.hash)}`}
+                    onClick={close}
+                    className={classes.navLink}
+                    data-guide="account-login"
+                  >
+                    <span className={classes.navIcon} aria-hidden="true">
+                      <Icon path={mdiLogin} size={0.95} />
+                    </span>
+                    <Text component="span" fw={650}>
+                      {t('common.tab.account.login')}
                     </Text>
-                    <Text size="xs" c="dimmed">
-                      {t('common.tab.account.profile')}
+                  </UnstyledButton>
+                )}
+              </Stack>
+
+              <Divider label={t('common.tab.preferences', 'Preferences')} labelPosition="left" />
+              {config.portMapping === ContainerPortMappingType.PlatformProxy && <WsrxManager />}
+              <Stack gap={4}>
+                <UnstyledButton className={classes.navLink} onClick={() => toggleColorScheme()}>
+                  <span className={classes.navIcon} aria-hidden="true">
+                    <Icon path={colorScheme === 'dark' ? mdiWeatherSunny : mdiWeatherNight} size={0.95} />
+                  </span>
+                  <Stack gap={0}>
+                    <Text component="span" fw={650}>
+                      {t('common.tab.theme.title', 'Appearance')}
+                    </Text>
+                    <Text component="span" size="xs" c="dimmed">
+                      {t('common.tab.theme.switch_to', {
+                        theme: colorScheme === 'dark' ? t('common.tab.theme.light') : t('common.tab.theme.dark'),
+                      })}
                     </Text>
                   </Stack>
                 </UnstyledButton>
                 <UnstyledButton
                   className={classes.navLink}
                   onClick={() => {
+                    clearLocalCache()
                     close()
-                    void logout()
                   }}
                 >
                   <span className={classes.navIcon} aria-hidden="true">
-                    <Icon path={mdiLogout} size={0.95} />
+                    <Icon path={mdiCached} size={0.95} />
                   </span>
                   <Text component="span" fw={650}>
-                    {t('common.tab.account.logout')}
+                    {t('common.tab.account.clean_cache')}
                   </Text>
                 </UnstyledButton>
-              </>
-            ) : (
-              <UnstyledButton
-                component={Link}
-                to={`/account/login?from=${encodeURIComponent(location.pathname + location.search)}`}
-                onClick={close}
-                className={classes.navLink}
-                data-guide="account-menu"
-              >
-                <span className={classes.navIcon} aria-hidden="true">
-                  <Icon path={mdiLogin} size={0.95} />
-                </span>
-                <Text component="span" fw={650}>
-                  {t('common.tab.account.login')}
-                </Text>
-              </UnstyledButton>
-            )}
-          </Stack>
-
-          <Divider label={t('common.tab.preferences', 'Preferences')} labelPosition="left" />
-          <Stack gap={4}>
-            <UnstyledButton className={classes.navLink} onClick={() => toggleColorScheme()}>
-              <span className={classes.navIcon} aria-hidden="true">
-                <Icon path={colorScheme === 'dark' ? mdiWeatherSunny : mdiWeatherNight} size={0.95} />
-              </span>
-              <Stack gap={0}>
-                <Text component="span" fw={650}>
-                  {t('common.tab.theme.title', 'Appearance')}
-                </Text>
-                <Text component="span" size="xs" c="dimmed">
-                  {t('common.tab.theme.switch_to', {
-                    theme: colorScheme === 'dark' ? t('common.tab.theme.light') : t('common.tab.theme.dark'),
-                  })}
-                </Text>
+                <UnstyledButton
+                  className={classes.navLink}
+                  onClick={() => {
+                    openColorModal()
+                    close()
+                  }}
+                >
+                  <span className={classes.navIcon} aria-hidden="true">
+                    <Icon path={mdiPalette} size={0.95} />
+                  </span>
+                  <Text component="span" fw={650}>
+                    {t('common.content.color.title')}
+                  </Text>
+                </UnstyledButton>
               </Stack>
-            </UnstyledButton>
-            <UnstyledButton
-              className={classes.navLink}
-              onClick={() => {
-                clearLocalCache()
-                close()
-              }}
-            >
-              <span className={classes.navIcon} aria-hidden="true">
-                <Icon path={mdiCached} size={0.95} />
-              </span>
-              <Text component="span" fw={650}>
-                {t('common.tab.account.clean_cache')}
-              </Text>
-            </UnstyledButton>
-            <UnstyledButton
-              className={classes.navLink}
-              onClick={() => {
-                openColorModal()
-                close()
-              }}
-            >
-              <span className={classes.navIcon} aria-hidden="true">
-                <Icon path={mdiPalette} size={0.95} />
-              </span>
-              <Text component="span" fw={650}>
-                {t('common.content.color.title')}
-              </Text>
-            </UnstyledButton>
-          </Stack>
-        </Stack>
-      </Drawer>
+            </Stack>
+          </Drawer.Body>
+        </Drawer.Content>
+      </Drawer.Root>
 
-      <nav className={classes.dock} aria-label={t('common.tab.mobile_navigation', 'Mobile navigation')}>
+      <nav
+        className={classes.dock}
+        style={{ gridTemplateColumns: `repeat(${dockItems.length + 1}, minmax(0, 1fr))` }}
+        aria-label={t('common.tab.mobile_navigation', 'Mobile navigation')}
+        data-guide-boundary="mobile-dock"
+      >
         {dockItems.map((item) => {
           const active = isNavigationItemActive(item, location.pathname)
           return (
@@ -266,7 +313,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
           aria-haspopup="dialog"
           data-guide="more-navigation"
           data-active={
-            opened || location.pathname.startsWith('/admin') || location.pathname.startsWith('/about') || undefined
+            opened || !dockItems.some((item) => isNavigationItemActive(item, location.pathname)) || undefined
           }
           onClick={() => setOpened(true)}
         >

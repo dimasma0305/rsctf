@@ -1,4 +1,9 @@
 //! Bounded Docker logging for platform-managed challenge containers.
+//!
+//! Workloads use Docker's `local` driver: it stores compressed, bounded
+//! files that the daemon does not have to re-read as JSON when a client
+//! streams logs, which is what kept `dockerd` busy during the abandoned
+//! `docker logs` incident. The size and file bounds are unchanged.
 
 use std::collections::HashMap;
 
@@ -32,7 +37,7 @@ pub(super) fn bounded_log_config() -> HostConfigLogConfig {
         DEFAULT_MAX_FILES,
     );
     HostConfigLogConfig {
-        typ: Some("json-file".into()),
+        typ: Some("local".into()),
         config: Some(HashMap::from([
             ("max-size".into(), format!("{max_size_mib}m")),
             ("max-file".into(), max_files.to_string()),

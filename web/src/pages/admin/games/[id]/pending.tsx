@@ -11,6 +11,7 @@ import { useParams } from 'react-router'
 import { ChallengeAuditModal } from '@Components/admin/ChallengeAuditModal'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { showErrorMsg } from '@Utils/Shared'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { PendingChallengeModel } from '@Api'
 
 dayjs.extend(relativeTime)
@@ -22,7 +23,7 @@ const PendingChallenges: FC = () => {
   const modals = useModals()
   const [busy, setBusy] = useState(false)
 
-  const { data: pending, mutate } = api.edit.useEditListPendingChallenges(gameId, undefined, gameId > 0)
+  const { data: pending, mutate } = api.edit.useEditListPendingChallenges(gameId, OnceSWRConfig, gameId > 0)
 
   const [auditTarget, setAuditTarget] = useState<{ id: number; title: string; submitter?: string | null } | null>(null)
 

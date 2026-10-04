@@ -9,6 +9,11 @@ services:
       - :8080
       - --to
       - http://${RSCTF_DEV_FRONTEND_HOST:?Set the Docker bridge host address}:${RSCTF_DEV_FRONTEND_PORT:-63000}
+      # Traefik is the only public ingress for this isolated gateway and
+      # overwrites X-Real-IP with the connected client. Preserve that value
+      # across Caddy and Vite so the backend can enforce event-VPN proofs.
+      - --header-up
+      - 'X-Forwarded-For: {http.request.header.X-Real-IP}'
     read_only: true
     cap_drop:
       - ALL

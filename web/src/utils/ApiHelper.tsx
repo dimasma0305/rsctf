@@ -3,6 +3,7 @@ import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { AxiosError, AxiosResponse } from 'axios'
 import { ContentType } from '@Api'
+import { runDownloadSingleFlight } from '@Utils/DownloadSingleFlight'
 
 export const handleAxiosError = async (err: unknown) => {
   if (err instanceof AxiosError) {
@@ -66,44 +67,47 @@ const openAxiosBlobResponse = (res: AxiosResponse, downloadFilename?: string) =>
   }
 }
 
-export const downloadBlob = async (
-  promise: Promise<AxiosResponse>,
+export const downloadBlob = (
+  singleFlightKey: string,
+  requestFactory: () => Promise<AxiosResponse>,
   setDisabled: (value: React.SetStateAction<boolean>) => void,
   t: (key: string) => string,
   filename?: string
-) => {
-  setDisabled(true)
+) =>
+  runDownloadSingleFlight(singleFlightKey, async () => {
+    setDisabled(true)
+    const notificationId = `blob-download:${singleFlightKey}`
 
-  showNotification({
-    color: 'orange',
-    id: 'blob-download',
-    message: t('common.download.started'),
-    loading: true,
-    autoClose: false,
-  })
-
-  try {
-    const res = await promise
-    updateNotification({
-      id: 'blob-download',
-      color: 'teal',
-      message: t('common.download.success'),
-      icon: <Icon path={mdiCheck} size={1} />,
-      loading: false,
-      autoClose: true,
-    })
-    openAxiosBlobResponse(res, filename)
-  } catch (err) {
-    updateNotification({
-      id: 'blob-download',
-      color: 'red',
-      title: t('common.download.failed'),
-      message: await handleAxiosError(err),
-      icon: <Icon path={mdiClose} size={1} />,
+    showNotification({
+      color: 'orange',
+      id: notificationId,
+      message: t('common.download.started'),
+      loading: true,
       autoClose: false,
-      withCloseButton: true,
     })
-  } finally {
-    setDisabled(false)
-  }
-}
+
+    try {
+      const res = await requestFactory()
+      updateNotification({
+        id: notificationId,
+        color: 'teal',
+        message: t('common.download.success'),
+        icon: <Icon path={mdiCheck} size={1} />,
+        loading: false,
+        autoClose: true,
+      })
+      openAxiosBlobResponse(res, filename)
+    } catch (err) {
+      updateNotification({
+        id: notificationId,
+        color: 'red',
+        title: t('common.download.failed'),
+        message: await handleAxiosError(err),
+        icon: <Icon path={mdiClose} size={1} />,
+        autoClose: false,
+        withCloseButton: true,
+      })
+    } finally {
+      setDisabled(false)
+    }
+  })

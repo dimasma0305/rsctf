@@ -3,6 +3,7 @@ use serde_json::json;
 use std::future::Future;
 
 use crate::app_state::SharedState;
+use crate::services::ad::koth_capability_cache::release_game_control;
 use crate::services::container::{ContainerInfo, ContainerSpec};
 use crate::utils::enums::ChallengeType;
 use crate::utils::error::{AppError, AppResult};
@@ -14,6 +15,7 @@ mod data;
 mod deadline;
 mod persistent;
 mod readiness;
+mod reporter;
 
 use super::state::CrownCyclePosition;
 use capability::mint_capabilities;
@@ -169,10 +171,10 @@ async fn finalize_previous_cycle(
         })
         .unwrap_or(0);
 
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(previous_id) = previous_id {
+    let mut control =
+        crate::services::ad::engine::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id)
+            .await?;
+    let retired_previous = if let Some(previous_id) = previous_id {
         sqlx::query(
             r#"UPDATE "KothCrownCycles"
                   SET phase = 'Completed',
@@ -186,10 +188,14 @@ async fn finalize_previous_cycle(
         )
         .bind(previous_id)
         .bind(round_number.saturating_sub(1))
-        .execute(&mut *transaction)
+        .execute(&mut **control.transaction_mut())
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    }
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .rows_affected()
+            == 1
+    } else {
+        false
+    };
     if config.champion_cooldown_ticks > 0 && !champions.is_empty() {
         sqlx::query(
             r#"INSERT INTO "KothCycleCooldowns"
@@ -204,7 +210,7 @@ async fn finalize_previous_cycle(
         .bind(lead)
         .bind(round_number)
         .bind(round_number + config.champion_cooldown_ticks - 1)
-        .execute(&mut *transaction)
+        .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
@@ -216,11 +222,11 @@ async fn finalize_previous_cycle(
     )
     .bind(cycle.id)
     .bind(champions.first().copied())
-    .execute(&mut *transaction)
+    .execute(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     record_receipt(
-        &mut transaction,
+        control.transaction_mut(),
         cycle,
         CrownPhase::FinalizePending,
         json!({
@@ -232,10 +238,8 @@ async fn finalize_previous_cycle(
         None,
     )
     .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))
+    release_game_control(control, st.cache.as_ref(), cycle.game_id, retired_previous).await?;
+    Ok(())
 }
 
 async fn snapshot_cycle(st: &SharedState, cycle: &CycleRow) -> AppResult<()> {
@@ -376,9 +380,15 @@ async fn create_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()>
         st.config.runtime_role,
         crate::services::challenge_images::shared_docker_daemon_acknowledged(),
     )?;
+    let reporter = reporter::ensure(st, cycle).await?;
     let info = st
         .containers
-        .create(replacement_container_spec(image, cycle, &spec))
+        .create(replacement_container_spec(
+            image,
+            cycle,
+            &spec,
+            reporter.as_ref(),
+        ))
         .await?;
     if !replacement_endpoint_is_valid(&info) {
         if let Err(error) = st.containers.destroy(&info.id).await {
@@ -428,7 +438,9 @@ fn replacement_container_spec(
     image: String,
     cycle: &CycleRow,
     spec: &data::HillSpec,
+    reporter: Option<&crate::services::ad::koth_reporter::TargetReporterRuntime>,
 ) -> ContainerSpec {
+    let operation_id = replacement_operation_id(cycle, reporter);
     ContainerSpec {
         game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
         image,
@@ -438,7 +450,9 @@ fn replacement_container_spec(
         expose_port: spec.expose_port,
         publish_port: true,
         proxy_only: false,
-        env: Vec::new(),
+        env: reporter
+            .map(|runtime| runtime.env.clone())
+            .unwrap_or_default(),
         // Initial shared-hill provisioning injects the selected static flag.
         // Persistent arena replacements must preserve that exact runtime
         // contract as well; some challenge supervisors derive their internal
@@ -446,12 +460,32 @@ fn replacement_container_spec(
         flag: Some(spec.runtime_flag.clone().unwrap_or_default()),
         ad_network: Some(crate::services::ad_vpn::services_network()),
         allow_egress: spec.allow_egress,
+        control_plane_callback_ports: reporter
+            .map(|runtime| runtime.callback_ports.clone())
+            .unwrap_or_default(),
         network_mode: crate::utils::enums::NetworkMode::Open,
-        operation_id: Some(format!(
-            "koth-cycle:{}:attempt:{}",
-            cycle.id, cycle.reset_attempt
-        )),
+        operation_id: Some(operation_id),
     }
+}
+
+fn replacement_operation_id(
+    cycle: &CycleRow,
+    reporter: Option<&crate::services::ad::koth_reporter::TargetReporterRuntime>,
+) -> String {
+    let reporter_identity = reporter.map_or_else(String::new, |runtime| {
+        // v0.1.92 can leave a crash-orphan under the unsuffixed identity. The
+        // contract version fences that workload. The non-secret routing and
+        // credential revisions prevent adoption when callback policy changes
+        // or a route is revisited after its prior credential was revoked.
+        format!(
+            ":managed-reporter-v2:{}:{}",
+            runtime.routing_revision, runtime.credential_revision
+        )
+    });
+    format!(
+        "koth-cycle:{}:attempt:{}{}",
+        cycle.id, cycle.reset_attempt, reporter_identity
+    )
 }
 
 fn replacement_endpoint_is_valid(info: &ContainerInfo) -> bool {
@@ -470,7 +504,8 @@ async fn publish_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()
     let port = cycle
         .replacement_port
         .ok_or_else(|| AppError::internal("replacement port is missing"))?;
-    let mut control = super::super::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+    let mut control =
+        super::super::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id).await?;
     let published = sqlx::query(
         r#"UPDATE "KothTargets" target
               SET host = $3, port = $4, container_id = $5,
@@ -544,9 +579,9 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
     .map_err(|error| AppError::internal(error.to_string()))?;
     let enforced_cooldowns =
         crate::services::ad_vpn::enforce_cycle_cooldown(&st.db, cycle.id).await?;
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut control =
+        crate::services::ad::engine::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id)
+            .await?;
     sqlx::query(
         r#"UPDATE "KothCycleCooldowns"
               SET network_enforced = TRUE,
@@ -554,7 +589,7 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
             WHERE cycle_id = $1 AND network_released_at IS NULL"#,
     )
     .bind(cycle.id)
-    .execute(&mut *transaction)
+    .execute(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     let durable_enforced: i64 = sqlx::query_scalar(
@@ -563,7 +598,7 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
               AND network_released_at IS NULL"#,
     )
     .bind(cycle.id)
-    .fetch_one(&mut *transaction)
+    .fetch_one(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     if durable_enforced != i64::try_from(enforced_cooldowns).unwrap_or(i64::MAX) {
@@ -571,7 +606,7 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
             "KotH cooldown enforcement receipt does not cover every selected champion",
         ));
     }
-    sqlx::query(
+    let activated = sqlx::query(
         r#"UPDATE "KothCrownCycles"
               SET phase = 'Active', actual_start_round = $2,
                   activated_at = clock_timestamp(), updated_at = clock_timestamp(),
@@ -580,11 +615,13 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
     )
     .bind(cycle.id)
     .bind(round_number)
-    .execute(&mut *transaction)
+    .execute(&mut **control.transaction_mut())
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected()
+        == 1;
     record_receipt(
-        &mut transaction,
+        control.transaction_mut(),
         cycle,
         CrownPhase::FirewallPending,
         json!({
@@ -595,10 +632,7 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
         None,
     )
     .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    release_game_control(control, st.cache.as_ref(), cycle.game_id, activated).await?;
     // Active is the first phase allowed to publish the replacement endpoint.
     crate::controllers::game::ad::invalidate_live_hill_snapshot(st, cycle.game_id).await;
     Ok(())
@@ -904,7 +938,7 @@ pub(crate) async fn recover_ended_cycle_transitions(st: &SharedState) -> AppResu
             _ => Ok(()),
         };
         if let Err(error) = &result {
-            deadline::record_recovery_error(st, cycle_id, &error.to_string()).await?;
+            deadline::record_recovery_error(st, game_id, cycle_id, &error.to_string()).await?;
             tracing::warn!(
                 game = game_id,
                 challenge = challenge_id,

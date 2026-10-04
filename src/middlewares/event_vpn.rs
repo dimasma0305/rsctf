@@ -29,14 +29,36 @@ static PROOF_SUBJECT_FLIGHT: LazyLock<
 
 fn protected_game_path(path: &str) -> Option<i32> {
     let mut segments = path.split('/').filter(|segment| !segment.is_empty());
-    if segments.next()? != "api" || segments.next()? != "game" {
+    if !segments.next()?.eq_ignore_ascii_case("api")
+        || !segments.next()?.eq_ignore_ascii_case("game")
+    {
         return None;
     }
-    let game_id = segments.next()?.parse().ok()?;
+    let game_id = segments.next()?.parse::<i32>().ok()?;
+    if game_id <= 0 {
+        return None;
+    }
     let suffix = segments.next();
+    // The compatibility Toolkit download is another entry point for the same
+    // personal profile when the event gate is enabled. Exempt only that exact
+    // path; every other A&D/KotH route remains proof-protected.
+    let is_toolkit_vpn_config = suffix.is_some_and(|segment| segment.eq_ignore_ascii_case("ad"))
+        && segments
+            .next()
+            .is_some_and(|segment| segment.eq_ignore_ascii_case("vpn"))
+        && segments
+            .next()
+            .is_some_and(|segment| segment.eq_ignore_ascii_case("config"))
+        && segments.next().is_none();
     // Joining, the public event summary, enrollment, and the connectivity check
-    // must remain reachable before a participant has a VPN profile.
-    if suffix.is_none() || matches!(suffix, Some("vpn" | "check")) {
+    // must remain reachable before a participant has a VPN profile. Both profile
+    // download routes enforce accepted participation in their controllers.
+    if suffix.is_none()
+        || suffix.is_some_and(|segment| {
+            segment.eq_ignore_ascii_case("vpn") || segment.eq_ignore_ascii_case("check")
+        })
+        || is_toolkit_vpn_config
+    {
         return None;
     }
     Some(game_id)
@@ -125,19 +147,50 @@ async fn proof_subject_is_current(
     Ok(result.is_some())
 }
 
+fn team_token_matches_game(
+    token: &crate::services::ad::api_token::VerifiedTeamToken,
+    game_id: i32,
+) -> bool {
+    token.participation.game_id == game_id
+}
+
+/// The principal this boundary resolved, plus the verified proof claims when
+/// a player proof (rather than the monitor bypass) admitted the request.
+/// Handlers that re-scope the proof, such as attachment grants, read the
+/// claims from the request extensions instead of verifying the header twice.
+type EventVpnPrincipal = (CurrentUser, Option<VpnProofClaims>);
+
 async fn authorize_request(
     st: &SharedState,
     headers: &HeaderMap,
+    team_token: Option<crate::services::ad::api_token::VerifiedTeamToken>,
+    rejected_team_token: bool,
     game_id: i32,
-) -> AppResult<Option<CurrentUser>> {
+) -> AppResult<Option<EventVpnPrincipal>> {
     let policy = load_policy(st, game_id).await?;
     if !policy.gate_active_at(chrono::Utc::now()) {
         return Ok(None);
     }
+
+    // Participation-scoped automation tokens are strong, revocable bearer
+    // credentials for headless A&D clients. The outer global middleware has
+    // already resolved the token against the current accepted roster. Let the
+    // destination A&D handler enforce its narrower operation authorization;
+    // do not require browser VPN proof or reinterpret this credential as JWT.
+    if let Some(token) = team_token {
+        if team_token_matches_game(&token, game_id) {
+            return Ok(None);
+        }
+        return Err(AppError::Unauthorized);
+    }
+    if rejected_team_token {
+        return Err(AppError::Unauthorized);
+    }
+
     let token = session_token(headers).ok_or(AppError::Unauthorized)?;
     let user = authenticate_token(st, &token).await?;
     if user.is_monitor() {
-        return Ok(Some(user));
+        return Ok(Some((user, None)));
     }
     let proof = headers
         .get(VPN_PROOF_HEADER)
@@ -152,7 +205,7 @@ async fn authorize_request(
     {
         return Err(AppError::Unauthorized);
     }
-    Ok(Some(user))
+    Ok(Some((user, Some(claims))))
 }
 
 pub async fn middleware(
@@ -164,10 +217,21 @@ pub async fn middleware(
         return next.run(request).await;
     };
     let headers = request.headers().clone();
-    match authorize_request(&st, &headers, game_id).await {
-        Ok(user) => {
-            if let Some(user) = user {
+    let team_token = request
+        .extensions()
+        .get::<crate::services::ad::api_token::VerifiedTeamToken>()
+        .cloned();
+    let rejected_team_token = request
+        .extensions()
+        .get::<crate::services::ad::api_token::RejectedTeamToken>()
+        .is_some();
+    match authorize_request(&st, &headers, team_token, rejected_team_token, game_id).await {
+        Ok(principal) => {
+            if let Some((user, claims)) = principal {
                 request.extensions_mut().insert(user);
+                if let Some(claims) = claims {
+                    request.extensions_mut().insert(claims);
+                }
             }
             next.run(request).await
         }
@@ -177,16 +241,60 @@ pub async fn middleware(
 
 #[cfg(test)]
 mod tests {
-    use super::protected_game_path;
+    use super::{protected_game_path, team_token_matches_game};
+    use crate::models::data::participation;
+    use crate::services::ad::api_token::VerifiedTeamToken;
+    use crate::utils::enums::ParticipationStatus;
 
     #[test]
     fn only_post_enrollment_game_paths_are_protected() {
         assert_eq!(protected_game_path("/api/game/7/details"), Some(7));
         assert_eq!(protected_game_path("/api/game/7/scoreboard"), Some(7));
+        assert_eq!(protected_game_path("/api/Game/7/Ad/Targets"), Some(7));
+        assert_eq!(protected_game_path("/API/gAmE/7/kOtH/hills"), Some(7));
+        // Attachment grants are minted only from a proof-bearing request.
+        assert_eq!(
+            protected_game_path(&format!("/api/game/7/assets/{}/grant", "a".repeat(64))),
+            Some(7)
+        );
         assert_eq!(protected_game_path("/api/game/7"), None);
         assert_eq!(protected_game_path("/api/game/7/check"), None);
         assert_eq!(protected_game_path("/api/game/7/vpn/config"), None);
+        assert_eq!(protected_game_path("/api/Game/7/Check"), None);
+        assert_eq!(protected_game_path("/api/Game/7/Vpn/Config"), None);
+        assert_eq!(protected_game_path("/api/Game/7/Ad/Vpn/Config"), None);
+        assert_eq!(
+            protected_game_path("/api/Game/7/Ad/Vpn/Config/extra"),
+            Some(7)
+        );
+        assert_eq!(protected_game_path("/api/Game/7/Ad/Targets"), Some(7));
         assert_eq!(protected_game_path("/api/game/recent"), None);
+        assert_eq!(protected_game_path("/api/game/0/details"), None);
+        assert_eq!(protected_game_path("/api/game/-1/details"), None);
         assert_eq!(protected_game_path("/api/edit/games/7"), None);
     }
+
+    #[test]
+    fn automation_token_is_bound_to_its_exact_game() {
+        let token = VerifiedTeamToken {
+            participation: participation::Model {
+                id: 29,
+                status: ParticipationStatus::Accepted,
+                token: String::new(),
+                writeup_id: None,
+                game_id: 7,
+                team_id: 11,
+                division_id: None,
+                suspicion_score: 0,
+                competitive_admitted_at_utc: None,
+            },
+            partition_key: "ad:test".to_string(),
+        };
+        assert!(team_token_matches_game(&token, 7));
+        assert!(!team_token_matches_game(&token, 8));
+    }
 }
+
+#[cfg(test)]
+#[path = "event_vpn_pg_tests.rs"]
+mod pg_tests;

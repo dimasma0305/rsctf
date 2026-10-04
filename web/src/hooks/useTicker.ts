@@ -16,6 +16,7 @@ type Listener = (now: Dayjs) => void
 
 const listeners = new Set<Listener>()
 let interval: ReturnType<typeof setInterval> | null = null
+let alignmentTimeout: ReturnType<typeof setTimeout> | null = null
 let lastValue: Dayjs = dayjs()
 
 const tick = (): void => {
@@ -24,20 +25,33 @@ const tick = (): void => {
 }
 
 const start = (): void => {
-  if (interval !== null) return
+  if (interval !== null || alignmentTimeout !== null || listeners.size === 0) return
+  if (typeof document !== 'undefined' && document.hidden) return
+  // A consumer may mount after the ticker spent a long time without listeners,
+  // or the tab may just have resumed from the background. Refresh immediately
+  // so deadline-sensitive UI never renders a stale shared snapshot while it
+  // waits for the next whole-second alignment.
+  tick()
   // Align first tick to the next whole second so multiple mounts agree on
   // the clock to the millisecond.
   const toNextSecond = 1000 - (Date.now() % 1000)
-  setTimeout(() => {
+  alignmentTimeout = setTimeout(() => {
+    alignmentTimeout = null
+    if (listeners.size === 0 || (typeof document !== 'undefined' && document.hidden)) return
     tick()
     interval = setInterval(tick, 1000)
   }, toNextSecond)
 }
 
 const stop = (): void => {
-  if (interval === null) return
-  clearInterval(interval)
-  interval = null
+  if (alignmentTimeout !== null) {
+    clearTimeout(alignmentTimeout)
+    alignmentTimeout = null
+  }
+  if (interval !== null) {
+    clearInterval(interval)
+    interval = null
+  }
 }
 
 if (typeof document !== 'undefined') {
@@ -52,7 +66,10 @@ if (typeof document !== 'undefined') {
  * The value is shared across all consumers — no duplicate intervals.
  */
 export const useTicker = (): Dayjs => {
-  const [now, setNow] = useState<Dayjs>(lastValue)
+  // Sample during the initial render as well as in `start()`. Effects run after
+  // paint, which is too late for controls that must start disabled when their
+  // deadline has already passed.
+  const [now, setNow] = useState<Dayjs>(() => dayjs())
 
   useEffect(() => {
     listeners.add(setNow)

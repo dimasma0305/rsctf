@@ -37,11 +37,68 @@ fn each_controller_router_builds() {
 }
 
 #[cfg(test)]
+mod challenge_audit_archive_route {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use sea_orm::SqlxPostgresConnector;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use rsctf::app_state::{AppState, SharedState};
+    use rsctf::models::internal::configs::{AppConfig, RuntimeRole};
+    use rsctf::services::cache::InMemoryCache;
+    use rsctf::services::container::NoopContainerManager;
+    use rsctf::services::token::TokenService;
+    use rsctf::storage::LocalBlobStorage;
+
+    fn test_state() -> SharedState {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .unwrap();
+        let database = SqlxPostgresConnector::from_sqlx_postgres_pool(pool);
+        let root = std::env::temp_dir().join(format!(
+            "rsctf-audit-archive-route-{}",
+            Uuid::new_v4().simple()
+        ));
+        let mut config = AppConfig::default();
+        config.runtime_role = RuntimeRole::All;
+        AppState::new(
+            database,
+            Arc::new(config),
+            Arc::new(InMemoryCache::new()),
+            Arc::new(LocalBlobStorage::new(root)),
+            TokenService::new("0123456789abcdef0123456789abcdef", 60),
+            Arc::new(NoopContainerManager),
+        )
+    }
+
+    async fn get(path: &str) -> axum::response::Response {
+        rsctf::controllers::edit::router()
+            .with_state(test_state())
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn retained_source_download_is_case_exact_and_rejects_anonymous_users() {
+        let exact = get("/api/edit/games/7/challenges/11/auditarchive").await;
+        assert_eq!(exact.status(), StatusCode::UNAUTHORIZED);
+
+        let wrong_case = get("/api/edit/games/7/challenges/11/AuditArchive").await;
+        assert_eq!(wrong_case.status(), StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
 mod koth_recovery_ownership {
     use std::sync::Arc;
 
     use axum::body::Body;
-    use axum::http::{header, Request, StatusCode};
+    use axum::http::{header, Method, Request, StatusCode};
     use sea_orm::SqlxPostgresConnector;
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
@@ -56,6 +113,9 @@ mod koth_recovery_ownership {
 
     const LEGACY: &str = "/api/edit/games/17/ad/koth/23/recover";
     const STATEFUL: &str = "/api/stateful/edit/games/17/ad/koth/23/recover";
+    const CONTEXT: &str = "/api/v1/koth/games/17/challenges/23/context";
+    const OBSERVATIONS: &str = "/api/v1/koth/games/17/challenges/23/observations";
+    const CAPABILITY: &str = "/api/v1/koth/capability/authenticate";
 
     fn test_state(role: RuntimeRole) -> SharedState {
         let pool = PgPoolOptions::new()
@@ -83,9 +143,24 @@ mod koth_recovery_ownership {
         role: RuntimeRole,
         path: &str,
     ) -> axum::response::Response {
+        request(router, role, Method::POST, path).await
+    }
+
+    async fn request(
+        router: axum::Router<SharedState>,
+        role: RuntimeRole,
+        method: Method,
+        path: &str,
+    ) -> axum::response::Response {
         router
             .with_state(test_state(role))
-            .oneshot(Request::post(path).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap()
     }
@@ -123,6 +198,20 @@ mod koth_recovery_ownership {
                 let response = post(router.clone(), role, path).await;
                 assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn control_router_owns_the_managed_target_callback_surface() {
+        let router = rsctf::controllers::game::koth::stateful_router();
+        for (method, path) in [
+            (Method::GET, CONTEXT),
+            (Method::POST, OBSERVATIONS),
+            (Method::POST, CAPABILITY),
+        ] {
+            let response = request(router.clone(), RuntimeRole::Control, method, path).await;
+            assert_ne!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert_ne!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{path}");
         }
     }
 }

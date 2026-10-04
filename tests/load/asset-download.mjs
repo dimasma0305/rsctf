@@ -27,6 +27,30 @@ if (!Number.isSafeInteger(ASSET_SIZE) || ASSET_SIZE <= 0) {
   );
 }
 
+const publicHash = String(
+  sql(
+    `SELECT file.hash
+       FROM "Files" file
+      WHERE file.reference_count > 0
+        AND (
+          EXISTS (SELECT 1 FROM "AspNetUsers" account WHERE account.avatar_hash = file.hash)
+          OR EXISTS (SELECT 1 FROM "Teams" team WHERE team.avatar_hash = file.hash)
+          OR EXISTS (SELECT 1 FROM "Games" game WHERE game.poster_hash = file.hash)
+          OR EXISTS (
+               SELECT 1 FROM "Configs" config
+                WHERE config.config_key IN ('GlobalConfig:LogoHash', 'GlobalConfig:FaviconHash')
+                  AND config.value = file.hash
+          )
+        )
+      ORDER BY file.id
+      LIMIT 1`,
+  ),
+).trim();
+if (!/^[0-9a-f]{64}$/.test(publicHash)) {
+  throw new Error("asset benchmark requires one real public avatar, poster, logo, or favicon");
+}
+const PUBLIC_ASSET_URL = `/assets/${publicHash}/public-conditional.bin`;
+
 const TOKEN_COUNT = Number(process.env.TOKEN_COUNT || 100);
 if (
   !Number.isSafeInteger(TOKEN_COUNT) ||
@@ -76,7 +100,9 @@ const tokens = accounts.map((entry) => {
 
 console.log(
   `asset download load → ${TARGET}${ASSET_URL} size=${ASSET_SIZE} ` +
-    `rate=${process.env.RATE || 20}/s range=${process.env.RANGE_BYTES || 1048576}B tokens=${tokens.length}`,
+    `rangeRate=${process.env.RATE || 20}/s unknownRate=${process.env.UNKNOWN_RATE || 32}/s ` +
+    `conditionalRate=${process.env.CONDITIONAL_RATE || 20}/s ` +
+    `range=${process.env.RANGE_BYTES || 1048576}B tokens=${tokens.length}`,
 );
 const directory = mkdtempSync(join(tmpdir(), "rsctf-asset-download-"));
 const tokenFile = join(directory, "tokens.json");
@@ -87,8 +113,11 @@ try {
     TARGET,
     ASSET_URL,
     ASSET_SIZE,
+    PUBLIC_ASSET_URL,
     TOKENS_FILE: tokenFile,
     RATE: process.env.RATE || 20,
+    UNKNOWN_RATE: process.env.UNKNOWN_RATE || 32,
+    CONDITIONAL_RATE: process.env.CONDITIONAL_RATE || 20,
     RANGE_BYTES: process.env.RANGE_BYTES || 1048576,
     VUS: process.env.VUS || 64,
     DURATION: process.env.DURATION || "30s",

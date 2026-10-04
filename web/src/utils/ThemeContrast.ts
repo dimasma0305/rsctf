@@ -1,8 +1,11 @@
 import { darken, lighten, luminance } from '@mantine/core'
 import type { MantineColorsTuple } from '@mantine/core'
 
-const LIGHT_ACCENT_BACKGROUND = '#ffffff'
-const DARK_ACCENT_BACKGROUND = '#111a29'
+// Accents also appear on the page and tinted panels, not only white cards.
+// Use the darkest neutral light surface so all of them retain AA contrast.
+const LIGHT_ACCENT_BACKGROUND = '#eef2f7'
+// Resolve against the brightest neutral dark surface, including hover states.
+const DARK_ACCENT_BACKGROUND = '#1b283b'
 
 export const contrastRatio = (foreground: string, background: string) => {
   const foregroundLuminance = luminance(foreground)

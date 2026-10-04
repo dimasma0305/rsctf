@@ -19,6 +19,7 @@ import {
   Text,
   TextInput,
   Tooltip,
+  useMantineColorScheme,
   useMantineTheme,
 } from '@mantine/core'
 import {
@@ -39,13 +40,7 @@ import { adLikeRowHighlight, fmtPts, useAdLikeScoreboardState } from '@Component
 import { ScoreboardPagination } from '@Components/ScoreboardPagination'
 import { ScrollingText } from '@Components/ScrollingText'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import {
-  CombinedScoreComponent,
-  CombinedScoreboardItem,
-  CombinedScoreboardModel,
-  useCombinedScoreboard,
-  useGame,
-} from '@Hooks/useGame'
+import { CombinedScoreComponent, CombinedScoreboardItem, CombinedScoreboardModel, useGame } from '@Hooks/useGame'
 import classes from '@Styles/CombinedScoreboard.module.css'
 import misc from '@Styles/Misc.module.css'
 
@@ -65,6 +60,10 @@ const ComponentValue: FC<{
   definition: ModeDefinition
 }> = ({ component, definition }) => {
   const { t } = useTranslation()
+  const { colorScheme } = useMantineColorScheme()
+  // Bold 14px text needs 4.5:1; the palette's default text shade misses that on
+  // the dark row surface, so pick the same readable shades the format boards use.
+  const valueColor = `${definition.color}.${colorScheme === 'dark' ? 3 : 9}`
   const raw =
     component.earnedPoints !== undefined && component.attainablePoints !== undefined
       ? t('game.content.scoreboard.combined.jeopardy_raw', {
@@ -75,7 +74,7 @@ const ComponentValue: FC<{
       : null
   return (
     <Stack gap={0} align="center">
-      <Text fw={800} size="sm" c={definition.color} className={misc.ffmono}>
+      <Text fw={800} size="sm" c={valueColor} className={misc.ffmono}>
         {fmtPts(component.score)}
       </Text>
       {Math.abs(component.score - component.projectedScore) > 0.005 && (
@@ -180,7 +179,7 @@ const MobileTeamCard: FC<{
           <Badge size="lg" variant="light" color="yellow" className={misc.ffmono}>
             #{rank || '-'}
           </Badge>
-          <Avatar src={row.avatar} radius="xl" color="blue">
+          <Avatar src={row.avatar} alt="" aria-hidden="true" radius="xl" color="blue">
             {row.name.slice(0, 1) || 'T'}
           </Avatar>
           <Stack gap={0} style={{ minWidth: 0 }}>
@@ -234,12 +233,15 @@ const MobileTeamCard: FC<{
   )
 }
 
-export const CombinedScoreboardTable: FC<{ numId: number }> = ({ numId }) => {
+export const CombinedScoreboardTable: FC<{
+  numId: number
+  scoreboard: CombinedScoreboardModel | undefined
+  error: unknown
+}> = ({ numId, scoreboard, error }) => {
   const { t } = useTranslation()
   const theme = useMantineTheme()
   const isMobile = useIsMobile()
   const { game } = useGame(numId)
-  const { combinedScoreboard: scoreboard, error } = useCombinedScoreboard(numId)
   const [infoOpened, setInfoOpened] = useState(false)
 
   const modes = useMemo<ModeDefinition[]>(() => {
@@ -457,7 +459,7 @@ export const CombinedScoreboardTable: FC<{ numId: number }> = ({ numId }) => {
                       </Table.Td>
                       <Table.Th scope="row">
                         <Group gap="xs" wrap="nowrap" maw={240}>
-                          <Avatar src={row.avatar} radius="xl" size={34} color="blue">
+                          <Avatar src={row.avatar} alt="" aria-hidden="true" radius="xl" size={34} color="blue">
                             {row.name.slice(0, 1) || 'T'}
                           </Avatar>
                           <Stack gap={0} style={{ minWidth: 0, flex: 1 }}>

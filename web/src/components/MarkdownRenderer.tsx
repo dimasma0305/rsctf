@@ -1,10 +1,10 @@
 import { Skeleton, Text, TextProps, Typography } from '@mantine/core'
 import 'katex/dist/katex.min.css'
 import { Marked } from 'marked'
-import { forwardRef, useMemo, Suspense, FC } from 'react'
+import { forwardRef, memo, useMemo, Suspense, FC } from 'react'
 import { KatexExtension } from '@Utils/marked/KatexExtension'
 import { ShikiExtension } from '@Utils/marked/ShikiExtension'
-import { sanitizeMarkdownHtml } from '@Utils/sanitize'
+import { sanitizeMarkdownDocumentHtml, sanitizeMarkdownHtml } from '@Utils/sanitize'
 import classes from '@Styles/Typography.module.css'
 
 export interface MarkdownProps extends React.ComponentPropsWithoutRef<'div'> {
@@ -49,22 +49,17 @@ export const ContentPlaceholder: FC = () => (
   </>
 )
 
-const MarkdownRenderer: FC<Pick<MarkdownProps, 'source'>> = (props) => {
-  const { source } = props
-
+const MarkdownRenderer: FC<Pick<MarkdownProps, 'source'>> = memo(function MarkdownRenderer({ source }) {
   const marked = useMemo(() => {
     const instance = new Marked()
     instance.use(KatexExtension()).use(ShikiExtension()).setOptions({ silent: true })
     return instance
   }, [])
 
-  const html = useMemo(
-    () => sanitizeMarkdownHtml((marked.parse(source) as string) ?? ''),
-    [marked, source]
-  )
+  const html = useMemo(() => sanitizeMarkdownDocumentHtml((marked.parse(source) as string) ?? ''), [marked, source])
 
   return <div className={classes.root} dangerouslySetInnerHTML={{ __html: html }} />
-}
+})
 
 export const Markdown = forwardRef<HTMLDivElement, MarkdownProps>((props, ref) => {
   const { source, ...others } = props

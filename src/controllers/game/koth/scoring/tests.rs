@@ -23,10 +23,6 @@ fn recent_rollup_epochs_keep_the_true_timeline_prefix() {
     let tail = KothTeamAggregate {
         settled_total: 0.0,
         projected_total: 80.0,
-        settled_epoch_points: 0.0,
-        settled_epoch_weight: 0.0,
-        projected_epoch_points: 40.0,
-        projected_epoch_weight: 0.5,
         acquisition_rate: 0.0,
         control_rate: 0.0,
         reliability_rate: 0.0,
@@ -42,6 +38,7 @@ fn recent_rollup_epochs_keep_the_true_timeline_prefix() {
     };
     let raw = KothScoringSnapshot {
         teams: HashMap::from([(7, tail)]),
+        hills: BTreeMap::new(),
         fully_settled: false,
     };
     let recent = rollup::RecentTeamEpochRow {
@@ -64,12 +61,8 @@ fn recent_rollup_epochs_keep_the_true_timeline_prefix() {
         2,
     );
     let team = &merged.teams[&7];
-    assert!((team.projected_total - 40.0).abs() < 1e-12);
-    assert!((team.settled_total - 20.0).abs() < 1e-12);
-    assert!((team.projected_epoch_points - 60.0).abs() < 1e-12);
-    assert!((team.projected_epoch_weight - 1.5).abs() < 1e-12);
-    assert!((team.settled_epoch_points - 20.0).abs() < 1e-12);
-    assert!((team.settled_epoch_weight - 1.0).abs() < 1e-12);
+    // This fixture carries no hill cells, so it exercises only the timeline
+    // prefix; the normalized event score is covered by the field-best tests.
     assert_eq!(team.epochs.len(), 2);
     assert_eq!(team.epochs[0].cumulative_points_numerator, 20.0);
     assert_eq!(team.epochs[0].cumulative_epoch_weight, 1.0);
@@ -276,4 +269,145 @@ fn leaderboard_uses_relative_performance_and_crown_share_for_every_team() {
     assert_eq!(scored.teams[&7].acquisition_rate, 1.0);
     assert_eq!(scored.teams[&7].control_rate, 0.8);
     assert_eq!(scored.teams[&7].reliability_rate, 1.0);
+}
+
+fn close(left: f64, right: f64) {
+    assert!(
+        (left - right).abs() < 1e-9,
+        "expected {left} to equal {right}"
+    );
+}
+
+fn hill_rollup(
+    participation_id: i32,
+    challenge_id: i32,
+    points: f64,
+    weight: f64,
+) -> rollup::HillRollupRow {
+    rollup::HillRollupRow {
+        participation_id,
+        challenge_id,
+        service_weight: weight,
+        cumulative_points_numerator: points,
+        cumulative_score_weight: 1.0,
+        cumulative_acquisition_numerator: 0.0,
+        cumulative_control_numerator: 0.0,
+        cumulative_sla_numerator: 0.0,
+        cumulative_rate_weight: 1.0,
+        cumulative_acquisition_windows: 0,
+        cumulative_controlled_ticks: 0,
+        cumulative_responsible_ticks: 0,
+        cumulative_healthy_responsible_ticks: 0,
+    }
+}
+
+fn team_rollup(participation_id: i32, points: f64) -> rollup::TeamRollupRow {
+    rollup::TeamRollupRow {
+        participation_id,
+        cumulative_points_numerator: points,
+        cumulative_epoch_weight: 1.0,
+        cumulative_acquisition_numerator: 0.0,
+        cumulative_control_numerator: 0.0,
+        cumulative_sla_numerator: 0.0,
+        cumulative_rate_weight: 1.0,
+        cumulative_acquisition_windows: 0,
+        cumulative_controlled_ticks: 0,
+        cumulative_responsible_ticks: 0,
+        cumulative_healthy_responsible_ticks: 0,
+    }
+}
+
+#[test]
+fn event_score_normalizes_each_hill_to_its_capped_field_best() {
+    let header = rollup::RollupHeaderRow {
+        epoch: 1,
+        cumulative_scorable_ticks: 8,
+        cumulative_eligible_windows: 2,
+    };
+    // Hill 5: the best event average is 80, so the hill scales by 1.25.
+    // Hill 6: the best event average is 10, so the cap holds the factor at 4.
+    let merged = merge_rollup_prefix(
+        &[1, 2],
+        Some(&header),
+        vec![team_rollup(1, 45.0), team_rollup(2, 25.0)],
+        vec![
+            hill_rollup(1, 5, 80.0, 1.0),
+            hill_rollup(1, 6, 10.0, 1.0),
+            hill_rollup(2, 5, 40.0, 1.0),
+            hill_rollup(2, 6, 10.0, 1.0),
+        ],
+        Vec::new(),
+        KothScoringSnapshot::default(),
+        true,
+        1,
+    );
+
+    let five = merged.hills[&5];
+    let six = merged.hills[&6];
+    close(five.settled_field_best, 80.0);
+    close(five.settled_multiplier, 1.25);
+    close(six.settled_field_best, 10.0);
+    close(six.settled_multiplier, 4.0);
+    close(five.settled_share, 0.5);
+    close(six.settled_share, 0.5);
+    close(five.projected_share, 0.5);
+
+    let one = &merged.teams[&1];
+    close(one.cells[&5].settled_points, 80.0);
+    close(one.cells[&5].settled_normalized_points, 100.0);
+    close(one.cells[&6].settled_normalized_points, 40.0);
+    close(one.settled_total, 70.0);
+    close(one.projected_total, 70.0);
+
+    let two = &merged.teams[&2];
+    close(two.cells[&5].settled_normalized_points, 50.0);
+    close(two.cells[&6].settled_normalized_points, 40.0);
+    close(two.settled_total, 45.0);
+    assert!(merged.fully_settled);
+}
+
+#[test]
+fn hill_weights_and_void_hills_shape_the_normalized_shares() {
+    let header = rollup::RollupHeaderRow {
+        epoch: 1,
+        cumulative_scorable_ticks: 8,
+        cumulative_eligible_windows: 2,
+    };
+    let mut void_hill = hill_rollup(1, 9, 0.0, 1.0);
+    void_hill.cumulative_score_weight = 0.0;
+    let mut void_hill_two = hill_rollup(2, 9, 0.0, 1.0);
+    void_hill_two.cumulative_score_weight = 0.0;
+    let merged = merge_rollup_prefix(
+        &[1, 2],
+        Some(&header),
+        vec![team_rollup(1, 60.0), team_rollup(2, 30.0)],
+        vec![
+            hill_rollup(1, 5, 60.0, 1.2),
+            hill_rollup(1, 6, 0.0, 0.8),
+            void_hill,
+            hill_rollup(2, 5, 30.0, 1.2),
+            hill_rollup(2, 6, 50.0, 0.8),
+            void_hill_two,
+        ],
+        Vec::new(),
+        KothScoringSnapshot::default(),
+        false,
+        1,
+    );
+
+    // A wholly void hill contributes neither numerator nor denominator.
+    close(merged.hills[&9].settled_share, 0.0);
+    close(merged.hills[&9].settled_multiplier, 1.0);
+    close(merged.hills[&5].settled_share, 0.6);
+    close(merged.hills[&6].settled_share, 0.4);
+    // Hill 5 best 60 -> x(100/60); hill 6 best 50 -> x2.
+    let one = &merged.teams[&1];
+    close(one.cells[&5].settled_normalized_points, 100.0);
+    close(one.cells[&6].settled_normalized_points, 0.0);
+    close(one.settled_total, 60.0);
+    let two = &merged.teams[&2];
+    close(two.cells[&5].settled_normalized_points, 50.0);
+    close(two.cells[&6].settled_normalized_points, 100.0);
+    close(two.settled_total, 0.6 * 50.0 + 0.4 * 100.0);
+    assert!(!merged.fully_settled);
 }

@@ -726,10 +726,39 @@ sudo -u rsctf-worker /usr/local/bin/rsctf-worker-agent run \
 The corresponding variables are `RSCTF_WORKER_CPU_MILLIS`,
 `RSCTF_WORKER_MEMORY_BYTES`, `RSCTF_WORKER_SLOTS`, and the comma-separated
 `RSCTF_WORKER_LABELS`. `RSCTF_WORKER_DOCKER_ENDPOINT` overrides `local` with a
-Unix socket path. Capacity overrides may reserve headroom but cannot exceed the
-detected safe CPU, memory, or slot capacity. Do not point the agent at an
-unauthenticated TCP Docker API. `--slots` counts isolated workload networks,
-not containers or replicas.
+Unix socket path.
+
+Without an override the agent advertises the detected host minus a reserve for
+Docker, the agent, networking, and maintenance: the larger of one tenth and
+1 CPU for CPU, and the larger of one tenth and 1 GiB for memory, never below
+1 CPU and 512 MiB so a small development worker stays usable. An explicit
+override replaces that default and may use the whole detected host, but it
+cannot exceed the detected CPU, memory, or slot capacity. Do not point the
+agent at an unauthenticated TCP Docker API. `--slots` counts isolated workload
+networks, not containers or replicas.
+
+The agent also bounds its own short-lived Docker Engine API calls. Reads
+(`inspect`, `list`, `ping`, bounded file downloads) and lifecycle calls
+(`create`, `start`, `stop`, `remove`, uploads, network changes, pulls) use
+separate concurrency slots, queue waits, and per-call deadlines, and a call that
+exceeds its deadline drops its daemon response stream. A rejected or timed-out
+call fails the current command with a retryable `runtimeUnavailable` or
+`timeout` error so the server's next reconciliation retries it; the wire
+protocol is unchanged. Saturation is logged at most once per class every 30
+seconds. The defaults are wider than the server's because Windows images and
+Hyper-V starts are slower. Override them with these run flags or variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RSCTF_WORKER_DOCKER_READ_CONCURRENCY` | `16` | Concurrent short-lived Docker reads (`1..256`) |
+| `RSCTF_WORKER_DOCKER_READ_DEADLINE_SECS` | `10` | Deadline for one Docker read (`1..3600`) |
+| `RSCTF_WORKER_DOCKER_READ_QUEUE_WAIT_SECS` | `5` | Longest a read waits for a slot before it is rejected (`1..3600`) |
+| `RSCTF_WORKER_DOCKER_LIFECYCLE_CONCURRENCY` | `4` | Concurrent lifecycle calls including pulls (`1..256`) |
+| `RSCTF_WORKER_DOCKER_LIFECYCLE_DEADLINE_SECS` | `60` | Deadline for one lifecycle call other than a pull (`1..3600`) |
+| `RSCTF_WORKER_DOCKER_LIFECYCLE_QUEUE_WAIT_SECS` | `30` | Longest a lifecycle call waits for a slot before it is rejected (`1..3600`) |
+| `RSCTF_WORKER_DOCKER_PULL_DEADLINE_SECS` | `600` | Deadline for one image pull (`1..3600`) |
+
+An out-of-range value is rejected at startup.
 
 ## Images
 

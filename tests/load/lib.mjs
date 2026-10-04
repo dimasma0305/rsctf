@@ -319,3 +319,45 @@ export function runK6(script, env = {}) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export async function retryTransientUntil(operation, shouldRetry, {
+  budgetMs = 10_000,
+  delayMs = 500,
+  now = () => performance.now(),
+  wait = sleep,
+} = {}) {
+  if (typeof operation !== 'function' || typeof shouldRetry !== 'function') {
+    throw new TypeError('bounded retry requires operation and shouldRetry functions');
+  }
+  if (!Number.isFinite(budgetMs) || budgetMs <= 0) {
+    throw new TypeError('bounded retry budgetMs must be positive');
+  }
+  if (!Number.isFinite(delayMs) || delayMs <= 0) {
+    throw new TypeError('bounded retry delayMs must be positive');
+  }
+  const deadlineMs = now() + budgetMs;
+  const maxAttempts = Math.ceil(budgetMs / delayMs) + 1;
+  let lastTransient;
+  const exhausted = () => {
+    if (lastTransient instanceof Error) throw lastTransient;
+    if (lastTransient !== undefined) return lastTransient;
+    throw new Error('bounded retry deadline elapsed before the first attempt');
+  };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const timeoutMs = Math.floor(deadlineMs - now());
+    if (timeoutMs <= 0) return exhausted();
+    try {
+      const outcome = await operation({ attempt, deadlineMs, timeoutMs });
+      if (!shouldRetry(outcome)) return outcome;
+      lastTransient = outcome;
+    } catch (error) {
+      if (!shouldRetry(error)) throw error;
+      lastTransient = error;
+    }
+    const remainingMs = deadlineMs - now();
+    if (remainingMs <= 0) return exhausted();
+    await wait(Math.min(delayMs, remainingMs));
+  }
+  return exhausted();
+}

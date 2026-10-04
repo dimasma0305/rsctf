@@ -29,12 +29,17 @@ test('Leaderboard lifecycle copy distinguishes persistent health recovery from C
   assert.match(operations, /runtime attempt/)
 })
 
-test('KotH scoreboard distinguishes the event average from hill-local performance', () => {
-  assert.match(scoreboard, /Event score averages every finalized epoch/)
+test('KotH scoreboard explains field-best normalization instead of an epoch-point basis', () => {
   assert.match(scoreboard, /Hill performance is a local average/)
   assert.match(scoreboard, /not added directly to the event score/i)
-  assert.match(scoreboard, /weighted epoch-points.*finalized epoch weight.*event score/s)
-  assert.match(scoreboard, /settledEpochPoints/)
-  assert.match(scoreboard, /settledEpochWeight/)
+  assert.match(scoreboard, /best event average on that hill counts 100/)
+  assert.match(scoreboard, /capped at \{\{cap\}\}×/)
+  assert.match(scoreboard, /hill share × normalized hill score/)
+  assert.match(scoreboard, /settledNormalizedPoints/)
+  assert.match(scoreboard, /settledShare/)
+  assert.match(scoreboard, /settledMultiplier/)
+  assert.doesNotMatch(scoreboard, /settledEpochPoints/)
+  assert.doesNotMatch(scoreboard, /weighted epoch-points/)
   assert.doesNotMatch(scoreboard, /Finalized hill contribution/)
+  assert.match(guide, /best team on that hill counts 100, capped at 4×/)
 })

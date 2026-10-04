@@ -25,6 +25,13 @@ pub struct FileChange {
 }
 
 #[derive(Debug, Clone)]
+pub struct ContainerFile {
+    pub bytes: Vec<u8>,
+    pub size: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct ContainerStatus {
     pub id: String,
     pub status: String,
@@ -85,6 +92,12 @@ pub trait ContainerManager: Send + Sync {
         ContainerBackendKind::None
     }
 
+    /// Stable, non-secret identity of backend routing that a managed challenge
+    /// uses to call rsctf. Backends with no extra route policy return `None`.
+    fn managed_callback_routing_identity(&self) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
     fn requires_proxy(&self) -> bool {
         false
     }
@@ -115,6 +128,13 @@ pub trait ContainerManager: Send + Sync {
         ))
     }
 
+    /// Locate the backend identity owned by a durable create operation without
+    /// requiring the original launch definition. Recovery uses this only to
+    /// adopt/publish or destroy an ambiguous, otherwise-unowned workload.
+    async fn find_operation_runtime(&self, _operation_id: &str) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
     async fn destroy(&self, id: &str) -> AppResult<()>;
     async fn query(&self, id: &str) -> AppResult<ContainerStatus>;
 
@@ -141,6 +161,13 @@ pub trait ContainerManager: Send + Sync {
         true
     }
 
+    /// Make an immutable image available ahead of a launch. Backends whose
+    /// runtime pulls during creation (trusted workers, Kubernetes) succeed
+    /// without doing anything; only a local daemon pulls eagerly.
+    async fn pull_image(&self, _image: &str) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn list_managed(&self) -> Vec<String> {
         Vec::new()
     }
@@ -151,6 +178,15 @@ pub trait ContainerManager: Send + Sync {
 
     async fn snapshot_changes(&self, _id: &str) -> AppResult<Vec<FileChange>> {
         Ok(Vec::new())
+    }
+
+    /// Read one regular file without launching a process inside an untrusted
+    /// workload. Implementations must stop after `limit` bytes and report the
+    /// original size and whether the preview was truncated.
+    async fn read_file(&self, _id: &str, _path: &str, _limit: usize) -> AppResult<ContainerFile> {
+        Err(AppError::bad_request(
+            "bounded file inspection is not supported by this backend",
+        ))
     }
 
     async fn exec(&self, _id: &str, _cmd: Vec<String>) -> AppResult<String> {

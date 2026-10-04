@@ -622,7 +622,7 @@ pub(crate) async fn record_flag_delivery_outcome_batch(
     if outcomes.is_empty() {
         return Ok(Vec::new());
     }
-    let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control = super::koth_auth::acquire_engine_game_lock(db, game_id).await?;
     record_flag_delivery_outcomes_transaction(
         control.transaction_mut(),
         game_id,
@@ -670,7 +670,7 @@ pub(crate) async fn settle_flag_delivery_outcomes(
     round_id: i32,
     attempted_service_ids: &[i32],
 ) -> AppResult<FlagDeliveryPublication> {
-    let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control = super::koth_auth::acquire_engine_game_lock(db, game_id).await?;
     let publication = record_flag_delivery_outcomes_transaction(
         control.transaction_mut(),
         game_id,

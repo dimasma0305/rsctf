@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { assetHashFromPath, assetRange } from "../asset-download-model.js";
+import {
+  assetHashFromPath,
+  assetRange,
+  rotatingAssetHash,
+} from "../asset-download-model.js";
 
 const HASH = "c5a573e275a0fca6cf6929d324dcc0a6d20882bc922009f1ca0ca022d8e5709d";
 
@@ -27,4 +31,12 @@ test("asset benchmark rejects zero, oversized, and unsafe range inputs", () => {
   assert.throws(() => assetRange(0, 10, 0));
   assert.throws(() => assetRange(0, 10, 11));
   assert.throws(() => assetRange(-1, 10, 4));
+});
+
+test("unknown-asset flood rotates valid bounded hash keys deterministically", () => {
+  assert.equal(rotatingAssetHash(1), "0000000000000001".repeat(4));
+  assert.equal(rotatingAssetHash(1).length, 64);
+  assert.notEqual(rotatingAssetHash(1), rotatingAssetHash(2));
+  assert.throws(() => rotatingAssetHash(-1));
+  assert.throws(() => rotatingAssetHash(Number.MAX_SAFE_INTEGER + 1));
 });

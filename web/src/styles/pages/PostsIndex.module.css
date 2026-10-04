@@ -1,12 +1,38 @@
+.workspace {
+  max-width: 64rem;
+  padding-block: 1rem 2rem;
+}
+.feed {
+  min-width: 0;
+}
+.feedHeader {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--app-border);
+}
+.feedTitle {
+  font-size: 1rem;
+  font-weight: 650;
+  scroll-margin-top: 6rem;
+}
+.feedTitle:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 4px;
+}
+.count {
+  text-transform: none;
+}
+.skeleton {
+  padding-block: 1.5rem;
+  border-bottom: 1px solid var(--app-border-subtle);
+}
 .paginationNav {
   width: 100%;
+  margin-top: 1.5rem;
 }
-
 .paginationNav :global(.mantine-Pagination-control) {
   min-width: 2.75rem;
   min-height: 2.75rem;
 }
-
 @media (max-width: $mantine-breakpoint-xs) {
   .paginationNav :global(.mantine-Group-root) {
     width: 100%;

@@ -1,10 +1,68 @@
 use super::*;
 
+#[test]
+fn anonymous_content_addressed_assets_are_globally_admitted() {
+    assert!(globally_limited_path("/api/game/1"));
+    assert!(globally_limited_path(
+        "/assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/file"
+    ));
+    assert!(!globally_limited_path("/healthz"));
+    assert!(!globally_limited_path("/assets-app.js"));
+}
+
+#[path = "rate_limiter_tests/koth.rs"]
+mod koth;
+#[path = "rate_limiter_tests/partition.rs"]
+mod partition;
+
 fn ad_submit_capacity() -> u32 {
     match Policy::AdSubmit.kind() {
         Kind::Bucket { capacity, .. } => capacity as u32,
         Kind::Sliding { .. } => panic!("A&D submit budget must remain a token bucket"),
     }
+}
+
+#[test]
+fn credential_mutations_use_a_tight_appended_identity_bucket() {
+    assert_eq!(
+        Policy::CredentialMutation as u8,
+        Policy::PowIssuanceGlobal as u8 + 1,
+        "new policies must not renumber shipped Redis namespaces"
+    );
+    match Policy::CredentialMutation.kind() {
+        Kind::Bucket {
+            capacity,
+            refill_per_sec,
+        } => {
+            assert_eq!(capacity, 6.0);
+            assert_eq!(refill_per_sec, 0.1);
+        }
+        Kind::Sliding { .. } => panic!("credential mutations require a bounded token bucket"),
+    }
+}
+
+#[test]
+fn managed_api_lookup_admission_is_appended_and_source_partitioned() {
+    assert_eq!(
+        Policy::ManagedApiAuthSourceAdmission as u8,
+        Policy::AssetGateMiss as u8 + 1,
+        "managed token admission must not renumber shipped Redis namespaces"
+    );
+    assert!(matches!(
+        Policy::ManagedApiAuthSourceAdmission.kind(),
+        Kind::Bucket {
+            capacity: 600.0,
+            refill_per_sec: 10.0,
+        }
+    ));
+    let mut request = Request::builder().body(axum::body::Body::empty()).unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "192.0.2.61:1234".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    assert_eq!(
+        partition_key(Policy::ManagedApiAuthSourceAdmission, &request),
+        "192.0.2.61"
+    );
 }
 
 #[test]
@@ -100,92 +158,6 @@ async fn redis_bucket_tokens(conn: &mut redis::aio::ConnectionManager, key: &str
 }
 
 #[test]
-fn authenticated_partitions_do_not_share_a_nat_bucket() {
-    let mut first = Request::builder()
-        .header("x-real-ip", "192.0.2.10")
-        .body(axum::body::Body::empty())
-        .unwrap();
-    first.extensions_mut().insert(
-        crate::middlewares::privilege_authentication::VerifiedSessionClaims(claims("user-a")),
-    );
-    first.extensions_mut().insert(ConnectInfo(
-        "192.0.2.10:1234".parse::<SocketAddr>().unwrap(),
-    ));
-    let mut second = Request::builder()
-        .header("x-real-ip", "192.0.2.10")
-        .body(axum::body::Body::empty())
-        .unwrap();
-    second.extensions_mut().insert(
-        crate::middlewares::privilege_authentication::VerifiedSessionClaims(claims("user-b")),
-    );
-    second.extensions_mut().insert(ConnectInfo(
-        "192.0.2.10:5678".parse::<SocketAddr>().unwrap(),
-    ));
-    assert_eq!(partition_key(Policy::Submit, &first).len(), 68);
-    assert_eq!(partition_key(Policy::Submit, &second).len(), 68);
-    assert_ne!(
-        partition_key(Policy::Submit, &first),
-        partition_key(Policy::Submit, &second)
-    );
-    assert_eq!(
-        partition_key(Policy::Login, &first),
-        partition_key(Policy::Login, &second)
-    );
-    assert_eq!(partition_key(Policy::Register, &first), "192.0.2.10");
-}
-
-#[test]
-fn session_partition_binds_subject_and_security_stamp_without_exposing_either() {
-    let a = claims("user-a");
-    let mut rotated = a.clone();
-    rotated.stamp = "stamp-2".to_string();
-    let key = session_partition_key(&a);
-    assert_eq!(key.len(), 68);
-    assert!(key.starts_with("jwt:"));
-    assert!(!key.contains(&a.sub));
-    assert!(!key.contains(&a.stamp));
-    assert_ne!(key, session_partition_key(&rotated));
-    assert_ne!(key, session_partition_key(&claims("user-b")));
-}
-
-#[test]
-fn named_policy_reuses_verified_session_partition_key() {
-    let session = claims("user-a");
-    let expected = session_partition_key(&session);
-    let mut request = Request::builder()
-        .header("x-real-ip", "192.0.2.10")
-        .body(axum::body::Body::empty())
-        .unwrap();
-    request
-        .extensions_mut()
-        .insert(crate::middlewares::privilege_authentication::VerifiedSessionClaims(session));
-    request.extensions_mut().insert(ConnectInfo(
-        "192.0.2.10:1234".parse::<SocketAddr>().unwrap(),
-    ));
-
-    // The fallback remains available to callers that construct the verified
-    // claims extension without passing through global_middleware.
-    assert_eq!(partition_key(Policy::Submit, &request), expected);
-
-    let cached = "jwt:already-computed".to_string();
-    request
-        .extensions_mut()
-        .insert(VerifiedSessionPartitionKey(cached.clone()));
-    assert_eq!(partition_key(Policy::Submit, &request), cached);
-    // Anonymous-facing policies must remain source-IP partitioned even when a
-    // verified session key is present.
-    assert_eq!(partition_key(Policy::Login, &request), "192.0.2.10");
-    assert_eq!(
-        partition_key(Policy::PrivilegedHubAdmission, &request),
-        "192.0.2.10"
-    );
-    assert_eq!(
-        partition_key(Policy::PublicHubAdmission, &request),
-        "192.0.2.10"
-    );
-}
-
-#[test]
 fn ad_submit_budget_charges_distinct_work_atomically() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -230,6 +202,52 @@ fn ad_submit_default_allows_four_max_batches_per_participation() {
             .unwrap_or_else(|error| error.into_inner())
             .remove(&(Policy::AdSubmit, partition));
     }
+}
+
+#[test]
+fn query_work_budget_caps_one_partition_under_concurrency() {
+    assert!(matches!(
+        Policy::Query.kind(),
+        Kind::Bucket {
+            capacity: 30.0,
+            refill_per_sec: 0.1,
+        }
+    ));
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let key = format!("query-work-concurrency-{nonce}");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(64));
+    let results = std::thread::scope(|scope| {
+        let handles = (0..64)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let key = key.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    check(Policy::Query, key)
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("query admission worker panicked"))
+            .collect::<Vec<_>>()
+    });
+
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 30);
+    assert_eq!(results.iter().filter(|result| result.is_err()).count(), 34);
+    assert!(results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .all(|retry_after| (1..=10).contains(retry_after)));
+
+    shard_for(Policy::Query, &key)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&(Policy::Query, key));
 }
 
 #[test]
@@ -415,6 +433,72 @@ fn high_source_ceilings_have_constant_size_state() {
     assert_eq!(Policy::PublicHubAdmission.fixed_window(), (512, 51_200));
 }
 
+#[test]
+fn verdict_recovery_has_a_distinct_bounded_identity_budget() {
+    assert!(matches!(
+        Policy::Verdict.kind(),
+        Kind::Bucket {
+            capacity: 30.0,
+            refill_per_sec: 0.5,
+        }
+    ));
+    assert_eq!(Policy::Verdict.fixed_window(), (30, 60_000));
+    assert!(redis_key(Policy::Verdict, "partition").starts_with("rl:tb:12:"));
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let key = format!("verdict-recovery-{nonce}");
+    for _ in 0..30 {
+        assert_eq!(check(Policy::Verdict, key.clone()), Ok(()));
+    }
+    assert_eq!(check(Policy::Verdict, key.clone()), Err(2));
+    shard_for(Policy::Verdict, &key)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&(Policy::Verdict, key));
+}
+
+#[test]
+fn proxy_policies_are_append_only_bounded_buckets() {
+    assert_eq!(Policy::ProxyOpen as u8, Policy::SolveReceipt as u8 + 1);
+    assert!(redis_key(Policy::ProxyOpen, "partition").starts_with("rl:tb:21:"));
+    assert!(redis_key(Policy::ProxySourceOpen, "partition").starts_with("rl:tb:22:"));
+    assert!(redis_key(Policy::ProxyTraffic, "partition").starts_with("rl:tb:23:"));
+    assert!(matches!(
+        Policy::ProxyOpen.kind(),
+        Kind::Bucket {
+            capacity: 32.0,
+            refill_per_sec: 4.0,
+        }
+    ));
+    assert!(matches!(
+        Policy::ProxySourceOpen.kind(),
+        Kind::Bucket {
+            capacity: 512.0,
+            refill_per_sec: 32.0,
+        }
+    ));
+    assert!(matches!(
+        Policy::ProxyTraffic.kind(),
+        Kind::Bucket {
+            capacity: 16_384.0,
+            refill_per_sec: 1_024.0,
+        }
+    ));
+
+    let key = format!("proxy-open-{}", uuid::Uuid::new_v4());
+    for _ in 0..32 {
+        assert_eq!(check(Policy::ProxyOpen, key.clone()), Ok(()));
+    }
+    assert_eq!(check(Policy::ProxyOpen, key.clone()), Err(1));
+    shard_for(Policy::ProxyOpen, &key)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&(Policy::ProxyOpen, key));
+}
+
 /// Two `DistributedLimiter` instances = two replicas sharing one Redis. Proves
 /// the whole point of the distributed limiter: N nodes enforce ONE combined
 /// quota, not N independent ones (two in-process stores would each admit `limit`,
@@ -472,6 +556,86 @@ async fn distributed_limiter_shares_one_counter_across_replicas() {
         .query_async(&mut admin)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn distributed_proxy_traffic_charge_is_atomic_across_every_dimension() {
+    let Ok(url) = std::env::var("RSCTF_TEST_REDIS_URL") else {
+        return;
+    };
+    let mut admin = redis::Client::open(url.as_str())
+        .unwrap()
+        .get_connection_manager()
+        .await
+        .unwrap();
+    let limiter = DistributedLimiter {
+        conn: admin.clone(),
+    };
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let partitions = [
+        format!("proxy-global-{nonce}"),
+        format!("proxy-subject-{nonce}"),
+        format!("proxy-scope-{nonce}"),
+        format!("proxy-source-{nonce}"),
+        format!("proxy-workload-{nonce}"),
+    ];
+    let partition_refs = partitions.each_ref().map(String::as_str);
+    let keys = partitions
+        .each_ref()
+        .map(|partition| redis_key(Policy::ProxyTraffic, partition));
+    for key in &keys {
+        redis::cmd("DEL")
+            .arg(key)
+            .query_async::<()>(&mut admin)
+            .await
+            .unwrap();
+    }
+
+    limiter
+        // Use a four-second deficit so every key remains inspectable even on a
+        // heavily contended CI host. The production source dimension is
+        // intentionally cheaper, but a 32-unit deficit expires after 32 ms and
+        // made this integration assertion depend on scheduler latency.
+        .check_proxy_traffic(partition_refs, [4_096; 5])
+        .await
+        .unwrap();
+    let Kind::Bucket { capacity, .. } = Policy::ProxyTraffic.kind() else {
+        panic!("proxy traffic must remain a token bucket")
+    };
+    for key in &keys {
+        let expected = capacity - 4_096.0;
+        let tokens = redis_bucket_tokens(&mut admin, key).await;
+        assert!(
+            (expected..=capacity).contains(&tokens),
+            "fresh proxy credit charge was outside its refill range"
+        );
+    }
+
+    // Freeze every bucket's clock in the future, exhaust one dimension, and
+    // prove the denied transaction did not partially charge the others.
+    let now_ms = redis_time_ms(&mut admin).await;
+    for key in &keys {
+        set_redis_bucket(&mut admin, key, 1_000.0, now_ms + 10_000, 20_000).await;
+    }
+    set_redis_bucket(&mut admin, &keys[2], 0.0, now_ms + 10_000, 20_000).await;
+    assert_eq!(
+        limiter
+            .check_proxy_traffic(partition_refs, [256, 256, 256, 32, 256])
+            .await,
+        Err(1)
+    );
+    for (index, key) in keys.iter().enumerate() {
+        let expected = if index == 2 { 0.0 } else { 1_000.0 };
+        assert_eq!(redis_bucket_tokens(&mut admin, key).await, expected);
+        redis::cmd("DEL")
+            .arg(key)
+            .query_async::<()>(&mut admin)
+            .await
+            .unwrap();
+    }
 }
 
 /// The batched script must be observationally identical to the old ordered

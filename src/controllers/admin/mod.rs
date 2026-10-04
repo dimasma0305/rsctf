@@ -8,20 +8,25 @@
 //! the router below preserves the existing React client paths and wire models.
 
 pub mod ad;
+pub(crate) mod agent_signatures;
+pub(crate) mod ai_chat_providers;
 mod flag_egress;
 #[path = "participation.rs"]
 mod participation_review;
+mod registries;
+pub(crate) mod users_manager_autocomplete;
+mod writeup_grading;
 
 use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::middlewares::rate_limiter::{limited, Policy};
-use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use futures::StreamExt;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
     QuerySelect, Set,
@@ -30,14 +35,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, Duration, Utc};
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::AdminUser;
 use crate::models::data::{
-    api_token, build_record, challenge_review, config, container, division, game, game_challenge,
-    game_manager, local_file, log_entry, participation, repo_binding, repo_binding_scan,
-    submission, team, user,
+    build_record, config, division, game, game_challenge, game_manager, local_file, repo_binding,
+    repo_binding_scan, team, user,
 };
 use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::{
@@ -48,6 +52,7 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{ArrayResponse, MessageResponse, RequestResponse};
 pub use flag_egress::*;
 pub use participation_review::*;
+use users_manager_autocomplete::manager_autocomplete;
 
 // ─── DTOs ──────────────────────────────────────────────────────────────────
 
@@ -81,8 +86,17 @@ pub fn router() -> Router<SharedState> {
     Router::new()
         // --- Diagnostics ---
         .route("/api/admin/MyIp", get(my_ip))
+        .route(
+            "/api/admin/realtime/metrics",
+            limited(Policy::Query, get(realtime::realtime_metrics)),
+        )
         // --- Config ---
-        .route("/api/admin/config", get(get_config).put(update_config))
+        .route(
+            "/api/admin/config",
+            get(get_config)
+                .put(update_config)
+                .layer(DefaultBodyLimit::max(96 * 1024)),
+        )
         .route(
             "/api/admin/config/logo",
             post(logo_upload)
@@ -91,20 +105,84 @@ pub fn router() -> Router<SharedState> {
                 ))
                 .merge(delete(logo_delete)),
         )
+        .route(
+            "/api/admin/config/logo/stage/{operation_id}",
+            post(stage_branding).layer(DefaultBodyLimit::max(
+                crate::utils::upload::IMAGE_BODY_BYTES,
+            )),
+        )
+        .route(
+            "/api/admin/config/operations/{operation_id}",
+            get(get_settings_operation),
+        )
         // --- Dashboard / trends / reviews / cheat reports / writeups ---
-        .route("/api/admin/dashboard", get(dashboard))
-        .route("/api/admin/Games/{id}/FlagEgress", get(get_flag_egress))
-        .route("/api/admin/submissiontrend", get(submission_trend))
-        .route("/api/admin/reviews", get(reviews))
-        .route("/api/admin/cheat-reports", get(cheat_reports))
-        .route("/api/admin/writeups", get(all_writeups))
-        .route("/api/admin/writeups/{id}", get(game_writeups))
-        .route("/api/admin/writeups/{id}/all", get(download_all_writeups))
+        .route(
+            "/api/admin/dashboard",
+            limited(Policy::Query, get(dashboard)),
+        )
+        .route(
+            "/api/admin/Games/{id}/FlagEgress",
+            limited(Policy::Query, get(get_flag_egress)),
+        )
+        .route(
+            "/api/admin/Games/{id}/FlagEgress/backfill",
+            limited(Policy::Query, get(get_flag_egress_backfill)),
+        )
+        .route(
+            "/api/admin/submissiontrend",
+            limited(Policy::Query, get(submission_trend)),
+        )
+        .route("/api/admin/reviews", limited(Policy::Query, get(reviews)))
+        .route(
+            "/api/admin/cheat-reports",
+            limited(Policy::Query, get(cheat_reports)),
+        )
+        .route(
+            "/api/admin/writeups",
+            limited(Policy::Query, get(all_writeups)),
+        )
+        .route(
+            "/api/admin/writeups/{id}",
+            limited(Policy::Query, get(game_writeups)),
+        )
+        .route(
+            "/api/admin/writeups/{id}/all",
+            limited(Policy::Query, get(download_all_writeups)),
+        )
+        .route(
+            "/api/admin/writeups/{id}/grading",
+            limited(Policy::Query, get(writeup_grading::get_grading)),
+        )
+        .route(
+            "/api/admin/writeups/{id}/grading/{participation_id}/{challenge_id}",
+            limited(Policy::Query, put(writeup_grading::save_grade))
+                .layer(DefaultBodyLimit::max(2048)),
+        )
         // --- Users ---
         .route("/api/admin/users", get(users).post(add_users))
-        .route("/api/admin/users/import", post(import_users))
+        .route(
+            "/api/admin/users/import",
+            post(import_users).layer(DefaultBodyLimit::max(1024 * 1024)),
+        )
+        .route(
+            "/api/admin/users/import/{operationId}",
+            get(recover_import_job),
+        )
+        .route("/api/admin/users/imports", get(import_history))
+        .route(
+            "/api/admin/users/imports/{operationId}",
+            get(import_history_detail),
+        )
         .route("/api/admin/users/credentials/send", post(send_credentials))
+        .route(
+            "/api/admin/users/{userid}/password-email",
+            post(send_password_setup_email),
+        )
         .route("/api/admin/users/search", post(search_users))
+        .route(
+            "/api/admin/users/manager-autocomplete",
+            limited(Policy::Query, get(manager_autocomplete)),
+        )
         .route(
             "/api/admin/users/{userid}",
             get(user_info).put(update_user).delete(delete_user),
@@ -123,6 +201,10 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/logs", get(logs))
         // --- Instances ---
         .route("/api/admin/instances", get(instances))
+        .route(
+            "/api/admin/instances/filter-options",
+            get(instance_filter_options),
+        )
         .route("/api/admin/instances/{id}", delete(destroy_instance))
         .route("/api/admin/instances/{id}/stats", get(instance_stats))
         // --- Files ---
@@ -137,7 +219,10 @@ pub fn router() -> Router<SharedState> {
             limited(Policy::Concurrency, post(test_email)),
         )
         // --- Bulk rebuild ---
-        .route("/api/admin/games/{gameId}/bulkrebuild", post(bulk_rebuild))
+        .route(
+            "/api/admin/games/{gameId}/bulkrebuild",
+            limited(Policy::Concurrency, post(bulk_rebuild)),
+        )
         // --- Anti-cheat ---
         .route("/api/admin/anticheatblocks", get(list_anti_cheat_blocks))
         .route(
@@ -177,12 +262,16 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/builds/inprogress", get(builds_in_progress))
         .route(
             "/api/admin/builds/images",
-            get(build_images).delete(delete_build_image),
+            limited(Policy::Query, get(build_images)),
         )
+        .route("/api/admin/builds/images", delete(delete_build_image))
         .route("/api/admin/builds/bulkdelete", post(bulk_delete_builds))
         .route("/api/admin/builds/prunefailed", post(prune_failed_builds))
         .route("/api/admin/builds/pruneimages", post(prune_images))
-        .route("/api/admin/builds/storage", get(build_storage_status))
+        .route(
+            "/api/admin/builds/storage",
+            limited(Policy::Query, get(build_storage_status)),
+        )
         .route(
             "/api/admin/builds/prunestorage",
             post(cleanup_build_storage),
@@ -190,7 +279,7 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/builds/{auditId}", delete(delete_build))
         .route(
             "/api/admin/builds/{auditId}/reenqueue",
-            post(reenqueue_build),
+            limited(Policy::Concurrency, post(reenqueue_build)),
         )
         // --- Repo bindings ---
         .route(
@@ -207,123 +296,54 @@ pub fn router() -> Router<SharedState> {
             get(repo_binding_scans),
         )
         // Admin A&D controller (round advance, service registration) under admin.
+        .merge(registries::router())
         .merge(ad::router())
 }
 
-// ─── Dashboard ───────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod dashboard_route_admission_tests {
+    #[test]
+    fn expensive_dashboard_activity_reads_require_admin_and_query_admission() {
+        let router_source = include_str!("mod.rs");
+        let compact_router = router_source
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let handler_sources = [
+            router_source,
+            include_str!("dashboard.rs"),
+            include_str!("anti_cheat.rs"),
+        ]
+        .join("\n");
 
-/// RSCTF `SystemStatsModel`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SystemStatsModel {
-    pub user_count: i64,
-    pub team_count: i64,
-    pub active_container_count: i64,
-}
+        for (path, handler) in [
+            ("/api/admin/dashboard", "dashboard"),
+            ("/api/admin/submissiontrend", "submission_trend"),
+            ("/api/admin/reviews", "reviews"),
+            ("/api/admin/cheat-reports", "cheat_reports"),
+            ("/api/admin/writeups", "all_writeups"),
+            ("/api/admin/writeups/{id}", "game_writeups"),
+            ("/api/admin/writeups/{id}/all", "download_all_writeups"),
+        ] {
+            assert!(
+                compact_router.contains(&format!("\"{path}\"")),
+                "missing {path}"
+            );
+            assert!(
+                compact_router.contains(&format!("limited(Policy::Query, get({handler}))")),
+                "{path} must retain named query-work admission"
+            );
 
-/// RSCTF `BasicGameInfoModel`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BasicGameInfoModel {
-    pub id: i32,
-    pub title: String,
-    pub summary: String,
-    pub poster: Option<String>,
-    pub limit: i32,
-    pub team_count: i64,
-    pub user_count: i64,
-    /// Fraction of positive (Like) ratings among decisive (Like/Dislike)
-    /// challenge reviews for the game; `null` when there are none — mirrors
-    /// RSCTF's nullable `AverageRating`.
-    pub average_rating: Option<f64>,
-    /// Total number of challenge-review rows for the game (RSCTF `ReviewCount`).
-    pub review_count: i32,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub start: DateTime<Utc>,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub end: DateTime<Utc>,
-}
-
-/// RSCTF `AdminDashboardModel`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AdminDashboardModel {
-    pub system_stats: SystemStatsModel,
-    pub top_games: Vec<BasicGameInfoModel>,
-}
-
-/// `GET /api/admin/dashboard` — platform-wide stats + top games by team count.
-pub async fn dashboard(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-) -> AppResult<RequestResponse<AdminDashboardModel>> {
-    let user_count = user::Entity::find().count(&st.db).await? as i64;
-    let team_count = team::Entity::find().count(&st.db).await? as i64;
-    let active_container_count = container::Entity::find().count(&st.db).await? as i64;
-
-    let games = game::Entity::find()
-        .order_by_desc(game::Column::Id)
-        .limit(50)
-        .all(&st.db)
-        .await?;
-
-    let mut top_games = Vec::with_capacity(games.len());
-    for g in games {
-        let tc = participation::Entity::find()
-            .filter(participation::Column::GameId.eq(g.id))
-            .count(&st.db)
-            .await? as i64;
-        top_games.push(BasicGameInfoModel {
-            id: g.id,
-            title: g.title,
-            summary: g.summary,
-            poster: g.poster_hash.map(|h| format!("/assets/{h}/poster")),
-            limit: g.team_member_count_limit,
-            team_count: tc,
-            user_count: tc,
-            average_rating: None,
-            review_count: 0,
-            start: g.start_time_utc,
-            end: g.end_time_utc,
-        });
-    }
-    top_games.sort_by_key(|game| std::cmp::Reverse(game.team_count));
-    top_games.truncate(5);
-
-    // Per top game, derive the review stats RSCTF's dashboard reports: the total
-    // review count, and the average rating as the fraction of decisive reviews
-    // that are positive. RSCTF's `ReviewRating` is stored numerically
-    // (Dislike = 1, Like = 2); rsctf's enum shares those discriminants, so we
-    // read the raw `i16` value rather than the (differently-named) variants.
-    for g in top_games.iter_mut() {
-        let reviews = challenge_review::Entity::find()
-            .filter(challenge_review::Column::GameId.eq(g.id))
-            .all(&st.db)
-            .await?;
-        g.review_count = reviews.len() as i32;
-        let mut decisive = 0i64;
-        let mut likes = 0i64;
-        for r in &reviews {
-            match r.rating as i16 {
-                2 => {
-                    likes += 1;
-                    decisive += 1;
-                }
-                1 => decisive += 1,
-                _ => {}
-            }
+            let signature_start = handler_sources
+                .find(&format!("pub async fn {handler}"))
+                .unwrap_or_else(|| panic!("missing handler {handler}"));
+            let signature_end = (signature_start + 320).min(handler_sources.len());
+            assert!(
+                handler_sources[signature_start..signature_end].contains("AdminUser"),
+                "{handler} must retain backend admin authentication"
+            );
         }
-        g.average_rating = (decisive > 0).then(|| likes as f64 / decisive as f64);
     }
-
-    Ok(RequestResponse::ok(AdminDashboardModel {
-        system_stats: SystemStatsModel {
-            user_count,
-            team_count,
-            active_container_count,
-        },
-        top_games,
-    }))
 }
 
 // ─── Container instances ───────────────────────────────────────────────────────
@@ -357,168 +377,7 @@ pub async fn files(
     Ok(ArrayResponse::new(data, total))
 }
 
-// ─── Challenge reviews ─────────────────────────────────────────────────────────
-
-/// RSCTF `ChallengeReviewDetailModel`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChallengeReviewDetailModel {
-    pub id: i32,
-    pub challenge_id: i32,
-    pub challenge_name: String,
-    pub game_title: String,
-    pub user_id: Uuid,
-    pub user_name: String,
-    pub rating: ReviewRating,
-    pub comment: Option<String>,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub submit_time_utc: DateTime<Utc>,
-}
-
-/// `GET /api/admin/reviews` — recent challenge reviews (raw array), newest first.
-pub async fn reviews(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Query(q): Query<ListQuery>,
-) -> AppResult<RequestResponse<Vec<ChallengeReviewDetailModel>>> {
-    let count = q.count.clamp(0, 1000);
-    let rows = challenge_review::Entity::find()
-        .order_by_desc(challenge_review::Column::SubmitTimeUtc)
-        .offset(q.skip)
-        .limit(count)
-        .all(&st.db)
-        .await?;
-
-    let mut data = Vec::with_capacity(rows.len());
-    for r in rows {
-        let (challenge_name, game_title) = match game_challenge::Entity::find_by_id(r.challenge_id)
-            .one(&st.db)
-            .await?
-        {
-            Some(ch) => {
-                let title = game::Entity::find_by_id(ch.game_id)
-                    .one(&st.db)
-                    .await?
-                    .map(|g| g.title)
-                    .unwrap_or_default();
-                (ch.title, title)
-            }
-            None => (String::new(), String::new()),
-        };
-        let user_name = user::Entity::find_by_id(r.user_id)
-            .one(&st.db)
-            .await?
-            .and_then(|u| u.user_name)
-            .unwrap_or_default();
-
-        data.push(ChallengeReviewDetailModel {
-            id: r.id,
-            challenge_id: r.challenge_id,
-            challenge_name,
-            game_title,
-            user_id: r.user_id,
-            user_name,
-            rating: r.rating,
-            comment: r.comment,
-            submit_time_utc: r.submit_time_utc,
-        });
-    }
-
-    Ok(RequestResponse::ok(data))
-}
-
-// ─── Submission trend ──────────────────────────────────────────────────────────
-
-/// RSCTF `SubmissionTrendModel`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubmissionTrendModel {
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub time: DateTime<Utc>,
-    pub count: i64,
-}
-
-/// Query for `GET /api/admin/submissiontrend`: the RSCTF `range` selector
-/// (`Day` | `Week` | `Month` | `Year`).
-#[derive(Debug, Default, Deserialize)]
-pub struct SubmissionTrendQuery {
-    pub range: Option<String>,
-}
-
-/// `GET /api/admin/submissiontrend` — submissions over a window bucketed per
-/// RSCTF `AdminController.GetSubmissionTrend`:
-///   * `Day` (default) — last 24h, by hour.
-///   * `Week` — last 7 days, by day.
-///   * `Month` — last 30 days, by day.
-///   * `Year` — last 12 months, by month.
-///
-/// Returns a raw array ascending by bucket time.
-pub async fn submission_trend(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Query(q): Query<SubmissionTrendQuery>,
-) -> AppResult<RequestResponse<Vec<SubmissionTrendModel>>> {
-    let range = q.range.unwrap_or_default().to_lowercase();
-    let now = Utc::now();
-    let since = match range.as_str() {
-        "week" => now - Duration::days(7),
-        "month" => now - Duration::days(30),
-        "year" => now - Duration::days(365),
-        // "day" and anything else
-        _ => now - Duration::hours(24),
-    };
-
-    let subs = submission::Entity::find()
-        .filter(submission::Column::SubmitTimeUtc.gte(since))
-        .all(&st.db)
-        .await?;
-
-    let mut buckets: BTreeMap<DateTime<Utc>, i64> = BTreeMap::new();
-    for s in subs {
-        let t = s.submit_time_utc;
-        let key = match range.as_str() {
-            // Group by month (first day of month, midnight UTC).
-            "year" => NaiveDate::from_ymd_opt(t.year(), t.month(), 1)
-                .and_then(|d| d.and_hms_opt(0, 0, 0))
-                .map(|dt| dt.and_utc())
-                .unwrap_or(t),
-            // Group by day (midnight UTC).
-            "week" | "month" => t
-                .date_naive()
-                .and_hms_opt(0, 0, 0)
-                .map(|dt| dt.and_utc())
-                .unwrap_or(t),
-            // Group by hour.
-            _ => t
-                .with_minute(0)
-                .and_then(|t| t.with_second(0))
-                .and_then(|t| t.with_nanosecond(0))
-                .unwrap_or(t),
-        };
-        *buckets.entry(key).or_insert(0) += 1;
-    }
-
-    let data = buckets
-        .into_iter()
-        .map(|(time, count)| SubmissionTrendModel { time, count })
-        .collect();
-    Ok(RequestResponse::ok(data))
-}
-
 // ─── Writeups ──────────────────────────────────────────────────────────────────
-
-/// RSCTF `WriteupInfo`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WriteupInfo {
-    pub id: i32,
-    pub team: TeamInfoModel,
-    pub game_title: String,
-    pub url: String,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub upload_time_utc: DateTime<Utc>,
-    pub division_id: Option<i32>,
-}
 
 /// RSCTF `WriteupInfoModel` (per-game view).
 #[derive(Debug, Serialize)]
@@ -526,67 +385,34 @@ pub struct WriteupInfo {
 pub struct WriteupInfoModel {
     pub divisions: BTreeMap<String, String>,
     pub writeups: Vec<WriteupInfo>,
+    pub total: i64,
 }
 
-/// Materialise a single participation's writeup, if it carries one.
-async fn writeup_for(st: &SharedState, p: &participation::Model) -> AppResult<Option<WriteupInfo>> {
-    let Some(wid) = p.writeup_id else {
-        return Ok(None);
-    };
-    let Some(f) = local_file::Entity::find_by_id(wid).one(&st.db).await? else {
-        return Ok(None);
-    };
-
-    let team = team::Entity::find_by_id(p.team_id)
-        .one(&st.db)
-        .await?
-        .map(TeamInfoModel::from)
-        .unwrap_or_else(|| TeamInfoModel {
-            id: p.team_id,
-            name: String::new(),
-            bio: None,
-            avatar: None,
-            locked: false,
-            members: Vec::new(),
-        });
-    let game_title = game::Entity::find_by_id(p.game_id)
-        .one(&st.db)
-        .await?
-        .map(|g| g.title)
-        .unwrap_or_default();
-
-    Ok(Some(WriteupInfo {
-        id: p.id,
-        team,
-        game_title,
-        url: format!("/assets/{}/{}", f.hash, f.name),
-        upload_time_utc: f.upload_time_utc,
-        division_id: p.division_id,
-    }))
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameWriteupQuery {
+    #[serde(default = "default_count")]
+    pub count: u64,
+    #[serde(default)]
+    pub skip: u64,
+    #[serde(default)]
+    pub division_id: Option<i32>,
 }
 
-/// `GET /api/admin/writeups` — every submitted writeup across all games (raw array).
-pub async fn all_writeups(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Query(q): Query<ListQuery>,
-) -> AppResult<RequestResponse<Vec<WriteupInfo>>> {
-    let count = q.count.clamp(0, 1000);
-    let parts = participation::Entity::find()
-        .filter(participation::Column::WriteupId.is_not_null())
-        .order_by_desc(participation::Column::Id)
-        .offset(q.skip)
-        .limit(count)
-        .all(&st.db)
-        .await?;
-
-    let mut data = Vec::with_capacity(parts.len());
-    for p in parts {
-        if let Some(w) = writeup_for(&st, &p).await? {
-            data.push(w);
-        }
-    }
-    Ok(RequestResponse::ok(data))
+#[derive(sqlx::FromRow)]
+struct GameWriteupRow {
+    participation_id: i32,
+    division_id: Option<i32>,
+    game_title: String,
+    hash: String,
+    file_name: String,
+    upload_time_utc: DateTime<Utc>,
+    team_id: i32,
+    team_name: String,
+    team_bio: Option<String>,
+    team_avatar_hash: Option<String>,
+    team_locked: bool,
+    total: i64,
 }
 
 /// `GET /api/admin/writeups/{id}` — writeups submitted for a single game.
@@ -594,6 +420,7 @@ pub async fn game_writeups(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(id): Path<i32>,
+    Query(q): Query<GameWriteupQuery>,
 ) -> AppResult<RequestResponse<WriteupInfoModel>> {
     game::Entity::find_by_id(id)
         .one(&st.db)
@@ -609,38 +436,91 @@ pub async fn game_writeups(
         .map(|d| (d.id.to_string(), d.name))
         .collect();
 
-    let parts = participation::Entity::find()
-        .filter(participation::Column::GameId.eq(id))
-        .filter(participation::Column::WriteupId.is_not_null())
-        .all(&st.db)
-        .await?;
-
-    let mut writeups = Vec::with_capacity(parts.len());
-    for p in parts {
-        if let Some(w) = writeup_for(&st, &p).await? {
-            writeups.push(w);
-        }
-    }
+    let count = q.count.clamp(1, 100);
+    let rows = sqlx::query_as::<_, GameWriteupRow>(
+        r#"SELECT participation.id AS participation_id,
+                  participation.division_id,
+                  game.title AS game_title,
+                  file.hash,
+                  file.name AS file_name,
+                  file.upload_time_utc,
+                  team.id AS team_id,
+                  team.name AS team_name,
+                  team.bio AS team_bio,
+                  team.avatar_hash AS team_avatar_hash,
+                  team.locked AS team_locked,
+                  COUNT(*) OVER()::bigint AS total
+             FROM "Participations" participation
+             JOIN "Games" game ON game.id = participation.game_id
+             JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "Files" file ON file.id = participation.writeup_id
+            WHERE participation.game_id = $1
+              AND ($4::integer IS NULL OR participation.division_id = $4)
+            ORDER BY participation.id
+            LIMIT $2 OFFSET $3"#,
+    )
+    .bind(id)
+    .bind(i64::try_from(count).unwrap_or(100))
+    .bind(i64::try_from(q.skip).unwrap_or(i64::MAX))
+    .bind(q.division_id)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let total = rows.first().map_or(0, |row| row.total);
+    let writeups = rows
+        .into_iter()
+        .map(|row| WriteupInfo {
+            id: row.participation_id,
+            team: TeamInfoModel {
+                id: row.team_id,
+                name: row.team_name,
+                bio: row.team_bio,
+                avatar: row
+                    .team_avatar_hash
+                    .map(|hash| format!("/assets/{hash}/avatar")),
+                locked: row.team_locked,
+                members: Vec::new(),
+            },
+            game_title: row.game_title,
+            url: format!("/assets/{}/{}", row.hash, row.file_name),
+            upload_time_utc: row.upload_time_utc,
+            division_id: row.division_id,
+        })
+        .collect();
 
     Ok(RequestResponse::ok(WriteupInfoModel {
         divisions,
         writeups,
+        total,
     }))
 }
 
 /// `GET /api/admin/writeups/{id}/all` — download every writeup for a game as a
 /// single streamed zip archive.
 const WRITEUP_ZIP_CHUNK_BYTES: usize = 64 * 1024;
-static WRITEUP_ARCHIVE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+const MAX_WRITEUP_ARCHIVE_ENTRIES: usize = 2_048;
+const MAX_WRITEUP_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
 
 struct WriteupArchiveSource {
     hash: String,
     entry: String,
+    size: usize,
 }
 
-struct WriteupArchiveFile {
-    entry: String,
-    bytes: Vec<u8>,
+#[derive(sqlx::FromRow)]
+struct WriteupArchiveRow {
+    participation_id: i32,
+    team_name: String,
+    hash: String,
+    file_name: String,
+    file_size: i64,
+}
+
+enum WriteupArchiveInput {
+    Start { entry: String, size: usize },
+    Chunk(bytes::Bytes),
+    End,
+    Failed(String),
 }
 
 type WriteupZipChunk = Result<bytes::Bytes, std::io::Error>;
@@ -696,117 +576,186 @@ impl Write for ZipStreamWriter {
     }
 }
 
+fn write_streamed_writeup_zip(
+    output: tokio::sync::mpsc::Sender<WriteupZipChunk>,
+    mut input: tokio::sync::mpsc::Receiver<WriteupArchiveInput>,
+) -> Result<(), String> {
+    let writer = ZipStreamWriter::new(output);
+    let mut zip = zip::ZipWriter::new_stream(writer);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut remaining = None::<usize>;
+    while let Some(message) = input.blocking_recv() {
+        match message {
+            WriteupArchiveInput::Start { entry, size } if remaining.is_none() => {
+                zip.start_file(entry, options)
+                    .map_err(|error| format!("zip entry: {error}"))?;
+                remaining = Some(size);
+            }
+            WriteupArchiveInput::Chunk(chunk) => {
+                let Some(left) = remaining.as_mut() else {
+                    return Err("writeup bytes arrived outside a ZIP entry".to_string());
+                };
+                if chunk.len() > *left {
+                    return Err("writeup stream exceeded its declared size".to_string());
+                }
+                zip.write_all(&chunk)
+                    .map_err(|error| format!("zip write: {error}"))?;
+                *left -= chunk.len();
+            }
+            WriteupArchiveInput::End if remaining == Some(0) => remaining = None,
+            WriteupArchiveInput::End => {
+                return Err("writeup stream ended before its declared size".to_string())
+            }
+            WriteupArchiveInput::Failed(error) => return Err(error),
+            WriteupArchiveInput::Start { .. } => {
+                return Err("writeup streams overlapped ZIP entries".to_string())
+            }
+        }
+    }
+    if remaining.is_some() {
+        return Err("writeup stream closed inside a ZIP entry".to_string());
+    }
+    zip.finish()
+        .map_err(|error| format!("zip finish: {error}"))?
+        .into_inner()
+        .finish()
+        .map_err(|error| format!("zip stream: {error}"))
+}
+
 pub async fn download_all_writeups(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(id): Path<i32>,
 ) -> AppResult<Response> {
+    let permit = match st
+        .bulk_export_admission
+        .try_acquire(std::sync::Arc::clone(&st.cache), MAX_WRITEUP_ARCHIVE_BYTES)
+        .await
+    {
+        Ok(permit) => std::sync::Arc::new(permit),
+        Err(_) => return Ok(crate::services::bulk_export::overload_response()),
+    };
     let game = game::Entity::find_by_id(id)
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Game not found"))?;
 
-    let parts = participation::Entity::find()
-        .filter(participation::Column::GameId.eq(id))
-        .filter(participation::Column::WriteupId.is_not_null())
-        .all(&st.db)
-        .await?;
-
-    let mut sources = Vec::with_capacity(parts.len());
-    for participation in parts {
-        let Some(writeup_id) = participation.writeup_id else {
-            continue;
-        };
-        let Some(file) = local_file::Entity::find_by_id(writeup_id)
-            .one(&st.db)
-            .await?
-        else {
-            continue;
-        };
-        if file.file_size < 0 || file.file_size as usize > crate::utils::upload::WRITEUP_FILE_BYTES
-        {
-            tracing::warn!(
-                file_id = file.id,
-                size = file.file_size,
-                "skipping writeup with invalid stored size"
-            );
-            continue;
+    let rows = sqlx::query_as::<_, WriteupArchiveRow>(
+        r#"SELECT participation.id AS participation_id,
+                  team.name AS team_name,
+                  file.hash,
+                  file.name AS file_name,
+                  file.file_size
+             FROM "Participations" participation
+             JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "Files" file ON file.id = participation.writeup_id
+            WHERE participation.game_id = $1
+            ORDER BY participation.id
+            LIMIT $2"#,
+    )
+    .bind(id)
+    .bind(i64::try_from(MAX_WRITEUP_ARCHIVE_ENTRIES + 1).unwrap_or(i64::MAX))
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if rows.len() > MAX_WRITEUP_ARCHIVE_ENTRIES {
+        return Err(AppError::payload_too_large(format!(
+            "Writeup archives are limited to {MAX_WRITEUP_ARCHIVE_ENTRIES} files"
+        )));
+    }
+    let mut total_bytes = 0usize;
+    let mut sources = Vec::with_capacity(rows.len());
+    for row in rows {
+        let file_size = usize::try_from(row.file_size)
+            .map_err(|_| AppError::bad_request("Writeup has an invalid stored size"))?;
+        if file_size > crate::utils::upload::WRITEUP_FILE_BYTES {
+            return Err(AppError::payload_too_large(
+                "A writeup exceeds the file limit",
+            ));
         }
-        let team_name = team::Entity::find_by_id(participation.team_id)
-            .one(&st.db)
-            .await?
-            .map(|team| team.name)
-            .unwrap_or_else(|| format!("team-{}", participation.team_id));
+        total_bytes = total_bytes
+            .checked_add(file_size)
+            .filter(|total| *total <= MAX_WRITEUP_ARCHIVE_BYTES)
+            .ok_or_else(|| AppError::payload_too_large("Writeup archive exceeds 128 MiB"))?;
         sources.push(WriteupArchiveSource {
-            hash: file.hash,
+            hash: row.hash,
             entry: format!(
                 "{}-{}-{}",
-                participation.id,
-                sanitize_entry(&team_name),
-                sanitize_entry(&file.name)
+                row.participation_id,
+                sanitize_entry(&row.team_name),
+                sanitize_entry(&row.file_name)
             ),
+            size: file_size,
         });
     }
 
-    let permit = WRITEUP_ARCHIVE_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Writeup archive capacity is busy; retry shortly"))?;
-    let (file_sender, mut file_receiver) = tokio::sync::mpsc::channel::<WriteupArchiveFile>(1);
+    let (file_sender, file_receiver) = tokio::sync::mpsc::channel::<WriteupArchiveInput>(8);
     let (output_sender, output_receiver) = tokio::sync::mpsc::channel::<WriteupZipChunk>(8);
 
     let error_sender = output_sender.clone();
+    let worker_permit = std::sync::Arc::clone(&permit);
     tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let outcome = (|| -> Result<(), String> {
-            let writer = ZipStreamWriter::new(output_sender);
-            let mut zip = zip::ZipWriter::new_stream(writer);
-            let options = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated);
-            while let Some(file) = file_receiver.blocking_recv() {
-                zip.start_file(file.entry, options)
-                    .map_err(|error| format!("zip entry: {error}"))?;
-                zip.write_all(&file.bytes)
-                    .map_err(|error| format!("zip write: {error}"))?;
-            }
-            let writer = zip
-                .finish()
-                .map_err(|error| format!("zip finish: {error}"))?;
-            writer
-                .into_inner()
-                .finish()
-                .map_err(|error| format!("zip stream: {error}"))
-        })();
+        let _permit = worker_permit;
+        let outcome = write_streamed_writeup_zip(output_sender, file_receiver);
         if let Err(error) = outcome {
             let _ = error_sender.blocking_send(Err(std::io::Error::other(error)));
         }
     });
 
     let storage = st.storage.clone();
+    let loader_permit = std::sync::Arc::clone(&permit);
     tokio::spawn(async move {
+        let _permit = loader_permit;
         for source in sources {
-            let bytes = match storage
-                .load_bounded(&source.hash, crate::utils::upload::WRITEUP_FILE_BYTES)
+            let mut stream = match storage
+                .stream_range(&source.hash, 0..source.size as u64)
                 .await
             {
-                Ok(bytes) => bytes,
+                Ok(stream) => stream,
                 Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        hash = %source.hash,
-                        "skipping unavailable writeup in archive"
-                    );
-                    continue;
+                    let _ = file_sender
+                        .send(WriteupArchiveInput::Failed(format!(
+                            "writeup {} is unavailable: {error}",
+                            source.hash
+                        )))
+                        .await;
+                    return;
                 }
             };
             if file_sender
-                .send(WriteupArchiveFile {
+                .send(WriteupArchiveInput::Start {
                     entry: source.entry,
-                    bytes,
+                    size: source.size,
                 })
                 .await
                 .is_err()
             {
-                break;
+                return;
+            }
+            while let Some(chunk) = stream.next().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        let _ = file_sender
+                            .send(WriteupArchiveInput::Failed(format!(
+                                "writeup {} stream failed: {error}",
+                                source.hash
+                            )))
+                            .await;
+                        return;
+                    }
+                };
+                if file_sender
+                    .send(WriteupArchiveInput::Chunk(chunk))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            if file_sender.send(WriteupArchiveInput::End).await.is_err() {
+                return;
             }
         }
     });
@@ -825,7 +774,10 @@ pub async fn download_all_writeups(
             (header::CONTENT_DISPOSITION, disposition),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
         ],
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(output_receiver)),
+        crate::services::bulk_export::permitted_stream_body(
+            tokio_stream::wrappers::ReceiverStream::new(output_receiver),
+            permit,
+        ),
     )
         .into_response())
 }
@@ -848,19 +800,44 @@ mod writeup_archive_tests {
     use std::io::{Cursor, Read};
 
     #[test]
+    fn writeup_archive_admits_before_any_projection_or_blob_read() {
+        let source = include_str!("mod.rs");
+        let handler = source.find("pub async fn download_all_writeups(").unwrap();
+        let end = source[handler..].find("fn sanitize_entry(").unwrap() + handler;
+        let body = &source[handler..end];
+        let admission = body.find("bulk_export_admission").unwrap();
+        let projection = body.find("query_as::<_, WriteupArchiveRow>").unwrap();
+        let blob_read = body.find("stream_range").unwrap();
+        assert!(admission < projection);
+        assert!(admission < blob_read);
+        assert!(!body.contains("load_bounded"));
+    }
+
+    #[test]
     fn streamed_writeup_zip_is_valid_without_buffering_the_archive() {
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<WriteupZipChunk>(8);
+        let (input_sender, input_receiver) = tokio::sync::mpsc::channel(8);
+        let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel::<WriteupZipChunk>(8);
+        input_sender
+            .blocking_send(WriteupArchiveInput::Start {
+                entry: "team-writeup.pdf".into(),
+                size: 9,
+            })
+            .unwrap();
+        input_sender
+            .blocking_send(WriteupArchiveInput::Chunk(bytes::Bytes::from_static(
+                b"%PDF-test",
+            )))
+            .unwrap();
+        input_sender
+            .blocking_send(WriteupArchiveInput::End)
+            .unwrap();
+        drop(input_sender);
         let worker = std::thread::spawn(move || {
-            let writer = ZipStreamWriter::new(sender);
-            let mut zip = zip::ZipWriter::new_stream(writer);
-            zip.start_file("team-writeup.pdf", zip::write::SimpleFileOptions::default())
-                .unwrap();
-            zip.write_all(b"%PDF-test").unwrap();
-            zip.finish().unwrap().into_inner().finish().unwrap();
+            write_streamed_writeup_zip(output_sender, input_receiver).unwrap();
         });
 
         let mut archive_bytes = Vec::new();
-        while let Some(chunk) = receiver.blocking_recv() {
+        while let Some(chunk) = output_receiver.blocking_recv() {
             archive_bytes.extend_from_slice(&chunk.unwrap());
         }
         worker.join().unwrap();
@@ -873,6 +850,27 @@ mod writeup_archive_tests {
             .read_to_end(&mut contents)
             .unwrap();
         assert_eq!(contents, b"%PDF-test");
+    }
+
+    #[test]
+    fn streamed_writeup_zip_rejects_declared_size_mismatches() {
+        let (input_sender, input_receiver) = tokio::sync::mpsc::channel(8);
+        let (output_sender, _output_receiver) = tokio::sync::mpsc::channel(8);
+        input_sender
+            .blocking_send(WriteupArchiveInput::Start {
+                entry: "writeup.pdf".into(),
+                size: 2,
+            })
+            .unwrap();
+        input_sender
+            .blocking_send(WriteupArchiveInput::Chunk(bytes::Bytes::from_static(
+                b"too long",
+            )))
+            .unwrap();
+        drop(input_sender);
+        assert!(write_streamed_writeup_zip(output_sender, input_receiver)
+            .unwrap_err()
+            .contains("declared size"));
     }
 
     #[test]
@@ -957,18 +955,25 @@ fn generate_password() -> String {
 
 mod anti_cheat;
 mod builds;
+mod dashboard;
 mod diagnostics;
 mod instances;
 mod logs;
+mod realtime;
 mod repo_bindings;
 mod settings;
 mod teams;
 mod users;
 mod users_bulk_identity;
+mod users_credential_admission;
 mod users_credentials;
+mod users_import_events;
+mod users_import_history;
+mod users_import_results;
 mod users_mutate;
 pub use anti_cheat::*;
 pub use builds::*;
+pub use dashboard::*;
 pub use diagnostics::*;
 pub use instances::*;
 pub use logs::*;
@@ -977,4 +982,6 @@ pub use settings::*;
 pub use teams::*;
 pub use users::*;
 pub use users_credentials::*;
+pub use users_import_history::{import_history, import_history_detail};
+pub use users_import_results::recover_import_job;
 pub use users_mutate::*;

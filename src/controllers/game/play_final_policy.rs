@@ -104,6 +104,7 @@ struct PreparedChallenge {
     category: i16,
     challenge_type: i16,
     hints: Option<Json>,
+    released_hint_count: i32,
     attachment_id: Option<i32>,
     submission_limit: i32,
     deadline_utc: Option<DateTime<Utc>>,
@@ -112,6 +113,7 @@ struct PreparedChallenge {
     container_image: Option<String>,
     expose_port: Option<i32>,
     shared_container_id: Option<Uuid>,
+    ad_self_hosted: bool,
 }
 
 #[derive(Debug)]
@@ -131,6 +133,7 @@ impl PreparedChallengeGrant {
                 category: challenge.category as i16,
                 challenge_type: challenge.challenge_type as i16,
                 hints: challenge.hints.clone(),
+                released_hint_count: challenge.released_hint_count,
                 attachment_id: challenge.attachment_id,
                 submission_limit: challenge.submission_limit,
                 deadline_utc: challenge.deadline_utc,
@@ -139,6 +142,7 @@ impl PreparedChallengeGrant {
                 container_image: challenge.container_image.clone(),
                 expose_port: challenge.expose_port,
                 shared_container_id: challenge.shared_container_id,
+                ad_self_hosted: challenge.ad_self_hosted,
             },
             attachment: PreparedAttachment::NotEmitted,
             runtime: PreparedRuntime::None,
@@ -220,13 +224,16 @@ impl PreparedChallengeGrant {
         };
         let runtime_matches = match &self.runtime {
             PreparedRuntime::None => {
-                model.context.instance_entry.is_none() && model.context.close_time.is_none()
+                model.context.instance_id.is_none()
+                    && model.context.instance_entry.is_none()
+                    && model.context.close_time.is_none()
             }
             PreparedRuntime::PerTeam {
                 instance: _,
                 container,
             } => {
                 !model.context.is_shared_instance
+                    && model.context.instance_id == Some(container.id)
                     && model
                         .context
                         .instance_entry
@@ -236,6 +243,7 @@ impl PreparedChallengeGrant {
             }
             PreparedRuntime::Shared { container } => {
                 model.context.is_shared_instance
+                    && model.context.instance_id == Some(container.id)
                     && model
                         .context
                         .instance_entry
@@ -244,7 +252,9 @@ impl PreparedChallengeGrant {
                     && model.context.close_time == Some(container.expect_stop_at)
             }
         };
-        attachment_matches && runtime_matches
+        attachment_matches
+            && runtime_matches
+            && model.ad_self_hosted == self.challenge.ad_self_hosted
     }
 }
 
@@ -376,6 +386,7 @@ struct ChallengePayloadRow {
     category: i16,
     challenge_type: i16,
     hints: Option<Json>,
+    released_hint_count: i32,
     attachment_id: Option<i32>,
     submission_limit: i32,
     deadline_utc: Option<DateTime<Utc>>,
@@ -384,6 +395,7 @@ struct ChallengePayloadRow {
     container_image: Option<String>,
     expose_port: Option<i32>,
     shared_container_id: Option<Uuid>,
+    ad_self_hosted: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -433,6 +445,7 @@ fn challenge_payload_matches(current: &ChallengePayloadRow, expected: &PreparedC
         && current.category == expected.category
         && current.challenge_type == expected.challenge_type
         && current.hints == expected.hints
+        && current.released_hint_count == expected.released_hint_count
         && current.attachment_id == expected.attachment_id
         && current.submission_limit == expected.submission_limit
         && current.deadline_utc == expected.deadline_utc
@@ -441,6 +454,7 @@ fn challenge_payload_matches(current: &ChallengePayloadRow, expected: &PreparedC
         && current.container_image == expected.container_image
         && current.expose_port == expected.expose_port
         && current.shared_container_id == expected.shared_container_id
+        && current.ad_self_hosted == expected.ad_self_hosted
 }
 
 fn container_matches(current: &ContainerRow, expected: &container::Model) -> bool {
@@ -599,9 +613,10 @@ async fn lock_challenge_payload_on(
 ) -> AppResult<bool> {
     let current = sqlx::query_as::<_, ChallengePayloadRow>(
         r#"SELECT title, content, category, "Type" AS challenge_type, hints,
+                  released_hint_count,
                   attachment_id, submission_limit, deadline_utc,
                   enable_shared_container, workload_spec, container_image,
-                  expose_port, shared_container_id
+                  expose_port, shared_container_id, ad_self_hosted
              FROM "GameChallenges"
             WHERE id = $1 AND game_id = $2
               AND is_enabled = TRUE
@@ -664,6 +679,27 @@ pub(super) async fn finish_details_response(
     challenge_ids: Vec<i32>,
     model: GameDetailModel,
 ) -> AppResult<Response> {
+    finish_scoped_model_response(
+        pool,
+        user,
+        game_id,
+        team_id,
+        participation_id,
+        challenge_ids,
+        model,
+    )
+    .await
+}
+
+async fn finish_scoped_model_response<T: Serialize>(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    challenge_ids: Vec<i32>,
+    model: T,
+) -> AppResult<Response> {
     let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
         pool,
         user.id,
@@ -694,7 +730,49 @@ pub(super) async fn finish_details_response(
     release_with_result(roster, result).await
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn finish_participant_response(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    challenge_ids: Vec<i32>,
+    bundle: bytes::Bytes,
+    headers: &HeaderMap,
+) -> AppResult<Response> {
+    let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
+        pool,
+        user.id,
+        &user.security_stamp,
+        game_id,
+        team_id,
+        participation_id,
+        true,
+    )
+    .await?
+    else {
+        return Err(AppError::Forbidden);
+    };
+
+    let result = async {
+        let scope = lock_play_scope_on(
+            roster.transaction_mut(),
+            game_id,
+            team_id,
+            participation_id,
+            &challenge_ids,
+        )
+        .await?;
+        scope.phase_at_db_clock(roster.transaction_mut()).await?;
+        super::scoreboard_encoding::scoped_response(bundle, headers, "participant-private")
+    }
+    .await;
+    release_with_result(roster, result).await
+}
+
 fn strip_live_runtime_context(model: &mut ChallengeDetailModel) {
+    model.context.instance_id = None;
     model.context.instance_entry = None;
     model.context.close_time = None;
     model.context.is_shared_instance = false;
@@ -702,6 +780,7 @@ fn strip_live_runtime_context(model: &mut ChallengeDetailModel) {
 
 pub(super) async fn finish_challenge_response(
     pool: &sqlx::PgPool,
+    events: &crate::services::event_bus::EventBus,
     user: &CurrentUser,
     scope: ChallengeResponseScope,
     grant: PreparedChallengeGrant,
@@ -744,6 +823,7 @@ pub(super) async fn finish_challenge_response(
     }
 
     let result = async {
+        let mut inserted_event_id = None;
         let scope = lock_play_scope_on(
             roster.transaction_mut(),
             game_id,
@@ -772,7 +852,7 @@ pub(super) async fn finish_challenge_response(
             strip_live_runtime_context(&mut model);
         } else {
             let challenge_id_text = challenge_id.to_string();
-            sqlx::query(
+            inserted_event_id = sqlx::query_scalar(
                 r#"INSERT INTO "GameEvents"
                      (game_id, "Type", "values", publish_time_utc, user_id, team_id)
                    SELECT $1, $2, $3, clock_timestamp(), $4, $5
@@ -785,7 +865,8 @@ pub(super) async fn finish_challenge_response(
                           SELECT 1 FROM "GameEvents"
                            WHERE game_id = $1 AND team_id = $5 AND "Type" = $2
                              AND "values"->>0 = $6
-                    )"#,
+                    )
+                   RETURNING id"#,
             )
             .bind(game_id)
             .bind(EventType::ChallengeOpened as i16)
@@ -796,7 +877,7 @@ pub(super) async fn finish_challenge_response(
             .bind(user.id)
             .bind(team_id)
             .bind(&challenge_id_text)
-            .execute(&mut **roster.transaction_mut())
+            .fetch_optional(&mut **roster.transaction_mut())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
 
@@ -808,10 +889,21 @@ pub(super) async fn finish_challenge_response(
                 strip_live_runtime_context(&mut model);
             }
         }
-        Ok(RequestResponse::ok(model).into_response())
+        Ok((
+            RequestResponse::ok(model).into_response(),
+            inserted_event_id,
+        ))
     }
     .await;
-    release_with_result(roster, result).await
+    let (response, event_id) = release_with_result(roster, result).await?;
+    if let Some(event_id) = event_id {
+        if let Err(error) =
+            crate::services::game_event_feed::publish_committed_on(pool, events, &[event_id]).await
+        {
+            tracing::warn!(event_id, %error, "challenge-open event publish failed");
+        }
+    }
+    Ok(response)
 }
 
 #[cfg(test)]

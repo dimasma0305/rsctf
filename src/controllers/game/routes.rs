@@ -27,9 +27,32 @@ fn router_with_domains(
             get(game_details).post(join_game).delete(leave_game),
         )
         .route("/api/game/{id}/details", get(game_details_with_challenges))
+        .route(
+            "/api/game/{id}/details/participant",
+            get(game_participant_delta),
+        )
         .route("/api/game/{id}/notices", get(notices))
-        .route("/api/game/{id}/events", get(events))
-        .route("/api/game/{id}/participations", get(participations))
+        .route("/api/game/{id}/events", limited(Policy::Query, get(events)))
+        .route(
+            "/api/game/{id}/events/page",
+            limited(Policy::Query, get(monitor_history::event_page)),
+        )
+        .route(
+            "/api/game/{id}/events/backfill",
+            limited(Policy::Query, get(event_backfill)),
+        )
+        .route(
+            "/api/game/{id}/participations",
+            limited(Policy::Query, get(participations)),
+        )
+        .route(
+            "/api/game/{id}/participations/page",
+            limited(Policy::Query, get(participation_page)),
+        )
+        .route(
+            "/api/game/{id}/participations/{participationId}",
+            limited(Policy::Query, get(participation_detail)),
+        )
         // The scoreboard is fully cache-served (cheap), so the always-on Global
         // window is protection enough — dropping the per-route Query decorator
         // halves the limiter work on the single hottest endpoint. A deliberate
@@ -40,21 +63,81 @@ fn router_with_domains(
             get(combined_scoreboard),
         )
         .route("/api/game/{id}/scoreboardsheet", get(scoreboard_sheet))
-        .route("/api/game/{id}/submissions", get(submissions))
+        .route(
+            "/api/game/{id}/submissions",
+            limited(Policy::Query, get(submissions)),
+        )
+        .route(
+            "/api/game/{id}/ai-chats",
+            limited(Policy::Query, get(list_ai_chat_links)),
+        )
+        .route(
+            "/api/game/{id}/ai-chats/pending",
+            limited(Policy::Query, get(pending_ai_chat_links)),
+        )
+        .route(
+            "/api/game/{id}/ai-chats/{participationId}/{challengeId}/events",
+            limited(Policy::Query, get(list_ai_chat_link_events)),
+        )
+        .route(
+            "/api/game/{id}/solver-uploads",
+            limited(Policy::Query, get(list_solver_uploads)),
+        )
+        .route(
+            "/api/game/{id}/solver-uploads/{uploadId}/file",
+            limited(Policy::Query, get(download_solver_upload)),
+        )
+        .route(
+            "/api/game/{id}/submissions/page",
+            limited(Policy::Query, get(monitor_history::submission_page)),
+        )
+        .route(
+            "/api/game/{id}/submissions/backfill",
+            limited(Policy::Query, get(submission_backfill)),
+        )
         .route("/api/game/{id}/submissionsheet", get(submission_sheet))
         .route("/api/game/{id}/check", get(join_check))
-        .route("/api/game/{id}/vpn/challenge", post(vpn_challenge))
-        .route("/api/game/{id}/vpn/proof", post(vpn_proof))
+        .route(
+            "/api/game/{id}/vpn/challenge",
+            limited(
+                Policy::EventVpnMintGlobal,
+                limited(Policy::EventVpnMint, post(vpn_challenge)),
+            ),
+        )
+        .route(
+            "/api/game/{id}/vpn/proof",
+            limited(
+                Policy::EventVpnMintGlobal,
+                limited(Policy::EventVpnMint, post(vpn_proof)),
+            ),
+        )
         .route("/api/game/{id}/vpn/config", get(vpn_config))
-        .route("/api/game/{id}/cheatinfo", get(cheat_info))
-        .route("/api/game/{id}/cheatreport", get(cheat_report))
+        .route(
+            "/api/game/{id}/assets/{hash}/grant",
+            limited(
+                Policy::EventVpnMintGlobal,
+                limited(Policy::EventVpnMint, post(vpn_asset_grant)),
+            ),
+        )
+        .route(
+            "/api/game/{id}/cheatinfo",
+            limited(Policy::Query, get(cheat_info)),
+        )
+        .route(
+            "/api/game/{id}/cheatinfo/page",
+            limited(Policy::Query, get(cheat_info_page)),
+        )
+        .route(
+            "/api/game/{id}/cheatreport",
+            limited(Policy::Query, get(cheat_report)),
+        )
         .route(
             "/api/game/{id}/cheatreport/events/{eventId}",
             limited(Policy::Query, get(suspicion_event_evidence)),
         )
         .route(
             "/api/game/{id}/cheatreport/compare",
-            get(cheat_report_compare),
+            limited(Policy::Query, get(cheat_report_compare)),
         )
         .route(
             "/api/game/{id}/writeup",
@@ -71,18 +154,45 @@ fn router_with_domains(
             get(challenge_solvers),
         )
         .route(
+            "/api/game/{id}/challenges/{challengeId}/solvers/page",
+            get(challenge_solver_page),
+        )
+        .route(
             "/api/game/{id}/challenges/{challengeId}",
             // Only the POST (flag submit) carries the Submit policy, like RSCTF's
             // per-action [EnableRateLimiting]; the GET detail is unthrottled.
-            get(get_challenge).merge(limited(Policy::Submit, post(submit))),
+            get(get_challenge).merge(limited(
+                Policy::Submit,
+                post(submit).layer(DefaultBodyLimit::max(8 * 1024)),
+            )),
         )
         .route(
             "/api/game/{id}/challenges/{challengeId}/review",
             post(review_challenge),
         )
         .route(
+            "/api/game/{id}/challenges/{challengeId}/ai-chats",
+            limited(
+                Policy::Query,
+                get(get_ai_chat_links)
+                    .put(save_ai_chat_links)
+                    .layer(DefaultBodyLimit::max(16 * 1024)),
+            ),
+        )
+        .route(
+            "/api/game/{id}/challenges/{challengeId}/solver-uploads",
+            limited(
+                Policy::Query,
+                get(get_solver_uploads)
+                    .post(submit_solver_upload)
+                    .layer(DefaultBodyLimit::max(
+                        crate::utils::upload::SOLVER_BODY_BYTES,
+                    )),
+            ),
+        )
+        .route(
             "/api/game/{id}/challenges/{challengeId}/status/{submitId}",
-            get(status),
+            limited(Policy::Verdict, get(status)),
         )
         .route(
             "/api/game/{id}/container/{challengeId}",
@@ -96,11 +206,29 @@ fn router_with_domains(
             limited(Policy::Container, post(extend_container)),
         )
         // Traffic capture subsystem — registered, well-typed empty payloads.
-        .route("/api/game/games/{id}/captures", get(game_captures))
-        .route("/api/game/captures/{challengeId}", get(team_traffic))
+        .route(
+            "/api/game/games/{id}/captures",
+            limited(Policy::Query, get(game_captures)),
+        )
+        .route(
+            "/api/game/games/{id}/captures/page",
+            limited(Policy::Query, get(game_captures_page)),
+        )
+        .route(
+            "/api/game/captures/{challengeId}",
+            limited(Policy::Query, get(team_traffic)),
+        )
+        .route(
+            "/api/game/captures/{challengeId}/page",
+            limited(Policy::Query, get(team_traffic_page)),
+        )
         .route(
             "/api/game/captures/{challengeId}/{partId}",
-            get(traffic_files),
+            limited(Policy::Query, get(traffic_files)),
+        )
+        .route(
+            "/api/game/captures/{challengeId}/{partId}/page",
+            limited(Policy::Query, get(traffic_files_page)),
         )
         .route(
             "/api/game/captures/{challengeId}/{partId}/all",
@@ -112,13 +240,27 @@ fn router_with_domains(
         )
         .route(
             "/api/game/captures/{challengeId}/{partId}/{filename}/flows",
-            get(traffic_flows),
+            limited(Policy::Query, get(traffic_flows)),
         )
         .route(
             "/api/game/captures/{challengeId}/{partId}/{filename}/flow/{connectionPort}",
-            get(traffic_flow_detail),
+            limited(Policy::Query, get(traffic_flow_detail)),
         )
         // Player-facing A&D + KotH controllers live under this game area.
         .merge(ad_router)
         .merge(koth_router)
+}
+
+#[cfg(test)]
+mod traffic_route_contract_tests {
+    #[test]
+    fn flow_inspection_routes_keep_named_query_admission() {
+        let source = include_str!("routes.rs");
+        for handler in ["traffic_flows", "traffic_flow_detail"] {
+            assert!(
+                source.contains(&format!("limited(Policy::Query, get({handler}))")),
+                "{handler} must retain named query-work admission"
+            );
+        }
+    }
 }

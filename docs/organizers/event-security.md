@@ -45,23 +45,61 @@ silently converted into an automatic certainty percentage.
 
 ## Enable an event safely
 
+Player transport and the website/API VPN gate are independent. A&D/KotH Toolkit
+downloads always use separate player keys and addresses. Turning the gate off
+does not turn these profiles into shared team credentials or revoke transport
+for an unended event with an enabled, approved A&D/KotH challenge. Membership,
+account, event expiry, and exact target firewall checks still apply.
+
+While the gate is active, a challenge attachment download from the ordinary
+browser origin re-scopes the player's live proof into a five-minute download
+grant for that one content hash, delivered as an `HttpOnly` cookie bound to the
+`/assets/{hash}` path. A deployment without the same-origin tunnel ingress
+therefore still serves attachments; the grant is rejected as soon as the peer is
+revoked or re-issued, the session stamp rotates, the policy revision changes, or
+the roster or division no longer authorizes the file. Monitors and events with
+an active gate override never need a grant.
+
+For Toolkit-only transport, configure `RSCTF_EVENT_VPN_CREDENTIAL_KEY` (an
+independent, persistent 32+ character secret) and `RSCTF_AD_VPN_SERVER_ENDPOINT`
+on the serving replicas as well as the managed VPN owner. The proof URL and
+sensor secrets are not required unless their corresponding features are used.
+Do not fall back to a shared player profile when the encryption key is missing.
+The installer generates a missing key and preserves an existing one; an
+explicit empty or invalid key needs an operator correction before VPN startup.
+On upgrade, have players replace old Toolkit profiles; keep BYOC hosting
+profiles separate and unchanged.
+
+Size `RSCTF_AD_VPN_CLIENT_CIDR` for individual players, BYOC hosting peers, and
+reserved historical addresses, not just the number of teams. Revoked personal
+addresses remain reserved to avoid assigning an old identity to another user.
+A `/24` has only 253 allocatable peer addresses after the network, hub and
+broadcast addresses are excluded. Choose a larger non-overlapping pool before
+the event if necessary, and update ingress return routes and player profiles
+when changing the pool. Split tunneling does not carry players' ordinary video
+streaming or other Internet traffic through the VPS.
+
 1. Deploy the managed WireGuard owner and configure three independent 32+
    character secrets: `RSCTF_EVENT_VPN_CREDENTIAL_KEY`,
    `RSCTF_EVENT_SENSOR_TOKEN`, and `RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN`.
-2. Set `RSCTF_EVENT_VPN_PROOF_URL` to an HTTPS rsctf origin whose exact address
-   is routed through WireGuard. Keep it on the same browser origin so the
-   session cookie is not shared with another site.
-3. Set `RSCTF_EVENT_VPN_ALLOWED_IPS` to only the proof-origin `/32` and any exact
-   event-service routes. `0.0.0.0/0` and `::/0` are rejected. rsctf never needs
-   to carry all player Internet traffic.
+2. Set `RSCTF_EVENT_VPN_PROOF_URL` to the public HTTPS rsctf browser origin.
+   The proof endpoint checks the caller against the WireGuard peer's public
+   endpoint and a handshake no older than 90 seconds, so the session cookie is
+   never shared with another site.
+3. Set `RSCTF_EVENT_VPN_ALLOWED_IPS` only for additional exact event-service
+   routes. Do not add the WireGuard server's own public address: routing the
+   endpoint back into its tunnel creates a loop. `0.0.0.0/0` and `::/0` are
+   rejected; rsctf never needs to carry all player Internet traffic.
 4. Start the optional sensor sidecar only if telemetry is wanted. It receives
    `NET_RAW`, but no database credential, Docker socket, TUN administration, or
    writable root filesystem.
 5. In **Edit game → Event Security**, enable **Require event VPN**. Enable each
    telemetry category separately. Save a reasoned policy change before the game
    starts.
-6. Players download their event profile from the game page. The web client mints
-   a new 30-second proof over the tunnel when a protected request needs it.
+6. Players download their personal profile from the game page or the A&D/KotH
+   Toolkit. For a gated event both locations return the same credential, so a
+   player never needs two tunnels. The web client mints a new 30-second proof
+   after rsctf verifies the live peer handshake.
 
 During `[start, end)`, game APIs, protected assets, and challenge proxy sessions
 recheck the exact live peer source. A policy change, account/session revocation,

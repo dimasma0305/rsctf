@@ -7,6 +7,16 @@ const card = readFileSync('src/components/GameCard.tsx', 'utf8')
 const cardStyles = readFileSync('src/styles/components/GameCard.module.css', 'utf8')
 const api = readFileSync('src/Api.ts', 'utf8')
 
+test('event discovery provides retry and filter reset instead of indefinite loading on errors', () => {
+  assert.match(page, /error: gamesError/)
+  assert.match(page, /gamesError &&/)
+  assert.match(page, /role="alert"/)
+  assert.match(page, /!gamesError &&/)
+  assert.match(page, /mutate\(\)\.catch/)
+  assert.match(page, /game\.content\.reset_filters/)
+  assert.match(page, /setMembership\(GameMembershipFilter\.All\)/)
+})
+
 test('event discovery searches the complete server-side catalog accessibly', () => {
   assert.match(page, /role="search"/)
   assert.match(page, /label=\{t\('game\.content\.search_label'/)
@@ -27,7 +37,8 @@ test('global challenge discovery remains authenticated and event-membership scop
   const navigation = readFileSync('src/components/navigation.ts', 'utf8')
   const mobileHeader = readFileSync('src/components/AppHeader.tsx', 'utf8')
   const mobileHeaderStyles = readFileSync('src/styles/components/AppHeader.module.css', 'utf8')
-  assert.match(challengePage, /Navigate to="\/account\/login\?from=%2Fchallenges"/)
+  assert.match(challengePage, /encodeURIComponent\(location.pathname \+ location.search \+ location.hash\)/)
+  assert.match(challengePage, /Navigate to=\{`\/account\/login\?from=\$\{from\}`\}/)
   assert.match(challengePage, /useGameChallengeCatalog/)
   assert.match(challengePage, /value: 'jeopardy', label: 'Jeopardy'/)
   assert.match(challengePage, /value: 'koth', label: 'KOTH'/)
@@ -52,10 +63,58 @@ test('global challenge discovery remains authenticated and event-membership scop
 })
 
 test('event cards remain whole-card links without a redundant view-event footer', () => {
-  assert.match(
-    card,
-    /<Link to=\{`\/games\/\$\{game\.id\}`\} className=\{classes\.link\} data-guide="event-card">/
-  )
+  assert.match(card, /<Link to=\{`\/games\/\$\{game\.id\}`\} className=\{classes\.link\} data-guide="event-card">/)
   assert.doesNotMatch(card, /view_event|mdiArrowRight|classes\.action/)
   assert.doesNotMatch(cardStyles, /\.action/)
+})
+
+test('event status and membership use wrapping content instead of clipped poster overlays', () => {
+  assert.match(card, /classes\.content[\s\S]*classes\.stateRow[\s\S]*data-status=\{status\}/)
+  assert.match(card, /classes\.stateRow[\s\S]*data-membership=\{membership\.status\}/)
+  const stateStyles = cardStyles.match(/\.status,\s*\.membership \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(stateStyles)
+  assert.match(stateStyles, /overflow-wrap: anywhere/)
+  assert.doesNotMatch(stateStyles, /position: absolute|overflow: hidden|white-space: nowrap/)
+  assert.match(cardStyles, /\.stateRow \{[\s\S]*?flex-wrap: wrap/)
+})
+
+test('placeholder text stays high contrast independently of its event gradient', () => {
+  const placeholder = cardStyles.match(/\.posterFallback \{([\s\S]*?)\n\}/)?.[1]
+  const code = cardStyles.match(/\.posterCode \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(placeholder && code)
+  const signal = cardStyles.match(/\.posterSignal \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(signal)
+  assert.match(placeholder, /color: #f8fafc/)
+  assert.match(code, /background: #0b1220/)
+  assert.match(signal, /background: #0b1220/)
+  assert.doesNotMatch(placeholder + code, /opacity:|filter:/)
+})
+
+test('events without posters retain distinct stable color without tinting uploaded artwork', () => {
+  assert.match(card, /const eventHue = \(game\.id \* 47 \+ 186\) % 360/)
+  assert.match(card, /'--event-hue': `\$\{eventHue\}deg`/)
+  assert.doesNotMatch(cardStyles, /\.visual::after/)
+  const artwork = cardStyles.match(/\.visual img \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(artwork)
+  assert.doesNotMatch(artwork, /filter:|opacity:|mix-blend-mode:/)
+})
+
+test('poster motifs use translucent color fading into a neutral base instead of solid color bands', () => {
+  const placeholder = cardStyles.match(/\.posterFallback \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(placeholder)
+  assert.match(placeholder, /background-color: #0b1220/)
+  assert.match(
+    placeholder,
+    /linear-gradient\(135deg, transparent 0 45%, hsl\(var\(--event-hue\) 82% 62% \/ 0\.08\) 45% 55%, transparent 55%\)/
+  )
+  assert.match(
+    placeholder,
+    /radial-gradient\(circle at 70% 24%, hsl\(var\(--event-hue\) 82% 58% \/ 0\.3\), transparent 62%\)/
+  )
+  assert.match(placeholder, /background-size:\s*1rem 1rem,\s*auto/)
+  const motif = cardStyles.match(/\.posterFallback::before,\s*\.posterFallback::after \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(motif)
+  assert.match(motif, /pointer-events: none/)
+  assert.match(motif, /border-radius: 50%/)
+  assert.doesNotMatch(placeholder + motif, /animation:|filter:|backdrop-filter:/)
 })

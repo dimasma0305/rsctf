@@ -63,7 +63,7 @@ function authFor(path) {
     path === '/challenges' ||
     path === '/account/profile' ||
     path === '/account/stats' ||
-    /^\/games\/[^/]+(?:\/(?:attack|challenges|scoreboard|submit))?$/.test(path)
+    /^\/games\/[^/]+(?:\/(?:challenges|scoreboard|submit))?$/.test(path)
   ) {
     return 'player'
   }

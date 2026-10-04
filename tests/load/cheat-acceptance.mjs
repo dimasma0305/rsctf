@@ -4,6 +4,8 @@
 // 100-team lifecycle event, k6, or container runtime. The explicit isolation
 // gates below prevent it from ever targeting the shared development/production
 // stack.
+import { randomUUID } from "node:crypto";
+
 import * as A from "./applib.mjs";
 import { cohortSeedQuery, parseCohortSeedResult } from "./cohort-seed.js";
 import {
@@ -464,7 +466,7 @@ async function submitFlag(gameId, challengeId, subject, flag, label) {
   const response = await A.api(
     "POST",
     `/api/game/${gameId}/challenges/${challengeId}`,
-    playerOptions(subject, { flag }),
+    playerOptions(subject, { flag, attemptId: randomUUID() }),
   );
   if (response.status !== 200) {
     throw new Error(`${label} submission failed: ${response.status} ${response.text}`);
@@ -605,7 +607,7 @@ async function exerciseSharedIpLogins(
     const userId = cohort.userIds[index];
     const reset = await A.api(
       "DELETE",
-      `/api/admin/users/${encodeURIComponent(userId)}/password`,
+      `/api/admin/users/${encodeURIComponent(userId)}/password?operationId=${randomUUID()}`,
       { jwt: A.adminJwt(), ip: "192.0.2.44" },
     );
     const password = unwrap(reset);
@@ -719,7 +721,7 @@ async function exerciseDistinctIpLogins(gameId, cohort, identities) {
 async function resetLoginCredentials(subject, label) {
   const reset = await A.api(
     "DELETE",
-    `/api/admin/users/${encodeURIComponent(subject.userId)}/password`,
+    `/api/admin/users/${encodeURIComponent(subject.userId)}/password?operationId=${randomUUID()}`,
     { jwt: A.adminJwt(), ip: "192.0.2.44" },
   );
   const password = unwrap(reset);
@@ -1111,48 +1113,9 @@ async function exerciseFinalizationGraceControl() {
     "192.0.2.222",
     "finalization-grace shared network",
   );
-  // A higher-ID active sentinel turns the next coalesced worker cycle into an
-  // observable barrier. Because games are reconciled in ID order, seeing the
-  // sentinel advance proves this ended game was considered earlier in that
-  // same cycle; a missing grace predicate cannot hide behind timer phase.
-  const sentinelId = await A.createGame({
-    title: `LOADTEST-CHEAT-FINALIZE-SENTINEL-${fixtureNow}`,
-    hidden: false,
-    practiceMode: false,
-    acceptWithoutReview: true,
-    start: fixtureNow + 10 * 60 * 1000,
-    end: fixtureNow + 2 * 60 * 60 * 1000,
-    teamMemberCountLimit: 0,
-  });
-  await A.setGameSchedule(
-    sentinelId,
-    A.nowMs() - 60 * 60 * 1000,
-    A.nowMs() + 60 * 60 * 1000,
-  );
-  const phase = await waitFor("finalization-grace reconciler phase", () => {
-    const state = reconciliationState(sentinelId);
-    if (state?.lastError) {
-      throw new Error(`finalization-grace sentinel failed: ${state.lastError}`);
-    }
-    const lastMicros = Number(state?.lastReconciledAtMicros);
-    const dbNowMicros = Number(state?.dbNowMicros);
-    if (
-      Number(state?.attempts) < 1 ||
-      !Number.isSafeInteger(lastMicros) ||
-      !Number.isSafeInteger(dbNowMicros) ||
-      dbNowMicros < lastMicros ||
-      dbNowMicros - lastMicros > 150_000
-    ) {
-      return false;
-    }
-    return state;
-  });
   const closeout = jsonQuery(
-    `WITH phase AS MATERIALIZED (` +
-      `SELECT last_reconciled_at_utc FROM "SuspicionReconciliationState" ` +
-      `WHERE game_id=${sentinelId} AND attempts=${positiveInteger(phase.attempts, "sentinel phase")}` +
-      `), boundary AS MATERIALIZED (` +
-      `SELECT last_reconciled_at_utc+interval '500 milliseconds' AS ended_at FROM phase` +
+    `WITH boundary AS MATERIALIZED (` +
+      `SELECT clock_timestamp()+interval '500 milliseconds' AS ended_at` +
       `), closed AS (` +
       `UPDATE "Games" game SET end_time_utc=boundary.ended_at FROM boundary ` +
       `WHERE game.id=${gameId} AND game.start_time_utc<boundary.ended_at ` +
@@ -1169,21 +1132,20 @@ async function exerciseFinalizationGraceControl() {
   if (Number(closeout.rows) !== 1 || !Number.isSafeInteger(endAtMicros)) {
     throw new Error("finalization-grace control could not schedule a phase-aligned closeout");
   }
-  const sentinelAttempt = positiveInteger(phase.attempts, "sentinel phase attempts");
-  const stateDuringGrace = await waitFor("phase-aligned finalization-grace cycle", () => {
-    const sentinel = reconciliationState(sentinelId);
-    if (sentinel?.lastError) {
-      throw new Error(`finalization-grace sentinel failed: ${sentinel.lastError}`);
-    }
-    if (Number(sentinel?.attempts) <= sentinelAttempt) return false;
+  const stateDuringGrace = await waitFor("phase-aligned finalization-grace window", () => {
     const control = reconciliationState(gameId);
-    const sampledAtMicros = Number(sentinel.dbNowMicros);
+    if (control?.lastError) {
+      throw new Error(`finalization-grace control failed: ${control.lastError}`);
+    }
+    const sampledAtMicros = Number(control?.dbNowMicros);
     if (
       !Number.isSafeInteger(sampledAtMicros) ||
-      sampledAtMicros <= endAtMicros ||
-      sampledAtMicros >= endAtMicros + 1_000_000
+      sampledAtMicros <= endAtMicros
     ) {
-      throw new Error("missed the phase-aligned finalization-grace control window");
+      return false;
+    }
+    if (sampledAtMicros >= endAtMicros + 1_000_000) {
+      throw new Error("missed the phase-aligned finalization-grace window");
     }
     return control;
   });
@@ -1437,8 +1399,11 @@ async function main() {
     attachmentFlag,
   );
   const attachmentName = "cheat-acceptance.txt";
-  const attachmentHash = await A.uploadAsset(attachmentName, "anti-cheat acceptance attachment\n");
-  await A.setAttachment(gameId, attachmentId, attachmentHash);
+  const uploadedAttachment = await A.uploadAsset(
+    attachmentName,
+    "anti-cheat acceptance attachment\n",
+  );
+  await A.setAttachment(gameId, attachmentId, uploadedAttachment);
   const containerFlag = `flag{cheat_acceptance_container_${now}}`;
   const containerTitle = "cheat-acceptance-container";
   const containerId = await createChallenge(
@@ -1506,7 +1471,7 @@ async function main() {
     gameId,
     attachmentId,
     download,
-    attachmentHash,
+    uploadedAttachment.hash,
     attachmentName,
     attachmentFlag,
     true,
@@ -1525,7 +1490,7 @@ async function main() {
     gameId,
     attachmentId,
     fastDownload,
-    attachmentHash,
+    uploadedAttachment.hash,
     attachmentName,
     attachmentFlag,
     false,

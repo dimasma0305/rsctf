@@ -31,9 +31,8 @@ import { useTranslation } from 'react-i18next'
 import { Link, useLocation } from 'react-router'
 import { LogoBox } from '@Components/LogoBox'
 import { LogoHeader } from '@Components/LogoHeader'
-import { ScrollingText } from '@Components/ScrollingText'
 import { WsrxManager } from '@Components/WsrxManager'
-import { PRIMARY_NAVIGATION, canAccessNavigationItem, isNavigationItemActive } from '@Components/navigation'
+import { getWorkspaceNavigation, isNavigationItemActive, navigationGroup } from '@Components/navigation'
 import { clearLocalCache } from '@Utils/Cache'
 import { LanguageMap, SupportedLanguages, useLanguage } from '@Utils/I18n'
 import { useConfig } from '@Hooks/useConfig'
@@ -59,7 +58,7 @@ const NavbarLink: FC<NavbarLinkProps> = ({ icon, label, link, onClick, isActive,
         <Icon path={icon} size={0.92} />
       </span>
       {!compact && (
-        <Text component="span" size="sm" fw={650} truncate>
+        <Text component="span" size="sm" fw={550} style={{ lineHeight: 1.35, overflowWrap: 'anywhere' }}>
           {translatedLabel}
         </Text>
       )}
@@ -122,16 +121,9 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
   const { t } = useTranslation()
   const { language, setLanguage, supportedLanguages } = useLanguage()
 
-  const links = PRIMARY_NAVIGATION.filter((item) => canAccessNavigationItem(item, user, config.donationsEnabled)).map(
-    (item) => (
-      <NavbarLink
-        key={item.label}
-        {...item}
-        compact={compact}
-        isActive={isNavigationItemActive(item, location.pathname)}
-      />
-    )
-  )
+  const items = getWorkspaceNavigation(location.pathname, user, config.donationsEnabled)
+  const groups = [...new Set(items.map(navigationGroup))]
+  const adminWorkspace = location.pathname.startsWith('/admin/')
   const loggedIn = Boolean(user && !error)
   const toggleLabel = compact
     ? t('common.button.expand_navigation', 'Expand navigation')
@@ -154,7 +146,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
             disabled={!compact}
           >
             <Link to="/" className={classes.brandLink} aria-label={t('common.tab.home', 'Home')}>
-              {compact ? <LogoBox size="40px" /> : <LogoHeader />}
+              {compact ? <LogoBox size="36px" /> : <LogoHeader logoSize="36px" />}
             </Link>
           </Tooltip>
           <Tooltip label={toggleLabel} position={compact ? 'right' : 'bottom'} withinPortal openDelay={350}>
@@ -182,12 +174,33 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
       <Divider />
 
       <AppShell.Section grow className={classes.navigationSection}>
-        {!compact && (
-          <Text className={classes.sectionLabel} component="span">
-            {t('common.tab.navigation', 'Navigate')}
-          </Text>
+        {adminWorkspace && (
+          <NavbarLink
+            icon={mdiChevronDoubleLeft}
+            label="common.workspace.back_to_player"
+            link="/games"
+            compact={compact}
+          />
         )}
-        <Stack gap={4}>{links}</Stack>
+        {groups.map((group) => (
+          <Stack key={group} gap={4} className={classes.navigationGroup}>
+            {!compact && (
+              <Text className={classes.sectionLabel} component="span">
+                {t(`common.workspace.groups.${group}`, group)}
+              </Text>
+            )}
+            {items
+              .filter((item) => navigationGroup(item) === group)
+              .map((item) => (
+                <NavbarLink
+                  key={item.link}
+                  {...item}
+                  compact={compact}
+                  isActive={isNavigationItemActive(item, location.pathname)}
+                />
+              ))}
+          </Stack>
+        ))}
       </AppShell.Section>
 
       <AppShell.Section className={classes.utilitySection}>
@@ -282,7 +295,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
             </UnstyledButton>
           </Tooltip>
 
-          <Menu position="right-end" offset={18} width={240}>
+          <Menu position="right-end" offset={18} width={240} withinPortal={false} withInitialFocusPlaceholder={false}>
             <Menu.Target>
               <UnstyledButton
                 className={classes.accountButton}
@@ -307,18 +320,14 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
             </Menu.Target>
             <Menu.Dropdown>
               {loggedIn && (
-                <>
-                  <Menu.Label>
-                    <ScrollingText text={user?.userName ?? ''} size="xs" maw={220} />
-                  </Menu.Label>
-                  <Menu.Item
-                    component={Link}
-                    to="/account/profile"
-                    leftSection={<Icon path={mdiAccountCircleOutline} size={0.9} />}
-                  >
-                    {t('common.tab.account.profile')}
-                  </Menu.Item>
-                </>
+                <Menu.Item
+                  component={Link}
+                  to="/account/profile"
+                  leftSection={<Icon path={mdiAccountCircleOutline} size={0.9} />}
+                  data-guide="account-profile"
+                >
+                  {t('common.tab.account.profile')}
+                </Menu.Item>
               )}
               <Menu.Item onClick={clearLocalCache} leftSection={<Icon path={mdiCached} size={0.9} />}>
                 {t('common.tab.account.clean_cache')}
@@ -334,8 +343,9 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
               ) : (
                 <Menu.Item
                   component={Link}
-                  to={`/account/login?from=${encodeURIComponent(location.pathname + location.search)}`}
+                  to={`/account/login?from=${encodeURIComponent(location.pathname + location.search + location.hash)}`}
                   leftSection={<Icon path={mdiLogin} size={0.9} />}
+                  data-guide="account-login"
                 >
                   {t('common.tab.account.login')}
                 </Menu.Item>

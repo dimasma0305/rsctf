@@ -84,6 +84,12 @@ async fn prune_terminal_workloads(store: &WorkerStore) {
     if deleted > 0 {
         tracing::info!(deleted, "pruned terminal worker workload history");
     }
+    if let Err(error) = store
+        .delete_expired_enrollment_operations(completed_before, MAINTENANCE_BATCH_SIZE)
+        .await
+    {
+        tracing::warn!(%error, "worker enrollment recovery cleanup failed");
+    }
 }
 
 async fn fence_orphaned_containers(store: &WorkerStore) {
@@ -131,11 +137,36 @@ async fn reconcile_batch(store: &WorkerStore, service: &WorkerService) {
         let message = match command_for(&due_workload) {
             Ok(message) => message,
             Err(error) => {
-                tracing::error!(
-                    workload_id = %due_workload.workload.id,
-                    %error,
-                    "stored worker workload cannot be reconciled"
-                );
+                let workload = &due_workload.workload;
+                let diagnostic = format!("worker command validation failed: {error}");
+                match store
+                    .quarantine_workload(
+                        workload.id,
+                        workload.assignment_id,
+                        workload.generation,
+                        &diagnostic,
+                    )
+                    .await
+                {
+                    Ok(true) => tracing::error!(
+                        workload_id = %workload.id,
+                        generation = workload.generation,
+                        %error,
+                        "quarantined worker workload that cannot be reconciled"
+                    ),
+                    Ok(false) => tracing::debug!(
+                        workload_id = %workload.id,
+                        generation = workload.generation,
+                        "invalid worker workload was concurrently repaired or quarantined"
+                    ),
+                    Err(quarantine_error) => tracing::warn!(
+                        workload_id = %workload.id,
+                        generation = workload.generation,
+                        %error,
+                        %quarantine_error,
+                        "failed to quarantine invalid worker workload"
+                    ),
+                }
                 continue;
             }
         };
@@ -171,7 +202,10 @@ async fn reconcile_batch(store: &WorkerStore, service: &WorkerService) {
 }
 
 fn should_defer_retry(dispatch: &Result<Uuid, WorkerError>) -> bool {
-    matches!(dispatch, Ok(_) | Err(WorkerError::Busy))
+    matches!(
+        dispatch,
+        Ok(_) | Err(WorkerError::Busy | WorkerError::Offline | WorkerError::StaleSession)
+    )
 }
 
 fn command_for(due: &DueWorkload) -> Result<ControlMessage, WorkerError> {
@@ -296,7 +330,162 @@ mod tests {
     fn busy_dispatch_defers_retry_so_the_due_batch_can_advance() {
         assert!(should_defer_retry(&Err(WorkerError::Busy)));
         assert!(should_defer_retry(&Ok(Uuid::new_v4())));
-        assert!(!should_defer_retry(&Err(WorkerError::Offline)));
-        assert!(!should_defer_retry(&Err(WorkerError::StaleSession)));
+        assert!(should_defer_retry(&Err(WorkerError::Offline)));
+        assert!(should_defer_retry(&Err(WorkerError::StaleSession)));
+        assert!(!should_defer_retry(&Err(WorkerError::Authentication)));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn poison_generations_are_quarantined_without_starving_valid_work() {
+        use super::super::postgres::tests::{spec, AuthorityFixture};
+
+        let fixture = AuthorityFixture::create().await;
+        let session = fixture.insert_current_session().await;
+        let store = WorkerStore::new(fixture.pool.clone());
+        let valid_spec = serde_json::to_value(spec()).unwrap();
+        let poison_spec = json!({
+            "gameKind": "future-protocol-version",
+            "services": [{"replicas": 1}],
+            "unknownProtocolField": true
+        });
+        let mut poison_ids = Vec::with_capacity(BATCH_SIZE as usize);
+
+        for position in 0..BATCH_SIZE + 2 {
+            let workload_id = Uuid::new_v4();
+            let assignment_id = Uuid::new_v4();
+            let poison = position < BATCH_SIZE;
+            let desired_state = if position == BATCH_SIZE + 1 {
+                "Absent"
+            } else {
+                "Present"
+            };
+            if poison {
+                poison_ids.push((workload_id, assignment_id));
+            }
+            sqlx::query(
+                r#"INSERT INTO "WorkerWorkloads" (
+                       id, owner_kind, owner_key, worker_id, assignment_id,
+                       generation, spec_hash_sha256, spec, required_replicas,
+                       desired_state, updated_at
+                   ) VALUES (
+                       $1, 'test', $2, $3, $4, 1, $5, $6, $7, $8,
+                       clock_timestamp() - INTERVAL '5 minutes' + $9 * INTERVAL '1 millisecond'
+                   )"#,
+            )
+            .bind(workload_id)
+            .bind(format!("poison-fairness-{position}"))
+            .bind(session.worker_id)
+            .bind(assignment_id)
+            .bind([position as u8; 32].as_slice())
+            .bind(if poison { &poison_spec } else { &valid_spec })
+            .bind(if poison { 1 } else { 2 })
+            .bind(desired_state)
+            .bind(position)
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+        }
+
+        let first = store
+            .list_due_workloads(Utc::now(), BATCH_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(first.len(), BATCH_SIZE as usize);
+        for due in first {
+            let error = command_for(&due).expect_err("poison spec must not reach a worker");
+            assert!(store
+                .quarantine_workload(
+                    due.workload.id,
+                    due.workload.assignment_id,
+                    due.workload.generation,
+                    &format!("worker command validation failed: {error}"),
+                )
+                .await
+                .unwrap());
+        }
+
+        let valid = store
+            .list_due_workloads(Utc::now(), BATCH_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(valid.len(), 2, "valid create/delete work must advance next");
+        assert!(valid.iter().all(|due| command_for(due).is_ok()));
+
+        let (quarantined, still_reserved, bounded_messages): (i64, i64, i64) = sqlx::query_as(
+            r#"SELECT
+                       COUNT(*) FILTER (
+                           WHERE reconcile_quarantine_generation = generation
+                       )::BIGINT,
+                       COUNT(*) FILTER (
+                           WHERE desired_state = 'Present'
+                             AND reserved_slots = 1
+                       )::BIGINT,
+                       COUNT(*) FILTER (
+                           WHERE OCTET_LENGTH(reconcile_quarantine_message) BETWEEN 1 AND 1024
+                       )::BIGINT
+                     FROM "WorkerWorkloads"
+                    WHERE id = ANY($1)"#,
+        )
+        .bind(
+            poison_ids
+                .iter()
+                .map(|identity| identity.0)
+                .collect::<Vec<_>>(),
+        )
+        .fetch_one(&fixture.pool)
+        .await
+        .unwrap();
+        assert_eq!(quarantined, BATCH_SIZE);
+        assert_eq!(still_reserved, BATCH_SIZE);
+        assert_eq!(bounded_messages, BATCH_SIZE);
+
+        let (repair_id, repair_assignment) = poison_ids[0];
+        assert!(!store
+            .quarantine_workload(repair_id, repair_assignment, 1, "exact replay")
+            .await
+            .unwrap());
+        sqlx::query(
+            r#"UPDATE "WorkerWorkloads"
+                  SET generation = 2,
+                      spec = $2,
+                      required_replicas = 2,
+                      observed_state = 'Unknown',
+                      observed_message = NULL,
+                      observed_at = NULL,
+                      updated_at = clock_timestamp() - INTERVAL '10 minutes'
+                WHERE id = $1 AND assignment_id = $3 AND generation = 1"#,
+        )
+        .bind(repair_id)
+        .bind(&valid_spec)
+        .bind(repair_assignment)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+
+        let after_repair = store
+            .list_due_workloads(Utc::now(), BATCH_SIZE)
+            .await
+            .unwrap();
+        let repaired = after_repair
+            .iter()
+            .find(|due| due.workload.id == repair_id)
+            .expect("newer repaired generation must leave quarantine");
+        assert_eq!(repaired.workload.generation, 2);
+        assert!(command_for(repaired).is_ok());
+        let retained_generation: i64 = sqlx::query_scalar(
+            r#"SELECT reconcile_quarantine_generation
+                 FROM "WorkerWorkloads" WHERE id = $1"#,
+        )
+        .bind(repair_id)
+        .fetch_one(&fixture.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            retained_generation, 1,
+            "repair retains prior audit evidence"
+        );
+
+        fixture.destroy().await;
     }
 }

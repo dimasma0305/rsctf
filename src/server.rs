@@ -4,9 +4,10 @@
 use std::path::Path;
 
 use axum::extract::MatchedPath;
-use axum::http::{header, Request};
-use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::http::{header, HeaderValue, Request};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get};
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::RequestBodyDeadlineLayer;
@@ -16,6 +17,7 @@ use crate::app_state::SharedState;
 use crate::{controllers, hubs};
 
 const UNMATCHED_TRACE_ROUTE: &str = "<unmatched>";
+const REQUEST_ID_HEADER: &str = "x-rsctf-request-id";
 
 /// Builds bounded-cardinality request spans without copying raw URI path or
 /// query data into logs. Some process-local routes contain bearer capabilities
@@ -29,9 +31,47 @@ impl<B> MakeSpan<B> for RedactedHttpMakeSpan {
             "request",
             method = %request.method(),
             route = trace_route(request),
+            request_id = trace_request_id(request).unwrap_or("<none>"),
             version = ?request.version(),
         )
     }
+}
+
+fn trace_request_id<B>(request: &Request<B>) -> Option<&str> {
+    let value = request.headers().get(REQUEST_ID_HEADER)?.to_str().ok()?;
+    if request.method() != axum::http::Method::GET {
+        return None;
+    }
+    let segments: Vec<_> = request
+        .uri()
+        .path()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let prefix = match segments.as_slice() {
+        ["api", "game", game_id, "challenges", challenge_id]
+            if game_id.parse::<i32>().is_ok() && challenge_id.parse::<i32>().is_ok() =>
+        {
+            "challenge-challenge-"
+        }
+        ["api", "game", game_id, "challenges", challenge_id, "solvers", "page"]
+            if game_id.parse::<i32>().is_ok() && challenge_id.parse::<i32>().is_ok() =>
+        {
+            "challenge-solvers-"
+        }
+        _ => return None,
+    };
+    let suffix = value.strip_prefix(prefix)?;
+    (suffix.len() == 36 && uuid::Uuid::parse_str(suffix).is_ok()).then_some(value)
+}
+
+async fn echo_request_id(request: Request<axum::body::Body>, next: Next) -> Response {
+    let request_id = trace_request_id(&request).and_then(|value| HeaderValue::from_str(value).ok());
+    let mut response = next.run(request).await;
+    if let Some(request_id) = request_id {
+        response.headers_mut().insert(REQUEST_ID_HEADER, request_id);
+    }
+    response
 }
 
 fn trace_route<B>(request: &Request<B>) -> &str {
@@ -114,6 +154,9 @@ pub fn build_stateful_router(state: SharedState) -> Router {
 }
 
 fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: bool) -> Router {
+    // Reserve API and hub namespaces before the SPA/static fallback is attached.
+    // A miss there must remain a typed transport failure, never HTTP 200 HTML.
+    let app = app.merge(typed_namespace_fallbacks());
     // Serve the built React frontend. When a static directory exists, unmatched
     // routes fall back to its index document so client-side deep links also work
     // after a browser refresh. The web/ client builds to web/build via pnpm.
@@ -165,6 +208,12 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
         state.clone(),
         crate::middlewares::user_activity::middleware,
     ))
+    // Public bait paths bypass the ordinary `/api` limiter. Admit them before
+    // handler authentication and silently return the same 404 on saturation.
+    .layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::controllers::honeypot::admission_middleware,
+    ))
     .layer(TraceLayer::new_for_http().make_span_with(RedactedHttpMakeSpan))
     .layer(axum::middleware::from_fn_with_state(
         state.clone(),
@@ -181,7 +230,30 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
         state.clone(),
         crate::services::health::reject_new_work_while_draining,
     ))
+    // Echo wraps admission/draining so even an early 429/503 retains the safe
+    // browser reference. Admitted requests record the same value in their
+    // redacted trace span above.
+    .layer(axum::middleware::from_fn(echo_request_id))
     .with_state(state)
+}
+
+fn typed_namespace_fallbacks<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new()
+        .route("/api", any(unmatched_api_route))
+        .route("/api/{*path}", any(unmatched_api_route))
+        .route("/hub", any(unmatched_hub_route))
+        .route("/hub/{*path}", any(unmatched_hub_route))
+}
+
+async fn unmatched_api_route() -> Response {
+    crate::utils::error::AppError::not_found("API route not found").into_response()
+}
+
+async fn unmatched_hub_route() -> Response {
+    crate::utils::error::AppError::not_found("Hub route not found").into_response()
 }
 
 /// Minimal HTTP surface for a background-only engine replica. Keeping health
@@ -231,7 +303,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        anti_autofill_script, inject_head, trace_route, ANTI_AUTOFILL_SCRIPT, ANTI_AUTOFILL_TAG,
+        anti_autofill_script, echo_request_id, inject_head, trace_request_id, trace_route,
+        typed_namespace_fallbacks, ANTI_AUTOFILL_SCRIPT, ANTI_AUTOFILL_TAG, REQUEST_ID_HEADER,
         UNMATCHED_TRACE_ROUTE,
     };
 
@@ -280,6 +353,63 @@ mod tests {
         assert!(!route.contains("query-secret"));
     }
 
+    #[tokio::test]
+    async fn safe_client_request_identity_is_echoed_for_support_correlation() {
+        let app = Router::new()
+            .route(
+                "/api/game/{id}/challenges/{challenge_id}/solvers/page",
+                get(|| async { "ok" }),
+            )
+            .layer(axum::middleware::from_fn(echo_request_id));
+        let request = Request::builder()
+            .uri("/api/game/7/challenges/11/solvers/page")
+            .header(
+                REQUEST_ID_HEADER,
+                "challenge-solvers-018f47d2-0c9a-4b31-8d1f-a1976639466f",
+            )
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            trace_request_id(&request),
+            Some("challenge-solvers-018f47d2-0c9a-4b31-8d1f-a1976639466f")
+        );
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(
+            response.headers().get(REQUEST_ID_HEADER),
+            Some(&axum::http::HeaderValue::from_static(
+                "challenge-solvers-018f47d2-0c9a-4b31-8d1f-a1976639466f"
+            ))
+        );
+    }
+
+    #[test]
+    fn unsafe_request_identity_is_never_logged_or_echoed() {
+        for (uri, value) in [
+            ("/api/game/7/challenges/11", "short"),
+            ("/api/game/7/challenges/11", "contains space"),
+            ("/api/game/7/challenges/11", "secret/bearer?query"),
+            (
+                "/api/game/7/challenges/11",
+                "safe-but-unscoped-018f47d2-0c9a-4b31-8d1f-a1976639466f",
+            ),
+            (
+                "/api/profile",
+                "challenge-challenge-018f47d2-0c9a-4b31-8d1f-a1976639466f",
+            ),
+            (
+                "/api/game/7/challenges/11/solvers/page",
+                "challenge-challenge-018f47d2-0c9a-4b31-8d1f-a1976639466f",
+            ),
+        ] {
+            let request = Request::builder()
+                .uri(uri)
+                .header(REQUEST_ID_HEADER, value)
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(trace_request_id(&request), None);
+        }
+    }
+
     #[test]
     fn spa_injection_uses_an_external_csp_compatible_script() {
         let html = inject_head("<head><title>x</title></head>", ANTI_AUTOFILL_TAG);
@@ -294,6 +424,75 @@ mod tests {
             response.headers().get(axum::http::header::CONTENT_TYPE),
             Some(&axum::http::HeaderValue::from_static(
                 "text/javascript; charset=utf-8"
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn unmatched_api_and_hub_routes_return_typed_json_404s() {
+        let app = Router::new()
+            .route("/api/known", get(|| async { "known" }))
+            .merge(typed_namespace_fallbacks())
+            .fallback(|| async { axum::response::Html("<!doctype html><title>SPA</title>") });
+
+        for (method, path) in [
+            (axum::http::Method::GET, "/api/missing"),
+            (axum::http::Method::POST, "/api/missing"),
+            (axum::http::Method::GET, "/hub/missing"),
+            (axum::http::Method::POST, "/hub/missing"),
+            (axum::http::Method::GET, "/api"),
+            (axum::http::Method::GET, "/hub"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+            assert_eq!(
+                response.headers().get(axum::http::header::CONTENT_TYPE),
+                Some(&axum::http::HeaderValue::from_static("application/json"))
+            );
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["status"], 404);
+            assert!(json["title"]
+                .as_str()
+                .is_some_and(|title| !title.is_empty()));
+        }
+
+        let known = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/known")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(known.status(), axum::http::StatusCode::OK);
+
+        let spa = app
+            .oneshot(
+                Request::builder()
+                    .uri("/games/1/challenges")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spa.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            spa.headers().get(axum::http::header::CONTENT_TYPE),
+            Some(&axum::http::HeaderValue::from_static(
+                "text/html; charset=utf-8"
             ))
         );
     }

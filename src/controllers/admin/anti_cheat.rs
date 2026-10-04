@@ -1,6 +1,7 @@
 //! Immutable stolen-flag evidence and anti-cheat policy adjudication.
 
 use super::*;
+use sha2::{Digest, Sha256};
 
 const MAX_PAGE_SIZE: u64 = 500;
 const MAX_PAGE_OFFSET: u64 = 1_000_000;
@@ -220,19 +221,19 @@ pub async fn delete_anti_cheat_block(
 
 // ─── Bounded event-network telemetry and evidence fusion ──────────────────
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DerivedFindingResult {
-    pub inserted: usize,
-}
-
 pub async fn derive_event_security_findings(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(game_id): Path<i32>,
-) -> AppResult<RequestResponse<DerivedFindingResult>> {
-    let inserted = crate::services::event_security::derive_context_findings(&st, game_id).await?;
-    Ok(RequestResponse::ok(DerivedFindingResult { inserted }))
+    headers: HeaderMap,
+) -> AppResult<(
+    StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
+    let operation = crate::controllers::edit::control_jobs::operation_id(&headers)?;
+    let job =
+        crate::services::control_jobs::request_security_derivation(&st, game_id, operation).await?;
+    Ok((StatusCode::ACCEPTED, RequestResponse::ok(job)))
 }
 
 pub async fn fused_event_security_breakdown(
@@ -308,6 +309,8 @@ pub async fn purge_event_security_telemetry(
 pub struct VpnOverrideRequest {
     pub reason: String,
     pub duration_minutes: i32,
+    pub operation_id: Uuid,
+    pub expected_policy_revision: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -316,6 +319,14 @@ pub struct VpnOverrideResult {
     pub id: Uuid,
     #[serde(with = "crate::utils::datetime::millis")]
     pub expires_at_utc: DateTime<Utc>,
+    pub policy_revision: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VpnOverrideRevokeRequest {
+    pub operation_id: Uuid,
+    pub expected_policy_revision: i64,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -332,26 +343,177 @@ pub struct VpnOverrideModel {
     pub active: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VpnOverrideList {
+    pub policy_revision: i64,
+    pub active_limit: i32,
+    pub overrides: Vec<VpnOverrideModel>,
+}
+
+#[derive(sqlx::FromRow)]
+struct StoredOverrideOperation {
+    actor_user_id: Uuid,
+    action: String,
+    override_id: Uuid,
+    request_digest: Vec<u8>,
+    result_revision: i64,
+    expires_at_utc: DateTime<Utc>,
+}
+
+const MAX_ACTIVE_VPN_OVERRIDES: i64 = 16;
+const VPN_OVERRIDE_HISTORY_LIMIT: i64 = 100;
+const VPN_OVERRIDE_MAINTENANCE_LIMIT: i64 = 128;
+const CREATE_VPN_OVERRIDE_SQL: &str = r#"
+    WITH observed_clock AS MATERIALIZED (
+        SELECT clock_timestamp() AS now
+    )
+    INSERT INTO "EventVpnGateOverrides"
+      (id, game_id, created_by_user_id, reason, created_at_utc,
+       expires_at_utc, policy_revision)
+    SELECT $1, $2, $3, $4, observed_clock.now,
+           observed_clock.now + make_interval(mins => $5), $6
+      FROM observed_clock
+    RETURNING expires_at_utc
+"#;
+
+fn valid_override_reason(reason: &str) -> bool {
+    (8..=512).contains(&reason.chars().count())
+}
+
+fn override_request_digest(
+    action: &str,
+    reason: &str,
+    duration: i32,
+    id: Option<Uuid>,
+    expected_policy_revision: i64,
+) -> Vec<u8> {
+    let mut digest = Sha256::new();
+    digest.update(b"rsctf:event-vpn-override-operation:v1\0");
+    digest.update(action.as_bytes());
+    digest.update([0]);
+    digest.update(reason.as_bytes());
+    digest.update(duration.to_be_bytes());
+    digest.update(expected_policy_revision.to_be_bytes());
+    if let Some(id) = id {
+        digest.update(id.as_bytes());
+    }
+    digest.finalize().to_vec()
+}
+
+async fn stored_override_operation(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+    operation_id: Uuid,
+) -> AppResult<Option<StoredOverrideOperation>> {
+    sqlx::query_as::<_, StoredOverrideOperation>(
+        r#"SELECT operation.actor_user_id, operation.action, operation.override_id,
+                  operation.request_digest, operation.result_revision,
+                  override.expires_at_utc
+             FROM "EventVpnOverrideOperations" operation
+             JOIN "EventVpnGateOverrides" override
+               ON override.id = operation.override_id
+            WHERE operation.game_id = $1 AND operation.operation_id = $2"#,
+    )
+    .bind(game_id)
+    .bind(operation_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
+async fn maintain_override_history(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"WITH expired AS (
+               SELECT game_id, operation_id
+                 FROM "EventVpnOverrideOperations"
+                WHERE created_at_utc < clock_timestamp() - INTERVAL '30 days'
+                ORDER BY created_at_utc, game_id, operation_id
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+           )
+           DELETE FROM "EventVpnOverrideOperations" operation
+            USING expired
+            WHERE operation.game_id = expired.game_id
+              AND operation.operation_id = expired.operation_id"#,
+    )
+    .bind(VPN_OVERRIDE_MAINTENANCE_LIMIT)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(
+        r#"WITH expired AS (
+               SELECT override.id
+                 FROM "EventVpnGateOverrides" override
+                WHERE (override.revoked_at_utc IS NOT NULL
+                       OR override.expires_at_utc <= clock_timestamp())
+                  AND override.created_at_utc
+                      < clock_timestamp() - INTERVAL '30 days'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM "EventVpnOverrideOperations" operation
+                       WHERE operation.override_id = override.id
+                  )
+                ORDER BY override.created_at_utc, override.id
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+           )
+           DELETE FROM "EventVpnGateOverrides" override
+            USING expired
+            WHERE override.id = expired.id"#,
+    )
+    .bind(VPN_OVERRIDE_MAINTENANCE_LIMIT)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
+}
+
 pub async fn list_event_vpn_overrides(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(game_id): Path<i32>,
-) -> AppResult<RequestResponse<Vec<VpnOverrideModel>>> {
+) -> AppResult<RequestResponse<VpnOverrideList>> {
+    let policy_revision = sqlx::query_scalar::<_, i64>(
+        r#"SELECT vpn_policy_revision FROM "Games"
+            WHERE id = $1 AND deletion_pending = FALSE"#,
+    )
+    .bind(game_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))?;
     let overrides = sqlx::query_as::<_, VpnOverrideModel>(
-        r#"SELECT id, reason, created_at_utc, expires_at_utc, revoked_at_utc,
+        r#"WITH recent_history AS MATERIALIZED (
+               SELECT id
+                 FROM "EventVpnGateOverrides"
+                WHERE game_id = $1
+                  AND (revoked_at_utc IS NOT NULL
+                       OR expires_at_utc <= clock_timestamp())
+                ORDER BY created_at_utc DESC, id DESC
+                LIMIT $2
+           )
+           SELECT id, reason, created_at_utc, expires_at_utc, revoked_at_utc,
                   revoked_at_utc IS NULL
                   AND created_at_utc <= clock_timestamp()
                   AND expires_at_utc > clock_timestamp() AS active
              FROM "EventVpnGateOverrides"
             WHERE game_id = $1
-            ORDER BY created_at_utc DESC, id DESC
-            LIMIT 100"#,
+              AND (revoked_at_utc IS NULL AND expires_at_utc > clock_timestamp()
+                   OR id IN (SELECT id FROM recent_history))
+            ORDER BY active DESC, created_at_utc DESC, id DESC"#,
     )
     .bind(game_id)
+    .bind(VPN_OVERRIDE_HISTORY_LIMIT)
     .fetch_all(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(RequestResponse::ok(overrides))
+    Ok(RequestResponse::ok(VpnOverrideList {
+        policy_revision,
+        active_limit: MAX_ACTIVE_VPN_OVERRIDES as i32,
+        overrides,
+    }))
 }
 
 pub async fn create_event_vpn_override(
@@ -361,57 +523,251 @@ pub async fn create_event_vpn_override(
     Json(request): Json<VpnOverrideRequest>,
 ) -> AppResult<RequestResponse<VpnOverrideResult>> {
     let reason = request.reason.trim();
-    if !(8..=512).contains(&reason.len()) || !(1..=60).contains(&request.duration_minutes) {
+    if request.operation_id.is_nil()
+        || request.expected_policy_revision < 1
+        || !valid_override_reason(reason)
+        || !(1..=60).contains(&request.duration_minutes)
+    {
         return Err(AppError::bad_request(
-            "Override requires an 8 to 512 character reason and 1 to 60 minute duration",
+            "Override requires an operation ID, observed policy revision, an 8 to 512 character reason, and 1 to 60 minute duration",
         ));
     }
-    let id = Uuid::now_v7();
-    let expires_at_utc: DateTime<Utc> = sqlx::query_scalar(
-        r#"INSERT INTO "EventVpnGateOverrides"
-             (id, game_id, created_by_user_id, reason, expires_at_utc)
-           SELECT $1, game.id, $3, $4,
-                  clock_timestamp() + make_interval(mins => $5)
-             FROM "Games" game
-            WHERE game.id = $2 AND game.deletion_pending = FALSE
-           RETURNING expires_at_utc"#,
+    let digest = override_request_digest(
+        "create",
+        reason,
+        request.duration_minutes,
+        None,
+        request.expected_policy_revision,
+    );
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let current_revision = sqlx::query_scalar::<_, i64>(
+        r#"SELECT vpn_policy_revision FROM "Games"
+            WHERE id = $1 AND deletion_pending = FALSE
+            FOR UPDATE"#,
     )
-    .bind(id)
     .bind(game_id)
-    .bind(admin.0.id)
-    .bind(reason)
-    .bind(request.duration_minutes)
-    .fetch_optional(st.pg())
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?;
+    if let Some(stored) =
+        stored_override_operation(&mut transaction, game_id, request.operation_id).await?
+    {
+        if stored.actor_user_id != admin.0.id
+            || stored.action != "create"
+            || stored.request_digest != digest
+        {
+            return Err(AppError::conflict(
+                "The operation ID is already bound to a different VPN override intent",
+            ));
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(RequestResponse::ok(VpnOverrideResult {
+            id: stored.override_id,
+            expires_at_utc: stored.expires_at_utc,
+            policy_revision: stored.result_revision,
+        }));
+    }
+    if request.expected_policy_revision != current_revision {
+        return Err(AppError::conflict(format!(
+            "VPN policy changed; current revision is {current_revision}"
+        )));
+    }
+    let active_count = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*)::bigint FROM "EventVpnGateOverrides"
+            WHERE game_id = $1 AND revoked_at_utc IS NULL
+              AND expires_at_utc > clock_timestamp()"#,
+    )
+    .bind(game_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if active_count >= MAX_ACTIVE_VPN_OVERRIDES {
+        return Err(AppError::conflict(format!(
+            "This event already has the maximum of {MAX_ACTIVE_VPN_OVERRIDES} active VPN bypasses"
+        )));
+    }
+    let policy_revision = current_revision + 1;
+    let id = Uuid::now_v7();
+    let expires_at_utc: DateTime<Utc> = sqlx::query_scalar(CREATE_VPN_OVERRIDE_SQL)
+        .bind(id)
+        .bind(game_id)
+        .bind(admin.0.id)
+        .bind(reason)
+        .bind(request.duration_minutes)
+        .bind(policy_revision)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(r#"UPDATE "Games" SET vpn_policy_revision = $2 WHERE id = $1"#)
+        .bind(game_id)
+        .bind(policy_revision)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(
+        r#"INSERT INTO "EventVpnOverrideOperations"
+             (game_id, operation_id, actor_user_id, action, override_id,
+              request_digest, result_revision)
+           VALUES ($1, $2, $3, 'create', $4, $5, $6)"#,
+    )
+    .bind(game_id)
+    .bind(request.operation_id)
+    .bind(admin.0.id)
+    .bind(id)
+    .bind(&digest)
+    .bind(policy_revision)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    maintain_override_history(&mut transaction).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     crate::services::event_security::invalidate_policy(&st, game_id).await;
     Ok(RequestResponse::ok(VpnOverrideResult {
         id,
         expires_at_utc,
+        policy_revision,
     }))
 }
 
 pub async fn revoke_event_vpn_override(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    admin: AdminUser,
     Path((game_id, override_id)): Path<(i32, Uuid)>,
-) -> AppResult<MessageResponse> {
-    let updated = sqlx::query(
-        r#"UPDATE "EventVpnGateOverrides"
-              SET revoked_at_utc = clock_timestamp()
-            WHERE id = $1 AND game_id = $2 AND revoked_at_utc IS NULL"#,
+    Json(request): Json<VpnOverrideRevokeRequest>,
+) -> AppResult<RequestResponse<VpnOverrideResult>> {
+    if request.operation_id.is_nil() || request.expected_policy_revision < 1 {
+        return Err(AppError::bad_request(
+            "Revoke requires an operation ID and observed policy revision",
+        ));
+    }
+    let digest = override_request_digest(
+        "revoke",
+        "",
+        0,
+        Some(override_id),
+        request.expected_policy_revision,
+    );
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let current_revision = sqlx::query_scalar::<_, i64>(
+        r#"SELECT vpn_policy_revision FROM "Games"
+            WHERE id = $1 AND deletion_pending = FALSE FOR UPDATE"#,
+    )
+    .bind(game_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))?;
+    if let Some(stored) =
+        stored_override_operation(&mut transaction, game_id, request.operation_id).await?
+    {
+        if stored.actor_user_id != admin.0.id
+            || stored.action != "revoke"
+            || stored.override_id != override_id
+            || stored.request_digest != digest
+        {
+            return Err(AppError::conflict(
+                "The operation ID is already bound to a different VPN override intent",
+            ));
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(RequestResponse::ok(VpnOverrideResult {
+            id: stored.override_id,
+            expires_at_utc: stored.expires_at_utc,
+            policy_revision: stored.result_revision,
+        }));
+    }
+    if request.expected_policy_revision != current_revision {
+        return Err(AppError::conflict(format!(
+            "VPN policy changed; current revision is {current_revision}"
+        )));
+    }
+    let row = sqlx::query_as::<_, (DateTime<Utc>, Option<DateTime<Utc>>, bool)>(
+        r#"SELECT expires_at_utc, revoked_at_utc,
+                  revoked_at_utc IS NULL AND expires_at_utc > clock_timestamp()
+             FROM "EventVpnGateOverrides"
+            WHERE id = $1 AND game_id = $2 FOR UPDATE"#,
     )
     .bind(override_id)
     .bind(game_id)
-    .execute(st.pg())
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("VPN override not found"))?;
+    let changes_authorization = row.2;
+    let result_revision = if changes_authorization {
+        current_revision + 1
+    } else {
+        current_revision
+    };
+    if row.1.is_none() {
+        sqlx::query(
+            r#"UPDATE "EventVpnGateOverrides"
+                  SET revoked_at_utc = clock_timestamp(), revoked_by_user_id = $3,
+                      revoke_policy_revision = $4
+                WHERE id = $1 AND game_id = $2 AND revoked_at_utc IS NULL"#,
+        )
+        .bind(override_id)
+        .bind(game_id)
+        .bind(admin.0.id)
+        .bind(result_revision)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    if changes_authorization {
+        sqlx::query(r#"UPDATE "Games" SET vpn_policy_revision = $2 WHERE id = $1"#)
+            .bind(game_id)
+            .bind(result_revision)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    sqlx::query(
+        r#"INSERT INTO "EventVpnOverrideOperations"
+             (game_id, operation_id, actor_user_id, action, override_id,
+              request_digest, result_revision)
+           VALUES ($1, $2, $3, 'revoke', $4, $5, $6)"#,
+    )
+    .bind(game_id)
+    .bind(request.operation_id)
+    .bind(admin.0.id)
+    .bind(override_id)
+    .bind(&digest)
+    .bind(result_revision)
+    .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if updated.rows_affected() != 1 {
-        return Err(AppError::not_found("VPN override not found"));
+    maintain_override_history(&mut transaction).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if changes_authorization {
+        crate::services::event_security::invalidate_policy(&st, game_id).await;
     }
-    crate::services::event_security::invalidate_policy(&st, game_id).await;
-    Ok(MessageResponse::ok("VPN override revoked"))
+    Ok(RequestResponse::ok(VpnOverrideResult {
+        id: override_id,
+        expires_at_utc: row.0,
+        policy_revision: result_revision,
+    }))
 }
 
 #[cfg(test)]
@@ -422,6 +778,42 @@ mod tests {
     fn pagination_is_bounded_before_reaching_postgres() {
         assert_eq!(bounded_page(0, 0), (1, 0));
         assert_eq!(bounded_page(u64::MAX, u64::MAX), (500, 1_000_000));
+    }
+
+    #[test]
+    fn vpn_override_operation_digest_binds_every_semantic_input() {
+        let id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let create = override_request_digest("create", "incident response", 15, None, 7);
+        assert_eq!(
+            create,
+            override_request_digest("create", "incident response", 15, None, 7)
+        );
+        assert_ne!(
+            create,
+            override_request_digest("create", "incident response", 16, None, 7)
+        );
+        assert_ne!(
+            create,
+            override_request_digest("create", "different reason", 15, None, 7)
+        );
+        assert_ne!(
+            create,
+            override_request_digest("create", "incident response", 15, None, 8)
+        );
+        assert_ne!(
+            create,
+            override_request_digest("revoke", "", 0, Some(id), 7)
+        );
+    }
+
+    #[test]
+    fn vpn_override_reason_and_expiry_match_the_database_contract() {
+        assert!(!valid_override_reason(&"界".repeat(7)));
+        assert!(valid_override_reason(&"界".repeat(8)));
+        assert!(valid_override_reason(&"界".repeat(512)));
+        assert!(!valid_override_reason(&"界".repeat(513)));
+        assert!(CREATE_VPN_OVERRIDE_SQL.contains("created_at_utc"));
+        assert!(CREATE_VPN_OVERRIDE_SQL.contains("observed_clock.now + make_interval"));
     }
 
     #[test]

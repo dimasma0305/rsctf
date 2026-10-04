@@ -1,4 +1,5 @@
 import {
+  Alert,
   Button,
   Center,
   Chip,
@@ -9,6 +10,7 @@ import {
   Input,
   List,
   Overlay,
+  Pagination,
   Progress,
   ScrollArea,
   Stack,
@@ -23,7 +25,7 @@ import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiPuzzleEditOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, PropsWithChildren, useEffect, useState } from 'react'
+import { FC, PropsWithChildren, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useParams } from 'react-router'
 import { AttachmentRemoteEditModal } from '@Components/admin/AttachmentRemoteEditModal'
@@ -31,15 +33,91 @@ import { AttachmentUploadModal } from '@Components/admin/AttachmentUploadModal'
 import { FlagCreateModal } from '@Components/admin/FlagCreateModal'
 import { FlagEditPanel } from '@Components/admin/FlagEditPanel'
 import { WithChallengeEdit } from '@Components/admin/WithChallengeEdit'
+import { challengeRevision, ChallengeMutationOperation, prepareChallengeMutation } from '@Utils/ChallengeMutation'
 import { showErrorMsg } from '@Utils/Shared'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
 import { useEditChallenge } from '@Hooks/useEdit'
-import api, { ChallengeType, FileType, FlagInfoModel } from '@Api'
+import api, { Attachment, ChallengeType, FileType, FlagInfoModel, FlagPageModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
 import uploadClasses from '@Styles/Upload.module.css'
 
 interface FlagEditProps {
   onDelete: (flag: FlagInfoModel) => void
+  onFlagsChanged: () => void
+  refreshToken: number
+}
+
+const FLAG_PAGE_SIZE = 100
+
+const PagedFlagEditor: FC<
+  Pick<FlagEditProps, 'onDelete' | 'refreshToken'> & { unifiedAttachment?: Attachment | null }
+> = ({ onDelete, refreshToken, unifiedAttachment }) => {
+  const { id, chalId } = useParams()
+  const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
+  const { challenge } = useEditChallenge(numId, numCId)
+  const [page, setPage] = useState(1)
+  const [result, setResult] = useState<FlagPageModel | null>(null)
+  const { colorScheme } = useMantineColorScheme()
+  const { t } = useTranslation()
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void api.edit
+      .editGetFlags(
+        numId,
+        numCId,
+        { offset: (page - 1) * FLAG_PAGE_SIZE, limit: FLAG_PAGE_SIZE },
+        { signal: controller.signal }
+      )
+      .then((response) => setResult(response.data))
+      .catch((error) => {
+        if (!controller.signal.aborted) showErrorMsg(error, t)
+      })
+    return () => controller.abort()
+  }, [numCId, numId, page, refreshToken, t])
+
+  const flags = result?.items ?? challenge?.flags ?? []
+  const pageCount = Math.max(1, Math.ceil((result?.total ?? flags.length) / FLAG_PAGE_SIZE))
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount)
+  }, [page, pageCount])
+
+  return (
+    <Stack gap="sm">
+      {!!result?.violationCount && (
+        <Alert color="red" title={`${result.violationCount} legacy flag policy violation(s)`}>
+          The migration detected non-canonical legacy flag data for this challenge. It remains unsafe to enable until
+          those rows are corrected. The first {result.violations.length} violation(s) are shown below.
+          <List size="sm" mt="xs">
+            {result.violations.map((violation, index) => (
+              <List.Item key={`${violation.violationType}-${violation.flagContextId ?? index}`}>
+                {violation.violationType}: {violation.observedBytes} bytes
+                {violation.flagContextId ? ` (flag row ${violation.flagContextId})` : ''}
+              </List.Item>
+            ))}
+          </List>
+        </Alert>
+      )}
+      <ScrollArea h="clamp(18rem, calc(100dvh - 32rem), 52rem)" pos="relative">
+        {!flags.length && (
+          <>
+            <Overlay opacity={0.3} color={colorScheme === 'dark' ? 'black' : 'white'} />
+            <Center mih="18rem">
+              <Stack gap={0}>
+                <Title order={2}>{t('admin.content.games.challenges.flag.empty.title')}</Title>
+                <Text>{t('admin.content.games.challenges.flag.empty.description')}</Text>
+              </Stack>
+            </Center>
+          </>
+        )}
+        <FlagEditPanel flags={flags} onDelete={onDelete} unifiedAttachment={unifiedAttachment} />
+      </ScrollArea>
+      {pageCount > 1 && (
+        <Pagination value={page} onChange={setPage} total={pageCount} aria-label="Flag pages" withEdges />
+      )}
+    </Stack>
+  )
 }
 
 const WrappingCode: FC<PropsWithChildren> = ({ children }) => (
@@ -59,6 +137,7 @@ const AttachmentEditor: FC = () => {
   const [type, setType] = useState<FileType>(challenge?.attachment?.type ?? FileType.None)
   const [remoteUrl, setRemoteUrl] = useState(challenge?.attachment?.url ?? '')
   const [progress, setProgress] = useState(0)
+  const uploadOperationRef = useRef<{ fileKey: string; id: string } | null>(null)
 
   const modals = useModals()
   const theme = useMantineTheme()
@@ -100,16 +179,26 @@ const AttachmentEditor: FC = () => {
     setProgress(0)
     setDisabled(true)
     try {
-      const res = await api.assets.assetsUpload({ files: [file] }, undefined, {
-        onUploadProgress: (e) => setProgress((e.loaded / (e.total ?? 1)) * 90),
-      })
+      const fileKey = `${file.name}:${file.size}:${file.lastModified}`
+      if (uploadOperationRef.current?.fileKey !== fileKey) {
+        uploadOperationRef.current = { fileKey, id: crypto.randomUUID() }
+      }
+      const res = await api.assets.assetsUpload(
+        { files: [file] },
+        { operationId: uploadOperationRef.current.id },
+        {
+          onUploadProgress: (e) => setProgress((e.loaded / (e.total ?? 1)) * 90),
+        }
+      )
       const remoteFile = res.data[0]
       setProgress(95)
       if (remoteFile) {
         await api.edit.editUpdateAttachment(numId, numCId, {
           attachmentType: FileType.Local,
           fileHash: remoteFile.hash,
+          uploadId: remoteFile.uploadId,
         })
+        uploadOperationRef.current = null
         setProgress(0)
         setDisabled(false)
         mutate()
@@ -279,7 +368,7 @@ const AdEngineAttachment: FC = () => {
 }
 
 // with only one attachment
-const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
+const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete, onFlagsChanged, refreshToken }) => {
   const { id, chalId } = useParams()
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
 
@@ -289,9 +378,9 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
   const [type, setType] = useState<FileType>(challenge?.attachment?.type ?? FileType.None)
   const [remoteUrl, setRemoteUrl] = useState(challenge?.attachment?.url ?? '')
   const [flagTemplate, setFlagTemplate] = useState(challenge?.flagTemplate ?? '')
+  const flagTemplateOperation = useRef<ChallengeMutationOperation | null>(null)
 
   const modals = useModals()
-  const { colorScheme } = useMantineColorScheme()
   const { t } = useTranslation()
 
   useEffect(() => {
@@ -329,6 +418,7 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
   const theme = useMantineTheme()
   const [progress, setProgress] = useState(0)
   const [flagCreateModalOpen, setFlagCreateModalOpen] = useState(false)
+  const uploadOperationRef = useRef<{ fileKey: string; id: string } | null>(null)
   const FileTypeDesrcMap = new Map<FileType, string>([
     [FileType.None, t('challenge.file_type.none')],
     [FileType.Remote, t('challenge.file_type.remote')],
@@ -342,11 +432,15 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
     setDisabled(true)
 
     try {
+      const fileKey = `${file.name}:${file.size}:${file.lastModified}`
+      if (uploadOperationRef.current?.fileKey !== fileKey) {
+        uploadOperationRef.current = { fileKey, id: crypto.randomUUID() }
+      }
       const res = await api.assets.assetsUpload(
         {
           files: [file],
         },
-        undefined,
+        { operationId: uploadOperationRef.current.id },
         {
           onUploadProgress: (e) => {
             setProgress((e.loaded / (e.total ?? 1)) * 90)
@@ -359,7 +453,9 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
         await api.edit.editUpdateAttachment(numId, numCId, {
           attachmentType: FileType.Local,
           fileHash: remoteFile.hash,
+          uploadId: remoteFile.uploadId,
         })
+        uploadOperationRef.current = null
         setProgress(0)
         setDisabled(false)
         mutate()
@@ -411,19 +507,21 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
     setDisabled(true)
 
     try {
+      const prepared = prepareChallengeMutation(
+        { flagTemplate },
+        challengeRevision(challenge),
+        flagTemplateOperation.current
+      )
+      flagTemplateOperation.current = prepared.operation
       // allow empty flag template to be set (but not null or undefined)
-      await api.edit.editUpdateGameChallenge(numId, numCId, { flagTemplate })
+      const updated = await api.edit.editUpdateGameChallenge(numId, numCId, prepared.payload)
+      flagTemplateOperation.current = null
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.challenges.flag_template.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      if (challenge) {
-        mutate({
-          ...challenge,
-          flagTemplate,
-        })
-      }
+      mutate(updated.data)
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
@@ -617,40 +715,25 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
           </Stack>
         </Stack>
       ) : (
-        <ScrollArea h="clamp(18rem, calc(100dvh - 32rem), 52rem)" pos="relative">
-          {!challenge?.flags.length && (
-            <>
-              <Overlay opacity={0.3} color={colorScheme === 'dark' ? 'black' : 'white'} />
-              <Center mih="18rem">
-                <Stack gap={0}>
-                  <Title order={2}>{t('admin.content.games.challenges.flag.empty.title')}</Title>
-                  <Text>{t('admin.content.games.challenges.flag.empty.description')}</Text>
-                </Stack>
-              </Center>
-            </>
-          )}
-          <FlagEditPanel flags={challenge?.flags} onDelete={onDelete} unifiedAttachment={challenge?.attachment} />
-        </ScrollArea>
+        <PagedFlagEditor onDelete={onDelete} refreshToken={refreshToken} unifiedAttachment={challenge?.attachment} />
       )}
       <FlagCreateModal
         title={t('admin.button.challenges.flag.add.normal')}
         size="min(32rem, calc(100vw - 2rem))"
         opened={flagCreateModalOpen}
-        onClose={() => setFlagCreateModalOpen(false)}
+        onClose={() => {
+          setFlagCreateModalOpen(false)
+          onFlagsChanged()
+        }}
       />
     </Stack>
   )
 }
 
-const FlagsWithAttachments: FC<FlagEditProps> = ({ onDelete }) => {
-  const { id, chalId } = useParams()
-  const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
-  const { challenge } = useEditChallenge(numId, numCId)
-
+const FlagsWithAttachments: FC<FlagEditProps> = ({ onDelete, onFlagsChanged, refreshToken }) => {
   const [attachmentUploadModalOpened, setAttachmentUploadModalOpened] = useState(false)
   const [remoteAttachmentModalOpened, setRemoteAttachmentModalOpened] = useState(false)
 
-  const { colorScheme } = useMantineColorScheme()
   const { t } = useTranslation()
 
   return (
@@ -667,31 +750,24 @@ const FlagsWithAttachments: FC<FlagEditProps> = ({ onDelete }) => {
         </Group>
       </Group>
       <Divider />
-      <ScrollArea h="clamp(18rem, calc(100dvh - 25rem), 52rem)" pos="relative">
-        {!challenge?.flags.length && (
-          <>
-            <Overlay opacity={0.3} color={colorScheme === 'dark' ? 'black' : 'white'} />
-            <Center mih="18rem">
-              <Stack gap={0}>
-                <Title order={2}>{t('admin.content.games.challenges.flag.empty.title')}</Title>
-                <Text>{t('admin.content.games.challenges.flag.empty.description')}</Text>
-              </Stack>
-            </Center>
-          </>
-        )}
-        <FlagEditPanel flags={challenge?.flags} onDelete={onDelete} />
-      </ScrollArea>
+      <PagedFlagEditor onDelete={onDelete} refreshToken={refreshToken} />
       <AttachmentUploadModal
         title={t('admin.button.challenges.flag.add.dynamic')}
         size="min(44rem, calc(100vw - 2rem))"
         opened={attachmentUploadModalOpened}
-        onClose={() => setAttachmentUploadModalOpened(false)}
+        onClose={() => {
+          setAttachmentUploadModalOpened(false)
+          onFlagsChanged()
+        }}
       />
       <AttachmentRemoteEditModal
         title={t('admin.button.challenges.flag.add.remote')}
         size="min(44rem, calc(100vw - 2rem))"
         opened={remoteAttachmentModalOpened}
-        onClose={() => setRemoteAttachmentModalOpened(false)}
+        onClose={() => {
+          setRemoteAttachmentModalOpened(false)
+          onFlagsChanged()
+        }}
       />
     </Stack>
   )
@@ -703,6 +779,7 @@ const GameChallengeEdit: FC = () => {
   const modals = useModals()
   const { classes } = useDisplayInputStyles({ fw: 'bold', ff: 'monospace' })
   const { challenge, mutate } = useEditChallenge(numId, numCId)
+  const [flagListRefreshToken, setFlagListRefreshToken] = useState(0)
 
   const { t } = useTranslation()
 
@@ -735,6 +812,7 @@ const GameChallengeEdit: FC = () => {
           flags: challenge.flags.filter((f) => f.id !== id),
         })
       }
+      setFlagListRefreshToken((current) => current + 1)
     } catch (e) {
       showErrorMsg(e, t)
     }
@@ -747,7 +825,7 @@ const GameChallengeEdit: FC = () => {
       backUrl={`/admin/games/${id}/challenges`}
       head={
         <>
-          <Title order={2} lineClamp={1} className={misc.wordBreakAll}>
+          <Title order={2} className={misc.wordBreakAll}>
             # {challenge?.title}
           </Title>
           <Group wrap="wrap" justify="right" w={{ base: '100%', sm: 'auto' }}>
@@ -767,9 +845,17 @@ const GameChallengeEdit: FC = () => {
       (challenge.type === ChallengeType.AttackDefense || challenge.type === ChallengeType.KingOfTheHill) ? (
         <AdEngineAttachment />
       ) : challenge && challenge.type === ChallengeType.DynamicAttachment ? (
-        <FlagsWithAttachments onDelete={onDeleteFlag} />
+        <FlagsWithAttachments
+          onDelete={onDeleteFlag}
+          onFlagsChanged={() => setFlagListRefreshToken((current) => current + 1)}
+          refreshToken={flagListRefreshToken}
+        />
       ) : (
-        <OneAttachmentWithFlags onDelete={onDeleteFlag} />
+        <OneAttachmentWithFlags
+          onDelete={onDeleteFlag}
+          onFlagsChanged={() => setFlagListRefreshToken((current) => current + 1)}
+          refreshToken={flagListRefreshToken}
+        />
       )}
     </WithChallengeEdit>
   )

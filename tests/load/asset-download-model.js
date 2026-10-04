@@ -22,3 +22,11 @@ export function assetRange(sequence, size, rangeBytes) {
   const end = Math.min(start + rangeBytes, size) - 1;
   return { start, end, length: end - start + 1 };
 }
+
+export function rotatingAssetHash(sequence) {
+  if (!Number.isSafeInteger(sequence) || sequence < 0) {
+    throw new Error("invalid rotating asset sequence");
+  }
+  const fragment = sequence.toString(16).padStart(16, "0");
+  return fragment.repeat(4);
+}

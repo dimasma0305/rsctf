@@ -11,6 +11,7 @@ test('polled-read is fixed-rate, read-only, and covers every dominant board', ()
   assert.doesNotMatch(scenario, /http\.(?:post|put|patch|del|delete)\(/);
   for (const path of [
     '/api/game',
+    '/api/game/recent?limit=7',
     '/scoreboard',
     '/Ad/Scoreboard',
     '/ad/koth/scoreboard',

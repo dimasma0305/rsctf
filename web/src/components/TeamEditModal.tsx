@@ -25,8 +25,9 @@ import { useModals } from '@mantine/modals'
 import { notifications, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose, mdiContentCopy, mdiLinkVariant, mdiLockOutline, mdiRefresh, mdiStar } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { KeyedMutator } from 'swr'
 import { ScrollingText } from '@Components/ScrollingText'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
@@ -37,6 +38,8 @@ import styles from '@Styles/TeamEditModal.module.css'
 interface TeamEditModalProps extends ModalProps {
   team: TeamInfoModel | null
   isCaptain: boolean
+  teams?: TeamInfoModel[]
+  mutateTeams: KeyedMutator<TeamInfoModel[]>
 }
 
 interface TeamMemberInfoProps {
@@ -103,7 +106,7 @@ const TeamMemberInfo: FC<TeamMemberInfoProps> = (props) => {
 }
 
 export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
-  const { team, isCaptain, ...modalProps } = props
+  const { team, isCaptain, teams, mutateTeams, ...modalProps } = props
 
   const teamId = team?.id
 
@@ -111,8 +114,16 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   const [dropzoneOpened, setDropzoneOpened] = useState(false)
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
   const [inviteCode, setInviteCode] = useState('')
+  const [inviteRevision, setInviteRevision] = useState<number | null>(null)
+  const [inviteLoading, setInviteLoading] = useState(false)
+  const [inviteLoadError, setInviteLoadError] = useState(false)
+  const inviteRequestGeneration = useRef(0)
+  const inviteMutationOwner = useRef(false)
+  const inviteOperationId = useRef<string | null>(null)
   const [disabled, setDisabled] = useState(false)
-  const { data: teams, mutate: mutateTeams } = api.team.useTeamGetTeamsInfo()
+  const mutationOwner = useRef<AbortController | null>(null)
+  const profileOperation = useRef<{ digest: string; id: string } | null>(null)
+  const avatarOperation = useRef<{ digest: string; id: string } | null>(null)
 
   const clipboard = useClipboard()
   const locked = teamInfo?.locked ?? false
@@ -137,18 +148,51 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
 
   useEffect(() => {
     setTeamInfo(team)
+    profileOperation.current = null
+    avatarOperation.current = null
+    mutationOwner.current?.abort()
+    mutationOwner.current = null
+    setDisabled(false)
   }, [team])
 
-  useEffect(() => {
-    const fetchCode = async () => {
-      if (!isCaptain || !teamId || inviteCode) return
-
-      const code = await api.team.teamInviteCode(teamId!)
-      setInviteCode(code.data)
+  const loadInviteCode = useCallback(async () => {
+    if (!isCaptain || !teamId || !props.opened) return
+    const generation = ++inviteRequestGeneration.current
+    setInviteLoading(true)
+    setInviteLoadError(false)
+    try {
+      const response = await api.team.teamInviteCode(teamId)
+      if (generation !== inviteRequestGeneration.current) return
+      setInviteCode(response.data.code)
+      setInviteRevision(response.data.revision)
+      // An authoritative read reconciles an ambiguous rotation. The next
+      // Refresh is a new intent and must not reuse the recovered operation ID.
+      inviteOperationId.current = null
+    } catch {
+      if (generation === inviteRequestGeneration.current) setInviteLoadError(true)
+    } finally {
+      if (generation === inviteRequestGeneration.current) setInviteLoading(false)
     }
+  }, [isCaptain, props.opened, teamId])
 
-    fetchCode()
-  }, [inviteCode, isCaptain, teamId])
+  useEffect(
+    () => () => {
+      mutationOwner.current?.abort()
+    },
+    []
+  )
+
+  useEffect(() => {
+    inviteRequestGeneration.current += 1
+    setInviteCode('')
+    setInviteRevision(null)
+    setInviteLoadError(false)
+    inviteOperationId.current = null
+    if (props.opened) void loadInviteCode()
+    return () => {
+      inviteRequestGeneration.current += 1
+    }
+  }, [loadInviteCode, props.opened])
 
   const onConfirmLeaveTeam = async () => {
     if (!teamInfo || isCaptain) return
@@ -200,7 +244,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
     if (!teamInfo || !isCaptain) return
 
     try {
-      await api.team.teamTransfer(teamInfo.id!, {
+      const response = await api.team.teamTransfer(teamInfo.id!, {
         newCaptainId: userId,
       })
       showNotification({
@@ -209,8 +253,9 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         message: t('team.notification.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
+      setTeamInfo(response.data)
       mutateTeams(
-        teams?.map((x) => (x.id === teamInfo.id ? teamInfo : x)),
+        teams?.map((x) => (x.id === teamInfo.id ? response.data : x)),
         {
           revalidate: false,
         }
@@ -224,15 +269,16 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
     if (!teamInfo?.id || !isCaptain) return
 
     try {
-      await api.team.teamKickUser(teamInfo.id, userId)
+      const response = await api.team.teamKickUser(teamInfo.id, userId)
       showNotification({
         color: 'teal',
         title: t('team.notification.kick.success'),
         message: t('team.notification.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
+      setTeamInfo(response.data)
       mutateTeams(
-        teams?.map((x) => (x.id === teamInfo.id ? teamInfo : x)),
+        teams?.map((x) => (x.id === teamInfo.id ? response.data : x)),
         {
           revalidate: false,
         }
@@ -253,23 +299,62 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   }
 
   const onRefreshInviteCode = async () => {
-    if (!inviteCode || !team?.id) return
+    if (!team?.id || inviteRevision == null || inviteMutationOwner.current) return
 
+    inviteMutationOwner.current = true
+    setInviteLoading(true)
+    const generation = ++inviteRequestGeneration.current
+    const targetTeamId = team.id
+    const observedRevision = inviteRevision
+    const operationId = inviteOperationId.current ?? crypto.randomUUID()
+    inviteOperationId.current = operationId
     try {
-      const code = await api.team.teamUpdateInviteToken(team.id)
-      setInviteCode(code.data)
-      showNotification({
-        color: 'teal',
-        message: t('team.notification.invite_code.updated'),
-        icon: <Icon path={mdiCheck} size={1} />,
+      const response = await api.team.teamUpdateInviteToken(targetTeamId, {
+        operationId,
+        expectedRevision: observedRevision,
       })
+      if (
+        generation === inviteRequestGeneration.current &&
+        props.opened &&
+        teamId === targetTeamId &&
+        response.data.revision >= observedRevision
+      ) {
+        setInviteCode(response.data.code)
+        setInviteRevision(response.data.revision)
+        inviteOperationId.current = null
+        setInviteLoadError(false)
+        showNotification({
+          color: 'teal',
+          message: t('team.notification.invite_code.updated'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+      }
     } catch (e) {
       showErrorMsg(e, t)
+      if (generation === inviteRequestGeneration.current) {
+        setInviteLoadError(true)
+        // A lost mutation response may still have committed, while another tab
+        // may already own a newer revision. Reconcile through the safe captain
+        // read before allowing an old code to remain copyable.
+        await loadInviteCode()
+      }
+    } finally {
+      inviteMutationOwner.current = false
+      if (generation === inviteRequestGeneration.current) setInviteLoading(false)
     }
   }
 
   const onChangeAvatar = async () => {
-    if (!avatarFile || !teamInfo?.id) return
+    if (!avatarFile || !teamInfo?.id || mutationOwner.current) return
+    const profileRevision = teamInfo.profileRevision ?? 0
+    const digest = `${avatarFile.name}:${avatarFile.size}:${avatarFile.lastModified}:${profileRevision}`
+    if (avatarOperation.current?.digest !== digest) {
+      avatarOperation.current = { digest, id: crypto.randomUUID() }
+    }
+    const operationId = avatarOperation.current?.id
+    if (!operationId) return
+    const owner = new AbortController()
+    mutationOwner.current = owner
     setDisabled(true)
     notifications.clean()
     showNotification({
@@ -281,9 +366,17 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
     })
 
     try {
-      const data = await api.team.teamAvatar(teamInfo.id, {
-        file: avatarFile,
-      })
+      const data = await api.team.teamAvatar(
+        teamInfo.id,
+        {
+          file: avatarFile,
+          operationId,
+          profileRevision,
+        },
+        {
+          signal: owner.signal,
+        }
+      )
       updateNotification({
         id: 'upload-avatar',
         color: 'teal',
@@ -293,7 +386,13 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         loading: false,
       })
       setAvatarFile(null)
-      const newTeamInfo = { ...teamInfo, avatar: data.data }
+      avatarOperation.current = null
+      const avatarChanged = data.data !== teamInfo.avatar
+      const newTeamInfo = {
+        ...teamInfo,
+        avatar: data.data,
+        profileRevision: profileRevision + (avatarChanged ? 1 : 0),
+      }
       setTeamInfo(newTeamInfo)
       mutateTeams(
         teams?.map((x) => (x.id === teamInfo.id ? newTeamInfo : x)),
@@ -312,36 +411,72 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         loading: false,
       })
     } finally {
-      setDisabled(false)
-      setDropzoneOpened(false)
+      if (mutationOwner.current === owner) {
+        mutationOwner.current = null
+        setDisabled(false)
+        setDropzoneOpened(false)
+      }
     }
   }
 
   const onSaveChange = async () => {
-    if (!teamInfo || !teamInfo?.id) return
+    if (!teamInfo?.id || !team || mutationOwner.current) return
+    const name = teamInfo.name?.trim() ?? ''
+    const bio = teamInfo.bio ?? ''
+    if (name === (team.name?.trim() ?? '') && bio === (team.bio ?? '')) return
+
+    const profileRevision = teamInfo.profileRevision ?? 0
+    const digest = JSON.stringify({ name, bio, profileRevision })
+    if (profileOperation.current?.digest !== digest) {
+      profileOperation.current = { digest, id: crypto.randomUUID() }
+    }
+    const operationId = profileOperation.current?.id
+    if (!operationId) return
+    const owner = new AbortController()
+    mutationOwner.current = owner
+    setDisabled(true)
 
     try {
-      await api.team.teamUpdateTeam(teamInfo.id, teamInfo)
+      const response = await api.team.teamUpdateTeam(
+        teamInfo.id,
+        {
+          name,
+          bio,
+          profileRevision,
+          operationId,
+        },
+        { signal: owner.signal }
+      )
+      const saved = response.data
+      setTeamInfo(saved)
+      profileOperation.current = null
       showNotification({
         color: 'teal',
         message: t('team.notification.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
       mutateTeams(
-        teams?.map((x) => (x.id === teamInfo.id ? teamInfo : x)),
+        teams?.map((x) => (x.id === teamInfo.id ? saved : x)),
         {
           revalidate: false,
         }
       )
     } catch (e) {
-      showErrorMsg(e, t)
+      if (!owner.signal.aborted) showErrorMsg(e, t)
+    } finally {
+      if (mutationOwner.current === owner) {
+        mutationOwner.current = null
+        setDisabled(false)
+      }
     }
   }
 
   return (
     <Modal
       {...modalProps}
+      withCloseButton={!disabled && (modalProps.withCloseButton ?? true)}
       onClose={() => {
+        if (disabled) return
         setDropzoneOpened(false)
         props.onClose()
       }}
@@ -364,7 +499,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
                 placeholder={team?.name ?? 'ctfteam'}
                 w="100%"
                 value={teamInfo?.name ?? 'team'}
-                disabled={!isCaptain || locked}
+                disabled={!isCaptain || locked || disabled}
                 maxLength={128}
                 onChange={(event) => setTeamInfo({ ...teamInfo, name: event.target.value })}
               />
@@ -380,13 +515,13 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
                 radius="xl"
                 size={70}
                 src={teamInfo?.avatar}
-                role={isCaptain && !locked ? 'button' : undefined}
-                tabIndex={isCaptain && !locked ? 0 : undefined}
-                aria-label={isCaptain && !locked ? avatarModalTitle : undefined}
-                style={isCaptain && !locked ? { cursor: 'pointer' } : undefined}
-                onClick={() => isCaptain && !locked && setDropzoneOpened(true)}
+                role={isCaptain && !locked && !disabled ? 'button' : undefined}
+                tabIndex={isCaptain && !locked && !disabled ? 0 : undefined}
+                aria-label={isCaptain && !locked && !disabled ? avatarModalTitle : undefined}
+                style={isCaptain && !locked && !disabled ? { cursor: 'pointer' } : undefined}
+                onClick={() => isCaptain && !locked && !disabled && setDropzoneOpened(true)}
                 onKeyDown={(event) => {
-                  if (isCaptain && !locked && (event.key === 'Enter' || event.key === ' ')) {
+                  if (isCaptain && !locked && !disabled && (event.key === 'Enter' || event.key === ' ')) {
                     event.preventDefault()
                     setDropzoneOpened(true)
                   }
@@ -420,7 +555,8 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
                     <ActionIcon
                       size="sm"
                       aria-label={t('team.label.refresh_code', 'Refresh invitation code')}
-                      disabled={locked}
+                      loading={inviteLoading}
+                      disabled={locked || disabled || inviteRevision == null || inviteMutationOwner.current}
                       onClick={onRefreshInviteCode}
                     >
                       <Icon path={mdiRefresh} size={1} />
@@ -451,6 +587,21 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
               }}
               readOnly
             />
+            {inviteLoadError && (
+              <Group justify="space-between" gap="xs" role="alert">
+                <Text size="xs" c="red">
+                  {t('team.error.invite_code_load', 'Invitation code could not be loaded. Retry safely.')}
+                </Text>
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  loading={inviteLoading}
+                  onClick={() => void loadInviteCode()}
+                >
+                  {t('common.button.retry', 'Retry')}
+                </Button>
+              </Group>
+            )}
             <Button
               size="xs"
               variant="light"
@@ -475,7 +626,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
           placeholder={teamInfo?.bio ?? t('team.placeholder.bio')}
           value={teamInfo?.bio ?? ''}
           w="100%"
-          disabled={!isCaptain || locked}
+          disabled={!isCaptain || locked || disabled}
           maxLength={4096}
           autosize
           minRows={2}
@@ -504,7 +655,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
               crew.map((user) => (
                 <TeamMemberInfo
                   key={user.id}
-                  isCaptain={isCaptain && !locked}
+                  isCaptain={isCaptain && !locked && !disabled}
                   user={user}
                   onTransferCaptain={(user: TeamUserInfoModel) => {
                     modals.openConfirmModal({
@@ -547,7 +698,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
             fullWidth
             color="red"
             variant="outline"
-            disabled={isCaptain && locked}
+            disabled={disabled || (isCaptain && locked)}
             onClick={() => {
               modals.openConfirmModal({
                 title: isCaptain ? t('team.content.disband.confirm.title') : t('team.content.leave.confirm.title'),
@@ -570,7 +721,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
           >
             {isCaptain ? t('team.button.disband') : t('team.button.leave')}
           </Button>
-          <Button fullWidth disabled={!isCaptain || locked} onClick={onSaveChange}>
+          <Button fullWidth disabled={!isCaptain || locked || disabled} loading={disabled} onClick={onSaveChange}>
             {t('team.button.save')}
           </Button>
         </Group>
@@ -579,9 +730,9 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
       {/* 更新头像浮窗 */}
       <Modal
         opened={dropzoneOpened}
-        onClose={() => setDropzoneOpened(false)}
+        onClose={() => !disabled && setDropzoneOpened(false)}
         title={avatarModalTitle}
-        withCloseButton
+        withCloseButton={!disabled}
         zIndex={1000}
       >
         <VisuallyHidden id="team-avatar-upload-instructions">
@@ -590,7 +741,10 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         <Dropzone
           aria-label={avatarModalTitle}
           aria-describedby="team-avatar-upload-instructions"
-          onDrop={(files) => setAvatarFile(files[0])}
+          onDrop={(files) => {
+            avatarOperation.current = null
+            setAvatarFile(files[0])
+          }}
           onReject={() => {
             showNotification({
               color: 'red',

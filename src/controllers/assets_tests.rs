@@ -5,11 +5,14 @@ use uuid::Uuid;
 
 use super::authorization::{
     finalize_grant_for_test, finalize_monitor_grant_for_test, finalize_public_grant_for_test,
-    participant_can_download_target, participant_grant_for_test, query_asset_gate, AssetGate,
-    AssetTarget,
+    participant_can_download_target, participant_grant_for_many_test, participant_grant_for_test,
+    query_asset_gate, AssetGate, AssetTarget,
 };
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::utils::enums::{GamePermission, Role};
+
+#[path = "assets_vpn_tests.rs"]
+mod event_vpn;
 
 const TEST_SECURITY_STAMP: &str = "asset-authorization-test-stamp";
 
@@ -58,10 +61,27 @@ impl AssetAuthorizationHarness {
               poster_hash TEXT,
               deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
               vpn_access_required BOOLEAN NOT NULL DEFAULT FALSE,
+              vpn_policy_revision BIGINT NOT NULL DEFAULT 1,
               start_time_utc TIMESTAMPTZ NOT NULL DEFAULT
                   (CURRENT_TIMESTAMP + interval '1 hour'),
               end_time_utc TIMESTAMPTZ NOT NULL DEFAULT
                   (CURRENT_TIMESTAMP + interval '2 hours')
+            );
+            CREATE TABLE "EventVpnUserPeers" (
+              id UUID PRIMARY KEY,
+              game_id INTEGER NOT NULL,
+              user_id UUID NOT NULL,
+              participation_id INTEGER NOT NULL,
+              public_key TEXT NOT NULL DEFAULT 'public-key',
+              address TEXT NOT NULL,
+              generation INTEGER NOT NULL DEFAULT 1,
+              revoked_at_utc TIMESTAMPTZ
+            );
+            CREATE TABLE "EventVpnGateOverrides" (
+              game_id INTEGER NOT NULL,
+              created_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+              expires_at_utc TIMESTAMPTZ NOT NULL,
+              revoked_at_utc TIMESTAMPTZ
             );
             CREATE TABLE "GameChallenges" (
               id INTEGER PRIMARY KEY,
@@ -251,6 +271,98 @@ async fn asset_gate_query_preserves_public_static_team_and_private_boundaries() 
         AssetGate::Private {
             file_size: Some(4096),
         }
+    );
+
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn many_owner_hash_uses_one_user_bound_authorization_instead_of_denial() {
+    let harness = AssetAuthorizationHarness::new().await;
+    let user_id = Uuid::new_v4();
+    let captain_id = Uuid::new_v4();
+    let user = current_user(user_id);
+    let content_hash = "e".repeat(64);
+    sqlx::query(
+        r#"INSERT INTO "Files" (id, hash, file_size, reference_count)
+           VALUES (91, $1, 2048, 1)"#,
+    )
+    .bind(&content_hash)
+    .execute(&harness.pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO "Attachments" (id, local_file_id) VALUES (92, 91)"#)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO "Games" (id, hidden)
+        SELECT id, TRUE FROM generate_series(1000, 1128) id;
+        INSERT INTO "GameChallenges"
+            (id, game_id, title, is_enabled, review_status, attachment_id)
+        SELECT id + 1000, id, 'shared attachment', TRUE, 0, 92
+          FROM generate_series(1000, 1128) id;
+        INSERT INTO "Participations" (id, game_id, team_id, status)
+        VALUES (93, 1128, 94, 1);
+        "#,
+    )
+    .execute(&harness.pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO "AspNetUsers" (id, role) VALUES ($1, 1), ($2, 1)"#)
+        .bind(user_id)
+        .bind(captain_id)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "Teams" (id, captain_id) VALUES (94, $1)"#)
+        .bind(captain_id)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES (94, $1)"#)
+        .bind(user_id)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "UserParticipations"
+               (user_id, game_id, team_id, participation_id)
+           VALUES ($1, 1128, 94, 93)"#,
+    )
+    .bind(user_id)
+    .execute(&harness.pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        query_asset_gate(&harness.pool, &content_hash)
+            .await
+            .unwrap(),
+        AssetGate::ProtectedMany {
+            file_size: Some(2048)
+        }
+    );
+    assert!(
+        participant_grant_for_many_test(&harness.pool, &user, &content_hash)
+            .await
+            .unwrap()
+            .is_some(),
+        "an eligible owner beyond the anonymous cache bound was denied"
+    );
+    sqlx::query(r#"DELETE FROM "TeamMembers" WHERE team_id = 94 AND user_id = $1"#)
+        .bind(user_id)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+    assert!(
+        participant_grant_for_many_test(&harness.pool, &user, &content_hash)
+            .await
+            .unwrap()
+            .is_none(),
+        "historical participation authorized a removed team member"
     );
 
     harness.cleanup().await;

@@ -38,7 +38,8 @@ async fn deletion_authorization_survives_start_time_but_not_late_evidence() {
         );
         CREATE TABLE "Teams" (
           id INTEGER PRIMARY KEY,
-          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
+          avatar_hash TEXT
         );
         CREATE TABLE "Participations" (
           id INTEGER PRIMARY KEY,

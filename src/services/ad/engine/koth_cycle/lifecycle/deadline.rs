@@ -98,14 +98,22 @@ async fn load_cleanup_runtime_state(
 }
 
 async fn prepare_deadline_network_shutdown(st: &SharedState, cycle: &CycleRow) -> AppResult<()> {
-    let mut access = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    persist_deadline_access_revocation(&mut access, cycle.game_id, cycle.challenge_id).await?;
-    access
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut access =
+        crate::services::ad::engine::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id)
+            .await?;
+    let revoked = persist_deadline_access_revocation(
+        access.transaction_mut(),
+        cycle.game_id,
+        cycle.challenge_id,
+    )
+    .await?;
+    crate::services::ad::koth_capability_cache::release_game_control(
+        access,
+        st.cache.as_ref(),
+        cycle.game_id,
+        revoked,
+    )
+    .await?;
 
     // Commit access revocation first. In particular, a FirewallPending retry
     // must never expose an empty target to cooldown validation while its row is
@@ -385,16 +393,21 @@ async fn persist_recovery_error(
 /// and records its latest failure for operators and the idempotent cron path.
 pub(super) async fn record_recovery_error(
     st: &SharedState,
+    game_id: i32,
     cycle_id: i64,
     message: &str,
 ) -> AppResult<()> {
-    let mut connection = st
-        .pg()
-        .acquire()
+    // Keep the error-only fallback on the same game -> cycle lock order as
+    // every authoritative KotH transition. In particular, an event deletion
+    // owns the game lock while cascading cycle rows; updating a cycle first
+    // here would deadlock when PostgreSQL checks that cascade.
+    let mut control =
+        super::super::super::koth_auth::acquire_engine_game_lock(&st.db, game_id).await?;
+    persist_recovery_error(control.transaction_mut(), cycle_id, message).await?;
+    control
+        .release()
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    persist_recovery_error(&mut connection, cycle_id, message).await?;
-    Ok(())
+        .map_err(|error| AppError::internal(error.to_string()))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -425,7 +438,7 @@ pub(super) const fn action(phase: CrownPhase, replacement_persisted: bool) -> Ac
 /// Finalized cycle fields and immutable scoring evidence are preserved.
 pub(super) async fn cleanup_completed_cycle(
     st: &SharedState,
-    config: &OfficialConfig,
+    _config: &OfficialConfig,
     cycle: &CycleRow,
     round_number: i32,
 ) -> AppResult<()> {
@@ -436,7 +449,7 @@ pub(super) async fn cleanup_completed_cycle(
     destroy_deadline_runtimes(st, &runtime.container_ids).await?;
 
     let mut control =
-        super::super::super::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+        super::super::super::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id).await?;
     persist_completed_cleanup(
         &mut *control.transaction_mut(),
         CompletedCleanup {
@@ -457,6 +470,8 @@ pub(super) async fn cleanup_completed_cycle(
     for key in [
         format!("_KothScoreBoard_{}", cycle.game_id),
         format!("_KothScoreBoardFrozen_{}", cycle.game_id),
+        format!("_KothScoreBoardWireV2_{}", cycle.game_id),
+        format!("_KothScoreBoardWireV2Frozen_{}", cycle.game_id),
         format!("_KothTimeline_{}", cycle.game_id),
         format!("_KothTimelineFrozen_{}", cycle.game_id),
         format!("_KothHillState_{}_{}", cycle.game_id, cycle.challenge_id),
@@ -465,20 +480,6 @@ pub(super) async fn cleanup_completed_cycle(
         st.cache.remove(&key).await;
     }
     crate::controllers::game::invalidate_combined_scoreboard(st, cycle.game_id).await;
-    for participation_id in &config.roster {
-        st.cache
-            .remove(&format!(
-                "kothtoken:{}:{}:{}:{}",
-                cycle.game_id, cycle.challenge_id, participation_id, round_number
-            ))
-            .await;
-        st.cache
-            .remove(&format!(
-                "kothtokensall:{}:{}:{}",
-                cycle.game_id, participation_id, round_number
-            ))
-            .await;
-    }
     Ok(())
 }
 
@@ -487,7 +488,10 @@ pub(super) async fn complete_active_cycle(
     cycle: &CycleRow,
     round_number: i32,
 ) -> AppResult<()> {
-    sqlx::query(
+    let mut control =
+        crate::services::ad::engine::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id)
+            .await?;
+    let completed: bool = sqlx::query_scalar(
         r#"WITH completed AS (
              UPDATE "KothCrownCycles"
               SET phase = 'Completed',
@@ -499,25 +503,35 @@ pub(super) async fn complete_active_cycle(
                   updated_at = clock_timestamp(), last_error = NULL
             WHERE id = $1 AND phase IN ('Active','CooldownReleasePending')
           RETURNING id, reset_attempt
-           )
+           ), receipt AS (
            INSERT INTO "KothCycleAuditReceipts"
              (cycle_id, phase, attempt, receipt, filesystem_diff)
            SELECT id, 'Completed', reset_attempt,
                   jsonb_build_object('reason', 'eventDeadline', 'endedRound', $2), NULL
              FROM completed
-           ON CONFLICT (cycle_id, phase, attempt) DO NOTHING"#,
+           ON CONFLICT (cycle_id, phase, attempt) DO NOTHING
+         RETURNING id
+           )
+           SELECT EXISTS(SELECT 1 FROM completed)"#,
     )
     .bind(cycle.id)
     .bind(round_number)
-    .execute(st.pg())
+    .fetch_one(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    crate::services::ad::koth_capability_cache::release_game_control(
+        control,
+        st.cache.as_ref(),
+        cycle.game_id,
+        completed,
+    )
+    .await?;
     Ok(())
 }
 
 pub(super) async fn terminate_interrupted_cycle(
     st: &SharedState,
-    config: &OfficialConfig,
+    _config: &OfficialConfig,
     cycle: &CycleRow,
     round_number: i32,
 ) -> AppResult<()> {
@@ -600,6 +614,8 @@ pub(super) async fn terminate_interrupted_cycle(
     for key in [
         format!("_KothScoreBoard_{}", cycle.game_id),
         format!("_KothScoreBoardFrozen_{}", cycle.game_id),
+        format!("_KothScoreBoardWireV2_{}", cycle.game_id),
+        format!("_KothScoreBoardWireV2Frozen_{}", cycle.game_id),
         format!("_KothTimeline_{}", cycle.game_id),
         format!("_KothTimelineFrozen_{}", cycle.game_id),
         format!("_KothHillState_{}_{}", cycle.game_id, cycle.challenge_id),
@@ -608,21 +624,6 @@ pub(super) async fn terminate_interrupted_cycle(
         st.cache.remove(&key).await;
     }
     crate::controllers::game::invalidate_combined_scoreboard(st, cycle.game_id).await;
-    for participation_id in &config.roster {
-        st.cache
-            .remove(&format!(
-                "kothtoken:{}:{}:{}:{}",
-                cycle.game_id, cycle.challenge_id, participation_id, round_number
-            ))
-            .await;
-        st.cache
-            .remove(&format!(
-                "kothtokensall:{}:{}:{}",
-                cycle.game_id, participation_id, round_number
-            ))
-            .await;
-    }
-
     Ok(())
 }
 
@@ -635,6 +636,28 @@ mod tests {
         persist_deadline_access_revocation, persist_deadline_snapshot_receipt,
         persist_deadline_target_deactivation, persist_recovery_error, CompletedCleanup,
     };
+
+    #[test]
+    fn recovery_error_writer_takes_the_game_lock_before_the_cycle_row() {
+        let source = include_str!("deadline.rs");
+        let start = source
+            .find("pub(super) async fn record_recovery_error(")
+            .expect("recovery error writer exists");
+        let end = source[start..]
+            .find("\n#[derive(Clone, Copy, Debug")
+            .map(|offset| start + offset)
+            .expect("recovery error writer boundary exists");
+        let writer = &source[start..end];
+        let game_lock = writer
+            .find("koth_auth::acquire_engine_game_lock")
+            .expect("recovery error writer owns the game lock");
+        let cycle_update = writer
+            .find("persist_recovery_error")
+            .expect("recovery error writer updates the cycle");
+
+        assert!(game_lock < cycle_update);
+        assert!(!writer.contains("st.pg().acquire()"));
+    }
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]

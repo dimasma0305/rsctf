@@ -34,12 +34,11 @@ import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { useParticipationStatusMap } from '@Utils/Shared'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
+import { useCheatIncidentFeed } from '@Hooks/useCheatIncidentFeed'
 import { useUserRole } from '@Hooks/useUser'
 import api, { CheatInfoModel, ParticipationEditModel, ParticipationStatus, Role } from '@Api'
 import classes from '@Styles/Accordion.module.css'
 import misc from '@Styles/Misc.module.css'
-
-const CHEAT_INFO_REFRESH_INTERVAL_MS = 10_000
 
 enum CheatType {
   Submit = 'Submit',
@@ -493,24 +492,21 @@ const CheatInfoTableView: FC<CheatInfoTableViewProps> = (props) => {
 
 interface CheatSubmissionLogProps {
   gameId: number
+  active?: boolean
 }
 
-export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
+export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId, active = true }) => {
   const {
     data: cheatInfo,
     error,
     isLoading,
     isValidating,
     mutate,
-  } = api.game.useGameCheatInfo(gameId, {
-    refreshInterval: CHEAT_INFO_REFRESH_INTERVAL_MS,
-    revalidateOnFocus: true,
-    revalidateOnReconnect: true,
-    refreshWhenHidden: false,
-    refreshWhenOffline: false,
-    shouldRetryOnError: false,
-    keepPreviousData: false,
-  })
+    loadingOlder,
+    hasOlder,
+    loadOlder,
+    updateRows,
+  } = useCheatIncidentFeed(gameId, active)
 
   const [disabled, setDisabled] = useState(false)
   const [teamView, setTeamView] = useLocalStorage({
@@ -520,7 +516,7 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
   })
 
   const { t } = useTranslation()
-  const cheatTeamInfo = useMemo(() => ToCheatTeamInfo(cheatInfo ?? []), [cheatInfo])
+  const cheatTeamInfo = useMemo(() => ToCheatTeamInfo(cheatInfo), [cheatInfo])
 
   const refresh = async () => {
     try {
@@ -534,20 +530,18 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
     setDisabled(true)
     try {
       await api.admin.adminParticipation(id, model)
-      await mutate(
-        (current) =>
-          (current ?? []).map((info) => ({
-            ...info,
-            ownedTeam:
-              info.ownedTeam?.id === id
-                ? { ...info.ownedTeam, status: model.status ?? info.ownedTeam.status }
-                : info.ownedTeam,
-            submitTeam:
-              info.submitTeam?.id === id
-                ? { ...info.submitTeam, status: model.status ?? info.submitTeam.status }
-                : info.submitTeam,
-          })),
-        { revalidate: false }
+      updateRows((current) =>
+        current.map((info) => ({
+          ...info,
+          ownedTeam:
+            info.ownedTeam?.id === id
+              ? { ...info.ownedTeam, status: model.status ?? info.ownedTeam.status }
+              : info.ownedTeam,
+          submitTeam:
+            info.submitTeam?.id === id
+              ? { ...info.submitTeam, status: model.status ?? info.submitTeam.status }
+              : info.submitTeam,
+        }))
       )
       showNotification({
         color: 'teal',
@@ -561,7 +555,7 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
     }
   }
 
-  if (error && !cheatInfo) {
+  if (error && cheatInfo.length === 0) {
     return (
       <Alert
         color="red"
@@ -580,7 +574,7 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
     )
   }
 
-  if (isLoading || !cheatInfo) {
+  if (isLoading) {
     return (
       <Center h="30vh">
         <Stack align="center" gap="sm" role="status" aria-live="polite">
@@ -636,6 +630,18 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
         <CheatInfoTeamView disabled={disabled} cheatTeamInfo={cheatTeamInfo} setParticipation={setParticipation} />
       ) : (
         <CheatInfoTableView cheatInfo={cheatInfo} />
+      )}
+      {hasOlder && (
+        <Button
+          variant="light"
+          loading={loadingOlder}
+          disabled={loadingOlder}
+          onClick={() => void loadOlder()}
+          aria-label={t('game.label.cheat_info.load_older', 'Load older suspicious submissions')}
+          mx="auto"
+        >
+          {t('game.button.cheat_info.load_older', 'Load older incidents')}
+        </Button>
       )}
     </Stack>
   )

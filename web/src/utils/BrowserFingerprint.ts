@@ -25,6 +25,12 @@ import { IS_BLINK, LowerEntropy, braveBrowser, getBraveMode, getBraveUnprotected
 import getCanvasWebgl from '@creepjs/webgl'
 import getWindowFeatures from '@creepjs/window'
 import getBestWorkerScope from '@creepjs/worker'
+import {
+    type FingerprintCollectionOptions,
+    assertRequiredFingerprintSignalsAvailable,
+    settleFingerprintProbe,
+    throwIfFingerprintCollectionAborted,
+} from '@Utils/FingerprintProbe'
 
 interface FingerprintProof {
     version: number
@@ -133,12 +139,17 @@ const buildFingerprintProof = (fp: any, fingerprint: string, challenge?: Fingerp
     return proof
 }
 
-export const getFingerprintPayload = async (challenge?: FingerprintChallenge): Promise<FingerprintPayload> => {
-    const isBrave = IS_BLINK ? await braveBrowser() : false
+export const getFingerprintPayload = async (
+    challenge?: FingerprintChallenge,
+    options: FingerprintCollectionOptions = {},
+): Promise<FingerprintPayload> => {
+    const failed = new Set<string>()
+    const probe = <T>(name: string, operation: () => Promise<T> | T) =>
+        settleFingerprintProbe(name, operation, failed, options)
+    const isBrave = IS_BLINK ? await probe('brave', braveBrowser) ?? false : false
     const braveMode: any = isBrave ? getBraveMode() : {}
     const braveFingerprintingBlocking = isBrave && (braveMode.standard || braveMode.strict)
 
-    // @ts-ignore
     const [
         workerScopeComputed,
         voicesComputed,
@@ -160,56 +171,56 @@ export const getFingerprintPayload = async (challenge?: FingerprintChallenge): P
         resistanceComputed,
         intlComputed,
     ] = await Promise.all([
-        getBestWorkerScope(),
-        getVoices(),
-        getOfflineAudioContext(),
-        getCanvasWebgl(),
-        getCanvas2d(),
-        getWindowFeatures(),
-        getHTMLElementVersion(),
-        getCSS(),
-        getCSSMedia(),
-        getScreen(),
-        getMaths(),
-        getConsoleErrors(),
-        getTimezone(),
-        getClientRects(),
-        getFonts(),
-        getMedia(),
-        getSVG(),
-        getResistance(),
-        getIntl(),
-    ]).catch((error) => console.error(error.message))
+        probe('workerScope', getBestWorkerScope),
+        probe('voices', getVoices),
+        probe('offlineAudioContext', getOfflineAudioContext),
+        probe('canvasWebgl', getCanvasWebgl),
+        probe('canvas2d', getCanvas2d),
+        probe('windowFeatures', getWindowFeatures),
+        probe('htmlElementVersion', getHTMLElementVersion),
+        probe('css', getCSS),
+        probe('cssMedia', getCSSMedia),
+        probe('screen', getScreen),
+        probe('maths', getMaths),
+        probe('consoleErrors', getConsoleErrors),
+        probe('timezone', getTimezone),
+        probe('clientRects', getClientRects),
+        probe('fonts', getFonts),
+        probe('media', getMedia),
+        probe('svg', getSVG),
+        probe('resistance', getResistance),
+        probe('intl', getIntl),
+    ])
 
-    const navigatorComputed = await getNavigator(workerScopeComputed)
-        .catch((error: any) => console.error(error.message))
+    const navigatorComputed = await probe('navigator', () => getNavigator(workerScopeComputed))
 
-    // @ts-ignore
     const [
         headlessComputed,
         featuresComputed,
     ] = await Promise.all([
-        getHeadlessFeatures({
+        probe('headless', () => getHeadlessFeatures({
             webgl: canvasWebglComputed,
             workerScope: workerScopeComputed,
-        }),
-        getEngineFeatures({
+        })),
+        probe('features', () => getEngineFeatures({
             cssComputed,
             navigatorComputed,
             windowFeaturesComputed,
-        }),
-    ]).catch((error) => console.error(error.message))
+        })),
+    ])
 
-    // @ts-ignore
     const [
         liesComputed,
         trashComputed,
         capturedErrorsComputed,
     ] = await Promise.all([
-        getLies(),
-        getTrash(),
-        getCapturedErrors(),
-    ]).catch((error) => console.error(error.message))
+        probe('lies', getLies),
+        probe('trash', getTrash),
+        probe('capturedErrors', getCapturedErrors),
+    ])
+
+    assertRequiredFingerprintSignalsAvailable(challenge?.requiredSignals ?? [], failed)
+    throwIfFingerprintCollectionAborted(options.signal)
 
     const hardenEntropy = (workerScope: any, prop: any) => {
         return (
@@ -219,7 +230,7 @@ export const getFingerprintPayload = async (challenge?: FingerprintChallenge): P
         )
     }
 
-    const fp = {
+    const fp: any = {
         workerScope: workerScopeComputed,
         navigator: navigatorComputed,
         windowFeatures: windowFeaturesComputed,
@@ -441,6 +452,7 @@ export const getFingerprintPayload = async (challenge?: FingerprintChallenge): P
     }
 
     const creepHash = await hashify(creep)
+    throwIfFingerprintCollectionAborted(options.signal)
     const proof = buildFingerprintProof(fp, creepHash, challenge)
 
     return {

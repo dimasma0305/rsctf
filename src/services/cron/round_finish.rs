@@ -274,6 +274,9 @@ async fn deliver_round_flag(
         .container_id
         .as_deref()
         .filter(|id| !id.trim().is_empty());
+    if let Some(outcome) = invalid_stored_flag_outcome(&planted, kind, container_id) {
+        return outcome;
+    }
     let attempted = match (planted.managed, container_id) {
         (true, Some(container_id)) => {
             deliver_managed_flag(
@@ -333,6 +336,30 @@ async fn deliver_round_flag(
             },
         )
     }
+}
+
+fn invalid_stored_flag_outcome(
+    planted: &crate::services::ad_engine::AdvancedRoundFlag,
+    kind: crate::services::ad_engine::FlagDeliveryKind,
+    container_id: Option<&str>,
+) -> Option<crate::services::ad_engine::FlagDeliveryOutcome> {
+    if crate::utils::flag_policy::validate_ad(&planted.flag).is_ok() {
+        return None;
+    }
+    tracing::warn!(
+        team_service_id = planted.team_service_id,
+        challenge_id = planted.challenge_id,
+        "invalid persisted A&D flag blocked before delivery"
+    );
+    Some(crate::services::ad_engine::FlagDeliveryOutcome::failed(
+        planted.team_service_id,
+        kind,
+        planted
+            .managed
+            .then(|| container_id.unwrap_or_default().to_string()),
+        0,
+        "stored round flag violates the canonical A&D format",
+    ))
 }
 
 async fn deliver_initial_round_flags<F, Fut>(
@@ -751,21 +778,31 @@ pub(super) async fn finish_prepared_round(
     // owner must repeat readiness work because it cannot trust the old runtime
     // identity. Reload the snapshot either way and never exec a stale container.
     if !newly_prepared {
-        let repair_failures =
-            match crate::controllers::edit::ensure_ad_containers(state, game, None, false, false)
-                .await
-            {
-                Ok((_, failures)) => failures as usize,
-                Err(error) => {
-                    tracing::warn!(
-                        game = game.id,
-                        round = next_number,
-                        %error,
-                        "cron: managed A&D service recovery failed before flag propagation"
-                    );
-                    1
-                }
-            };
+        let repair_failures = match async {
+            let job =
+                crate::controllers::edit::request_ad_reconcile_job(state, game.id, false, false)
+                    .await?;
+            let remaining = pipeline_deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .min(std::time::Duration::from_secs(90));
+            let job =
+                crate::services::control_jobs::wait_for_terminal(state.pg(), job.id, remaining)
+                    .await?;
+            crate::services::control_jobs::result_count(&job, "failures")
+        }
+        .await
+        {
+            Ok(failures) => failures,
+            Err(error) => {
+                tracing::warn!(
+                    game = game.id,
+                    round = next_number,
+                    %error,
+                    "cron: managed A&D service recovery failed before flag propagation"
+                );
+                1
+            }
+        };
         if repair_failures > 0 {
             tracing::warn!(
                 game = game.id,
@@ -837,16 +874,20 @@ pub(super) async fn finish_prepared_round(
                 "cron: KotH crown-cycle transition remains pending"
             );
         }
-        crate::services::ad_engine::run_checker(
-            &state.db,
-            state.containers.as_ref(),
+        let result = crate::services::ad_engine::run_checker(
+            crate::services::ad_engine::CheckerDependencies::new(
+                &state.db,
+                state.containers.as_ref(),
+                state.cache.as_ref(),
+            ),
             game.id,
             round_id,
             lease,
             pipeline_deadline,
             receipt_receiver,
         )
-        .await
+        .await;
+        result
     };
     let (delivery, checker) =
         run_publication_with_checker(publisher, checker_after_hill_transition).await;
@@ -887,7 +928,15 @@ pub(super) async fn finish_prepared_round(
         .await;
     state
         .cache
+        .remove(&format!("_KothScoreBoardWireV2_{}", game.id))
+        .await;
+    state
+        .cache
         .remove(&format!("_KothScoreBoardFrozen_{}", game.id))
+        .await;
+    state
+        .cache
+        .remove(&format!("_KothScoreBoardWireV2Frozen_{}", game.id))
         .await;
     state
         .cache
@@ -923,6 +972,7 @@ pub(super) async fn finish_prepared_round(
         })
         .to_string(),
     );
+    crate::controllers::game::publish_scoreboard_changed(state, game.id, "engines");
     tracing::debug!(
         game = game.id,
         round = next_number,

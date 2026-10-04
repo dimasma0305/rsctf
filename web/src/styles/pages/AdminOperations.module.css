@@ -1,0 +1,171 @@
+.workspace,
+.toolbar {
+  min-width: 0;
+  width: 100%;
+}
+.toolbar {
+  align-items: flex-end;
+}
+.toolbar :global(.mantine-Button-root) {
+  min-height: 42px;
+  max-width: 100%;
+}
+.toolbar :global(.mantine-Button-label) {
+  white-space: normal;
+}
+.scopeNote {
+  color: var(--app-text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.65;
+  max-width: 58ch;
+}
+.overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+.metric {
+  min-width: 0;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.8rem;
+  background: var(--app-raised-surface);
+  text-align: left;
+}
+.metricLabel {
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
+  line-height: 1.5;
+}
+.metricValue {
+  font: 650 1.75rem var(--mantine-font-family-monospace);
+  letter-spacing: -0.06em;
+  margin-top: 0.5rem;
+  color: var(--app-text-primary);
+}
+button.metric[data-active] {
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-surface);
+}
+button.metric:hover {
+  border-color: var(--app-control-border);
+}
+button.metric:focus-visible {
+  outline: 2px solid var(--app-accent-text);
+  outline-offset: 3px;
+}
+.repoCard {
+  border-color: var(--app-border);
+  border-radius: 0.85rem;
+  background: var(--app-raised-surface);
+}
+.repoCard :global(.mantine-ActionIcon-root) {
+  min-width: 38px;
+  min-height: 38px;
+}
+.repoCard :global(.mantine-Button-root) {
+  min-height: 38px;
+}
+.repoName {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+  flex: 1;
+}
+.linkedEvents {
+  padding: 0.8rem 1rem;
+  border-radius: 0.5rem;
+  background: var(--app-subtle-surface);
+  border: 1px solid var(--app-border);
+}
+.linkedEvents a {
+  overflow-wrap: anywhere;
+  text-underline-offset: 3px;
+}
+.repoFooter {
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--app-border);
+}
+.scanMessage {
+  padding: 0.65rem 0.8rem;
+  border-radius: 0.4rem;
+  background: var(--app-subtle-surface);
+  overflow-wrap: anywhere;
+}
+.wrapCode,
+.log {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.warningText {
+  color: light-dark(#9a3412, var(--mantine-color-orange-3));
+}
+.log {
+  padding: 1rem;
+  line-height: 1.7;
+  border: 1px solid var(--app-border);
+}
+.search {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+.activity {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.8rem;
+  background: var(--app-raised-surface);
+}
+.activeRow {
+  min-width: 0;
+  padding: 0.65rem;
+}
+.activeRow a {
+  overflow-wrap: anywhere;
+}
+.empty {
+  min-height: 180px;
+  padding: 1.5rem;
+  border: 1px dashed var(--app-border);
+  border-radius: 0.8rem;
+  text-align: center;
+}
+.result {
+  border-color: var(--app-accent-border);
+  border-radius: 0.75rem;
+  background: var(--app-raised-surface);
+}
+.result code {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 48em) {
+  .overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 36em) {
+  .metric {
+    padding: 0.85rem;
+  }
+  .metricValue {
+    font-size: 1.5rem;
+  }
+  .toolbar > :global(.mantine-Group-root) {
+    width: 100%;
+  }
+  .toolbar > :global(.mantine-Group-root) > a,
+  .toolbar > :global(.mantine-Group-root) > button {
+    flex: 1 1 auto;
+  }
+  .repoCard {
+    padding: 1rem;
+  }
+  .repoName {
+    font-size: 0.95rem;
+  }
+  .activity {
+    padding: 1rem;
+  }
+}

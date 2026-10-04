@@ -1,0 +1,327 @@
+// Browser-only fixtures: every API request is intercepted, including mutations.
+import assert from 'node:assert/strict'
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { launchBrowser } from './cdp.mjs'
+import { auditChallengeCategoryScroller } from './audit.mjs'
+import { auditGlobeRotation } from './globe-rotation.mjs'
+import { auditGlobeFocus } from './globe-focus.mjs'
+import { createCompetitionFixture } from './competition-fixtures.mjs'
+import { arenaBrowserSetup, createArenaFixture } from './attack-arena-fixtures.mjs'
+
+const target = process.env.RSCTF_WORKSPACE_PREVIEW || 'http://127.0.0.1:63017'
+const targetUrl = new URL(target)
+assert.ok(targetUrl.origin === target && (targetUrl.hostname === '127.0.0.1' || target === 'https://tcp.1pc.tf'))
+const output = resolve(process.env.RSCTF_WORKSPACE_OUTPUT || '../visual-audit-output/competition')
+mkdirSync(output, { recursive: true })
+const { now, profile, game, challenges, rank, config, responses } = createCompetitionFixture()
+const arena = createArenaFixture()
+arena.scoreboard.items = arena.scoreboard.items.map((team, index) => ({ ...team, rank: index + 1, solvedChallenges: [] }))
+for (const path of ['/api/game/901/ad/scoreboard', '/api/game/901/ad/koth/scoreboard', '/api/game/901/scoreboard']) responses[path] = arena.responses[path]
+const browser = await launchBrowser()
+const { cdp } = browser
+const reports = [], unknown = new Set(), requests = []
+let errors = [], forbidden = false
+const evaluate = async (expression) => {
+  const result = await cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
+  return result.result?.value
+}
+const waitFor = async (expression) => {
+  for (let i = 0; i < 160; i++) {
+    if (await evaluate(`Boolean(${expression})`)) return
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  const state = await evaluate(`({url:location.href,width:innerWidth,workspaceWidth:document.querySelector('[data-competition-workspace]')?.getBoundingClientRect().width,detail:!!document.querySelector('[data-challenge-detail]'),dialog:!!document.querySelector('[role="dialog"]'),active:document.activeElement?.outerHTML,selected:[...document.querySelectorAll('[data-challenge-row][aria-current="true"]')].map(e=>e.getAttribute('href'))})`)
+  throw new Error(`Timed out: ${expression}; ${JSON.stringify(state)}; ${await evaluate('document.body.innerText.slice(-2500)')}`)
+}
+const press = async (key) => {
+  const vk = { Enter: 13, ' ': 32, Escape: 27, Tab: 9 }[key]
+  for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', { type, key, windowsVirtualKeyCode: vk, ...(type === 'keyDown' && key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) })
+}
+const screenshot = async (name) => {
+  const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
+  writeFileSync(`${output}/${name}.png`, Buffer.from(shot.data, 'base64'))
+}
+const inspect = async (name) => {
+  // Audit the settled popup, not a partially transparent opening frame.
+  // Keep perpetual activity indicators running; navigation motion is tested separately.
+  await evaluate(`document.fonts.ready`)
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  await evaluate(`Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().endTime !== Infinity).map(a => a.finished.catch(() => {})))`)
+  await evaluate(readFileSync('node_modules/axe-core/axe.min.js', 'utf8'))
+  const issues = await evaluate(`(async () => ({ overflow: document.documentElement.scrollWidth > innerWidth + 1, violations: (await axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } })).violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => ({ target: n.target, summary: n.failureSummary })) })) }))()`)
+  await screenshot(name)
+  reports.push({ name, ...issues, errors: [...errors] })
+  console.log(name, JSON.stringify(issues))
+}
+const selectView = async (view) => {
+  // Closing details updates the hash before React Router publishes its new
+  // location. Let that commit finish before another hash-owning control runs.
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  await evaluate(`document.querySelector('input[value="${view}"]').click()`)
+  await waitFor(view === 'globe' ? `document.querySelector('[data-challenge-globe]')` : view === 'list' ? `document.querySelector('[data-challenge-list]')` : `document.querySelector('[data-guide="challenge-card"]')`)
+  // Let hash-driven detail cleanup and its deferred focus restoration settle
+  // before sending keyboard input into the newly selected presentation.
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+}
+try {
+  await cdp.send('Page.enable'); await cdp.send('Runtime.enable')
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: arenaBrowserSetup })
+  cdp.on('Runtime.exceptionThrown', ({ exceptionDetails }) => errors.push(exceptionDetails.exception?.description ?? exceptionDetails.text))
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (location.origin === ${JSON.stringify(new URL(target).origin)}) { localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark'); localStorage.setItem('rsctf-player-guide:${profile.userId}', JSON.stringify({ interactiveEnabled:false, completedVersion:1, seenFeatures:[] })); }` })
+  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `${target}/api/*` }, { urlPattern: `${target}/hub*` }] })
+  cdp.on('Fetch.requestPaused', async ({ requestId, request }) => {
+    const path = new URL(request.url).pathname.toLowerCase()
+    requests.push({ path, method: request.method })
+    let value = responses[path], status = 200
+    if (!['GET', 'HEAD'].includes(request.method)) { value = { title: 'Fixture mutation blocked', status: 405 }; status = 405 }
+    else if (forbidden && path.startsWith('/api/game/902/details')) { value = { title: 'forbidden', status: 403 }; status = 403 }
+    else if (value === undefined) { unknown.add(path); value = [] }
+    await cdp.send('Fetch.fulfillRequest', { requestId, responseCode: status, responseHeaders: [{ name: 'Content-Type', value: 'application/json' }], body: Buffer.from(JSON.stringify(value)).toString('base64') })
+  })
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1200, deviceScaleFactor: 1, mobile: false })
+  await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
+  assert.equal(await evaluate(`document.querySelector('input[value="cards"]').checked`), true)
+  await inspect('desktop-default-cards')
+  const eventTabs = '[data-event-tabs]'
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('${eventTabs} a')].slice(0,3).map(a=>a.getAttribute('href'))`), ['/games/901/challenges', '/games/901/scoreboard', '/games/901/attack'])
+  await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/attack"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('[data-arena-theme]')?.shadowRoot?.querySelector('#connectionStatus')?.textContent === 'Connected'`)
+  assert.equal(await evaluate(`document.querySelector('${eventTabs} [aria-current="page"]').getAttribute('href')`), '/games/901/attack')
+  assert.equal(await evaluate('document.querySelector("h1").textContent'), game.title)
+  await inspect('desktop-arena-tab')
+  await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/scoreboard"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('${eventTabs} [aria-current="page"]')?.getAttribute('href') === '/games/901/scoreboard'`)
+  await waitFor(`document.querySelector('table tbody tr')`)
+  assert.equal(await evaluate('arenaSockets.filter(s=>s.readyState===1).length'), 0, 'leaving the arena closes its socket')
+  await inspect('desktop-scoreboard-tab')
+  // Persist and reload so Mantine's hooks and the shared theme agree.
+  await evaluate(`localStorage.setItem('mantine-color-scheme-value','light')`)
+  const lightSetup = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('mantine-color-scheme-value','light')` })
+  await cdp.send('Page.reload')
+  await waitFor(`document.querySelector('table tbody tr')`)
+  await inspect('light-scoreboard-tab')
+  await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: lightSetup.identifier })
+  await cdp.send('Page.reload')
+  await waitFor(`document.querySelector('table tbody tr')`)
+  await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/challenges"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
+  await evaluate(`document.querySelector('#challenge-search').focus()`)
+  await cdp.send('Input.insertText', { text: 'pwn ret2win' })
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 1`)
+  assert.ok(await evaluate(`document.querySelector('article[data-guide="challenge-card"]').textContent.includes('Ret2win')`))
+  await inspect('cards-multiword-search')
+  await evaluate(`document.querySelector('button[aria-label="Clear search"]').click()`)
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
+  assert.equal(await evaluate(`document.activeElement.id`), 'challenge-search')
+  await evaluate(`document.querySelector('[data-challenge-toolbar] input[role="switch"]').click()`)
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 88`)
+  assert.ok(await evaluate(`Array.from(document.querySelectorAll('article[data-guide="challenge-card"]')).some(card => card.textContent.includes('Ret2win'))`), 'rejected attempts remain available in the unsolved filter')
+  await inspect('cards-unsolved')
+  await evaluate(`document.querySelector('[data-challenge-toolbar] input[role="switch"]').click()`)
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
+  await evaluate(`document.querySelector('[data-challenge-toolbar] input[role="combobox"]').click()`)
+  await waitFor(`document.querySelector('[role="option"]')`)
+  await evaluate(`[...document.querySelectorAll('[role="option"]')].find(option => option.textContent === 'Highest points').click()`)
+  const pointOrder = [...challenges].sort((a, b) => b.score - a.score || a.title.localeCompare(b.title) || a.id - b.id).map(item => item.title)
+  await waitFor(`document.querySelector('[data-challenge-toolbar] input[role="combobox"]').value === 'Highest points'`)
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('article[data-guide="challenge-card"] a')).map(link => link.textContent)`), pointOrder)
+  await inspect('cards-points-sorted')
+  await selectView('list')
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('[data-challenge-row] > span')).map(span => span.textContent)`), pointOrder.slice(0, 10))
+  await selectView('globe')
+  await waitFor(`document.querySelectorAll('[data-globe-node]').length === 5`)
+  assert.equal(await evaluate(`!!document.querySelector('#primary-navigation-rail') && !document.querySelector('header[data-guide-boundary="top-shell"]')`), true)
+  assert.equal(await evaluate(`document.querySelector('[data-competition-workspace]').getBoundingClientRect().left >= document.querySelector('#primary-navigation-rail').getBoundingClientRect().right`), true)
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('[data-competition-workspace]')).gridTemplateColumns.split(' ').length`), 1)
+  assert.ok(await evaluate(`document.querySelector('[data-event-workspace-header]').getBoundingClientRect().height < 190`), 'event information and team stats form one compact masthead')
+  assert.ok(await evaluate(`parseFloat(getComputedStyle(document.querySelector('[data-team-summary] dd')).fontSize) >= 16`), 'compact desktop team values stay readable below the event header')
+  assert.equal(await evaluate(`document.querySelectorAll('[data-globe-choice]').length`), 5)
+  assert.ok(await evaluate(`document.querySelector('[data-globe-stage]').getBoundingClientRect().width >= 800`), 'desktop globe is the dominant visual, not a small illustration')
+  assert.ok(await evaluate(`document.querySelector('[data-challenge-globe] nav').getBoundingClientRect().width < document.querySelector('[data-globe-stage]').getBoundingClientRect().width * 0.4`), 'category navigator stays secondary to the globe')
+  assert.equal(await evaluate(`document.querySelector('[data-globe-stage] canvas').width`), 1200, 'larger globe has a bounded high-resolution bitmap')
+  await inspect('desktop-globe-categories')
+  const rotationRequests = requests.length
+  await auditGlobeRotation(cdp, evaluate, waitFor, { onTilt: () => inspect('desktop-globe-tilted') })
+  assert.equal(requests.slice(rotationRequests).filter(request => request.path.includes('/challenges/')).length, 0, 'rotation has no challenge reads or writes')
+  await inspect('desktop-globe-rotation')
+  await evaluate(`document.querySelector('[data-team-summary] button').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('input[type="password"]')`)
+  assert.equal(await evaluate(`document.querySelector('input[type="password"]').readOnly`), true)
+  await inspect('desktop-team-options')
+  await press('Escape')
+  await waitFor(`!document.querySelector('input[type="password"]')`)
+  await waitFor(`document.activeElement === document.querySelector('[data-team-summary] button')`)
+  assert.ok(await evaluate(`document.querySelector('[data-game-activity]').getBoundingClientRect().height < 240`), 'one notice must not reserve an empty tall panel')
+  await evaluate(`document.querySelector('#navigation-rail-toggle').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('#primary-navigation-rail').getBoundingClientRect().width < 80`)
+  await inspect('desktop-collapsed-sidebar')
+  await press('Enter')
+  await waitFor(`document.querySelector('#primary-navigation-rail').getBoundingClientRect().width >= 260`)
+  const before = requests.length
+  await evaluate(`document.querySelector('[aria-label="Rotate globe right"]').click()`)
+  await evaluate(`document.querySelector('[aria-label="Reset globe view"]').click()`)
+  assert.equal(requests.slice(before).filter((request) => request.path.includes('/challenges/')).length, 0)
+  const categoryRequests = requests.length
+  await evaluate(`document.querySelector('[data-globe-choice="category-Pwn"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelectorAll('[data-globe-node]').length === 8`)
+  assert.equal(requests.slice(categoryRequests).filter(request => request.path.includes('/challenges/')).length, 0, 'category selection filters without fetching arbitrary challenge details')
+  assert.ok(await evaluate(`(() => { const stage = document.querySelector('[data-globe-stage]').getBoundingClientRect(); return [...document.querySelectorAll('[data-globe-node]:not([hidden])')].every(node => { const r = node.getBoundingClientRect(); return r.left >= stage.left + 3 && r.right <= stage.right - 3 && r.top >= stage.top + 3 && r.bottom <= stage.bottom - 3; }); })()`), 'all eight visible pins and their focus outlines fit above the cropped equator')
+  await inspect('desktop-horizon-eight-pins')
+  await auditGlobeFocus(cdp, evaluate, waitFor, inspect, 'desktop-challenge')
+  await evaluate(`[...document.querySelectorAll('.mantine-Pagination-root button')].find(button => button.textContent.trim() === '2').click()`)
+  await waitFor(`!document.querySelector('[data-challenge-globe]').dataset.globeFocus`)
+  await auditGlobeFocus(cdp, evaluate, waitFor, inspect, 'desktop-page-two')
+  await evaluate(`[...document.querySelectorAll('.mantine-Pagination-root button')].find(button => button.textContent.trim() === '1').click()`)
+  await waitFor(`!document.querySelector('[data-challenge-globe]').dataset.globeFocus`)
+  await evaluate(`document.querySelector('#challenge-search').focus()`)
+  await cdp.send('Input.insertText', { text: 'Ret2win' })
+  await waitFor(`document.querySelectorAll('[data-globe-node]').length === 1`)
+  await evaluate(`document.querySelector('[data-globe-choice="9001"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('[data-challenge-detail] input')`)
+  await inspect('desktop-globe-open-action')
+  await evaluate(`document.querySelector('[data-challenge-detail] button[aria-label="Close"]').click()`)
+  await waitFor(`!document.querySelector('[data-challenge-detail]')`)
+  await selectView('list')
+  await evaluate(`document.querySelector('[data-challenge-row="9001"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('[data-challenge-detail] input')`)
+  assert.equal(await evaluate(`document.activeElement.id`), 'competition-challenge-title')
+  await inspect('desktop-list-selected')
+  await selectView('globe')
+  await waitFor(`document.querySelector('[data-challenge-detail]')`)
+  assert.equal(await evaluate(`location.hash.startsWith('#9001-')`), true)
+  await inspect('desktop-globe-selected')
+  await evaluate(`document.querySelector('[data-challenge-detail] button[aria-label="Close"]').click()`)
+  await waitFor(`!document.querySelector('[data-challenge-detail]')`)
+  await selectView('list')
+  await evaluate(`document.querySelector('#challenge-search').focus()`)
+  await cdp.send('Input.insertText', { text: 'does-not-exist' })
+  await waitFor(`document.body.innerText.includes('No matching challenges')`)
+  await inspect('empty-search')
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.innerText === 'Reset filters').click()`)
+  await waitFor(`document.querySelectorAll('[data-challenge-row]').length === 10`)
+  for (const [name, width, height] of [['compact', 320, 568], ['mobile', 390, 844], ['tablet', 768, 1024], ['laptop', 1024, 768], ['small-desktop', 1200, 900], ['notebook', 1366, 768], ['wide', 1920, 1080]]) {
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
+    await selectView('list')
+    await waitFor(width <= 768 ? `!document.querySelector('#primary-navigation-rail') && document.querySelector('header[data-guide-boundary="top-shell"]')` : `document.querySelector('#primary-navigation-rail') && !document.querySelector('header[data-guide-boundary="top-shell"]')`)
+    await evaluate(`window.scrollTo({ top: 0, behavior: 'instant' })`)
+    await inspect(`${name}-list`)
+    if (width < 400) {
+      assert.ok(await evaluate(`document.querySelector('[data-challenge-list] tbody tr').getBoundingClientRect().bottom < innerHeight - 64`), 'a complete challenge should be visible without scrolling past the controls')
+      const filters = await auditChallengeCategoryScroller(cdp, { path: '/games/901/challenges' }, { width, mobile: true })
+      assert.equal(filters.mode, 'popover')
+      assert.equal(filters.keyboardReachedLast && filters.touchOpened && filters.focusRestored && filters.bounded, true)
+      await evaluate(`document.querySelector('[data-challenge-filters]').focus()`)
+      await press('Enter')
+      await waitFor(`document.querySelector('#challenge-category-filter')`)
+      await inspect(`${name}-filters`)
+      await press('Escape')
+      await waitFor(`!document.querySelector('#challenge-category-filter')`)
+    }
+    if (width < 400) {
+      await evaluate(`document.querySelector('[data-challenge-list]').scrollIntoView({ block: 'start', behavior: 'instant' })`)
+      await inspect(`${name}-list-content`)
+    }
+    await evaluate(`(document.querySelector('[data-challenge-row="9001"]') ?? document.querySelector('[data-challenge-row]')).click()`)
+    const inline = await evaluate(`document.querySelector('[data-competition-workspace]').getBoundingClientRect().width >= 1200`)
+    await waitFor(inline ? `document.querySelector('[data-challenge-detail] input')` : `document.querySelector('[role="dialog"] input')`)
+    if (inline) {
+      assert.ok(await evaluate(`document.querySelector('[data-challenge-list]').getBoundingClientRect().width >= 740`), 'persistent inspector must leave a readable results column')
+      assert.equal(await evaluate(`(() => { const label = document.querySelector('[data-challenge-list] tbody tr:first-child td:last-child > span > span'); const range = document.createRange(); range.selectNodeContents(label); return range.getClientRects().length; })()`), 1, 'status words remain readable beside the detail panel')
+    }
+    await inspect(`${name}-detail`)
+    if (!inline) { await press('Escape'); await waitFor(`!document.querySelector('[role="dialog"]')`) }
+    else { await evaluate(`document.querySelector('[data-challenge-detail] button[aria-label="Close"]').click()`) }
+    await selectView('globe')
+    await evaluate(`document.querySelector('[data-challenge-globe]').scrollIntoView({ block: 'start', behavior: 'instant' })`)
+    assert.ok(await evaluate(`(() => { const stage = document.querySelector('[data-globe-stage]').getBoundingClientRect(); const planet = document.querySelector('[data-globe-stage] canvas').getBoundingClientRect(); return Math.abs(stage.width - stage.height * 2) < 1 && Math.abs(planet.width - planet.height) < 1 && Math.abs(planet.top + planet.height / 2 - stage.bottom) < 1 && stage.left >= 0 && stage.right <= innerWidth; })()`), 'horizon clips half of a round planet without horizontal page overflow')
+    assert.ok(await evaluate(`[...document.querySelectorAll('[data-globe-choice]')].every(node => node.getBoundingClientRect().height >= 44)`), 'navigator retains full-size targets when small horizons hide pins')
+    await inspect(`${name}-globe`)
+    if (width === 320 || width === 390) await auditGlobeRotation(cdp, evaluate, waitFor, { touch: true, onTilt: () => inspect(`${name}-globe-tilted`) })
+    if (width === 320 || width === 390) await auditGlobeFocus(cdp, evaluate, waitFor, inspect, name)
+    await selectView('list')
+  }
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (location.origin === ${JSON.stringify(new URL(target).origin)}) { localStorage.setItem('language', JSON.stringify('id-ID')); localStorage.setItem('mantine-color-scheme-value', 'light'); }` })
+  await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
+  await waitFor(`document.querySelector('[data-challenge-list]')`)
+  await inspect('light-indonesian-list')
+  await selectView('globe')
+  await inspect('light-indonesian-globe')
+  await evaluate(`document.querySelector('[data-challenge-globe]').scrollIntoView({ block: 'center', behavior: 'instant' })`)
+  await inspect('light-indonesian-globe-content')
+  await auditGlobeRotation(cdp, evaluate, waitFor, { touch: true, onTilt: () => inspect('light-indonesian-globe-tilted') })
+  await auditGlobeFocus(cdp, evaluate, waitFor, inspect, 'light-indonesian-reduced')
+
+  // Reproduce the longer header and extra archive content of the ended, mixed-mode
+  // main event without using live participant data or bypassing authentication.
+  game.title = 'INTECHFEST 2026 Main Event'
+  game.end = now - 60000
+  game.writeupRequired = true
+  rank.name = 'HIB — Stargazers'
+  config.title = 'INTECHFEST'
+  challenges[3].type = 'KingOfTheHill'
+  challenges[4].type = 'AttackDefense'
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (location.origin === ${JSON.stringify(new URL(target).origin)}) { localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark'); localStorage.setItem('challenge-explorer-view', JSON.stringify('globe')); }` })
+  for (const [name, width, height] of [['archived-main-desktop', 1600, 1000], ['archived-main-compact', 320, 568], ['archived-main-mobile', 390, 844]]) {
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
+    await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
+    await waitFor(`document.querySelector('[data-event-archive]') && document.querySelector('[data-challenge-globe]')`)
+    assert.equal(await evaluate(`!!document.querySelector('[data-event-workspace-header] [role="timer"]')`), false)
+    if (width < 400) {
+      assert.ok(await evaluate(`document.querySelector('[data-team-summary] dl').getBoundingClientRect().top >= document.querySelector('[data-team-summary] button').getBoundingClientRect().bottom - 1`), 'mixed-mode labels have a full-width row on narrow screens')
+    }
+    assert.ok(await evaluate(`document.querySelector('[data-event-workspace-header]').getBoundingClientRect().height < ${width < 400 ? 230 : 190}`), 'full event title and mixed-mode summary must not dominate the page')
+    await inspect(name)
+    await selectView('cards')
+    await inspect(`${name}-cards`)
+  }
+  game.title = 'INTECHFEST CTF 2023'
+  game.practiceMode = true
+  game.end = now + 300 * 86400000
+  game.writeupRequired = false
+  challenges[3].type = 'StaticAttachment'
+  challenges[4].type = 'StaticAttachment'
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.removeItem('challenge-explorer-view'); localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark');` })
+  for (const [name, width, height] of [['practice-desktop', 1440, 1100], ['practice-mobile', 390, 844], ['practice-compact', 320, 568]]) {
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
+    await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
+    await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
+    assert.equal(await evaluate(`document.querySelector('input[value="cards"]').checked`), true)
+    assert.ok(await evaluate(`document.querySelector('[data-event-workspace-header]').textContent.includes('Practice')`))
+    assert.equal(await evaluate(`!!document.querySelector('[data-event-workspace-header] [role="timer"]')`), false)
+    await inspect(name)
+    if (width < 400) {
+      await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/attack"]').focus()`)
+      await press('Enter')
+      await waitFor(`document.querySelector('[data-arena-theme]')?.shadowRoot?.querySelector('#connectionStatus')?.textContent === 'Connected'`)
+      assert.equal(await evaluate(`document.querySelector('${eventTabs} [aria-current="page"]').getAttribute('href')`), '/games/901/attack')
+      assert.equal(await evaluate(`!!document.querySelector('${eventTabs} a[href="/games/901/challenges"]')`), true)
+      assert.ok(await evaluate(`(() => { const r=document.querySelector('${eventTabs} [aria-current="page"]').getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth; })()`), 'active arena tab stays visible on narrow screens')
+      await inspect(`${name}-arena-navigation`)
+    }
+  }
+  forbidden = true
+  await cdp.send('Page.navigate', { url: `${target}/games/902/challenges#999999-hidden` })
+  await waitFor(`document.querySelector('[role="alert"]')`)
+  assert.equal(await evaluate(`!!document.querySelector('[data-challenge-detail]')`), false)
+  assert.equal(requests.some((request) => request.path.includes('/challenges/999999')), false)
+  await inspect('forbidden-no-detail')
+} finally {
+  writeFileSync(`${output}/report.json`, JSON.stringify({ reports, unknown: [...unknown], requests }, null, 2))
+  await browser.close()
+}
+assert.deepEqual([...unknown], [])
+assert.deepEqual(reports.filter((report) => report.overflow || report.violations.length || report.errors.length), [])
+console.log(`PASS: ${reports.length} browser/Axe views`)

@@ -215,6 +215,23 @@ pub(super) async fn persist_challenge_archive(
             return;
         }
     };
+    let staged = match crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        uuid::Uuid::new_v4(),
+        &format!("challenge-source-archive:{challenge_id}"),
+        None,
+        &format!("{dir_name}.zip"),
+        &bytes,
+    )
+    .await
+    {
+        Ok(staged) => staged,
+        Err(error) => {
+            tracing::warn!(%error, "audit archive: stage {dir_name} failed");
+            return;
+        }
+    };
     let persisted: AppResult<Option<String>> = async {
         let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
             .await
@@ -238,13 +255,8 @@ pub(super) async fn persist_challenge_archive(
                 .map_err(|error| AppError::internal(error.to_string()))?;
             return Ok(None);
         }
-        let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-            st.storage.as_ref(),
-            &mut transaction,
-            &format!("{dir_name}.zip"),
-            &bytes,
-        )
-        .await?;
+        crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
+        let blob = staged.blob.clone();
         sqlx::query(
             r#"UPDATE "GameChallenges"
                   SET original_archive_blob_path = $2
@@ -269,5 +281,27 @@ pub(super) async fn persist_challenge_archive(
             "audit archive: retained authoritative build/source fingerprint"
         ),
         Err(error) => tracing::warn!(%error, "audit archive: persist {dir_name} failed"),
+    }
+    // Finalize either possible outcome without assuming that a failed COMMIT
+    // acknowledgement means PostgreSQL rolled the transaction back. A real
+    // publication has an exact Published receipt; a definite no-op/failure
+    // still owns a Ready stage that can be discarded immediately.
+    if let Err(error) = sqlx::query(
+        r#"DELETE FROM "BlobStagingOperations"
+            WHERE operation_id = $1 AND state = 'Published'
+              AND published_owner_scope = $2"#,
+    )
+    .bind(staged.operation_id)
+    .bind(format!("challenge-source-archive:{challenge_id}"))
+    .execute(st.pg())
+    .await
+    {
+        tracing::warn!(%error, operation_id = %staged.operation_id, "audit archive: receipt cleanup deferred");
+    }
+    if let Err(error) =
+        crate::services::blob_refs::discard_unpublished_stage(st.pg(), st.storage.as_ref(), &staged)
+            .await
+    {
+        tracing::warn!(%error, hash = %staged.blob.hash, "audit archive: stage cleanup deferred");
     }
 }

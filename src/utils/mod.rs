@@ -1,4 +1,5 @@
 pub(crate) mod archive;
+pub(crate) mod challenge_hints;
 pub mod codec;
 pub(crate) mod content_disposition;
 pub mod crypto_utils;
@@ -7,6 +8,7 @@ pub mod datetime;
 pub mod enums;
 pub mod error;
 pub mod flag_generator;
+pub mod flag_policy;
 pub(crate) mod redis;
 pub mod scoring;
 pub mod shared;

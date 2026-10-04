@@ -337,12 +337,14 @@ export function assertReceivedLog(frame, { message, userName }) {
     throw new Error('ReceivedLog payload did not match the exact semantic audit action');
   }
   if (
+    !Number.isSafeInteger(payload.id) ||
+    payload.id <= 0 ||
     payload.level !== 'Information' ||
     payload.status !== 'Success' ||
     !Number.isFinite(payload.time) ||
     payload.time <= 0
   ) {
-    throw new Error('ReceivedLog payload is missing its level, status, or millisecond timestamp');
+    throw new Error('ReceivedLog payload is missing its id, level, status, or millisecond timestamp');
   }
   return payload;
 }

@@ -54,9 +54,14 @@ static KOTH_TIMELINE_SF: std::sync::LazyLock<
     crate::utils::single_flight::SingleFlight<Option<KothScoreTimelineModel>>,
 > = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 
-/// Return the same bounded epoch score used by the leaderboard, sampled at each
-/// epoch boundary. The removed additive hold-credit total is never exposed as a
-/// second scoring model.
+/// Return each team's raw epoch running average sampled at each epoch boundary.
+///
+/// This is the pre-normalization basis of the leaderboard: the official event
+/// score additionally scales every hill to its capped field best, and that
+/// factor is only defined for the whole event, so the timeline reports the
+/// bounded epoch history rather than inventing a per-epoch normalized value.
+/// The removed additive hold-credit total is never exposed as a second scoring
+/// model.
 pub async fn timeline(
     State(st): State<SharedState>,
     MaybeUser(maybe): MaybeUser,
@@ -64,8 +69,8 @@ pub async fn timeline(
 ) -> AppResult<RequestResponse<KothScoreTimelineModel>> {
     let game = crate::controllers::game::load_game_cached(&st, game_id).await?;
     let is_monitor = maybe.as_ref().is_some_and(|user| user.is_monitor());
-    if !super::can_view_koth_standings(game.hidden, is_monitor) {
-        return Err(AppError::not_found("Game not found"));
+    if Utc::now() < game.start_time_utc && !is_monitor {
+        return Err(AppError::game_not_started());
     }
     let key = if is_monitor {
         format!("_KothTimeline_{game_id}")

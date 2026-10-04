@@ -114,6 +114,26 @@ pub(super) async fn issue_noinstance_capability(
     Ok(no_store_capability(token))
 }
 
+/// Resolve only the authenticated subject needed for pre-resolution churn
+/// admission. Capability verification is local signature work; the live account
+/// lookup stays behind this budget in `proxy_user`.
+pub(super) fn proxy_subject(
+    st: &SharedState,
+    user: &MaybeUser,
+    query: &ProxyCapabilityQuery,
+    container_id: Uuid,
+    preview: bool,
+) -> Option<Uuid> {
+    if let Some(user) = user.0.as_ref() {
+        return Some(user.id);
+    }
+    let token = query.capability.as_deref()?;
+    st.token
+        .verify_proxy_capability(token, container_id, preview)
+        .ok()
+        .map(|identity| identity.user_id)
+}
+
 /// Prefer an ordinary browser/API principal when present. Native WSRX carries
 /// only the narrow query capability; resolve its subject against the current
 /// account row so a ban, role change, logout or stamp rotation still revokes it.

@@ -1,7 +1,8 @@
 import {
   ActionIcon,
+  Alert,
   Anchor,
-  Badge,
+  Button,
   Group,
   Pagination,
   SegmentedControl,
@@ -16,7 +17,7 @@ import {
   useMantineTheme,
 } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
-import { mdiClose, mdiMagnify } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiClose, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -26,8 +27,9 @@ import { GameCard, GameColorMap, GameStatus, getGameStatusLabel } from '@Compone
 import { PageHeader } from '@Components/PageHeader'
 import { WithNavBar } from '@Components/WithNavbar'
 import { GanttTimeLine } from '@Components/charts/GanttTimeline'
+import { useServerNow } from '@Utils/ServerClock'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { getGameStatus, toLimitTag, useRecentGames } from '@Hooks/useGame'
+import { getGameStatus, toLimitTag, useGameTimingSWRConfig, useRecentGames } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUser } from '@Hooks/useUser'
 import api, { GameMembershipFilter } from '@Api'
@@ -39,6 +41,7 @@ const ITEM_PER_PAGE = 12
 const Games: FC = () => {
   const { t } = useTranslation()
   const { recentGames } = useRecentGames()
+  const now = useServerNow()
   const [activePage, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [membership, setMembership] = useState<GameMembershipFilter>(GameMembershipFilter.All)
@@ -48,17 +51,22 @@ const Games: FC = () => {
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
   const { user } = useUser()
+  const timingConfig = useGameTimingSWRConfig()
 
-  const { data: games, isLoading } = api.game.useGameGames(
+  const {
+    data: games,
+    error: gamesError,
+    isLoading,
+    isValidating,
+    mutate,
+  } = api.game.useGameGames(
     {
       count: ITEM_PER_PAGE,
       skip: (activePage - 1) * ITEM_PER_PAGE,
       search: debouncedSearch || undefined,
       membership: user ? membership : GameMembershipFilter.All,
     },
-    {
-      refreshInterval: 5 * 60 * 1000,
-    }
+    timingConfig
   )
 
   const clearSearch = () => {
@@ -71,7 +79,7 @@ const Games: FC = () => {
 
   const recents =
     recentGames?.map((game) => {
-      const { startTime, endTime, status } = getGameStatus(game)
+      const { startTime, endTime, status } = getGameStatus(game, now)
       const color = GameColorMap.get(status) ?? 'gray'
       const colorHex = theme.colors[color][colorScheme === 'dark' ? 5 : 6]
       const title = game.title || t('game.content.untitled', 'Untitled event')
@@ -105,21 +113,18 @@ const Games: FC = () => {
     {
       status: GameStatus.OnGoing,
       title: getGameStatusLabel(t, GameStatus.OnGoing),
-      description: t('game.content.lifecycle.live_description', 'Open now — jump in while scoring is active.'),
     },
     {
       status: GameStatus.Coming,
       title: getGameStatusLabel(t, GameStatus.Coming),
-      description: t('game.content.lifecycle.upcoming_description', 'Plan ahead and get your team ready.'),
     },
     {
       status: GameStatus.Ended,
       title: getGameStatusLabel(t, GameStatus.Ended),
-      description: t('game.content.lifecycle.past_description', 'Revisit completed events and their results.'),
     },
   ].map((section) => ({
     ...section,
-    events: games?.data.filter((game) => getGameStatus(game).status === section.status) ?? [],
+    events: games?.data.filter((game) => getGameStatus(game, now).status === section.status) ?? [],
   }))
 
   const pageCount = Math.ceil((games?.total ?? 0) / ITEM_PER_PAGE)
@@ -127,33 +132,18 @@ const Games: FC = () => {
   return (
     <WithNavBar withFooter withHeader stickyHeader>
       <PageHeader
-        eyebrow={t('game.content.workspace', 'Competition')}
         title={t('game.title.index')}
-        description={t('game.content.index_description', 'Browse upcoming, live, and completed competitions.')}
         actions={
           games && (
-            <Badge size="lg" variant="light" className={classes.totalBadge}>
+            <Text size="sm" c="dimmed">
               {t('game.content.events_total', '{{count}} events', { count: games.total })}
-            </Badge>
+            </Text>
           )
         }
       />
 
-      <Stack gap="xl" className={classes.catalog}>
-        <Group component="header" justify="space-between" align="flex-end" gap="lg" wrap="wrap">
-          <Stack gap={3}>
-            <Text className={classes.eyebrow}>{t('game.content.event_discovery', 'Event discovery')}</Text>
-            <Title order={2} size="h3" className={classes.catalogTitle}>
-              {t('game.content.choose_event', 'Choose your next challenge')}
-            </Title>
-            <Text size="sm" c="dimmed">
-              {t(
-                'game.content.page_grouping_hint',
-                'Events on this page are organized by where they are in their lifecycle.'
-              )}
-            </Text>
-          </Stack>
-
+      <Stack gap="md" className={classes.catalog} data-event-catalog>
+        <Group justify="space-between" gap="sm" wrap="wrap">
           {games && games.data.length > 0 && (
             <nav
               className={classes.lifecycleOverview}
@@ -252,13 +242,51 @@ const Games: FC = () => {
           </VisuallyHidden>
         </form>
 
-        <div id="event-catalog-results" aria-busy={games === undefined || isLoading ? true : undefined}>
+        {gamesError && (
+          <Alert
+            color="red"
+            role="alert"
+            icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+            title={
+              games
+                ? t('game.content.refresh_failed', 'Events could not be refreshed')
+                : t('game.content.load_failed', 'Events could not be loaded')
+            }
+          >
+            <Text size="sm">
+              {games
+                ? t(
+                    'game.content.stale_results',
+                    'Showing the last loaded events. Check your connection and try again.'
+                  )
+                : t(
+                    'game.content.load_failed_hint',
+                    'Check your connection and try again. Your search and filters are kept.'
+                  )}
+            </Text>
+            <Button
+              mt="sm"
+              variant="outline"
+              loading={isValidating}
+              onClick={() => void mutate().catch(() => undefined)}
+            >
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Alert>
+        )}
+
+        <div
+          id="event-catalog-results"
+          aria-busy={isLoading || (games === undefined && !gamesError) ? true : undefined}
+        >
           {games === undefined ? (
-            <SimpleGrid cols={{ base: 1, md: 2, xl: 3, w24: 4 }} spacing="lg" verticalSpacing="lg">
-              {Array.from({ length: ITEM_PER_PAGE }).map((_, index) => (
-                <Skeleton key={index} h="13.25rem" radius="lg" />
-              ))}
-            </SimpleGrid>
+            !gamesError && (
+              <SimpleGrid cols={{ base: 1, md: 2, xl: 3, w24: 4 }} spacing="lg" verticalSpacing="lg">
+                {Array.from({ length: ITEM_PER_PAGE }).map((_, index) => (
+                  <Skeleton key={index} h="13.25rem" radius="lg" />
+                ))}
+              </SimpleGrid>
+            )
           ) : games.data.length === 0 ? (
             <Empty
               description={
@@ -267,6 +295,19 @@ const Games: FC = () => {
                       query: debouncedSearch,
                     })
                   : t('game.content.no_game', 'No games available')
+              }
+              action={
+                (debouncedSearch || membership !== GameMembershipFilter.All) && (
+                  <Button
+                    variant="light"
+                    onClick={() => {
+                      setMembership(GameMembershipFilter.All)
+                      clearSearch()
+                    }}
+                  >
+                    {t('game.content.reset_filters', 'Clear search and filters')}
+                  </Button>
+                )
               }
             />
           ) : (
@@ -280,27 +321,12 @@ const Games: FC = () => {
                     className={classes.lifecycleSection}
                   >
                     <Group justify="space-between" align="center" gap="md" className={classes.sectionHeader}>
-                      <Group wrap="nowrap" gap="sm">
-                        <span className={classes.sectionMarker} data-status={section.status} aria-hidden="true">
-                          <span />
-                        </span>
-                        <div>
-                          <Title
-                            order={3}
-                            size="h4"
-                            id={`lifecycle-${section.status}`}
-                            className={classes.sectionTitle}
-                          >
-                            {section.title}
-                          </Title>
-                          <Text size="sm" c="dimmed">
-                            {section.description}
-                          </Text>
-                        </div>
-                      </Group>
-                      <Badge color={GameColorMap.get(section.status)} variant="light" size="lg">
+                      <Title order={2} size="h4" id={`lifecycle-${section.status}`} className={classes.sectionTitle}>
+                        {section.title}
+                      </Title>
+                      <Text size="sm" c="dimmed">
                         {section.events.length}
-                      </Badge>
+                      </Text>
                     </Group>
 
                     <SimpleGrid cols={{ base: 1, md: 2, xl: 3, w24: 4 }} spacing="lg" verticalSpacing="lg">

@@ -87,6 +87,27 @@ pub(super) async fn player_container_request_is_eligible(
     player_container_request_is_eligible_on(connection, caller, challenge_id, mode, false).await
 }
 
+/// Run the mutable player/runtime eligibility predicate on one short checkout.
+/// Runtime probes and mutations must happen only after this connection is
+/// returned to the pool, then repeat the predicate at publication.
+pub(super) async fn player_request_is_eligible_now(
+    st: &SharedState,
+    caller: LiveParticipationIdentity<'_>,
+    challenge_id: i32,
+    mode: ContainerRequestMode,
+) -> AppResult<bool> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let eligible =
+        player_container_request_is_eligible(&mut transaction, caller, challenge_id, mode).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(eligible)
+}
+
 /// Exact pre-build authorization for the one transition where an active,
 /// recoverable challenge is intentionally still Queued. Every post-build and
 /// response boundary continues to require Success.
@@ -150,12 +171,11 @@ async fn player_container_request_is_eligible_on(
                        OR ($16 AND challenge.build_status = $17))
                   AND (
                         participation.division_id IS NULL
-                        OR (COALESCE(permission.permissions, division.default_permissions, $9) & $10) = $10
+                        OR (division.id IS NOT NULL
+                            AND (COALESCE(permission.permissions, division.default_permissions, $9) & $10) = $10)
                   )
                   AND (
-                       ($4 AND
-                            game.end_time_utc >= CURRENT_TIMESTAMP
-                        AND challenge."Type" = $11
+                       ($4 AND challenge."Type" = $11
                         AND challenge.enable_shared_container
                         AND (challenge.workload_spec IS NOT NULL OR (
                              COALESCE(challenge.container_image, '') <> ''
@@ -218,6 +238,34 @@ fn is_shared_container_mode(challenge: &game_challenge::Model) -> bool {
     uses_shared_container(challenge) || challenge.challenge_type == ChallengeType::KingOfTheHill
 }
 
+/// Practice extends the Jeopardy shared-container lifecycle, never the live
+/// KotH engine. Keep this check at the publication boundary as well as admission.
+async fn shared_game_is_available(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<bool> {
+    sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(
+               SELECT 1
+                 FROM "Games" game
+                 JOIN "GameChallenges" candidate
+                   ON candidate.game_id = game.id AND candidate.id = $2
+                WHERE game.id = $1
+                  AND (game.end_time_utc >= CURRENT_TIMESTAMP
+                       OR (game.practice_mode AND candidate."Type" = $3))
+                  AND game.deletion_pending = FALSE
+                  AND candidate.deletion_pending = FALSE
+           )"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .bind(ChallengeType::StaticContainer as i16)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 pub(super) async fn load_eligible_shared_challenge(
     st: &SharedState,
     challenge_id: i32,
@@ -228,24 +276,9 @@ pub(super) async fn load_eligible_shared_challenge(
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    let game_is_live = sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS(
-               SELECT 1
-                 FROM "Games" game
-                 JOIN "GameChallenges" candidate
-                   ON candidate.game_id = game.id AND candidate.id = $2
-                WHERE game.id = $1
-                  AND game.end_time_utc >= CURRENT_TIMESTAMP
-                  AND game.deletion_pending = FALSE
-                  AND candidate.deletion_pending = FALSE
-           )"#,
-    )
-    .bind(challenge.game_id)
-    .bind(challenge.id)
-    .fetch_one(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if !game_is_live
+    let game_is_available =
+        shared_game_is_available(st.pg(), challenge.game_id, challenge.id).await?;
+    if !game_is_available
         || !challenge.is_enabled
         || challenge.review_status != ChallengeReviewStatus::Active
         || !is_shared_container_mode(&challenge)
@@ -281,7 +314,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn deletion_pending_game_or_challenge_is_never_container_eligible() {
+    async fn container_eligibility_checks_practice_roster_and_deletion_boundaries() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
         let admin = PgPoolOptions::new()
@@ -423,6 +456,126 @@ mod tests {
         )
         .await
         .unwrap());
+        // Snapan-style shared Jeopardy instances must remain available after
+        // the deadline in practice, at admission and at runtime publication.
+        sqlx::raw_sql(
+            r#"UPDATE "GameChallenges" SET enable_shared_container = TRUE WHERE id = 4;
+               UPDATE "Games" SET end_time_utc = clock_timestamp() - interval '1 minute'
+                WHERE id = 1;"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(!player_container_request_is_eligible_on(
+            &mut connection,
+            caller,
+            4,
+            ContainerRequestMode::Shared,
+            false,
+        )
+        .await
+        .unwrap());
+        assert!(!shared_game_is_available(&pool, 1, 4).await.unwrap());
+        sqlx::query(r#"UPDATE "Games" SET practice_mode = TRUE WHERE id = 1"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(player_container_request_is_eligible_on(
+            &mut connection,
+            caller,
+            4,
+            ContainerRequestMode::Shared,
+            false,
+        )
+        .await
+        .unwrap());
+        assert!(shared_game_is_available(&pool, 1, 4).await.unwrap());
+        assert!(!player_container_request_is_eligible_on(
+            &mut connection,
+            caller,
+            4,
+            ContainerRequestMode::PerTeam,
+            false,
+        )
+        .await
+        .unwrap());
+        for status in [
+            ParticipationStatus::Pending,
+            ParticipationStatus::Rejected,
+            ParticipationStatus::Suspended,
+        ] {
+            sqlx::query(r#"UPDATE "Participations" SET status = $1 WHERE id = 2"#)
+                .bind(status as i16)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert!(!player_container_request_is_eligible_on(
+                &mut connection,
+                caller,
+                4,
+                ContainerRequestMode::Shared,
+                false,
+            )
+            .await
+            .unwrap());
+        }
+        sqlx::raw_sql(r#"UPDATE "Participations" SET status = 1, division_id = 99 WHERE id = 2;"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(!player_container_request_is_eligible_on(
+            &mut connection,
+            caller,
+            4,
+            ContainerRequestMode::Shared,
+            false,
+        )
+        .await
+        .unwrap());
+        sqlx::raw_sql(
+            r#"UPDATE "Participations" SET division_id = NULL WHERE id = 2;
+               UPDATE "GameChallenges" SET "Type" = 5 WHERE id = 4;"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(!shared_game_is_available(&pool, 1, 4).await.unwrap());
+        assert!(!player_container_request_is_eligible_on(
+            &mut connection,
+            caller,
+            4,
+            ContainerRequestMode::Shared,
+            false,
+        )
+        .await
+        .unwrap());
+        sqlx::raw_sql(
+            r#"UPDATE "GameChallenges" SET "Type" = 1 WHERE id = 4;
+               UPDATE "Games" SET start_time_utc = clock_timestamp() + interval '1 hour',
+                                  end_time_utc = clock_timestamp() + interval '2 hours'
+                WHERE id = 1;"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(!player_container_request_is_eligible_on(
+            &mut connection,
+            caller,
+            4,
+            ContainerRequestMode::Shared,
+            false,
+        )
+        .await
+        .unwrap());
+        sqlx::raw_sql(
+            r#"UPDATE "GameChallenges" SET enable_shared_container = FALSE WHERE id = 4;
+               UPDATE "Games" SET practice_mode = FALSE,
+                 start_time_utc = clock_timestamp() - interval '1 hour',
+                 end_time_utc = clock_timestamp() + interval '1 hour' WHERE id = 1;"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             r#"UPDATE "GameChallenges"
                   SET build_status = $1, build_image_digest = NULL

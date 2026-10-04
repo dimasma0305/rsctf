@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
+use crate::services::docker_admission::docker_admission;
 use crate::utils::enums::ChallengeVariantMode;
 use crate::utils::error::{AppError, AppResult};
 
@@ -22,6 +23,7 @@ const GENERATOR_PIDS: i64 = 64;
 const GENERATOR_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_GENERATOR_OUTPUT: usize = 1024 * 1024;
 const GENERATOR_LOG_MAX_SIZE: &str = "1m";
+const TARGET_PAGE_SIZE: i64 = 128;
 static GENERATOR_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(2));
 
@@ -61,7 +63,8 @@ impl ChallengeVariantManifest {
         let content_bytes = self.content.as_ref().map_or(0, String::len);
         let hints = self.hints.as_deref().unwrap_or_default();
         let hint_bytes = hints.iter().map(String::len).sum::<usize>();
-        if !(8..=127).contains(&self.flag.len())
+        if self.flag.len() < 8
+            || crate::utils::flag_policy::validate_normal(&self.flag).is_err()
             || content_bytes > 64 * 1024
             || hints.len() > 32
             || hints.iter().any(|hint| hint.len() > 4 * 1024)
@@ -159,11 +162,14 @@ async fn run_generator_once(
     input: &GeneratorInput,
 ) -> AppResult<Vec<u8>> {
     let runtime_image = generator_runtime_image(st, target)?;
-    let inspected = docker.inspect_image(&runtime_image).await.map_err(|_| {
-        AppError::unavailable(
-            "Variant generator image is not present on the trusted generator host",
-        )
-    })?;
+    let inspected = docker_admission()
+        .read("inspect_image", docker.inspect_image(&runtime_image))
+        .await?
+        .map_err(|_| {
+            AppError::unavailable(
+                "Variant generator image is not present on the trusted generator host",
+            )
+        })?;
     if !crate::services::challenge_images::inspect_matches_immutable_reference(
         &inspected,
         &runtime_image,
@@ -197,7 +203,7 @@ async fn run_generator_once(
             cap_drop: Some(vec!["ALL".to_string()]),
             security_opt: Some(vec!["no-new-privileges:true".to_string()]),
             log_config: Some(HostConfigLogConfig {
-                typ: Some("json-file".to_string()),
+                typ: Some("local".to_string()),
                 config: Some(HashMap::from([
                     ("max-size".to_string(), GENERATOR_LOG_MAX_SIZE.to_string()),
                     ("max-file".to_string(), "1".to_string()),
@@ -212,22 +218,30 @@ async fn run_generator_once(
         }),
         ..Default::default()
     };
-    let created = docker
-        .create_container(
-            Some(CreateContainerOptions {
-                name,
-                platform: None,
-            }),
-            config,
+    let created = docker_admission()
+        .lifecycle(
+            "create_container",
+            docker.create_container(
+                Some(CreateContainerOptions {
+                    name,
+                    platform: None,
+                }),
+                config,
+            ),
         )
-        .await
+        .await?
         .map_err(|error| AppError::internal(format!("create variant generator: {error}")))?;
     let container_id = created.id;
     let run = async {
-        docker
-            .start_container::<String>(&container_id, None)
-            .await
+        docker_admission()
+            .lifecycle(
+                "start_container",
+                docker.start_container::<String>(&container_id, None),
+            )
+            .await?
             .map_err(|error| AppError::internal(format!("start variant generator: {error}")))?;
+        // The exit wait is a long-lived stream owned by GENERATOR_TIMEOUT
+        // below, so it deliberately stays outside the short-lived classes.
         let mut wait = docker.wait_container::<String>(&container_id, None);
         let result = wait
             .next()
@@ -240,37 +254,51 @@ async fn run_generator_once(
                 result.status_code
             )));
         }
-        let mut output = Vec::new();
-        let mut logs = docker.logs::<String>(
-            &container_id,
-            Some(LogsOptions {
-                stdout: true,
-                stderr: false,
-                ..Default::default()
-            }),
-        );
-        while let Some(chunk) = logs.next().await {
-            let chunk = chunk
-                .map_err(|error| AppError::internal(format!("read variant output: {error}")))?;
-            bounded_append(&mut output, chunk.as_ref())?;
-        }
-        Ok(output)
+        docker_admission()
+            .read("logs", async {
+                let mut output = Vec::new();
+                let mut logs = docker.logs::<String>(
+                    &container_id,
+                    Some(LogsOptions {
+                        stdout: true,
+                        stderr: false,
+                        ..Default::default()
+                    }),
+                );
+                while let Some(chunk) = logs.next().await {
+                    let chunk = chunk.map_err(|error| {
+                        AppError::internal(format!("read variant output: {error}"))
+                    })?;
+                    bounded_append(&mut output, chunk.as_ref())?;
+                }
+                Ok(output)
+            })
+            .await?
     };
     let result = match tokio::time::timeout(GENERATOR_TIMEOUT, run).await {
         Ok(result) => result,
         Err(_) => Err(AppError::unavailable("Variant generator timed out")),
     };
-    let cleanup = docker
-        .remove_container(
-            &container_id,
-            Some(RemoveContainerOptions {
-                force: true,
-                ..Default::default()
-            }),
+    let cleanup = docker_admission()
+        .lifecycle(
+            "remove_container",
+            docker.remove_container(
+                &container_id,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            ),
         )
         .await;
-    if let Err(error) = cleanup {
-        tracing::warn!(%error, %container_id, "could not remove variant generator container");
+    match cleanup {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, %container_id, "could not remove variant generator container");
+        }
+        Err(error) => {
+            tracing::warn!(%error, %container_id, "variant generator cleanup was not admitted");
+        }
     }
     result
 }
@@ -399,42 +427,140 @@ async fn load_targets(st: &SharedState, game_id: i32) -> AppResult<Vec<VariantTa
                      challenge.variant_generator_digest,
                      challenge.variant_generator_build_context_subdir,
                      challenge.variant_generator_build_status
-            ORDER BY challenge.id, participation.id"#,
+            ORDER BY challenge.id, participation.id
+            LIMIT $3"#,
     )
     .bind(game_id)
     .bind(ChallengeVariantMode::PerParticipation as i16)
+    .bind(TARGET_PAGE_SIZE)
     .fetch_all(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
-pub async fn generate_event_variants(st: &SharedState, game_id: i32) -> AppResult<usize> {
-    let targets = load_targets(st, game_id).await?;
-    if targets.is_empty() {
-        return Ok(0);
-    }
+async fn claim_target(st: &SharedState, target: &VariantTarget, job_id: Uuid) -> AppResult<bool> {
+    sqlx::query_scalar::<_, bool>(
+        r#"INSERT INTO "VariantGenerationClaims"
+              (game_id, challenge_id, participation_id, revision, job_id,
+               lease_expires_at_utc)
+            VALUES ($1, $2, $3, $4, $5, clock_timestamp() + interval '3 minutes')
+            ON CONFLICT (game_id, challenge_id, participation_id, revision)
+            DO UPDATE SET job_id = EXCLUDED.job_id,
+                          lease_expires_at_utc = EXCLUDED.lease_expires_at_utc
+              WHERE "VariantGenerationClaims".completed_at_utc IS NULL
+                AND "VariantGenerationClaims".lease_expires_at_utc <= clock_timestamp()
+            RETURNING TRUE"#,
+    )
+    .bind(target.game_id)
+    .bind(target.challenge_id)
+    .bind(target.participation_id)
+    .bind(target.revision)
+    .bind(job_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+    .map(|claimed| claimed.unwrap_or(false))
+}
+
+async fn complete_target_claim(
+    st: &SharedState,
+    target: &VariantTarget,
+    job_id: Uuid,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"UPDATE "VariantGenerationClaims"
+              SET completed_at_utc = clock_timestamp(),
+                  lease_expires_at_utc = clock_timestamp()
+            WHERE game_id = $1 AND challenge_id = $2
+              AND participation_id = $3 AND revision = $4
+              AND job_id = $5 AND completed_at_utc IS NULL"#,
+    )
+    .bind(target.game_id)
+    .bind(target.challenge_id)
+    .bind(target.participation_id)
+    .bind(target.revision)
+    .bind(job_id)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
+}
+
+pub async fn generate_event_variants_for_job(
+    st: &SharedState,
+    claimed: &crate::services::control_jobs::ClaimedControlJob,
+) -> AppResult<usize> {
+    let game_id = claimed.model.game_id;
+    let job_id = claimed.model.id;
+    // Leave enough headroom for the active two-run target and container cleanup
+    // before the outer 14-minute control-job lease deadline can cancel us.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(12 * 60);
     super::validate_credential_key(&st.config.event_vpn_credential_key)?;
     let docker = Docker::connect_with_local_defaults()
         .map_err(|error| AppError::unavailable(format!("Docker is unavailable: {error}")))?;
     let mut generated = 0;
-    for target in targets {
-        let _permit = GENERATOR_SLOTS
-            .acquire()
-            .await
-            .map_err(|_| AppError::unavailable("Variant generator is shutting down"))?;
-        let seed = variant_seed(&st.config.event_vpn_credential_key, &target)?;
-        let input = GeneratorInput {
-            game_id: target.game_id,
-            challenge_id: target.challenge_id,
-            participation_id: target.participation_id,
-            revision: target.revision,
-            seed: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(seed),
-        };
-        let (first, first_hash) =
-            run_generator_deterministically(st, &docker, &target, &input).await?;
-        let (manifest, artifact_hash) = parse_output(&first)?;
-        let inserted = sqlx::query(
-            r#"INSERT INTO "ChallengeVariants"
+    let mut examined = 0i32;
+    loop {
+        let targets = load_targets(st, game_id).await?;
+        if targets.is_empty() {
+            break;
+        }
+        let page_len = i32::try_from(targets.len()).unwrap_or(i32::MAX);
+        let progress_total = examined.saturating_add(page_len).max(1);
+        crate::services::control_jobs::set_progress(
+            st.pg(),
+            job_id,
+            claimed.lease_token,
+            examined,
+            progress_total,
+        )
+        .await?;
+        let mut claimed_in_page = 0;
+        for target in targets {
+            if crate::services::control_jobs::cancellation_requested(
+                st.pg(),
+                job_id,
+                claimed.lease_token,
+            )
+            .await?
+            {
+                return Ok(generated);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AppError::unavailable(
+                    "Variant generation reached its bounded deadline; retry to continue remaining targets",
+                ));
+            }
+            if !claim_target(st, &target, job_id).await? {
+                examined = examined.saturating_add(1);
+                crate::services::control_jobs::set_progress(
+                    st.pg(),
+                    job_id,
+                    claimed.lease_token,
+                    examined.min(progress_total),
+                    progress_total,
+                )
+                .await?;
+                continue;
+            }
+            claimed_in_page += 1;
+            let _permit = GENERATOR_SLOTS
+                .acquire()
+                .await
+                .map_err(|_| AppError::unavailable("Variant generator is shutting down"))?;
+            let seed = variant_seed(&st.config.event_vpn_credential_key, &target)?;
+            let input = GeneratorInput {
+                game_id: target.game_id,
+                challenge_id: target.challenge_id,
+                participation_id: target.participation_id,
+                revision: target.revision,
+                seed: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(seed),
+            };
+            let (first, first_hash) =
+                run_generator_deterministically(st, &docker, &target, &input).await?;
+            let (manifest, artifact_hash) = parse_output(&first)?;
+            let inserted = sqlx::query(
+                r#"INSERT INTO "ChallengeVariants"
                  (id, game_id, challenge_id, participation_id, revision,
                   generator_image, generator_digest, seed_hash, manifest,
                   artifact_hash, determinism_hash, frozen_at_utc)
@@ -445,24 +571,74 @@ pub async fn generate_event_variants(st: &SharedState, game_id: i32) -> AppResul
                      WHERE game.id = $2 AND clock_timestamp() < game.start_time_utc
                 )
                ON CONFLICT DO NOTHING"#,
-        )
-        .bind(Uuid::now_v7())
-        .bind(target.game_id)
-        .bind(target.challenge_id)
-        .bind(target.participation_id)
-        .bind(target.revision)
-        .bind(&target.generator_image)
-        .bind(&target.generator_digest)
-        .bind(Sha256::digest(seed).as_slice())
-        .bind(sqlx::types::Json(manifest))
-        .bind(artifact_hash.as_slice())
-        .bind(first_hash.as_slice())
-        .execute(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        generated += usize::try_from(inserted.rows_affected()).unwrap_or(usize::MAX);
+            )
+            .bind(Uuid::now_v7())
+            .bind(target.game_id)
+            .bind(target.challenge_id)
+            .bind(target.participation_id)
+            .bind(target.revision)
+            .bind(&target.generator_image)
+            .bind(&target.generator_digest)
+            .bind(Sha256::digest(seed).as_slice())
+            .bind(sqlx::types::Json(&manifest))
+            .bind(artifact_hash.as_slice())
+            .bind(first_hash.as_slice())
+            .execute(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            if inserted.rows_affected() == 0 {
+                reject_repeated_flag(st, &target, &manifest).await?;
+            }
+            generated += usize::try_from(inserted.rows_affected()).unwrap_or(usize::MAX);
+            complete_target_claim(st, &target, job_id).await?;
+            examined = examined.saturating_add(1);
+            crate::services::control_jobs::set_progress(
+                st.pg(),
+                job_id,
+                claimed.lease_token,
+                examined.min(progress_total),
+                progress_total,
+            )
+            .await?;
+        }
+        if claimed_in_page == 0 {
+            return Err(AppError::conflict(
+                "Variant targets are leased by another recovering generation job",
+            ));
+        }
     }
     Ok(generated)
+}
+
+/// The flag index makes a second team's copy of a flag a silent no-op insert.
+/// That team would have no variant at all, so stop generation and tell the
+/// organizer that the generator must derive each flag from its seed.
+async fn reject_repeated_flag(
+    st: &SharedState,
+    target: &VariantTarget,
+    manifest: &serde_json::Value,
+) -> AppResult<()> {
+    let repeated: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS (
+               SELECT 1 FROM "ChallengeVariants"
+                WHERE game_id = $1 AND challenge_id = $2 AND participation_id <> $3
+                  AND frozen_at_utc IS NOT NULL
+                  AND manifest->>'flag' = $4
+           )"#,
+    )
+    .bind(target.game_id)
+    .bind(target.challenge_id)
+    .bind(target.participation_id)
+    .bind(manifest.get("flag").and_then(serde_json::Value::as_str))
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if repeated {
+        return Err(AppError::bad_request(
+            "The variant generator gave two teams the same flag; each flag must be derived from its seed",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn variant_for_participation(

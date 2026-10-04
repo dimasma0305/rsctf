@@ -4,6 +4,7 @@ import {
   isKothResetTransition,
   kothConfirmationProgress,
   maxKothCooldownTicks,
+  visibleKothControlStatus,
 } from './kothLifecycle'
 
 test('only durable reset phases are presented as non-active transitions', () => {
@@ -13,6 +14,12 @@ test('only durable reset phases are presented as non-active transitions', () => 
   assert.equal(isKothResetTransition('Destroying'), true)
   assert.equal(isKothResetTransition('Readiness'), true)
   assert.equal(isKothResetTransition('Failed'), true)
+})
+
+test('planned reset readiness does not masquerade as a checker failure', () => {
+  assert.equal(visibleKothControlStatus('InternalError', 'Readiness'), null)
+  assert.equal(visibleKothControlStatus('Offline', 'Creating'), null)
+  assert.equal(visibleKothControlStatus('Ok', 'Active'), 'Ok')
 })
 
 test('tied champion cooldown displays the authoritative longest remaining duration', () => {

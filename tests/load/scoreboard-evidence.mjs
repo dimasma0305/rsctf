@@ -282,6 +282,10 @@ const afterSql = `SELECT submission.participation_id, submission.challenge_id,
     ON submission.id = first_solve.submission_id
    AND submission.participation_id = first_solve.participation_id
    AND submission.challenge_id = first_solve.challenge_id
+  JOIN ${qSchema}."Games" game
+    ON game.id = submission.game_id
+   AND submission.submit_time_utc >= game.start_time_utc
+   AND submission.submit_time_utc < game.end_time_utc
   JOIN ${qSchema}."GameChallenges" challenge
     ON challenge.id = submission.challenge_id
    AND challenge.game_id = submission.game_id
@@ -295,6 +299,10 @@ try {
   docker(['inspect', PG_CONTAINER]);
   psql(`
     CREATE SCHEMA ${qSchema};
+    CREATE UNLOGGED TABLE ${qSchema}."Games" (
+      id integer PRIMARY KEY, start_time_utc timestamptz NOT NULL,
+      end_time_utc timestamptz NOT NULL
+    );
     CREATE UNLOGGED TABLE ${qSchema}."GameChallenges" (
       id integer PRIMARY KEY, game_id integer NOT NULL,
       is_enabled boolean NOT NULL, review_status smallint NOT NULL
@@ -318,6 +326,8 @@ try {
       ON ${qSchema}."Submissions" (id, participation_id, challenge_id);
     CREATE INDEX ix_firstsolves_challenge
       ON ${qSchema}."FirstSolves" (challenge_id, participation_id);
+    INSERT INTO ${qSchema}."Games" (id, start_time_utc, end_time_utc)
+      VALUES (1, timestamptz '2026-01-01 00:00:00+00', timestamptz '2026-01-02 00:00:00+00');
     INSERT INTO ${qSchema}."GameChallenges" (id, game_id, is_enabled, review_status)
       SELECT challenge_id, 1, TRUE, 0
         FROM generate_series(1, ${CHALLENGES}) AS challenge_id;
@@ -335,6 +345,7 @@ try {
              ((team_id - 1) * ${CHALLENGES} + challenge_id - 1) * ${ACCEPTED_PER_SOLVE} + 1
         FROM generate_series(1, ${TEAMS}) AS team_id
        CROSS JOIN generate_series(1, ${CHALLENGES}) AS challenge_id;
+    ANALYZE ${qSchema}."Games";
     ANALYZE ${qSchema}."GameChallenges";
     ANALYZE ${qSchema}."Submissions";
     ANALYZE ${qSchema}."FirstSolves";

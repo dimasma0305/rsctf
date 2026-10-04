@@ -1,7 +1,7 @@
 use super::{
     cap_flag_publication_deadlines, deliver_initial_round_flags, delivery_order_key,
-    managed_flag_command, run_delivery_attempts, run_publication_with_checker, DeliveryAttempt,
-    DeliveryAttemptSummary, DeliveryAttemptTracker,
+    invalid_stored_flag_outcome, managed_flag_command, run_delivery_attempts,
+    run_publication_with_checker, DeliveryAttempt, DeliveryAttemptSummary, DeliveryAttemptTracker,
 };
 
 #[tokio::test]
@@ -252,6 +252,28 @@ fn managed_flag_is_an_argument_not_shell_source() {
     assert_eq!(command[4], flag);
     assert!(!command[2].contains(flag));
     assert!(command[2].contains("$1"));
+}
+
+#[test]
+fn malformed_stored_flag_fails_before_any_delivery_attempt() {
+    let planted = crate::services::ad_engine::AdvancedRoundFlag {
+        team_service_id: 7,
+        participation_id: 8,
+        challenge_id: 9,
+        managed: true,
+        container_id: Some("container-7".to_string()),
+        flag: "x".repeat(4_096),
+    };
+    let outcome = invalid_stored_flag_outcome(
+        &planted,
+        crate::services::ad_engine::FlagDeliveryKind::Managed,
+        planted.container_id.as_deref(),
+    )
+    .expect("malformed flag must be blocked");
+    assert!(!outcome.delivered);
+    assert_eq!(outcome.attempts, 0);
+    assert_eq!(outcome.container_id.as_deref(), Some("container-7"));
+    assert!(!outcome.failure_reason.unwrap().contains(&planted.flag));
 }
 
 #[tokio::test]

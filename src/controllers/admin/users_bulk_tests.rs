@@ -1,5 +1,17 @@
 use super::*;
 
+#[test]
+fn credential_delivery_resolves_smtp_from_admin_settings() {
+    let source = include_str!("users_credentials.rs");
+    let handler = source
+        .split("pub async fn send_credentials")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn send_password_setup_email").next())
+        .expect("credential delivery handler source");
+    assert!(handler.contains("MailSender::from_database(st.pg()).await?"));
+    assert!(!handler.contains("MailSender::from_env()"));
+}
+
 use std::str::FromStr;
 
 use crate::services::cache::{Cache, InMemoryCache};
@@ -346,6 +358,7 @@ async fn registration_lock_closes_bulk_creation_precheck_race() {
     let result = contender.await.unwrap().unwrap();
     assert_eq!(result.id, public_id);
     assert!(!result.created);
+    assert!(result.user_name_changed);
     let count: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*)::bigint FROM "AspNetUsers" WHERE normalized_email = 'RACER@EXAMPLE.TEST'"#,
     )
@@ -358,7 +371,7 @@ async fn registration_lock_closes_bulk_creation_precheck_race() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn scored_team_rejects_a_new_bulk_member_but_allows_an_existing_member_retry() {
+async fn scored_team_allows_a_new_bulk_member_and_an_existing_member_retry() {
     let harness = Harness::new().await;
     let captain = Uuid::new_v4();
     let member = Uuid::new_v4();
@@ -415,19 +428,15 @@ async fn scored_team_rejects_a_new_bulk_member_but_allows_an_existing_member_ret
     .expect("an existing member's idempotent team assignment was rejected");
     assert_eq!(retry.team_id, Some(10));
 
-    let error = provision_explicit_user(
+    let added = provision_explicit_user(
         &harness.pool,
         explicit_write("OUTSIDER", "OUTSIDER@EXAMPLE.TEST", "outsider-new-hash"),
         Some("frozen"),
         Some(10),
     )
     .await
-    .expect_err("official scoring accepted a new bulk-imported team member");
-    assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
-    assert_eq!(
-        error.to_string(),
-        "Team membership cannot change after A&D/KotH epoch scoring has started"
-    );
+    .expect("official scoring rejected a late bulk-imported teammate");
+    assert_eq!(added.team_id, Some(10));
     let joined: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
              SELECT 1 FROM "TeamMembers" WHERE team_id = 10 AND user_id = $1
@@ -437,17 +446,15 @@ async fn scored_team_rejects_a_new_bulk_member_but_allows_an_existing_member_ret
     .fetch_one(&harness.pool)
     .await
     .unwrap();
-    assert!(!joined);
+    assert!(joined);
     let outsider_identity: (Option<String>, Option<String>) =
         sqlx::query_as(r#"SELECT password_hash, security_stamp FROM "AspNetUsers" WHERE id = $1"#)
             .bind(outsider)
             .fetch_one(&harness.pool)
             .await
             .unwrap();
-    assert_eq!(
-        outsider_identity,
-        (Some("old-hash".into()), Some("old-stamp".into()))
-    );
+    assert_eq!(outsider_identity.0.as_deref(), Some("outsider-new-hash"));
+    assert_ne!(outsider_identity.1.as_deref(), Some("old-stamp"));
 
     sqlx::query(
         r#"UPDATE "Games" SET end_time_utc = clock_timestamp() - interval '1 second'
@@ -653,7 +660,7 @@ async fn failed_team_assignment_rolls_back_recredential_and_creation() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results() {
-    use super::super::users::{import_row_step, ImportUserResult};
+    use super::super::users::{import_row_step, terminal_import_row_reason, ImportUserResult};
     use crate::controllers::admin::users_credentials::credential_cache_key;
 
     let harness = Harness::new().await;
@@ -704,6 +711,7 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
         panic!("first row was unexpectedly skipped");
     };
     let mut response_rows = vec![ImportUserResult {
+        user_id: Some(first.id),
         email: "first@example.test".to_string(),
         real_name: "First".to_string(),
         user_name: first.user_name,
@@ -713,7 +721,7 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
         error: None,
     }];
 
-    let second_reason = import_row_step(
+    let second_error = import_row_step(
         provision_import_user(
             &harness.pool,
             import_write("SECOND@EXAMPLE.TEST", "second-hash"),
@@ -726,7 +734,10 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
         "provision",
     )
     .expect_err("full team unexpectedly accepted the second row");
+    let second_reason = terminal_import_row_reason(&second_error)
+        .expect("a full team is a deterministic skipped-row result");
     response_rows.push(ImportUserResult {
+        user_id: None,
         email: "second@example.test".to_string(),
         real_name: "Second".to_string(),
         user_name: "imported.2".to_string(),
@@ -753,6 +764,7 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
         panic!("third row did not continue after the second row was skipped");
     };
     response_rows.push(ImportUserResult {
+        user_id: Some(third.id),
         email: "third@example.test".to_string(),
         real_name: "Third".to_string(),
         user_name: third.user_name,
@@ -950,51 +962,5 @@ async fn failed_commit_removes_the_just_published_plaintext() {
     harness.cleanup().await;
 }
 
-#[tokio::test]
-#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn credential_publication_tracks_the_last_committed_import() {
-    use crate::controllers::admin::users_credentials::{
-        credential_cache_key, CachedImportCredential,
-    };
-
-    let harness = Harness::new().await;
-    let email = "race@example.test";
-    let normalized_email = "RACE@EXAMPLE.TEST";
-    let first = provision_import_user(
-        &harness.pool,
-        import_write(normalized_email, "first-hash"),
-        credential_write(&harness, "first-password"),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
-    let ImportProvision::Provisioned(first) = first else {
-        panic!("first import was unexpectedly skipped");
-    };
-    let second = provision_import_user(
-        &harness.pool,
-        import_write(normalized_email, "second-hash"),
-        credential_write(&harness, "second-password"),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
-    let ImportProvision::Provisioned(second) = second else {
-        panic!("second import was unexpectedly skipped");
-    };
-    assert_eq!(first.id, second.id);
-    assert_ne!(first.security_stamp, second.security_stamp);
-
-    let value = harness
-        .cache
-        .get(&credential_cache_key(email))
-        .await
-        .expect("newest credential disappeared");
-    let credential: CachedImportCredential = serde_json::from_slice(&value).unwrap();
-    assert_eq!(credential.user_id, second.id);
-    assert_eq!(credential.security_stamp, second.security_stamp);
-    assert_eq!(credential.password, "second-password");
-    harness.cleanup().await;
-}
+#[path = "users_bulk_tests_publication.rs"]
+mod publication;

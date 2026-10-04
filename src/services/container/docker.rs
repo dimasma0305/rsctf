@@ -1,17 +1,34 @@
-use bollard::container::{RemoveContainerOptions, StartContainerOptions, StatsOptions};
+use bollard::container::{
+    DownloadFromContainerOptions, RemoveContainerOptions, StartContainerOptions, StatsOptions,
+};
 use bollard::models::{
-    ContainerInspectResponse, ContainerStateStatusEnum, ImageInspect, SystemInfo,
+    ContainerInspectResponse, ContainerStateStatusEnum, HealthConfig, HostConfig, ImageInspect,
+    PortBinding, SystemInfo,
 };
 use bollard::Docker;
 use futures::StreamExt;
 use rsctf_worker_protocol::GameKind;
 
 use super::{
-    labels_match_scope, ContainerExecAdmission, ContainerExecError, ContainerLiveness,
-    ContainerManager, ContainerSpec, DockerContainerManager, NoopContainerManager,
-    MAX_EXEC_OUTPUT_BYTES,
+    labels_match_scope, ContainerExecAdmission, ContainerExecError, ContainerFile,
+    ContainerLiveness, ContainerSpec, DockerContainerManager, MAX_EXEC_OUTPUT_BYTES,
 };
+use crate::services::docker_admission::docker_admission;
 use crate::utils::error::{AppError, AppResult};
+
+mod construct;
+mod image;
+pub(super) mod network;
+mod retry;
+pub use construct::{
+    from_env, from_env_gated, from_env_required, from_env_required_gated, select_local_backend,
+};
+pub(crate) use retry::launch_spec_fingerprint;
+#[cfg(test)]
+pub(super) use retry::launch_spec_matches;
+pub(super) use retry::{
+    adopt_operation_container, discover_operation_container, failed_start_action, FailedStartAction,
+};
 
 pub(super) const LAUNCH_SPEC_LABEL: &str = "rsctf.launch-spec";
 pub(super) const STORAGE_QUOTA_LABEL: &str = "rsctf.storage-quota";
@@ -35,6 +52,115 @@ pub(super) const SNAPSHOT_EXPORT_MAX_DURATION: std::time::Duration =
     std::time::Duration::from_secs(120);
 pub(super) const SNAPSHOT_EXPORT_ADMISSION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(5);
+pub(super) const MAX_FILE_ARCHIVE_METADATA_BYTES: usize = 512 * 1024;
+const ABSOLUTE_MAX_FILE_PREVIEW_BYTES: usize = 256 * 1024;
+
+/// Retain a deterministic prefix of Docker's TAR stream. Returning true asks
+/// the caller to drop the stream immediately, which cancels the daemon body
+/// transfer for large files instead of reading the rest into memory.
+pub(super) fn append_file_archive_chunk(
+    out: &mut Vec<u8>,
+    chunk: &[u8],
+    limit: usize,
+) -> AppResult<bool> {
+    let remaining = limit.saturating_sub(out.len());
+    let retained = chunk.len().min(remaining);
+    out.try_reserve(retained)
+        .map_err(|_| AppError::internal("failed to reserve file preview buffer"))?;
+    out.extend_from_slice(&chunk[..retained]);
+    Ok(out.len() >= limit)
+}
+
+/// Decode the first regular file from Docker's archive response. Archive
+/// parsing is called from `spawn_blocking`; a FIFO, device, directory, or link
+/// is rejected without executing or opening it inside the participant box.
+pub(super) fn parse_file_archive(archive: &[u8], limit: usize) -> AppResult<ContainerFile> {
+    use std::io::Read;
+
+    let mut archive = tar::Archive::new(archive);
+    let mut entries = archive.entries().map_err(|error| {
+        AppError::bad_request(format!("invalid container file archive: {error}"))
+    })?;
+    if let Some(entry) = entries.next() {
+        let entry = entry.map_err(|error| {
+            AppError::bad_request(format!("invalid container file archive entry: {error}"))
+        })?;
+        if !entry.header().entry_type().is_file() {
+            return Err(AppError::bad_request("Only regular files can be previewed"));
+        }
+        let size = entry.size();
+        let take = u64::try_from(limit).unwrap_or(u64::MAX).min(size);
+        let mut bytes = Vec::with_capacity(usize::try_from(take).unwrap_or(limit));
+        entry.take(take).read_to_end(&mut bytes).map_err(|error| {
+            AppError::bad_request(format!("invalid container file data: {error}"))
+        })?;
+        if bytes.len() < usize::try_from(take).unwrap_or(limit) {
+            return Err(AppError::bad_request(
+                "Container file preview ended before its declared size",
+            ));
+        }
+        return Ok(ContainerFile {
+            truncated: size > bytes.len() as u64,
+            size,
+            bytes,
+        });
+    }
+    Err(AppError::not_found("Container file archive was empty"))
+}
+
+impl DockerContainerManager {
+    pub(super) async fn read_bounded_file(
+        &self,
+        id: &str,
+        path: &str,
+        limit: usize,
+    ) -> AppResult<ContainerFile> {
+        if limit == 0 || limit > ABSOLUTE_MAX_FILE_PREVIEW_BYTES {
+            return Err(AppError::bad_request(
+                "file preview limit must be between 1 byte and 256 KiB",
+            ));
+        }
+        let docker = self.client()?;
+        let info = self
+            .inspect_scoped_container(docker, id)
+            .await?
+            .ok_or_else(|| AppError::not_found(format!("container not found: {id}")))?;
+        let canonical_id = info
+            .id
+            .as_deref()
+            .ok_or_else(|| AppError::internal("inspected container has no backend identity"))?;
+        let archive_limit = limit
+            .checked_add(MAX_FILE_ARCHIVE_METADATA_BYTES)
+            .ok_or_else(|| AppError::bad_request("file preview size overflow"))?;
+        let archive = docker_admission()
+            .read("download_from_container", async {
+                let mut archive = Vec::new();
+                let mut stream = docker.download_from_container(
+                    canonical_id,
+                    Some(DownloadFromContainerOptions { path }),
+                );
+                while let Some(chunk) = stream.next().await {
+                    let bytes = chunk.map_err(|error| {
+                        if is_not_found(&error) {
+                            AppError::not_found(format!("file not found in container: {path}"))
+                        } else {
+                            AppError::internal(format!(
+                                "failed to read container file archive: {error}"
+                            ))
+                        }
+                    })?;
+                    if append_file_archive_chunk(&mut archive, &bytes, archive_limit)? {
+                        break;
+                    }
+                }
+                Ok::<_, AppError>(archive)
+            })
+            .await??;
+        tokio::task::spawn_blocking(move || parse_file_archive(&archive, limit))
+            .await
+            .map_err(|error| AppError::internal(format!("file preview task failed: {error}")))?
+    }
+}
 
 /// Export + compression temporarily holds the raw TAR and compressed archive.
 /// One capture at a time keeps the control replica inside its memory budget.
@@ -75,6 +201,108 @@ pub(super) fn validate_docker_container_spec(spec: &ContainerSpec) -> AppResult<
         return Err(AppError::bad_request(COMPETITIVE_EGRESS_ERROR));
     }
     super::validate_container_spec(spec)
+}
+
+/// Resource limits and hardening shared by every local Docker challenge
+/// container. The local backend only creates Linux containers, so `init` is
+/// always requested: a challenge PID 1 that forks without reaping must not
+/// accumulate zombie children for the lifetime of the workload.
+pub(super) fn challenge_host_config(
+    spec: &ContainerSpec,
+    restricted_profile: bool,
+    storage_opt: Option<std::collections::HashMap<String, String>>,
+    port_bindings: Option<std::collections::HashMap<String, Option<Vec<PortBinding>>>>,
+) -> HostConfig {
+    HostConfig {
+        memory: Some(i64::from(spec.memory_limit) * 1024 * 1024),
+        nano_cpus: Some(i64::from(spec.cpu_count) * 1_000_000_000),
+        pids_limit: Some(512),
+        init: Some(true),
+        storage_opt,
+        cap_drop: restricted_profile.then(|| vec!["ALL".to_string()]),
+        readonly_rootfs: restricted_profile.then_some(true),
+        security_opt: restricted_profile.then(|| vec!["no-new-privileges:true".to_string()]),
+        tmpfs: restricted_profile.then(restricted_tmpfs_mounts),
+        log_config: Some(super::bounded_log_config()),
+        port_bindings,
+        network_mode: docker_network_mode(spec),
+        ..Default::default()
+    }
+}
+
+/// Steady-state floor for an inherited image health check. Docker runs each
+/// probe as a container exec, so a fleet of images polling every second or two
+/// turns into daemon CPU and process churn at event scale.
+pub(super) const MIN_HEALTH_INTERVAL_NANOS: i64 = 15_000_000_000;
+
+/// Inherit the image's health check but never poll faster than
+/// [`MIN_HEALTH_INTERVAL_NANOS`] once the start period has elapsed.
+///
+/// Returns `None` whenever the container should simply inherit the image
+/// definition: no health check, an explicitly disabled one (`NONE`), or an
+/// interval that is already at or above the floor. A container-level
+/// `Healthcheck` replaces the image's whole block rather than merging into it,
+/// so the clamp clones every field (command, timeout, retries, start period,
+/// start interval) and changes only the steady interval.
+pub(super) fn clamped_image_health_config(image: &ImageInspect) -> Option<HealthConfig> {
+    let health = image.config.as_ref()?.healthcheck.as_ref()?;
+    let test = health.test.as_ref()?;
+    if test.is_empty() || test.first().is_some_and(|command| command == "NONE") {
+        return None;
+    }
+    health
+        .interval
+        .filter(|interval| *interval > 0 && *interval < MIN_HEALTH_INTERVAL_NANOS)?;
+    Some(HealthConfig {
+        interval: Some(MIN_HEALTH_INTERVAL_NANOS),
+        ..health.clone()
+    })
+}
+
+/// Eager pull for an operator preflight. A repository digest is fetched when
+/// absent; a daemon-local image id cannot be pulled and must already exist.
+/// Both the inspect and the pull go through Docker admission so a preflight
+/// cannot starve live provisioning of daemon slots.
+pub(super) async fn pull_immutable_image(docker: &Docker, image: &str) -> AppResult<()> {
+    if docker_admission()
+        .read("inspect_image", docker.inspect_image(image))
+        .await?
+        .is_ok()
+    {
+        return Ok(());
+    }
+    if !crate::services::challenge_images::is_repository_digest(image) {
+        return Err(AppError::unavailable(
+            "The daemon-local image id is absent from this container host; rebuild the challenge.",
+        ));
+    }
+    let options = bollard::image::CreateImageOptions {
+        from_image: image.to_string(),
+        ..Default::default()
+    };
+    let last_error = docker_admission()
+        .pull("create_image", async {
+            let mut pull = docker.create_image(Some(options), None, None);
+            let mut last_error = None;
+            while let Some(item) = pull.next().await {
+                if let Err(error) = item {
+                    last_error = Some(error.to_string());
+                    break;
+                }
+            }
+            last_error
+        })
+        .await?;
+    docker_admission()
+        .read("inspect_image", docker.inspect_image(image))
+        .await?
+        .map_err(|error| {
+            AppError::unavailable(format!(
+                "The image could not be pulled: {}",
+                last_error.unwrap_or_else(|| error.to_string())
+            ))
+        })?;
+    Ok(())
 }
 
 pub(super) fn image_requests_restricted_profile(image: &ImageInspect) -> bool {
@@ -133,35 +361,6 @@ pub(super) fn restricted_profile_matches(
                     .get(RESTRICTED_TMPFS_PATH)
                     .is_some_and(|options| options == RESTRICTED_TMPFS_OPTIONS)
         })
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DockerLaunchSpec<'a> {
-    revision: u8,
-    game_kind: GameKind,
-    image: &'a str,
-    memory_limit: i32,
-    cpu_count: i32,
-    storage_limit: i32,
-    expose_port: i32,
-    #[serde(skip_serializing_if = "is_true")]
-    publish_port: bool,
-    #[serde(skip_serializing_if = "is_false")]
-    proxy_only: bool,
-    env: &'a [(String, String)],
-    flag: Option<&'a str>,
-    ad_network: Option<&'a str>,
-    allow_egress: bool,
-    network_mode: crate::utils::enums::NetworkMode,
-}
-
-fn is_true(value: &bool) -> bool {
-    *value
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 pub(super) const PROXY_BIND_REQUIRED: &str =
@@ -307,52 +506,6 @@ pub(super) fn storage_quota_policy_matches(
         .map_or(enforced, |actual| actual == expected)
 }
 
-/// Hash every launch-affecting caller input into a non-secret identity label.
-/// Operation and installation identities have their own labels and deliberately
-/// do not affect whether a crash retry represents the same workload.
-pub(super) fn launch_spec_fingerprint(spec: &ContainerSpec) -> String {
-    let canonical = DockerLaunchSpec {
-        // v4 adds writable-layer and author-selected network isolation. Older
-        // workloads must never be adopted because they lack those boundaries.
-        revision: 4,
-        game_kind: spec.game_kind,
-        image: &spec.image,
-        memory_limit: spec.memory_limit,
-        cpu_count: spec.cpu_count,
-        storage_limit: spec.storage_limit,
-        expose_port: spec.expose_port,
-        publish_port: spec.publish_port,
-        proxy_only: spec.proxy_only,
-        env: &spec.env,
-        flag: spec.flag.as_deref(),
-        ad_network: spec.ad_network.as_deref(),
-        allow_egress: spec.allow_egress,
-        network_mode: spec.network_mode,
-    };
-    let bytes = serde_json::to_vec(&canonical)
-        .expect("the fixed Docker launch identity is always JSON serializable");
-    crate::utils::codec::sha256_hex(&bytes)
-}
-
-pub(super) fn launch_spec_matches(
-    info: &ContainerInspectResponse,
-    expected_fingerprint: &str,
-) -> bool {
-    info.config
-        .as_ref()
-        .and_then(|config| config.labels.as_ref())
-        .and_then(|labels| labels.get(LAUNCH_SPEC_LABEL))
-        .map(String::as_str)
-        == Some(expected_fingerprint)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FailedStartAction {
-    TreatAsStarted,
-    RetainForRetry,
-    RemoveOwned,
-}
-
 fn container_is_running(info: &ContainerInspectResponse) -> bool {
     info.state.as_ref().and_then(|state| state.status) == Some(ContainerStateStatusEnum::RUNNING)
 }
@@ -409,7 +562,11 @@ impl DockerContainerManager {
         admission: ContainerExecAdmission,
     ) -> Result<String, ContainerExecError> {
         let docker = self.client().map_err(ContainerExecError::Platform)?;
-        let info = match docker.inspect_container(id, None).await {
+        let inspected = docker_admission()
+            .read("inspect_container", docker.inspect_container(id, None))
+            .await
+            .map_err(|error| ContainerExecError::Platform(error.into()))?;
+        let info = match inspected {
             Ok(info) => info,
             Err(error) if is_not_found(&error) => {
                 return Err(ContainerExecError::Participant(AppError::not_found(
@@ -482,27 +639,6 @@ impl DockerContainerManager {
     }
 }
 
-/// Reconcile a failed Docker start without racing an idempotent adopter. A
-/// stable operation is never removed here: another replica may have inspected
-/// the CREATED container and be starting it concurrently.
-pub(super) fn failed_start_action(
-    stable_operation: bool,
-    inspected: Option<&ContainerInspectResponse>,
-) -> FailedStartAction {
-    let status = inspected
-        .and_then(|info| info.state.as_ref())
-        .and_then(|state| state.status);
-    match status {
-        Some(ContainerStateStatusEnum::RUNNING) => FailedStartAction::TreatAsStarted,
-        Some(
-            ContainerStateStatusEnum::CREATED
-            | ContainerStateStatusEnum::EXITED
-            | ContainerStateStatusEnum::DEAD,
-        ) if !stable_operation => FailedStartAction::RemoveOwned,
-        _ => FailedStartAction::RetainForRetry,
-    }
-}
-
 pub(super) fn docker_liveness(state: Option<ContainerStateStatusEnum>) -> ContainerLiveness {
     match state {
         Some(ContainerStateStatusEnum::RUNNING) => ContainerLiveness::Running,
@@ -562,7 +698,10 @@ impl DockerContainerManager {
         docker: &Docker,
         id: &str,
     ) -> AppResult<Option<ContainerInspectResponse>> {
-        match docker.inspect_container(id, None).await {
+        let inspected = docker_admission()
+            .read("inspect_container", docker.inspect_container(id, None))
+            .await?;
+        match inspected {
             Ok(info) => {
                 verify_container_scope(&info, &self.scope)?;
                 Ok(Some(info))
@@ -582,18 +721,22 @@ impl DockerContainerManager {
         adopted: bool,
     ) -> AppResult<()> {
         let already_running = adopted
-            && docker
-                .inspect_container(id, None)
+            && docker_admission()
+                .read("inspect_container", docker.inspect_container(id, None))
                 .await
                 .ok()
+                .and_then(Result::ok)
                 .as_ref()
                 .is_some_and(container_is_running);
         if already_running {
             return Ok(());
         }
-        let Err(error) = docker
-            .start_container(id, None::<StartContainerOptions<String>>)
-            .await
+        let Err(error) = docker_admission()
+            .lifecycle(
+                "start_container",
+                docker.start_container(id, None::<StartContainerOptions<String>>),
+            )
+            .await?
         else {
             return Ok(());
         };
@@ -611,21 +754,48 @@ impl DockerContainerManager {
                 "failed to start container: {error}"
             ))),
             FailedStartAction::RemoveOwned => {
-                if let Some(canonical_id) = inspected.as_ref().and_then(|info| info.id.as_deref()) {
-                    let _ = docker
-                        .remove_container(
+                let canonical_id = inspected
+                    .as_ref()
+                    .and_then(|info| info.id.as_deref())
+                    .ok_or_else(|| {
+                        AppError::internal(format!(
+                            "failed to start container and cleanup identity was unavailable: {error}"
+                        ))
+                    })?;
+                match docker_admission()
+                    .lifecycle(
+                        "remove_container",
+                        docker.remove_container(
                             canonical_id,
                             Some(RemoveContainerOptions {
                                 v: false,
                                 force: true,
                                 link: false,
                             }),
-                        )
-                        .await;
+                        ),
+                    )
+                    .await?
+                {
+                    Ok(())
+                    | Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 404,
+                        ..
+                    }) => {}
+                    Err(cleanup_error) => {
+                        return Err(AppError::internal(format!(
+                            "failed to start container ({error}) and cleanup failed: {cleanup_error}"
+                        )));
+                    }
                 }
-                Err(AppError::internal(format!(
-                    "failed to start container: {error}"
-                )))
+                if stable_operation {
+                    Err(AppError::conflict(
+                        "Docker retry reached a terminal container; retry with a new operation identity",
+                    ))
+                } else {
+                    Err(AppError::internal(format!(
+                        "failed to start container: {error}"
+                    )))
+                }
             }
         }
     }
@@ -637,21 +807,32 @@ impl DockerContainerManager {
             return (None, None);
         };
 
-        let mut stream = docker.stats(
-            id,
-            Some(StatsOptions {
-                stream: false,
-                one_shot: true,
-            }),
-        );
+        let sample = docker_admission()
+            .read("stats", async {
+                docker
+                    .stats(
+                        id,
+                        Some(StatsOptions {
+                            stream: false,
+                            one_shot: true,
+                        }),
+                    )
+                    .next()
+                    .await
+            })
+            .await;
 
-        let stats = match stream.next().await {
-            Some(Ok(stats)) => stats,
-            Some(Err(e)) => {
+        let stats = match sample {
+            Ok(Some(Ok(stats))) => stats,
+            Ok(Some(Err(e))) => {
                 tracing::debug!(id = %id, error = %e, "container stats sample failed");
                 return (None, None);
             }
-            None => return (None, None),
+            Ok(None) => return (None, None),
+            Err(e) => {
+                tracing::debug!(id = %id, error = %e, "container stats sample was not admitted");
+                return (None, None);
+            }
         };
 
         let memory_bytes = stats.memory_stats.usage;
@@ -685,49 +866,6 @@ impl DockerContainerManager {
     }
 }
 
-/// Select Docker when its daemon is reachable, otherwise use the no-op backend.
-pub fn from_env() -> std::sync::Arc<dyn ContainerManager> {
-    match DockerContainerManager::connect() {
-        Ok(manager) if manager.reachable_blocking() => {
-            tracing::info!(
-                endpoint = ?manager.endpoint,
-                "docker daemon reachable; using DockerContainerManager"
-            );
-            std::sync::Arc::new(manager)
-        }
-        Ok(_) => {
-            tracing::warn!(
-                "docker daemon not reachable (ping failed); \
-                 falling back to NoopContainerManager (containers disabled)"
-            );
-            std::sync::Arc::new(NoopContainerManager)
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "could not connect to docker; \
-                 falling back to NoopContainerManager (containers disabled)"
-            );
-            std::sync::Arc::new(NoopContainerManager)
-        }
-    }
-}
-
-/// Select Docker without silently degrading to the no-op backend.
-pub fn from_env_required() -> AppResult<std::sync::Arc<dyn ContainerManager>> {
-    let manager = DockerContainerManager::connect()?;
-    if !manager.reachable_blocking() {
-        return Err(AppError::internal(
-            "RSCTF_CONTAINER_BACKEND=docker but the Docker daemon is unreachable",
-        ));
-    }
-    tracing::info!(
-        endpoint = ?manager.endpoint,
-        "docker daemon reachable; using explicitly selected DockerContainerManager"
-    );
-    Ok(std::sync::Arc::new(manager))
-}
-
 #[cfg(test)]
 mod exec_admission_tests {
     use super::*;
@@ -749,5 +887,83 @@ mod exec_admission_tests {
         };
         assert!(attached_exec_output(attached, &attached_admission).is_ok());
         assert!(attached_admission.is_admitted());
+    }
+}
+
+#[cfg(test)]
+mod file_archive_tests {
+    use super::super::ContainerManager;
+    use super::*;
+
+    fn archive_header(entry_type: tar::EntryType, size: u64) -> Vec<u8> {
+        let mut header = tar::Header::new_gnu();
+        header.set_path("preview").unwrap();
+        header.set_mode(0o600);
+        header.set_entry_type(entry_type);
+        header.set_size(size);
+        header.set_cksum();
+        header.as_bytes().to_vec()
+    }
+
+    #[test]
+    fn large_regular_file_returns_only_a_truthful_bounded_preview() {
+        let limit = 16 * 1024;
+        let declared = 1024 * 1024 * 1024u64;
+        let mut archive = archive_header(tar::EntryType::Regular, declared);
+        archive.extend(std::iter::repeat_n(b'x', limit));
+
+        let file = parse_file_archive(&archive, limit).unwrap();
+        assert_eq!(file.size, declared);
+        assert_eq!(file.bytes.len(), limit);
+        assert!(file.truncated);
+    }
+
+    #[test]
+    fn fifo_and_device_like_entries_are_never_opened_as_files() {
+        for entry_type in [
+            tar::EntryType::Fifo,
+            tar::EntryType::Block,
+            tar::EntryType::Char,
+        ] {
+            let archive = archive_header(entry_type, 0);
+            assert!(matches!(
+                parse_file_archive(&archive, 1024),
+                Err(AppError::BadRequest(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn docker_archive_collection_stops_at_the_memory_cap() {
+        let mut output = vec![1; 8];
+        assert!(append_file_archive_chunk(&mut output, &[2; 8], 12).unwrap());
+        assert_eq!(output.len(), 12);
+        assert_eq!(&output[8..], &[2; 4]);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable scoped Docker container in RSCTF_TEST_FORENSICS_CONTAINER_ID"]
+    async fn real_docker_large_file_and_fifo_are_bounded_without_exec() {
+        let id = std::env::var("RSCTF_TEST_FORENSICS_CONTAINER_ID")
+            .expect("RSCTF_TEST_FORENSICS_CONTAINER_ID is required");
+        let manager = DockerContainerManager::connect().unwrap();
+        let large = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            manager.read_file(&id, "/tmp/large", 240 * 1024),
+        )
+        .await
+        .expect("large-file archive read timed out")
+        .unwrap();
+        assert_eq!(large.bytes.len(), 240 * 1024);
+        assert!(large.size >= 1024 * 1024);
+        assert!(large.truncated);
+
+        let fifo = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            manager.read_file(&id, "/tmp/blocked", 240 * 1024),
+        )
+        .await
+        .expect("FIFO archive metadata read timed out");
+        assert!(matches!(fifo, Err(AppError::BadRequest(_))));
     }
 }

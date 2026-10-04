@@ -5,12 +5,6 @@ use serde::Serialize;
 
 use super::*;
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VariantGenerationResult {
-    pub generated: usize,
-}
-
 #[derive(Debug, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct VariantSummary {
@@ -28,10 +22,28 @@ pub async fn generate_variants(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path(game_id): Path<i32>,
-) -> AppResult<RequestResponse<VariantGenerationResult>> {
+    headers: axum::http::HeaderMap,
+) -> AppResult<(
+    axum::http::StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
     super::manager_or_admin(&st, &user, game_id).await?;
-    let generated = crate::services::event_security::generate_event_variants(&st, game_id).await?;
-    Ok(RequestResponse::ok(VariantGenerationResult { generated }))
+    let operation = super::control_jobs::operation_id(&headers)?;
+    let input = serde_json::json!({ "gameId": game_id });
+    let fingerprint = super::control_jobs::fingerprint(&input)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::VariantGeneration,
+        &format!("game:{game_id}"),
+        game_id,
+        None,
+        operation,
+        &fingerprint,
+        input,
+    )
+    .await?;
+    crate::services::control_jobs::kick(st);
+    Ok((axum::http::StatusCode::ACCEPTED, RequestResponse::ok(job)))
 }
 
 pub async fn list_variants(

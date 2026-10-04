@@ -7,9 +7,8 @@ import banner from 'vite-plugin-banner'
 import { optimizeCssModules } from 'vite-plugin-optimize-css-modules'
 import Pages from 'vite-plugin-pages'
 import webfontDownload from 'vite-plugin-webfont-dl'
-import tsconfigPaths from 'vite-tsconfig-paths'
-import { fetchContributors } from './plugins/vite-fetch-contributors'
-import { i18nVirtualManifest } from './plugins/vite-i18n-virtual-manifest'
+import { fetchContributors } from './plugins/vite-fetch-contributors.ts'
+import { i18nVirtualManifest } from './plugins/vite-i18n-virtual-manifest.ts'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd())
@@ -30,6 +29,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     resolve: {
+      tsconfigPaths: true,
       alias: {
         '@creepjs': path.resolve(__dirname, 'src/lib/creepjs/src'),
       },
@@ -40,16 +40,18 @@ export default defineConfig(({ mode }) => {
       allowedHosts: true,
       proxy: {
         '/healthz': TARGET,
-        '/api': TARGET,
+        '/api': {
+          target: TARGET,
+          ws: true,
+        },
         '/swagger': TARGET,
         '/assets': TARGET,
         '/hub': {
           target: TARGET,
           changeOrigin: true,
-          headers: { origin: new URL(TARGET).origin },
-          rewriteWsOrigin: true,
           ws: true,
         },
+        '/install': TARGET,
         '/favicon.webp': TARGET,
       },
     },
@@ -74,7 +76,6 @@ export default defineConfig(({ mode }) => {
       },
     },
     plugins: [
-      tsconfigPaths(),
       react(),
       banner(BANNER),
       webfontDownload(

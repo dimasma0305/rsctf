@@ -1,0 +1,810 @@
+use super::*;
+
+#[test]
+fn bounds_are_deliberately_small_and_gameplay_independent() {
+    assert_eq!(EVENT_LOGICAL_QUOTA_BYTES, 256 * 1024 * 1024);
+    assert_eq!(GLOBAL_LOGICAL_QUOTA_BYTES, 5 * 1024 * 1024 * 1024);
+    assert_eq!(MAX_PATTERNS, 50_000);
+    assert_eq!(MAX_PATTERN_BYTES, 4 * 1024 * 1024);
+    assert_eq!(MAX_TRACKED_FLOWS, 65_536);
+    assert_eq!(MAX_INGEST_ROWS, 4_096);
+    assert_eq!(INGEST_INTERVAL_SECONDS, 30);
+}
+
+#[test]
+fn flag_transports_keep_a_reserve_when_bulk_telemetry_fills_the_quota() {
+    let both = QuotaDecision {
+        keep_bulk: true,
+        keep_flags: true,
+    };
+    assert_eq!(quota_decision(0, 0, false, 192, 176), both);
+    // Bulk rows that would reach into the reserve are dropped; the flag
+    // transport arriving in the same batch is kept.
+    let event_limit = EVENT_LOGICAL_QUOTA_BYTES - FLAG_EVENT_RESERVE_BYTES;
+    let decision = quota_decision(event_limit - 100, 0, false, 192, 176);
+    assert!(!decision.keep_bulk && decision.keep_flags);
+    let global_limit = GLOBAL_LOGICAL_QUOTA_BYTES - FLAG_GLOBAL_RESERVE_BYTES;
+    let decision = quota_decision(0, global_limit, false, 192, 176);
+    assert!(!decision.keep_bulk && decision.keep_flags);
+    // Once bulk stopped, flags continue until the whole quota is used.
+    assert!(!quota_decision(0, 0, true, 192, 0).keep_bulk);
+    assert_eq!(quota_decision(event_limit, 0, true, 0, 176), both);
+    assert!(!quota_decision(EVENT_LOGICAL_QUOTA_BYTES - 100, 0, true, 0, 176).keep_flags);
+}
+
+#[test]
+fn invalid_bucket_and_raw_values_are_rejected_before_database_work() {
+    let batch = TelemetryBatch {
+        batch_id: Uuid::new_v4(),
+        game_id: 1,
+        flows: vec![FlowBucketInput {
+            user_id: Uuid::nil(),
+            participation_id: 1,
+            peer_id: Uuid::nil(),
+            challenge_id: None,
+            container_generation: None,
+            bucket_start_utc: Utc::now(),
+            packets_up: 0,
+            packets_down: 0,
+            bytes_up: 0,
+            bytes_down: 0,
+            distinct_destinations: 0,
+            connection_count: 0,
+            active_seconds: 0,
+        }],
+        dns_providers: Vec::new(),
+        peer_networks: Vec::new(),
+        flag_transports: Vec::new(),
+        sensor_dropped_rows: 0,
+        sensor_dropped_bytes: 0,
+    };
+    assert!(batch.validate().is_err());
+    assert!(decode_hash("not-an-address-or-hash").is_err());
+}
+
+#[test]
+fn internal_bulk_timestamps_are_rfc3339_not_wire_milliseconds() {
+    let timestamp = DateTime::parse_from_rfc3339("2026-08-20T13:40:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let flow = FlowBucketInput {
+        user_id: Uuid::nil(),
+        participation_id: 1,
+        peer_id: Uuid::nil(),
+        challenge_id: None,
+        container_generation: None,
+        bucket_start_utc: timestamp,
+        packets_up: 1,
+        packets_down: 1,
+        bytes_up: 1,
+        bytes_down: 1,
+        distinct_destinations: 1,
+        connection_count: 1,
+        active_seconds: 1,
+    };
+    let dns = DnsProviderBucketInput {
+        user_id: Uuid::nil(),
+        participation_id: 1,
+        peer_id: Uuid::nil(),
+        provider_category: 1,
+        bucket_start_utc: timestamp,
+        query_count: 1,
+        first_seen_at_utc: timestamp,
+        last_seen_at_utc: timestamp,
+    };
+
+    assert_eq!(
+        flow_database_rows(&[flow])[0]["bucketStartUtc"],
+        "2026-08-20T13:40:00Z"
+    );
+    assert_eq!(
+        dns_database_rows(&[dns])[0]["firstSeenAtUtc"],
+        "2026-08-20T13:40:00Z"
+    );
+}
+
+#[test]
+fn trigger_stamped_telemetry_prefilters_exact_replays() {
+    let source = concat!(
+        include_str!("telemetry.rs"),
+        include_str!("telemetry_rows.rs")
+    );
+    assert_eq!(source.matches("deduped_input AS MATERIALIZED").count(), 3);
+    assert_eq!(
+        source
+            .matches("Reconciliation uses a BEFORE INSERT stamp")
+            .count(),
+        3
+    );
+    for exact_lookup in [
+        "SELECT 1 FROM \"VpnDnsProviderBuckets\" existing",
+        "SELECT 1 FROM \"VpnPeerNetworkObservations\" existing",
+        "SELECT 1 FROM \"VpnFlagTransportEvents\" existing",
+    ] {
+        assert!(source.contains(exact_lookup));
+    }
+    assert_eq!(
+        source.matches("ON CONFLICT DO NOTHING RETURNING 1").count(),
+        4
+    );
+    assert!(source.contains("let policy = load_ingest_policy"));
+    assert!(source.contains("if !policy.5"));
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn postgres_final_barrier_rejects_a_delayed_telemetry_reader() {
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use tokio::sync::oneshot;
+
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("telemetry_barrier_{}", Uuid::new_v4().simple());
+    sqlx::raw_sql(&format!(
+        r#"CREATE SCHEMA "{schema}";
+           CREATE TABLE "{schema}"."Games" (
+               id INTEGER PRIMARY KEY,
+               deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
+               vpn_behavior_telemetry_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+               vpn_flag_scan_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+               vpn_provider_dns_telemetry_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+               vpn_source_asn_telemetry_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+               vpn_device_sharing_telemetry_enabled BOOLEAN NOT NULL DEFAULT TRUE
+           );
+           CREATE TABLE "{schema}"."SuspicionReconciliationState" (
+               game_id INTEGER PRIMARY KEY,
+               evidence_closed_at_utc TIMESTAMPTZ NULL
+           );
+           INSERT INTO "{schema}"."Games" (id) VALUES (1);
+           INSERT INTO "{schema}"."SuspicionReconciliationState" (game_id)
+               VALUES (1);"#
+    ))
+    .execute(&admin)
+    .await
+    .unwrap();
+    let options = PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(3)
+        .connect_with(options)
+        .await
+        .unwrap();
+
+    let mut finalizer = pool.begin().await.unwrap();
+    sqlx::query(r#"SELECT id FROM "Games" WHERE id = 1 FOR UPDATE"#)
+        .execute(&mut *finalizer)
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"UPDATE "SuspicionReconciliationState"
+              SET evidence_closed_at_utc = clock_timestamp()
+            WHERE game_id = 1"#,
+    )
+    .execute(&mut *finalizer)
+    .await
+    .unwrap();
+    let finalizer_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *finalizer)
+        .await
+        .unwrap();
+
+    let delayed_pool = pool.clone();
+    let (started_tx, started_rx) = oneshot::channel();
+    let delayed = tokio::spawn(async move {
+        let mut transaction = delayed_pool.begin().await.unwrap();
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+        started_tx.send(pid).unwrap();
+        let policy = load_ingest_policy(&mut transaction, 1).await;
+        transaction.rollback().await.unwrap();
+        policy
+    });
+    let delayed_pid = started_rx.await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT $1 = ANY(pg_blocking_pids($2))")
+                .bind(finalizer_pid)
+                .bind(delayed_pid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            if blocked {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("delayed telemetry reader never waited behind the final game barrier");
+    finalizer.commit().await.unwrap();
+    let policy = tokio::time::timeout(std::time::Duration::from_secs(3), delayed)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        !policy.5,
+        "a reader released after sealing must see closure"
+    );
+
+    pool.close().await;
+    sqlx::raw_sql(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn postgres_exact_batch_replay_leaves_reconciliation_clean() {
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("telemetry_exact_replay_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let options = PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"CREATE TABLE "Games" (
+               id INTEGER PRIMARY KEY,
+               vpn_flag_scan_enabled BOOLEAN NOT NULL,
+               vpn_provider_dns_telemetry_enabled BOOLEAN NOT NULL,
+               vpn_source_asn_telemetry_enabled BOOLEAN NOT NULL,
+               start_time_utc TIMESTAMPTZ NOT NULL,
+               end_time_utc TIMESTAMPTZ NOT NULL
+           );
+           CREATE TABLE "EventVpnUserPeers" (
+               id UUID PRIMARY KEY, game_id INTEGER NOT NULL,
+               user_id UUID NOT NULL, participation_id INTEGER NOT NULL,
+               revoked_at_utc TIMESTAMPTZ NULL
+           );
+           CREATE TABLE "Participations" (
+               id INTEGER NOT NULL, game_id INTEGER NOT NULL,
+               PRIMARY KEY (game_id, id)
+           );
+           CREATE TABLE "GameChallenges" (
+               id INTEGER NOT NULL, game_id INTEGER NOT NULL,
+               "Type" SMALLINT NOT NULL, flag_template TEXT NULL,
+               PRIMARY KEY (game_id, id)
+           );
+           CREATE TABLE "ChallengeVariants" (
+               game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
+               participation_id INTEGER NOT NULL, frozen_at_utc TIMESTAMPTZ NULL
+           );
+           CREATE TABLE "AntiCheatReconciliationSources" (
+               game_id INTEGER NOT NULL, source_kind SMALLINT NOT NULL,
+               applied_version BIGINT NOT NULL, dirty_version BIGINT NOT NULL,
+               PRIMARY KEY (game_id, source_kind)
+           );
+           CREATE TABLE "AntiCheatReconciliationQueue" (
+               game_id INTEGER PRIMARY KEY,
+               applied_generation BIGINT NOT NULL,
+               desired_generation BIGINT NOT NULL
+           );
+           CREATE TABLE "VpnDnsProviderBuckets" (
+               id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+               user_id UUID NOT NULL, participation_id INTEGER NOT NULL,
+               peer_id UUID NOT NULL, provider_category SMALLINT NOT NULL,
+               bucket_start_utc TIMESTAMPTZ NOT NULL, query_count INTEGER NOT NULL,
+               first_seen_at_utc TIMESTAMPTZ NOT NULL,
+               last_seen_at_utc TIMESTAMPTZ NOT NULL,
+               reconciliation_version BIGINT NOT NULL
+           );
+           CREATE UNIQUE INDEX ux_test_dns_replay ON "VpnDnsProviderBuckets" (
+               game_id, user_id, participation_id, peer_id,
+               provider_category, bucket_start_utc
+           );
+           CREATE TABLE "VpnPeerNetworkObservations" (
+               id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+               user_id UUID NOT NULL, participation_id INTEGER NOT NULL,
+               peer_id UUID NOT NULL, endpoint_hash BYTEA NOT NULL,
+               source_asn BIGINT NULL, network_class SMALLINT NOT NULL,
+               first_seen_at_utc TIMESTAMPTZ NOT NULL,
+               last_seen_at_utc TIMESTAMPTZ NOT NULL,
+               handshake_count INTEGER NOT NULL,
+               reconciliation_version BIGINT NOT NULL
+           );
+           CREATE UNIQUE INDEX ux_test_network_replay ON "VpnPeerNetworkObservations" (
+               game_id, peer_id, endpoint_hash, first_seen_at_utc
+           );
+           CREATE TABLE "VpnFlagTransportEvents" (
+               id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+               challenge_id INTEGER NOT NULL, receiving_user_id UUID NOT NULL,
+               receiving_participation_id INTEGER NOT NULL,
+               owning_participation_id INTEGER NOT NULL, peer_id UUID NOT NULL,
+               flag_value_hash BYTEA NOT NULL, transport SMALLINT NOT NULL,
+               direction SMALLINT NOT NULL, observed_at_utc TIMESTAMPTZ NOT NULL,
+               reconciliation_version BIGINT NOT NULL
+           );
+           CREATE UNIQUE INDEX ux_test_flag_replay ON "VpnFlagTransportEvents" (
+               game_id, challenge_id, receiving_participation_id,
+               owning_participation_id, flag_value_hash, transport, direction
+           );
+           INSERT INTO "Games" VALUES (
+               7, TRUE, TRUE, TRUE,
+               '2026-08-20T00:00:00Z', '2026-08-21T00:00:00Z'
+           );
+           INSERT INTO "Participations" VALUES (9, 7), (10, 7);
+           INSERT INTO "GameChallenges" VALUES (11, 7, 0, 'flag-{team}');
+           INSERT INTO "EventVpnUserPeers" VALUES (
+               '10000000-0000-0000-0000-000000000001', 7,
+               '20000000-0000-0000-0000-000000000002', 9, NULL
+           );
+           INSERT INTO "VpnDnsProviderBuckets" (
+               game_id, user_id, participation_id, peer_id, provider_category,
+               bucket_start_utc, query_count, first_seen_at_utc, last_seen_at_utc,
+               reconciliation_version
+           ) VALUES (
+               7, '20000000-0000-0000-0000-000000000002', 9,
+               '10000000-0000-0000-0000-000000000001', 2,
+               '2026-08-20T13:45:00Z', 4,
+               '2026-08-20T13:46:00Z', '2026-08-20T13:47:00Z', 1
+           );
+           INSERT INTO "VpnPeerNetworkObservations" (
+               game_id, user_id, participation_id, peer_id, endpoint_hash,
+               source_asn, network_class, first_seen_at_utc, last_seen_at_utc,
+               handshake_count, reconciliation_version
+           ) VALUES (
+               7, '20000000-0000-0000-0000-000000000002', 9,
+               '10000000-0000-0000-0000-000000000001',
+               decode(repeat('11', 32), 'hex'), 64512, 2,
+               '2026-08-20T13:48:00Z', '2026-08-20T13:49:00Z', 3, 1
+           );
+           INSERT INTO "VpnFlagTransportEvents" (
+               game_id, challenge_id, receiving_user_id,
+               receiving_participation_id, owning_participation_id, peer_id,
+               flag_value_hash, transport, direction, observed_at_utc,
+               reconciliation_version
+           ) VALUES (
+               7, 11, '20000000-0000-0000-0000-000000000002', 9, 10,
+               '10000000-0000-0000-0000-000000000001',
+               decode(repeat('22', 32), 'hex'), 1, 0,
+               '2026-08-20T13:50:00Z', 1
+           );
+           INSERT INTO "AntiCheatReconciliationSources"
+               (game_id, source_kind, applied_version, dirty_version)
+               VALUES (7, 3, 1, 1), (7, 4, 1, 1), (7, 5, 1, 1);
+           INSERT INTO "AntiCheatReconciliationQueue"
+               (game_id, applied_generation, desired_generation)
+               VALUES (7, 4, 4);
+           CREATE FUNCTION test_stamp_anticheat_insert()
+           RETURNS trigger LANGUAGE plpgsql AS $$
+           DECLARE stamped_version BIGINT;
+           BEGIN
+               IF NEW.reconciliation_version IS NOT NULL THEN
+                   RAISE EXCEPTION 'reconciliation version is database-owned';
+               END IF;
+               UPDATE "AntiCheatReconciliationSources"
+                  SET dirty_version = dirty_version + 1
+                WHERE game_id = NEW.game_id
+                  AND source_kind = TG_ARGV[0]::SMALLINT
+               RETURNING dirty_version INTO stamped_version;
+               UPDATE "AntiCheatReconciliationQueue"
+                  SET desired_generation = desired_generation + 1
+                WHERE game_id = NEW.game_id;
+               NEW.reconciliation_version := stamped_version;
+               RETURN NEW;
+           END
+           $$;
+           CREATE TRIGGER zz_test_dns_anticheat_stamp
+             BEFORE INSERT ON "VpnDnsProviderBuckets"
+             FOR EACH ROW EXECUTE FUNCTION test_stamp_anticheat_insert('3');
+           CREATE TRIGGER zz_test_network_anticheat_stamp
+             BEFORE INSERT ON "VpnPeerNetworkObservations"
+             FOR EACH ROW EXECUTE FUNCTION test_stamp_anticheat_insert('4');
+           CREATE TRIGGER zz_test_flag_anticheat_stamp
+             BEFORE INSERT ON "VpnFlagTransportEvents"
+             FOR EACH ROW EXECUTE FUNCTION test_stamp_anticheat_insert('5');"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let game_id: i32 = sqlx::query_scalar(
+        r#"SELECT game.id
+              FROM "Games" game
+             WHERE EXISTS (
+                       SELECT 1 FROM "VpnDnsProviderBuckets" dns
+                       JOIN "EventVpnUserPeers" peer ON peer.id = dns.peer_id
+                      WHERE dns.game_id = game.id AND peer.revoked_at_utc IS NULL
+                   )
+               AND EXISTS (
+                       SELECT 1 FROM "VpnPeerNetworkObservations" network
+                       JOIN "EventVpnUserPeers" peer ON peer.id = network.peer_id
+                      WHERE network.game_id = game.id AND peer.revoked_at_utc IS NULL
+                   )
+               AND EXISTS (
+                       SELECT 1 FROM "VpnFlagTransportEvents" flag
+                       JOIN "EventVpnUserPeers" peer ON peer.id = flag.peer_id
+                       JOIN "GameChallenges" challenge
+                         ON challenge.game_id = flag.game_id
+                        AND challenge.id = flag.challenge_id
+                      WHERE flag.game_id = game.id AND peer.revoked_at_utc IS NULL
+                        AND challenge."Type" NOT IN (4, 5)
+                        AND (
+                             challenge.flag_template IS NOT NULL
+                             OR EXISTS (
+                                 SELECT 1 FROM "ChallengeVariants" variant
+                                  WHERE variant.game_id = flag.game_id
+                                    AND variant.challenge_id = flag.challenge_id
+                                    AND variant.participation_id =
+                                          flag.owning_participation_id
+                                    AND variant.frozen_at_utc IS NOT NULL
+                             )
+                        )
+                   )
+             ORDER BY game.id LIMIT 1"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("fixture needs one game with replayable DNS, peer, and flag telemetry");
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query(
+        r#"UPDATE "Games"
+              SET vpn_provider_dns_telemetry_enabled = TRUE,
+                  vpn_source_asn_telemetry_enabled = TRUE,
+                  vpn_flag_scan_enabled = TRUE
+            WHERE id = $1"#,
+    )
+    .bind(game_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+
+    #[allow(clippy::type_complexity)]
+    let dns_row: (
+        Uuid,
+        i32,
+        Uuid,
+        i16,
+        DateTime<Utc>,
+        i32,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    ) = sqlx::query_as(
+        r#"SELECT dns.user_id, dns.participation_id, dns.peer_id,
+                      dns.provider_category, dns.bucket_start_utc,
+                      dns.query_count, dns.first_seen_at_utc, dns.last_seen_at_utc
+                 FROM "VpnDnsProviderBuckets" dns
+                 JOIN "EventVpnUserPeers" peer ON peer.id = dns.peer_id
+                WHERE dns.game_id = $1 AND peer.revoked_at_utc IS NULL
+                ORDER BY dns.id LIMIT 1"#,
+    )
+    .bind(game_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .unwrap();
+    #[allow(clippy::type_complexity)]
+    let network_row: (
+        Uuid,
+        i32,
+        Uuid,
+        Vec<u8>,
+        Option<i64>,
+        i16,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        i32,
+    ) = sqlx::query_as(
+        r#"SELECT network.user_id, network.participation_id, network.peer_id,
+                  network.endpoint_hash, network.source_asn, network.network_class,
+                  network.first_seen_at_utc, network.last_seen_at_utc,
+                  network.handshake_count
+             FROM "VpnPeerNetworkObservations" network
+             JOIN "EventVpnUserPeers" peer ON peer.id = network.peer_id
+            WHERE network.game_id = $1 AND peer.revoked_at_utc IS NULL
+            ORDER BY network.id LIMIT 1"#,
+    )
+    .bind(game_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .unwrap();
+    let flag_row: (i32, Uuid, i32, i32, Uuid, Vec<u8>, i16, i16, DateTime<Utc>) = sqlx::query_as(
+        r#"SELECT flag.challenge_id, flag.receiving_user_id,
+                      flag.receiving_participation_id, flag.owning_participation_id,
+                      flag.peer_id, flag.flag_value_hash, flag.transport,
+                      flag.direction, flag.observed_at_utc
+                 FROM "VpnFlagTransportEvents" flag
+                 JOIN "EventVpnUserPeers" peer ON peer.id = flag.peer_id
+                 JOIN "GameChallenges" challenge
+                   ON challenge.game_id = flag.game_id
+                  AND challenge.id = flag.challenge_id
+                WHERE flag.game_id = $1 AND peer.revoked_at_utc IS NULL
+                  AND challenge."Type" NOT IN (4, 5)
+                  AND (
+                       challenge.flag_template IS NOT NULL
+                       OR EXISTS (
+                           SELECT 1 FROM "ChallengeVariants" variant
+                            WHERE variant.game_id = flag.game_id
+                              AND variant.challenge_id = flag.challenge_id
+                              AND variant.participation_id =
+                                    flag.owning_participation_id
+                              AND variant.frozen_at_utc IS NOT NULL
+                       )
+                  )
+                ORDER BY flag.id LIMIT 1"#,
+    )
+    .bind(game_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .unwrap();
+    let before_sources: Vec<(i16, i64, i64)> = sqlx::query_as(
+        r#"SELECT source_kind, applied_version, dirty_version
+             FROM "AntiCheatReconciliationSources"
+            WHERE game_id = $1 AND source_kind IN (3, 4, 5)
+            ORDER BY source_kind"#,
+    )
+    .bind(game_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .unwrap();
+    let before_queue: (i64, i64) = sqlx::query_as(
+        r#"SELECT applied_generation, desired_generation
+             FROM "AntiCheatReconciliationQueue" WHERE game_id = $1"#,
+    )
+    .bind(game_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .unwrap();
+
+    let dns = DnsProviderBucketInput {
+        user_id: dns_row.0,
+        participation_id: dns_row.1,
+        peer_id: dns_row.2,
+        provider_category: dns_row.3,
+        bucket_start_utc: dns_row.4,
+        query_count: dns_row.5,
+        first_seen_at_utc: dns_row.6,
+        last_seen_at_utc: dns_row.7,
+    };
+    let network = PeerNetworkInput {
+        user_id: network_row.0,
+        participation_id: network_row.1,
+        peer_id: network_row.2,
+        endpoint_hash: hex::encode(network_row.3),
+        source_asn: network_row.4,
+        network_class: network_row.5,
+        first_seen_at_utc: network_row.6,
+        last_seen_at_utc: network_row.7,
+        handshake_count: network_row.8,
+    };
+    let flag = FlagTransportInput {
+        challenge_id: flag_row.0,
+        receiving_user_id: flag_row.1,
+        receiving_participation_id: flag_row.2,
+        owning_participation_id: flag_row.3,
+        peer_id: flag_row.4,
+        flag_value_hash: hex::encode(flag_row.5),
+        transport: flag_row.6,
+        direction: flag_row.7,
+        observed_at_utc: flag_row.8,
+    };
+    assert_eq!(
+        insert_dns(&mut transaction, game_id, &[dns]).await.unwrap(),
+        0
+    );
+    assert_eq!(
+        insert_networks(&mut transaction, game_id, &[network])
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        insert_flags(&mut transaction, game_id, &[flag])
+            .await
+            .unwrap(),
+        0
+    );
+    let after_sources: Vec<(i16, i64, i64)> = sqlx::query_as(
+        r#"SELECT source_kind, applied_version, dirty_version
+             FROM "AntiCheatReconciliationSources"
+            WHERE game_id = $1 AND source_kind IN (3, 4, 5)
+            ORDER BY source_kind"#,
+    )
+    .bind(game_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .unwrap();
+    let after_queue: (i64, i64) = sqlx::query_as(
+        r#"SELECT applied_generation, desired_generation
+             FROM "AntiCheatReconciliationQueue" WHERE game_id = $1"#,
+    )
+    .bind(game_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .unwrap();
+    assert_eq!(after_sources, before_sources);
+    assert_eq!(after_queue, before_queue);
+    transaction.rollback().await.unwrap();
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn postgres_evidence_observed_before_revocation_is_kept() {
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("telemetry_revocation_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            PgConnectOptions::from_str(&database_url)
+                .unwrap()
+                .options([("search_path", schema.as_str())]),
+        )
+        .await
+        .unwrap();
+    // The event runs 00:02-02:00; the member's peer was revoked at 01:00
+    // (they left the team), and the sensor flushes what it saw before that.
+    sqlx::raw_sql(
+        r#"CREATE TABLE "Games" (
+               id INTEGER PRIMARY KEY,
+               vpn_behavior_telemetry_enabled BOOLEAN NOT NULL,
+               vpn_flag_scan_enabled BOOLEAN NOT NULL,
+               start_time_utc TIMESTAMPTZ NOT NULL,
+               end_time_utc TIMESTAMPTZ NOT NULL
+           );
+           CREATE TABLE "EventVpnUserPeers" (
+               id UUID PRIMARY KEY, game_id INTEGER NOT NULL,
+               user_id UUID NOT NULL, participation_id INTEGER NOT NULL,
+               revoked_at_utc TIMESTAMPTZ NULL
+           );
+           CREATE TABLE "Participations" (
+               id INTEGER NOT NULL, game_id INTEGER NOT NULL,
+               PRIMARY KEY (game_id, id)
+           );
+           CREATE TABLE "GameChallenges" (
+               id INTEGER NOT NULL, game_id INTEGER NOT NULL,
+               "Type" SMALLINT NOT NULL, flag_template TEXT NULL,
+               PRIMARY KEY (game_id, id)
+           );
+           CREATE TABLE "ChallengeVariants" (
+               game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
+               participation_id INTEGER NOT NULL, frozen_at_utc TIMESTAMPTZ NULL
+           );
+           CREATE TABLE "VpnFlowTelemetryBuckets" (
+               game_id INTEGER NOT NULL, user_id UUID NOT NULL,
+               participation_id INTEGER NOT NULL, peer_id UUID NOT NULL,
+               challenge_id INTEGER NULL, container_generation INTEGER NULL,
+               bucket_start_utc TIMESTAMPTZ NOT NULL, packets_up BIGINT NOT NULL,
+               packets_down BIGINT NOT NULL, bytes_up BIGINT NOT NULL,
+               bytes_down BIGINT NOT NULL, distinct_destinations INTEGER NOT NULL,
+               connection_count INTEGER NOT NULL, active_seconds INTEGER NOT NULL
+           );
+           CREATE TABLE "VpnFlagTransportEvents" (
+               id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+               challenge_id INTEGER NOT NULL, receiving_user_id UUID NOT NULL,
+               receiving_participation_id INTEGER NOT NULL,
+               owning_participation_id INTEGER NOT NULL, peer_id UUID NOT NULL,
+               flag_value_hash BYTEA NOT NULL, transport SMALLINT NOT NULL,
+               direction SMALLINT NOT NULL, observed_at_utc TIMESTAMPTZ NOT NULL
+           );
+           INSERT INTO "Games" VALUES (
+               7, TRUE, TRUE, '2026-08-20T00:02:00Z', '2026-08-20T02:00:00Z'
+           );
+           INSERT INTO "Participations" VALUES (9, 7), (10, 7);
+           INSERT INTO "GameChallenges" VALUES (11, 7, 0, 'flag-{team}');
+           INSERT INTO "EventVpnUserPeers" VALUES (
+               '10000000-0000-0000-0000-000000000001', 7,
+               '20000000-0000-0000-0000-000000000002', 9, '2026-08-20T01:00:00Z'
+           );"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let at = |text: &str| {
+        DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .with_timezone(&Utc)
+    };
+    let peer_id = Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap();
+    let user_id = Uuid::parse_str("20000000-0000-0000-0000-000000000002").unwrap();
+    let flow = |start: &str| FlowBucketInput {
+        user_id,
+        participation_id: 9,
+        peer_id,
+        challenge_id: Some(11),
+        container_generation: None,
+        bucket_start_utc: at(start),
+        packets_up: 1,
+        packets_down: 1,
+        bytes_up: 1,
+        bytes_down: 1,
+        distinct_destinations: 1,
+        connection_count: 1,
+        active_seconds: 30,
+    };
+    let flag = |observed: &str, hash: &str| FlagTransportInput {
+        challenge_id: 11,
+        receiving_user_id: user_id,
+        receiving_participation_id: 9,
+        owning_participation_id: 10,
+        peer_id,
+        flag_value_hash: hash.repeat(32),
+        transport: 1,
+        direction: 0,
+        observed_at_utc: at(observed),
+    };
+    let mut transaction = pool.begin().await.unwrap();
+    // The first bucket (00:00) holds the event's first three minutes.
+    let flows = [
+        flow("2026-08-19T23:55:00Z"),
+        flow("2026-08-20T00:00:00Z"),
+        flow("2026-08-20T00:55:00Z"),
+        flow("2026-08-20T01:00:00Z"),
+    ];
+    assert_eq!(insert_flows(&mut transaction, 7, &flows).await.unwrap(), 2);
+    let kept: Vec<DateTime<Utc>> =
+        sqlx::query_scalar(r#"SELECT bucket_start_utc FROM "VpnFlowTelemetryBuckets" ORDER BY 1"#)
+            .fetch_all(&mut *transaction)
+            .await
+            .unwrap();
+    assert_eq!(
+        kept,
+        [at("2026-08-20T00:00:00Z"), at("2026-08-20T00:55:00Z")]
+    );
+    let flags = [
+        flag("2026-08-20T00:59:50Z", "22"),
+        flag("2026-08-20T01:00:05Z", "33"),
+    ];
+    assert_eq!(insert_flags(&mut transaction, 7, &flags).await.unwrap(), 1);
+    let observed: DateTime<Utc> =
+        sqlx::query_scalar(r#"SELECT observed_at_utc FROM "VpnFlagTransportEvents""#)
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+    assert_eq!(observed, at("2026-08-20T00:59:50Z"));
+    transaction.rollback().await.unwrap();
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}

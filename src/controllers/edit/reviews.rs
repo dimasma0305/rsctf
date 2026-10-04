@@ -1,25 +1,33 @@
 //! edit: poster/admins/reviews (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
+use axum::http::HeaderMap;
 
 /// `PUT /api/edit/games/{id}/poster` — multipart image upload stored to blob
 /// storage; the returned string is the poster asset URL.
 pub async fn update_poster(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path(id): Path<i32>,
     mut multipart: Multipart,
 ) -> AppResult<RequestResponse<String>> {
+    let operation_root = crate::utils::upload::required_operation_id(&headers)?;
     manager_or_admin(&st, &user, id).await?;
     let game = load_game(&st, id).await?;
     let _upload_reservation =
         crate::utils::upload::reserve_buffered(crate::utils::upload::IMAGE_BODY_BYTES)?;
 
     let mut data: Option<Vec<u8>> = None;
+    let mut field_count = 0usize;
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?
     {
+        field_count += 1;
+        if field_count > crate::utils::upload::SINGLE_FILE_FIELD_COUNT {
+            return Err(AppError::bad_request("Too many multipart fields"));
+        }
         if field.name() == Some("file") {
             let bytes = field
                 .bytes()
@@ -37,6 +45,21 @@ pub async fn update_poster(
         return Err(AppError::bad_request("File is too large"));
     }
 
+    let staged = crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        crate::services::blob_refs::scoped_operation_id(
+            operation_root,
+            &format!("game-poster:{id}"),
+            0,
+        ),
+        &format!("game-poster:{id}"),
+        Some(user.id),
+        "poster",
+        &bytes,
+    )
+    .await?;
+
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     require_game_mutable(control.transaction_mut(), id).await?;
     let old_hash = sqlx::query_as::<_, (Option<String>,)>(
@@ -48,27 +71,47 @@ pub async fn update_poster(
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?
     .0;
-    let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-        st.storage.as_ref(),
+    crate::services::blob_refs::lock_direct_hashes_locked(
         control.transaction_mut(),
-        "poster",
-        &bytes,
+        std::iter::once(staged.blob.hash.as_str()).chain(old_hash.as_deref()),
     )
     .await?;
-    sqlx::query(r#"UPDATE "Games" SET poster_hash = $2 WHERE id = $1"#)
-        .bind(game.id)
-        .bind(&blob.hash)
-        .execute(&mut **control.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let blob = staged.blob.clone();
+    let replaced_hash = if old_hash.as_deref() == Some(blob.hash.as_str()) {
+        staged
+            .consume_with_existing_reference(control.transaction_mut())
+            .await?;
+        None
+    } else {
+        crate::services::blob_refs::publish_staged_blob(control.transaction_mut(), &staged).await?;
+        sqlx::query(r#"UPDATE "Games" SET poster_hash = $2 WHERE id = $1"#)
+            .bind(game.id)
+            .bind(&blob.hash)
+            .execute(&mut **control.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        if let Some(old_hash) = old_hash.as_deref() {
+            crate::services::blob_refs::release_direct_hash_locked(
+                control.transaction_mut(),
+                old_hash,
+            )
+            .await?;
+        }
+        old_hash
+    };
     control
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(old_hash) = old_hash {
-        if let Err(error) =
-            crate::services::blob_refs::release_and_purge(st.pg(), st.storage.as_ref(), &old_hash)
-                .await
+    crate::controllers::assets::invalidate_asset_gate(&st, &blob.hash).await;
+    if let Some(old_hash) = replaced_hash {
+        crate::controllers::assets::invalidate_asset_gate(&st, &old_hash).await;
+        if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
+            st.pg(),
+            st.storage.as_ref(),
+            &old_hash,
+        )
+        .await
         {
             tracing::warn!(%error, hash = %old_hash, "old game poster purge failed");
         }

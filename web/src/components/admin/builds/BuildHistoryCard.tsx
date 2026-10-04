@@ -52,9 +52,16 @@ export const BuildHistoryCard: FC<BuildHistoryCardProps> = ({
   const copiedLabel = t('admin.button.builds.copied')
 
   return (
-    <Paper component="article" p="md" withBorder className={classes.historyCard} data-selected={selected || undefined}>
+    <Paper
+      component="article"
+      p="md"
+      withBorder
+      className={classes.historyCard}
+      data-selected={selected || undefined}
+      data-build-card={build.id}
+    >
       <Stack gap="md">
-        <Group align="flex-start" gap="sm" wrap="nowrap">
+        <Group align="flex-start" gap="sm" wrap="wrap">
           <Checkbox
             size="md"
             mt={2}
@@ -66,7 +73,7 @@ export const BuildHistoryCard: FC<BuildHistoryCardProps> = ({
             })}
           />
           <Stack gap={3} miw={0} className={classes.cardIdentity}>
-            <Group gap={6} wrap="nowrap" miw={0}>
+            <Group gap={6} wrap="wrap" miw={0}>
               <Title order={3} size="sm" className={classes.cardTitle}>
                 <Anchor
                   component={Link}
@@ -94,9 +101,9 @@ export const BuildHistoryCard: FC<BuildHistoryCardProps> = ({
             color={BUILD_STATUS_COLOR[build.status]}
             variant={BUILD_STATUS_VARIANT}
             autoContrast
-            className={classes.cardStatus}
+            className={`${classes.cardStatus} ${classes.statusBadge}`}
           >
-            {build.status}
+            {t(`admin.content.builds.status.${build.status}`, build.status)}
           </Badge>
         </Group>
 
@@ -180,7 +187,7 @@ export const BuildHistoryCard: FC<BuildHistoryCardProps> = ({
             size="sm"
             variant="default"
             leftSection={<Icon path={mdiTextBoxOutline} size={0.8} />}
-            disabled={!build.logTail}
+            disabled={!build.logTail && !build.errorMessage && !build.imageRef}
             onClick={onViewLog}
             aria-label={t('admin.button.builds.view_log')}
           >

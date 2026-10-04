@@ -17,6 +17,7 @@ test('dense operational history uses responsive cards and named controls', () =>
   const builds = readFileSync('src/pages/admin/builds.tsx', 'utf8')
   const buildPresentation = readFileSync('src/components/admin/builds/buildPresentation.ts', 'utf8')
   const logs = readFileSync('src/pages/admin/Logs.tsx', 'utf8')
+  const bindings = readFileSync('src/pages/admin/repo-bindings.tsx', 'utf8')
 
   assert.match(builds, /<BuildHistoryCard/)
   assert.match(builds, /visibleFrom="lg"/)
@@ -30,6 +31,23 @@ test('dense operational history uses responsive cards and named controls', () =>
   assert.match(logs, /hiddenFrom="md"/)
   assert.doesNotMatch(logs, /tableClasses\.overflow/)
   assert.equal((logs.match(/closeButtonProps:/g) ?? []).length, 2)
+  assert.equal((bindings.match(/<AccessibleModal/g) ?? []).length, 3)
+})
+
+test('repository binding pagination stays compact and mounted while history pages load', () => {
+  const bindings = readFileSync('src/pages/admin/repo-bindings.tsx', 'utf8')
+  const loadHistory = bindings.slice(bindings.indexOf('const loadHistory'), bindings.indexOf('const onOpenHistory'))
+
+  assert.equal((bindings.match(/<ResponsivePagination\s+value=/g) ?? []).length, 2)
+  assert.match(bindings, /useMediaQuery\('\(max-width: 35\.99em\)'/)
+  assert.match(bindings, /compact \? \([\s\S]*?common\.pagination\.page_of[\s\S]*?: \([\s\S]*?<Pagination\.Items/)
+  assert.match(loadHistory, /setHistoryLoading\(true\)/)
+  assert.doesNotMatch(loadHistory, /setHistory\(null\)/)
+  assert.match(bindings, /bindingKnownPageCount !== undefined && bindingKnownPageCount > 1/)
+  assert.match(loadHistory, /setHistoryRequestedPage\(page\)/)
+  assert.equal((bindings.match(/setHistoryPage\(page\)/g) ?? []).length, 1)
+  assert.match(bindings, /loadHistory\(historyTarget, historyRequestedPage\)/)
+  assert.match(bindings, /<Stack gap="sm" aria-busy=\{historyLoading\}>/)
 })
 
 test('dense admin inventories use readable breakpoints and manageable pages', () => {
@@ -56,15 +74,36 @@ test('dense admin inventories use readable breakpoints and manageable pages', ()
 
 test('admin navigation keeps every section discoverable without a horizontal scrollbar', () => {
   const navigation = readFileSync('src/components/admin/WithAdminTab.tsx', 'utf8')
-  const navigationStyles = readFileSync('src/styles/components/AdminTabs.module.css', 'utf8')
+  const rail = readFileSync('src/components/AppNavbar.tsx', 'utf8')
+  const drawer = readFileSync('src/components/AppHeader.tsx', 'utf8')
   const workers = readFileSync('src/pages/admin/workers.tsx', 'utf8')
 
-  assert.match(navigation, /visibleFrom="lg"/)
-  assert.match(navigation, /hiddenFrom="lg"/)
-  assert.match(navigationStyles, /\.navigationItems \{[\s\S]*?display: grid;/)
-  assert.match(navigationStyles, /repeat\(auto-fit, minmax\(8\.75rem, 1fr\)\)/)
-  assert.doesNotMatch(navigationStyles, /\.navigationViewport \{[\s\S]*?overflow-x: auto;/)
+  assert.match(navigation, /hiddenFrom="sm"/)
+  assert.match(navigation, /getAdminNavigation\(user\)/)
+  assert.match(rail, /getWorkspaceNavigation\(location.pathname, user/)
+  assert.match(drawer, /getWorkspaceNavigation\(location.pathname, user/)
+  assert.match(rail, /navigationGroup/)
+  assert.doesNotMatch(navigation, /navigationViewport/)
   assert.match(workers, /miw="9rem"[\s\S]*?admin\.workers\.add/)
+  assert.match(workers, /const origin = window\.location\.origin/)
+})
+
+test('the source-development server forwards copied worker installer URLs to the API', () => {
+  const viteConfig = readFileSync('vite.config.mts', 'utf8')
+
+  assert.match(viteConfig, /'\/install': TARGET/)
+})
+
+test('admin list responses are decoded before they reach array state', () => {
+  const gameInfo = readFileSync('src/pages/admin/games/[id]/Info.tsx', 'utf8')
+  const managers = readFileSync('src/pages/admin/games/[id]/Managers.tsx', 'utf8')
+  const workers = readFileSync('src/pages/admin/workers.tsx', 'utf8')
+
+  assert.match(gameInfo, /requireApiCollection<EventVpnOverrideModel>[\s\S]*?itemKeys: \['overrides'\]/)
+  assert.doesNotMatch(gameInfo, /setVpnOverrides\((?:response|refreshed)\.data\)/)
+  assert.doesNotMatch(managers, /as any/)
+  assert.equal((managers.match(/requireApiCollection</g) ?? []).length, 2)
+  assert.match(workers, /return requireApiCollection<Worker>[\s\S]*?\.items/)
 })
 
 test('admin dashboard keeps popular-game metrics visible and action labels intact', () => {
@@ -85,10 +124,11 @@ test('intentionally shortened operational values expose their full text', () => 
   const bindings = readFileSync('src/pages/admin/repo-bindings.tsx', 'utf8')
   const cheatInfo = readFileSync('src/components/monitor/CheatInfo.tsx', 'utf8')
 
-  assert.match(gameCards, /lineClamp=\{2\} className=\{classes\.title\} title=\{eventTitle\}/)
+  assert.match(gameCards, /<Title[^>]*className=\{classes\.title\}>\s*\{eventTitle\}/)
+  assert.doesNotMatch(gameCards, /<Title[^>]*lineClamp/)
   assert.match(buildCards, /className=\{classes\.cardReference\} title=\{build\.imageRef\}/)
   assert.match(bindings, /lineClamp=\{1\} title=\{b\.currentActivity\}/)
-  assert.match(bindings, /lineClamp=\{2\} ff="monospace" title=\{b\.lastScanMessage\}/)
+  assert.match(bindings, /lineClamp=\{2\}\s+ff="monospace"\s+title=\{b\.lastScanMessage\}/)
   assert.match(cheatInfo, /className=\{classes\.truncate\} title=\{teamName\}/)
 })
 
@@ -119,9 +159,14 @@ test('repeated mobile action landmarks use entity-specific names', () => {
 
 test('game notices keep one realtime connection across ordinary rerenders', () => {
   const source = readFileSync('src/components/GameNoticePanel.tsx', 'utf8')
+  const owner = readFileSync('src/hooks/useRecoveringHub.ts', 'utf8')
 
-  assert.match(source, /\}, \[id, numId, t, theme\.primaryColor\]\)/)
-  assert.doesNotMatch(source, /\n  \}\)\n\n  const allNotices/)
+  assert.match(source, /useRecoveringHub\(\{[\s\S]*?url: `\/hub\/user\?game=\$\{numId\}`/)
+  assert.doesNotMatch(source, /new signalR\.HubConnectionBuilder/)
+  assert.match(owner, /useEffect\(\(\) => \{[\s\S]*?handlersRef\.current = handlers/)
+  assert.match(owner, /if \(!disposed\) handlersRef\.current\[name\]/)
+  assert.match(owner, /\}, \[active, ownerKey, pollingIntervalMs, url\]\)/)
+  assert.doesNotMatch(owner, /\[active, handlers, revalidate/)
 })
 
 test('the mobile app-shell scroll region remains keyboard accessible', () => {

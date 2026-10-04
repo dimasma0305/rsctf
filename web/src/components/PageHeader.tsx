@@ -11,7 +11,7 @@ interface PageHeaderProps {
 
 export const PageHeader: FC<PageHeaderProps> = ({ title, description, eyebrow, actions }) => (
   <Group component="header" justify="space-between" align="flex-end" gap="lg" wrap="wrap" className={classes.root}>
-    <Stack gap={4} className={classes.copy}>
+    <Stack gap={6} className={classes.copy}>
       {eyebrow && <Text className={classes.eyebrow}>{eyebrow}</Text>}
       <Title order={1} className={classes.title}>
         {title}

@@ -81,22 +81,25 @@ impl MtlsConnector {
 fn load_certificates(
     path: &std::path::Path,
 ) -> Result<Vec<CertificateDer<'static>>, TlsConnectorError> {
-    let file = File::open(path)?;
+    let file = File::open(path).map_err(TlsConnectorError::IdentityIo)?;
     rustls_pemfile::certs(&mut BufReader::new(file))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(TlsConnectorError::Io)
+        .map_err(TlsConnectorError::IdentityIo)
 }
 
 fn load_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, TlsConnectorError> {
-    let file = File::open(path)?;
-    rustls_pemfile::private_key(&mut BufReader::new(file))?
+    let file = File::open(path).map_err(TlsConnectorError::IdentityIo)?;
+    rustls_pemfile::private_key(&mut BufReader::new(file))
+        .map_err(TlsConnectorError::IdentityIo)?
         .ok_or(TlsConnectorError::MissingPrivateKey)
 }
 
 #[derive(Debug, Error)]
 pub enum TlsConnectorError {
     #[error("TLS identity I/O failed: {0}")]
-    Io(#[from] std::io::Error),
+    IdentityIo(std::io::Error),
+    #[error("TLS transport I/O failed: {0}")]
+    TransportIo(#[from] std::io::Error),
     #[error("TLS configuration failed: {0}")]
     Rustls(#[from] rustls::Error),
     #[error("timed out connecting to the worker server")]
@@ -156,7 +159,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             load_certificates(&malformed_path),
-            Err(TlsConnectorError::Io(_))
+            Err(TlsConnectorError::IdentityIo(_))
         ));
         std::fs::remove_dir_all(path).unwrap();
     }

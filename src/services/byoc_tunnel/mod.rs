@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::net::UdpSocket;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use axum::extract::ws::{Message, WebSocket};
 use bytes::Bytes;
@@ -25,6 +25,7 @@ use futures::io::AsyncWriteExt;
 use futures::{future, SinkExt, StreamExt};
 use ipnet::Ipv4Net;
 use sea_orm::DatabaseConnection;
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
@@ -37,6 +38,7 @@ mod endpoint;
 mod flag;
 mod framing;
 mod lifecycle;
+mod team;
 use authorization::live_tunnel_authorized;
 pub use control::start_control_listener;
 use endpoint::RelayEndpoint;
@@ -97,9 +99,59 @@ struct TunnelHandle {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct AuthorizationGeneration {
+pub(crate) struct AuthorizationGeneration {
     participation: u64,
     challenge: u64,
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct ByocLeaseKey {
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+    token_fingerprint: [u8; 32],
+}
+
+static BYOC_LEASE_GENERATIONS: LazyLock<
+    Arc<crate::services::authorization_lease::LeaseGenerationCache<ByocLeaseKey>>,
+> = LazyLock::new(crate::services::authorization_lease::LeaseGenerationCache::new);
+
+fn byoc_lease_period(participation_id: i32, challenge_id: i32) -> std::time::Duration {
+    let seed = u64::from(participation_id.unsigned_abs())
+        .wrapping_mul(31)
+        .wrapping_add(u64::from(challenge_id.unsigned_abs()));
+    std::time::Duration::from_secs(AUTHORIZATION_LEASE_SECONDS)
+        + std::time::Duration::from_millis(seed % 1_000)
+}
+
+async fn wait_for_byoc_revocation(
+    st: SharedState,
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+    token: String,
+) {
+    let key = ByocLeaseKey {
+        game_id,
+        participation_id,
+        challenge_id,
+        token_fingerprint: Sha256::digest(token.as_bytes()).into(),
+    };
+    let (mut subscription, owner) = BYOC_LEASE_GENERATIONS.subscribe(key);
+    if let Some(owner) = owner {
+        drop(tokio::spawn(owner.drive(
+            byoc_lease_period(participation_id, challenge_id),
+            move || {
+                let st = st.clone();
+                let token = token.clone();
+                async move {
+                    live_tunnel_authorized(&st, game_id, participation_id, challenge_id, &token)
+                        .await
+                }
+            },
+        )));
+    }
+    subscription.invalidated().await;
 }
 
 #[derive(Default)]
@@ -209,7 +261,11 @@ impl Registry {
             .is_some_and(|endpoint| endpoint.id() == endpoint_id)
     }
 
-    async fn authorization_generation(&self, pid: i32, cid: i32) -> AuthorizationGeneration {
+    pub(crate) async fn authorization_generation(
+        &self,
+        pid: i32,
+        cid: i32,
+    ) -> AuthorizationGeneration {
         self.authorization_generations
             .read()
             .await
@@ -257,21 +313,24 @@ impl Registry {
     ) {
         let registry = Arc::downgrade(self);
         tokio::spawn(async move {
+            let revoked = wait_for_byoc_revocation(st, game_id, pid, cid, token);
+            tokio::pin!(revoked);
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(AUTHORIZATION_LEASE_SECONDS))
-                    .await;
-                if !endpoint.is_idle_at(idle_epoch).await {
-                    return;
+                tokio::select! {
+                    _ = &mut revoked => {
+                        if let Some(registry) = registry.upgrade() {
+                            registry
+                                .retire_idle_endpoint(pid, cid, endpoint, idle_epoch)
+                                .await;
+                        }
+                        return;
+                    }
+                    _ = tokio::time::sleep(byoc_lease_period(pid, cid)) => {
+                        if !endpoint.is_idle_at(idle_epoch).await {
+                            return;
+                        }
+                    }
                 }
-                if live_tunnel_authorized(&st, game_id, pid, cid, &token).await {
-                    continue;
-                }
-                if let Some(registry) = registry.upgrade() {
-                    registry
-                        .retire_idle_endpoint(pid, cid, endpoint, idle_epoch)
-                        .await;
-                }
-                return;
             }
         });
     }
@@ -377,14 +436,26 @@ impl Registry {
     /// Terminate every live tunnel for a challenge when it is disabled or loses
     /// approval.
     pub async fn disconnect_challenge(&self, db: &DatabaseConnection, cid: i32) -> AppResult<()> {
-        self.disconnect_challenge_inner(db, cid, true).await
+        self.disconnect_challenge_inner(db, cid, true, true).await
     }
 
-    async fn disconnect_challenge_inner(
+    /// Revoke one challenge while deferring the event-wide VPN rebuild to a
+    /// surrounding bounded batch. Cross-replica endpoint invalidation is still
+    /// published; only the redundant per-child hub reconciliation is skipped.
+    pub async fn disconnect_challenge_deferred_vpn(
+        &self,
+        db: &DatabaseConnection,
+        cid: i32,
+    ) -> AppResult<()> {
+        self.disconnect_challenge_inner(db, cid, true, false).await
+    }
+
+    pub(super) async fn disconnect_challenge_inner(
         &self,
         db: &DatabaseConnection,
         cid: i32,
         propagate: bool,
+        reconcile_vpn: bool,
     ) -> AppResult<()> {
         let mut generations = self.authorization_generations.write().await;
         let generation = generations.challenges.entry(cid).or_default();
@@ -417,7 +488,10 @@ impl Registry {
             .execute(db.get_postgres_connection_pool())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-            crate::services::ad_vpn::ensure_hub_and_sync(db).await
+            if reconcile_vpn {
+                crate::services::ad_vpn::ensure_hub_and_sync(db).await?;
+            }
+            Ok::<(), AppError>(())
         }
         .await;
         wait_for_tunnel_shutdown(&mut handles).await;
@@ -510,12 +584,13 @@ fn services_ip() -> Result<String, String> {
 /// Accept an agent WebSocket, run the yamux client over it, and attach it to the
 /// team's stable process-local relay endpoint. Ordinary reconnects swap only
 /// the yamux session; revocation or an idle-grace expiry releases the listener.
-pub async fn serve_agent(
+pub(crate) async fn serve_agent(
     st: SharedState,
     game_id: i32,
     pid: i32,
     cid: i32,
     token: String,
+    authorization_generation: AuthorizationGeneration,
     ws: WebSocket,
 ) {
     // The WireGuard interface, firewall, and relay registry are protected by
@@ -528,12 +603,10 @@ pub async fn serve_agent(
         );
         return;
     }
-    if !live_tunnel_authorized(&st, game_id, pid, cid, &token).await {
-        return;
-    }
-    // Capture before doing any socket setup. A later disconnect advances this
-    // generation and prevents this pending activation from reaching VPN sync.
-    let authorization_generation = st.byoc.authorization_generation(pid, cid).await;
+    // The controller captured this generation while its atomic database
+    // authorization fence was still held. A later disconnect advances the
+    // generation and prevents this pending activation from reaching VPN sync;
+    // `activate_tunnel` performs the next DB read under the publication lock.
     if st.containers.backend_kind() == crate::services::container::ContainerBackendKind::Kubernetes
     {
         tracing::warn!(pid, cid, "byoc: Kubernetes relay mode is not supported");
@@ -647,14 +720,8 @@ pub async fn serve_agent(
         });
     }
 
-    let authorization_lease = async {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(AUTHORIZATION_LEASE_SECONDS)).await;
-            if !live_tunnel_authorized(&st, game_id, pid, cid, &token).await {
-                break;
-            }
-        }
-    };
+    let authorization_lease =
+        wait_for_byoc_revocation(st.clone(), game_id, pid, cid, token.clone());
 
     // Drive the yamux connection until it closes, a newer agent supersedes us,
     // or its live participation/game/challenge authorization expires.

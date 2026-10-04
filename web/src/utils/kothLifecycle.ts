@@ -1,6 +1,9 @@
 export const isKothResetTransition = (phase?: string | null): boolean =>
   phase != null && phase !== 'Active' && phase !== 'Ended'
 
+export const visibleKothControlStatus = (status?: string | null, phase?: string | null): string | null =>
+  isKothResetTransition(phase) ? null : (status ?? null)
+
 export const maxKothCooldownTicks = (participants: { remainingTicks: number }[]): number =>
   participants.reduce((remaining, participant) => Math.max(remaining, participant.remainingTicks), 0)
 

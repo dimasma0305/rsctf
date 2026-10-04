@@ -1,80 +1,76 @@
-import {
-  Button,
-  Card,
-  Center,
-  Divider,
-  Group,
-  ScrollArea,
-  SegmentedControl,
-  Skeleton,
-  Stack,
-  Switch,
-  Tabs,
-  Text,
-  Title,
-  Tooltip,
-  VisuallyHidden,
-} from '@mantine/core'
-import { useLocalStorage } from '@mantine/hooks'
-import { mdiCrown, mdiFileUploadOutline, mdiFlagOutline, mdiPuzzle, mdiSwordCross } from '@mdi/js'
+import { Alert, Button, Card, Center, Divider, Group, ScrollArea, Skeleton, Stack, Text, Title } from '@mantine/core'
+import { useElementSize, useLocalStorage } from '@mantine/hooks'
+import { mdiAlertCircleOutline, mdiCrown, mdiFlagOutline, mdiSwordCross, mdiVpn } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import dayjs from 'dayjs'
-import { FC, useEffect, useState, useMemo } from 'react'
+import { FC, useCallback, useEffect, useState, useMemo, useRef, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useParams } from 'react-router'
-import useSWR from 'swr'
+import type { AdStateOwner } from '@Components/AdChallengePanel'
+import { AiChatPendingNotice, useAiChatPendingChallenges } from '@Components/AiChatPendingNotice'
 import { ChallengeCard } from '@Components/ChallengeCard'
 import { Empty } from '@Components/Empty'
 import { GameChallengeModal } from '@Components/GameChallengeModal'
 import { WriteupSubmitModal } from '@Components/WriteupSubmitModal'
-import { useChallengeCategoryLabelMap, SubmissionTypeIconMap } from '@Utils/Shared'
+import { ChallengeGlobe, type GlobeNode } from '@Components/competition/ChallengeGlobe'
+import { ChallengeList } from '@Components/competition/ChallengeList'
+import { ChallengeToolbar } from '@Components/competition/ChallengeToolbar'
+import {
+  isAcceptedSolve,
+  matchesChallengeSearch,
+  resolveChallengeView,
+  sortChallenges,
+  type ChallengeView,
+} from '@Components/competition/model'
+import { closeEventChallengeHash, eventChallengeHash } from '@Utils/ChallengeLinks'
+import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
+import { allowEventVpnReconnectRetry, isEventVpnAccessError } from '@Utils/EventVpnProof'
+import { showErrorMsg, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { useGame, useGameTeamInfo } from '@Hooks/useGame'
+import { useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import { ChallengeInfo, ChallengeCategory, ChallengeType, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengePanel.module.css'
 
-interface RatingSummary {
-  challengeId: number
-  likes: number
-  dislikes: number
+type ChallengePanelProps = {
+  teamState: ReturnType<typeof useGameTeamInfo>
+  adStateOwner?: AdStateOwner
+  activity?: ReactNode
 }
 
-const ratingSWRFetcher = (url: string) => fetch(url, { credentials: 'include' }).then((r) => (r.ok ? r.json() : []))
-
-export const ChallengePanel: FC = () => {
-  const { hash } = useLocation()
+export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwner, activity }) => {
+  const { pathname, search: locationSearch, hash } = useLocation()
+  const challengeHref = (chal: ChallengeInfo) =>
+    pathname + locationSearch + eventChallengeHash(chal.id, chal.title, hash)
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
 
-  const { teamInfo } = useGameTeamInfo(numId)
+  const { teamInfo, game, error: teamInfoError, mutate: mutateTeamInfo } = teamState
   const challenges = teamInfo?.challenges
-
-  const { game } = useGame(numId)
+  const { finished } = useGameStatus(game)
   const isCompact = useIsMobile()
+  const { ref: workspaceRef, width: workspaceWidth } = useElementSize()
+  // Measure the space left by the navigation rail, not the viewport. Keep a
+  // useful results column beside the 26rem inspector even on expanded sidebars.
+  const inlineDetail = workspaceWidth >= 1200
+  const [sort, setSort] = useUrlTab('sort', ['name', 'score', 'solves'], 'name')
+  const [viewPreference, setViewPreference] = useLocalStorage<ChallengeView | null>({
+    key: 'challenge-explorer-view',
+    defaultValue: null,
+    getInitialValueInEffect: false,
+  })
+  // Retain the initial preference for Back navigation to the URL without a view.
+  const defaultView = useRef(resolveChallengeView(viewPreference)).current
+  const [view, setUrlView] = useUrlTab('view', ['cards', 'list', 'globe'], defaultView)
+  const setView = (next: ChallengeView) => {
+    setUrlView(next)
+    setViewPreference(next)
+  }
+  const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
 
-  const { data: ratingsData } = useSWR<RatingSummary[]>(
-    numId > 0 ? `/api/game/${numId}/Reviews/Summary` : null,
-    ratingSWRFetcher,
-    { refreshInterval: 60000, revalidateOnFocus: false }
-  )
-
-  const ratingMap = useMemo(() => {
-    const map = new Map<number, { likes: number; dislikes: number }>()
-    for (const r of ratingsData ?? []) {
-      map.set(r.challengeId, { likes: r.likes, dislikes: r.dislikes })
-    }
-    return map
-  }, [ratingsData])
-
-  const categories = Object.keys(challenges ?? {}).sort()
-  const [activeTab, setActiveTab] = useState<ChallengeCategory | 'All'>('All')
-
-  // Sync state if activeTab becomes invalid (e.g. after data load updates categories)
-  useEffect(() => {
-    if (activeTab !== 'All' && !categories.includes(activeTab)) {
-      setActiveTab('All')
-    }
-  }, [categories, activeTab])
+  const categories = useMemo(() => Object.keys(challenges ?? {}).sort(), [challenges])
+  const [selectedCategory, setActiveTab] = useUrlTab('category', ['All', ...Object.values(ChallengeCategory)], 'All')
+  const activeTab = selectedCategory === 'All' || categories.includes(selectedCategory) ? selectedCategory : 'All'
+  const [search, setSearch] = useState('')
 
   const [hideSolved, setHideSolved] = useLocalStorage({
     key: 'hide-solved',
@@ -91,6 +87,13 @@ export const ChallengePanel: FC = () => {
     getInitialValueInEffect: false,
   })
 
+  const resetFilters = () => {
+    setSearch('')
+    setHideSolved(false)
+    setActiveTab('All')
+    setChallengeKind('all')
+  }
+
   const kindOf = (c: ChallengeInfo): 'jeopardy' | 'ad' | 'koth' =>
     c.type === ChallengeType.AttackDefense ? 'ad' : c.type === ChallengeType.KingOfTheHill ? 'koth' : 'jeopardy'
 
@@ -101,6 +104,11 @@ export const ChallengePanel: FC = () => {
     // Stable sort by ID first
     return all.sort((a, b) => a.id - b.id)
   }, [challenges])
+
+  const solvedIds = useMemo(
+    () => new Set((teamInfo?.rank?.solvedChallenges ?? []).filter(isAcceptedSolve).map((item) => item.id)),
+    [teamInfo?.rank?.solvedChallenges]
+  )
 
   // Switcher visibility — show only when there's more than one bucket to choose between.
   const { hasJeopardy, hasAd, hasKoth, kindsPresent } = useMemo(() => {
@@ -126,56 +134,27 @@ export const ChallengePanel: FC = () => {
   }, [challengeKind, hasJeopardy, hasAd, hasKoth, setChallengeKind])
 
   const currentChallenges = useMemo(() => {
-    if (!challenges) return []
-
-    // Seeded RNG (Linear Congruential Generator)
-    const seed = teamInfo?.rank?.id ?? 0
-    const seededRandom = (s: number) => {
-      let t = s + 0x6d2b79f5
-      t = Math.imul(t ^ (t >>> 15), t | 1)
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-    }
-
-    // Create a deterministic shuffle for this team
-    const shuffle = (array: ChallengeInfo[]) => {
-      const shuffled = [...array] // Copy to match original array length
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        // Generate a random index based on seed + current index + challenge ID to vary variance
-        // using a combination of teamID and index ensures order is fixed for this team
-        const r = seededRandom(seed + i * 997 + shuffled[i].id * 13)
-        const j = Math.floor(r * (i + 1))
-        const temp = shuffled[i]
-        shuffled[i] = shuffled[j]
-        shuffled[j] = temp
-      }
-      return shuffled
-    }
-
-    const processList = (list: ChallengeInfo[]) => {
-      const filtered = list.filter(
+    const candidates = activeTab === 'All' ? allChallenges : (challenges?.[activeTab] ?? [])
+    return sortChallenges(
+      candidates.filter(
         (chal) =>
           matchesKind(chal) &&
-          (!hideSolved || (teamInfo && teamInfo.rank?.solvedChallenges?.find((c) => c.id === chal.id)) === undefined)
-      )
-      // Ensure base order is stable (by ID) before shuffling
-      filtered.sort((a, b) => a.id - b.id)
-      return shuffle(filtered)
-    }
-
-    if (activeTab !== 'All') {
-      return processList(challenges[activeTab] ?? [])
-    }
-
-    // Iterate over sorted categories and process each list separately
-    const result: ChallengeInfo[] = []
-    categories.forEach((cat) => {
-      if (challenges[cat]) {
-        result.push(...processList(challenges[cat]))
-      }
-    })
-    return result
-  }, [challenges, activeTab, allChallenges, hideSolved, teamInfo, categories, challengeKind])
+          matchesChallengeSearch(chal, search, challengeCategoryLabelMap.get(chal.category)?.name) &&
+          (!hideSolved || !solvedIds.has(chal.id))
+      ),
+      sort
+    )
+  }, [
+    challenges,
+    activeTab,
+    allChallenges,
+    hideSolved,
+    solvedIds,
+    challengeKind,
+    search,
+    sort,
+    challengeCategoryLabelMap,
+  ])
 
   // When the user is viewing "All" on a mixed game, split the rendered list
   // into kind-segregated sections (Jeopardy / A&D / KotH) with a visual
@@ -204,57 +183,169 @@ export const ChallengePanel: FC = () => {
     ].filter((s) => s.items.length > 0)
   }, [currentChallenges, challengeKind, kindsPresent])
 
-  const [challenge, setChallenge] = useState<ChallengeInfo | null>(null)
+  const [selection, setSelection] = useState<{ gameId: number; challengeId: number } | null>(null)
   const [detailOpened, setDetailOpened] = useState(false)
+  const openerRef = useRef<HTMLElement | null>(null)
+  const openChallenge = useCallback(
+    (chal: ChallengeInfo) => {
+      openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      setSelection({ gameId: numId, challengeId: chal.id })
+      setDetailOpened(true)
+      window.location.hash = eventChallengeHash(chal.id, chal.title, hash)
+    },
+    [numId, hash]
+  )
+  // Not polled: one read per page, refreshed by solves and disclosure saves.
+  const aiChatPending = useAiChatPendingChallenges(numId, game?.aiChatLinksRequired === true, allChallenges)
+  const aiChatPendingIds = useMemo(() => new Set(aiChatPending.map((item) => item.id)), [aiChatPending])
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
   const [writeupSubmitOpened, setWriteupSubmitOpened] = useState(false)
-  const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
   const { t } = useTranslation()
-  const challengeKindLabels = {
-    all: t('game.button.kind.all', { defaultValue: 'All' }),
-    jeopardy: t('game.button.kind.jeopardy', { defaultValue: 'CTF' }),
-    ad: t('game.button.kind.ad', { defaultValue: 'A&D' }),
-    koth: t('game.button.kind.koth', { defaultValue: 'KotH' }),
+  const [eventVpnDownloading, setEventVpnDownloading] = useState(false)
+  const eventVpnDisconnected = Boolean(
+    game?.vpnAccessRequired && isEventVpnAccessError(teamInfoError) && teamInfoError.kind === 'disconnected'
+  )
+
+  const onDownloadEventVpn = async () => {
+    if (eventVpnDownloading) return
+    setEventVpnDownloading(true)
+    try {
+      await downloadEventVpnConfig(numId)
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setEventVpnDownloading(false)
+    }
   }
 
-  const renderKindLabel = (kind: keyof typeof challengeKindLabels, path: string, color?: string) => {
-    const label = challengeKindLabels[kind]
-    const content = (
-      <Center className={classes.kindOption}>
-        <Icon path={path} size={isCompact ? 0.72 : 0.7} color={color} aria-hidden="true" />
-        {isCompact ? (
-          <Text component="span" className={classes.kindOptionText}>
-            {label}
-          </Text>
-        ) : (
-          <VisuallyHidden>{label}</VisuallyHidden>
-        )}
-      </Center>
-    )
-
-    return isCompact ? (
-      content
-    ) : (
-      <Tooltip label={label} withArrow openDelay={200}>
-        {content}
-      </Tooltip>
-    )
+  const retryTeamInfo = () => {
+    if (eventVpnDisconnected) allowEventVpnReconnectRetry(numId)
+    void mutateTeamInfo()
   }
+
+  const ownedHashChallengeId = useMemo(
+    () =>
+      ownedChallengeIdFromHash(
+        hash,
+        allChallenges.map((item) => item.id)
+      ),
+    [allChallenges, hash]
+  )
+  const challenge =
+    selection?.gameId === numId && selection.challengeId === ownedHashChallengeId
+      ? (allChallenges.find((item) => item.id === selection.challengeId) ?? null)
+      : null
+
+  const globeNodes = useMemo((): GlobeNode[] => {
+    if (activeTab === 'All' && !search.trim() && currentChallenges.length > 8 && categories.length > 1) {
+      return categories.flatMap((category) => {
+        const count = currentChallenges.filter((item) => item.category === category).length
+        return count
+          ? [
+              {
+                id: `category-${category}`,
+                label: challengeCategoryLabelMap.get(category as ChallengeCategory)?.name ?? category,
+                count,
+                onSelect: () => setActiveTab(category as ChallengeCategory),
+              },
+            ]
+          : []
+      })
+    }
+    return currentChallenges.map((item) => ({
+      id: String(item.id),
+      label: item.title,
+      solved: solvedIds.has(item.id),
+      selected: item.id === challenge?.id,
+      onSelect: () => openChallenge(item),
+    }))
+  }, [
+    activeTab,
+    search,
+    currentChallenges,
+    categories,
+    challengeCategoryLabelMap,
+    solvedIds,
+    challenge?.id,
+    openChallenge,
+  ])
 
   useEffect(() => {
-    const challId = hash.slice(1).split('-')[0]
-    if (challId && allChallenges) {
-      const id = parseInt(challId)
-      if (isNaN(id) || id < 0) return
-      if (challenge?.id === id) return
+    setSearch('')
+    setSelection(null)
+    setDetailOpened(false)
+    setWriteupSubmitOpened(false)
+  }, [numId])
 
-      const chal = allChallenges.find((c) => c.id === id)
-      if (chal) {
-        setChallenge(chal)
-        setDetailOpened(true)
-      }
+  useEffect(() => {
+    const challengeId = ownedHashChallengeId
+    if (challengeId === null) {
+      setSelection(null)
+      setDetailOpened(false)
+      if (openerRef.current?.isConnected) openerRef.current.focus({ preventScroll: true })
+      return
     }
-  }, [hash, challenge, allChallenges])
+
+    // A hash is only a request to open a challenge. It becomes authoritative
+    // after this game's current team response proves ownership.
+    if (
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement.closest('[data-guide="challenge-card"]')
+    ) {
+      openerRef.current = document.activeElement
+    }
+    setSelection({ gameId: numId, challengeId })
+    setDetailOpened(true)
+  }, [numId, ownedHashChallengeId])
+
+  if (teamInfoError && !teamInfo) {
+    return (
+      <Center h={isCompact ? undefined : 'calc(100vh - 100px)'} w="100%" p="md">
+        <Alert
+          color={eventVpnDisconnected ? 'cyan' : 'red'}
+          icon={<Icon path={eventVpnDisconnected ? mdiVpn : mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+          title={
+            eventVpnDisconnected
+              ? t('game.vpn.challenge_list_title', 'Connect to the event VPN to load challenges')
+              : t('game.content.challenge_load_failed.title', 'Challenges could not be loaded')
+          }
+          role="alert"
+          maw="32rem"
+        >
+          <Stack gap="sm">
+            <Text size="sm">
+              {eventVpnDisconnected
+                ? t(
+                    'game.vpn.challenge_list_description',
+                    'This event protects its challenge APIs with WireGuard. Download and import your personal profile, connect it, then retry.'
+                  )
+                : t(
+                    'game.content.challenge_load_failed.description',
+                    'You may not have access to this event, or the request failed. Try again after checking your membership.'
+                  )}
+            </Text>
+            <Stack gap="xs">
+              {eventVpnDisconnected && (
+                <Button
+                  fullWidth
+                  onClick={() => void onDownloadEventVpn()}
+                  loading={eventVpnDownloading}
+                  data-guide="event-vpn-download"
+                >
+                  {t('game.button.event_vpn', 'Download event VPN')}
+                </Button>
+              )}
+              <Button fullWidth variant="outline" onClick={retryTeamInfo}>
+                {eventVpnDisconnected
+                  ? t('challenge.vpn.retry', 'I’m connected — retry')
+                  : t('common.button.retry', 'Retry')}
+              </Button>
+            </Stack>
+          </Stack>
+        </Alert>
+      </Center>
+    )
+  }
 
   // skeleton for loading
   if (!challenges) {
@@ -314,257 +405,213 @@ export const ChallengePanel: FC = () => {
   }
 
   return (
-    <>
-      <div className={classes.panel}>
-        <Stack className={classes.filters}>
-          {game?.writeupRequired && (
-            <>
-              <Button
-                px="xs"
-                justify="space-between"
-                leftSection={<Icon path={mdiFileUploadOutline} size={1} />}
-                onClick={() => setWriteupSubmitOpened(true)}
-              >
-                {t('game.button.submit_writeup')}
-              </Button>
-              <Divider />
-            </>
-          )}
-          {kindsPresent >= 2 && (
-            <Stack gap={6} className={classes.kindFilterGroup}>
-              <Text component="span" className={classes.mobileFilterLabel}>
-                {t('game.label.challenge_type', { defaultValue: 'Challenge type' })}
-              </Text>
-              {/* The desktop sidebar stays icon-only to fit its compact rail. On
-                  touch layouts, the same options expose their labels directly. */}
-              <SegmentedControl
-                size={isCompact ? 'sm' : 'xs'}
-                w="100%"
-                aria-label={t('game.label.challenge_kind', { defaultValue: 'Filter challenges by type' })}
-                value={challengeKind}
-                onChange={(v) => setChallengeKind(v as 'all' | 'jeopardy' | 'ad' | 'koth')}
-                classNames={{
-                  root: classes.kindControlRoot,
-                  control: classes.kindControl,
-                  label: classes.kindControlLabel,
-                }}
-                data={[
-                  { value: 'all', label: renderKindLabel('all', mdiPuzzle) },
-                  ...(hasJeopardy
-                    ? [
-                        {
-                          value: 'jeopardy',
-                          label: renderKindLabel('jeopardy', mdiFlagOutline, 'var(--mantine-color-blue-6)'),
-                        },
-                      ]
-                    : []),
-                  ...(hasAd
-                    ? [
-                        {
-                          value: 'ad',
-                          label: renderKindLabel('ad', mdiSwordCross, 'var(--mantine-color-red-6)'),
-                        },
-                      ]
-                    : []),
-                  ...(hasKoth
-                    ? [
-                        {
-                          value: 'koth',
-                          label: renderKindLabel('koth', mdiCrown, 'var(--mantine-color-violet-6)'),
-                        },
-                      ]
-                    : []),
-                ]}
-              />
-            </Stack>
-          )}
-          <Switch
-            w="100%"
-            checked={hideSolved}
-            onChange={(e) => setHideSolved(e.target.checked)}
-            classNames={{ body: classes.switch }}
-            label={
-              <Text fz="md" fw="bold" ta="right">
-                {t('game.button.hide_solved')}
-              </Text>
-            }
-          />
-          <Text component="span" className={classes.mobileFilterLabel}>
-            {t('game.label.challenge_category', { defaultValue: 'Category' })}
-          </Text>
-          <Tabs
-            autoContrast
-            orientation={isCompact ? 'horizontal' : 'vertical'}
-            variant="pills"
-            value={activeTab}
-            onChange={(value) => setActiveTab(value as ChallengeCategory)}
-            classNames={{
-              root: classes.tabRoot,
-              list: classes.tabList,
-              tabLabel: classes.tabLabel,
-              tab: classes.tab,
+    <div ref={workspaceRef} className={classes.explorer}>
+      <ChallengeToolbar
+        search={search}
+        onSearch={setSearch}
+        view={view}
+        onView={setView}
+        sort={sort}
+        onSort={setSort}
+        category={activeTab}
+        onCategory={setActiveTab}
+        categories={categories.map((category) => ({
+          value: category as ChallengeCategory,
+          count: challenges[category].length,
+        }))}
+        kind={challengeKind}
+        onKind={setChallengeKind}
+        kinds={[
+          ...(hasJeopardy ? ['jeopardy' as const] : []),
+          ...(hasAd ? ['ad' as const] : []),
+          ...(hasKoth ? ['koth' as const] : []),
+        ]}
+        hideSolved={hideSolved}
+        onHideSolved={setHideSolved}
+        shown={currentChallenges.length}
+        total={allChallenges.length}
+        onReset={resetFilters}
+        onWriteup={game?.writeupRequired ? () => setWriteupSubmitOpened(true) : undefined}
+      />
+      <div
+        className={classes.workspace}
+        data-competition-workspace
+        data-detail-open={(detailOpened && inlineDetail) || undefined}
+      >
+        <div className={classes.panel}>
+          <AiChatPendingNotice challenges={aiChatPending} onOpen={openChallenge} />
+          <ScrollArea
+            pos="relative"
+            offsetScrollbars
+            scrollbarSize={4}
+            classNames={{ root: classes.scrollArea }}
+            viewportProps={{
+              tabIndex: 0,
+              'aria-label': t('game.label.challenge_results', 'Challenge list'),
             }}
           >
-            <Tabs.List aria-label={t('game.label.challenge_category', { defaultValue: 'Filter by category' })}>
-              <Tabs.Tab value={'All'} leftSection={<Icon path={mdiPuzzle} size={1} />}>
-                <Group justify="space-between" wrap="nowrap" gap={6}>
-                  <Text fz="sm" fw="bold" c="inherit">
-                    {challengeKindLabels.all}
-                  </Text>
-                  <Text fz="sm" fw="bold" c="inherit">
-                    {allChallenges.length}
-                  </Text>
-                </Group>
-              </Tabs.Tab>
-              {categories.map((tab) => {
-                const data = challengeCategoryLabelMap.get(tab as ChallengeCategory)!
-                return (
-                  <Tabs.Tab key={tab} value={tab} leftSection={<Icon path={data?.icon} size={1} />} color={data?.color}>
-                    <Group justify="space-between" wrap="nowrap" gap={6}>
-                      <Text fz="sm" fw="bold" c="inherit">
-                        {data?.name}
-                      </Text>
-                      <Text fz="sm" fw="bold" c="inherit">
-                        {challenges && challenges[tab].length}
-                      </Text>
-                    </Group>
-                  </Tabs.Tab>
-                )
-              })}
-            </Tabs.List>
-          </Tabs>
-        </Stack>
-        <ScrollArea
-          h={isCompact ? undefined : 'calc(100vh - 6.67rem)'}
-          pos="relative"
-          offsetScrollbars
-          scrollbarSize={4}
-          classNames={{ root: classes.scrollArea }}
-          viewportProps={{
-            tabIndex: 0,
-            'aria-label': t('game.label.challenge_results', 'Challenge list'),
-          }}
-        >
-          {/* if rank is 0, and have no division, means scoreboard not ready yet */}
-          {!teamInfo.rank?.divisionId && !teamInfo?.rank?.rank ? (
-            <Center h="calc(100vh - 10rem)">
-              <Stack gap={0}>
-                <Title order={2}>{t('game.content.scoreboard_not_ready.title')}</Title>
-                <Text>{t('game.content.scoreboard_not_ready.comment')}</Text>
-              </Stack>
-            </Center>
-          ) : currentChallenges && currentChallenges.length ? (
-            <Stack gap="sm" p="xs" pt={0}>
-              {groupedSections.map((section, idx) => {
-                const sectionHeader = section.kind ? (
-                  <Group gap="xs" align="center" wrap="nowrap" mt={idx === 0 ? 0 : 'sm'}>
-                    <Icon
-                      path={
-                        section.kind === 'jeopardy' ? mdiFlagOutline : section.kind === 'ad' ? mdiSwordCross : mdiCrown
-                      }
-                      size={0.8}
-                      color={
-                        section.kind === 'jeopardy'
-                          ? 'var(--mantine-color-blue-6)'
+            {/* if rank is 0, and have no division, means scoreboard not ready yet */}
+            {!teamInfo.rank?.divisionId && !teamInfo?.rank?.rank ? (
+              <Center h="calc(100vh - 10rem)">
+                <Stack gap={0}>
+                  <Title order={2}>{t('game.content.scoreboard_not_ready.title')}</Title>
+                  <Text>{t('game.content.scoreboard_not_ready.comment')}</Text>
+                </Stack>
+              </Center>
+            ) : currentChallenges.length && view === 'globe' ? (
+              <ChallengeGlobe
+                nodes={globeNodes}
+                scope={`${numId}:${activeTab}:${challengeKind}:${search}:${hideSolved}`}
+                onList={() => setView('list')}
+              />
+            ) : currentChallenges.length && view === 'list' ? (
+              <ChallengeList
+                challenges={currentChallenges}
+                solvedIds={solvedIds}
+                disclosurePendingIds={aiChatPendingIds}
+                selectedId={challenge?.id}
+                challengeHref={challengeHref}
+                sort={sort}
+              />
+            ) : currentChallenges && currentChallenges.length ? (
+              <Stack gap="sm" p="xs" pt={0}>
+                {groupedSections.map((section, idx) => {
+                  const sectionHeader = section.kind ? (
+                    <Group gap="xs" align="center" wrap="nowrap" mt={idx === 0 ? 0 : 'sm'}>
+                      <Icon
+                        path={
+                          section.kind === 'jeopardy'
+                            ? mdiFlagOutline
+                            : section.kind === 'ad'
+                              ? mdiSwordCross
+                              : mdiCrown
+                        }
+                        size={0.8}
+                        color={
+                          section.kind === 'jeopardy'
+                            ? 'var(--mantine-color-blue-6)'
+                            : section.kind === 'ad'
+                              ? 'var(--mantine-color-red-6)'
+                              : 'var(--mantine-color-violet-6)'
+                        }
+                      />
+                      <Title order={2} size="h4">
+                        {section.kind === 'jeopardy'
+                          ? t('game.content.section.jeopardy', 'Jeopardy challenges')
                           : section.kind === 'ad'
-                            ? 'var(--mantine-color-red-6)'
-                            : 'var(--mantine-color-violet-6)'
-                      }
-                    />
-                    <Title
-                      order={2}
-                      c={section.kind === 'jeopardy' ? 'blue' : section.kind === 'ad' ? 'red' : 'violet'}
-                    >
-                      {section.kind === 'jeopardy'
-                        ? t('game.content.section.jeopardy', 'Jeopardy challenges')
-                        : section.kind === 'ad'
-                          ? t('game.content.section.ad', 'Attack & Defense')
-                          : t('game.content.section.koth', 'King of the Hill')}
-                    </Title>
-                    <Text size="xs" c="dimmed">
-                      ({section.items.length})
-                    </Text>
-                    <Divider
-                      flex={1}
-                      ml="xs"
-                      color={section.kind === 'jeopardy' ? 'blue' : section.kind === 'ad' ? 'red' : 'violet'}
-                      opacity={0.4}
-                    />
-                  </Group>
-                ) : null
-                return (
-                  <Stack key={section.kind ?? 'all'} gap="xs">
-                    {sectionHeader}
-                    <div className={classes.challengeGrid}>
-                      {section.items.map((chal) => {
-                        const status = teamInfo?.rank?.solvedChallenges?.find((c) => c.id === chal.id)?.type
-                        const solved = status !== SubmissionType.Unaccepted && status !== undefined
+                            ? t('game.content.section.ad', 'Attack & Defense')
+                            : t('game.content.section.koth', 'King of the Hill')}
+                      </Title>
+                      <Text size="xs" c="dimmed">
+                        ({section.items.length})
+                      </Text>
+                      <Divider
+                        flex={1}
+                        ml="xs"
+                        color={section.kind === 'jeopardy' ? 'blue' : section.kind === 'ad' ? 'red' : 'violet'}
+                        opacity={0.4}
+                      />
+                    </Group>
+                  ) : null
+                  return (
+                    <Stack key={section.kind ?? 'all'} gap="xs">
+                      {sectionHeader}
+                      <div className={classes.challengeGrid} data-motion="page">
+                        {section.items.map((chal) => {
+                          const status = teamInfo?.rank?.solvedChallenges?.find((c) => c.id === chal.id)?.type
+                          const solved = status !== SubmissionType.Unaccepted && status !== undefined
 
-                        return (
-                          <ChallengeCard
-                            key={chal.id}
-                            challenge={chal}
-                            iconMap={iconMap}
-                            colorMap={colorMap}
-                            onClick={() => {
-                              setChallenge(chal)
-                              setDetailOpened(true)
-                              // update hash after modal opened, so don't trigger useEffect
-                              window.location.hash = `#${chal.id}-${encodeURIComponent(chal.title?.replace(/ /g, '-') ?? '')}`
-                            }}
-                            solved={solved}
-                            teamId={teamInfo?.rank?.id}
-                            rating={solved || dayjs(game?.end) < dayjs() ? ratingMap.get(chal.id) : undefined}
-                          />
-                        )
-                      })}
-                    </div>
-                  </Stack>
-                )
-              })}
-            </Stack>
-          ) : (
-            <Center h="calc(100vh - 10rem)">
-              <Stack gap={0}>
-                <Title order={2}>{t('game.content.all_solved.title')}</Title>
-                <Text>{t('game.content.all_solved.comment')}</Text>
+                          return (
+                            <ChallengeCard
+                              key={chal.id}
+                              challenge={chal}
+                              iconMap={iconMap}
+                              colorMap={colorMap}
+                              href={challengeHref(chal)}
+                              solved={solved}
+                              disclosurePending={aiChatPendingIds.has(chal.id)}
+                              teamId={teamInfo?.rank?.id}
+                            />
+                          )
+                        })}
+                      </div>
+                    </Stack>
+                  )
+                })}
               </Stack>
-            </Center>
-          )}
-        </ScrollArea>
+            ) : (
+              <Center mih={240} p="lg">
+                <Stack gap="xs" align="center">
+                  <Title order={2} size="h3">
+                    {t('common.workspace.no_challenges', 'No matching challenges')}
+                  </Title>
+                  <Text size="sm" c="dimmed" ta="center">
+                    {t('common.workspace.challenge_filter_hint', 'Try another search or clear your filters.')}
+                  </Text>
+                  <Button variant="default" onClick={resetFilters}>
+                    {t('common.workspace.reset_filters', 'Reset filters')}
+                  </Button>
+                </Stack>
+              </Center>
+            )}
+          </ScrollArea>
+          {activity}
+        </div>
+        {game?.writeupRequired && (
+          <WriteupSubmitModal
+            opened={writeupSubmitOpened}
+            onClose={() => setWriteupSubmitOpened(false)}
+            withCloseButton
+            size="min(32rem, calc(100vw - 1.5rem))"
+            gameId={numId}
+            writeupDeadline={teamInfo.writeupDeadline}
+          />
+        )}
+        {detailOpened && challenge?.id && (
+          <GameChallengeModal
+            embedded={inlineDetail}
+            drawer={!inlineDetail && !isCompact}
+            gameId={numId}
+            gameTitle={game?.title ?? ''}
+            opened={detailOpened}
+            challengeOwned={selection?.gameId === numId && selection.challengeId === challenge.id}
+            withCloseButton
+            onClose={() => {
+              window.location.hash = closeEventChallengeHash(hash)
+              setDetailOpened(false)
+              setSelection(null)
+              requestAnimationFrame(() => {
+                if (openerRef.current?.isConnected) openerRef.current.focus({ preventScroll: true })
+              })
+            }}
+            gameEnded={finished}
+            practiceMode={game?.practiceMode}
+            eventVpnRequired={game?.vpnAccessRequired}
+            aiChatLinksEnabled={game?.aiChatLinksEnabled === true}
+            solverUploadsEnabled={game?.solverUploadsEnabled === true}
+            status={teamInfo?.rank?.solvedChallenges?.find((c) => c.id === challenge?.id)?.type}
+            cateData={challengeCategoryLabelMap.get(
+              (challenge?.category as ChallengeCategory) ?? ChallengeCategory.Misc
+            )!}
+            title={challenge?.title ?? ''}
+            score={challenge?.score ?? 0}
+            challengeId={challenge.id}
+            adStateOwner={adStateOwner}
+          />
+        )}
       </div>
-      {game?.writeupRequired && (
-        <WriteupSubmitModal
-          opened={writeupSubmitOpened}
-          onClose={() => setWriteupSubmitOpened(false)}
-          withCloseButton
-          size="min(32rem, calc(100vw - 1.5rem))"
-          gameId={numId}
-          writeupDeadline={teamInfo.writeupDeadline}
-        />
-      )}
-      {challenge?.id && (
-        <GameChallengeModal
-          gameId={numId}
-          gameTitle={game?.title ?? ''}
-          opened={detailOpened}
-          withCloseButton
-          onClose={() => {
-            window.location.hash = ''
-            setDetailOpened(false)
-          }}
-          gameEnded={dayjs(game?.end) < dayjs()}
-          practiceMode={game?.practiceMode}
-          eventVpnRequired={game?.vpnAccessRequired}
-          status={teamInfo?.rank?.solvedChallenges?.find((c) => c.id === challenge?.id)?.type}
-          cateData={challengeCategoryLabelMap.get(
-            (challenge?.category as ChallengeCategory) ?? ChallengeCategory.Misc
-          )!}
-          title={challenge?.title ?? ''}
-          score={challenge?.score ?? 0}
-          challengeId={challenge.id}
-        />
-      )}
-    </>
+    </div>
   )
+}
+
+export const challengeIdFromHash = (hash: string): number | null => {
+  const match = /^#([1-9]\d*)(?:-|&|$)/.exec(hash)
+  if (!match) return null
+  const id = Number(match[1])
+  return Number.isSafeInteger(id) ? id : null
+}
+
+export const ownedChallengeIdFromHash = (hash: string, currentChallengeIds: readonly number[]): number | null => {
+  const id = challengeIdFromHash(hash)
+  return id !== null && currentChallengeIds.includes(id) ? id : null
 }

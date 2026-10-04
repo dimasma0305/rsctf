@@ -14,139 +14,8 @@ use crate::services::token::TokenService;
 use crate::storage::LocalBlobStorage;
 use crate::utils::enums::Role;
 
-#[tokio::test]
-#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn roster_removal_stays_invisible_until_teardown_lock_commits() {
-    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-        .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
-    let admin_pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&database_url)
-        .await
-        .expect("connect test database");
-    let schema = format!("rsctf_roster_teardown_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-        .execute(&admin_pool)
-        .await
-        .expect("create isolated test schema");
-    let options = PgConnectOptions::from_str(&database_url)
-        .expect("parse test database URL")
-        .options([("search_path", schema.as_str())]);
-    let pool = PgPoolOptions::new()
-        .max_connections(3)
-        .connect_with(options)
-        .await
-        .expect("connect isolated test pool");
-    sqlx::raw_sql(
-        r#"
-        CREATE TABLE "TeamMembers" (
-          team_id INTEGER NOT NULL,
-          user_id UUID NOT NULL
-        );
-        CREATE TABLE "Participations" (
-          id INTEGER PRIMARY KEY,
-          status SMALLINT NOT NULL,
-          game_id INTEGER NOT NULL
-        );
-        CREATE TABLE "Games" (id INTEGER PRIMARY KEY, end_time_utc TIMESTAMPTZ NOT NULL);
-        CREATE TABLE "UserParticipations" (
-          team_id INTEGER NOT NULL,
-          user_id UUID NOT NULL,
-          participation_id INTEGER NOT NULL
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .expect("create roster fixture tables");
-    let user_id = uuid::Uuid::new_v4();
-    sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES (9, $1)"#)
-        .bind(user_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    // Deliberately dangling: ordinary roster cleanup must still remove legacy
-    // links that have no participation identity to preserve.
-    sqlx::query(
-        r#"INSERT INTO "UserParticipations" (team_id, user_id, participation_id)
-           VALUES (9, $1, 99)"#,
-    )
-    .bind(user_id)
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // A failed teardown leaves roster rows untouched and retryable.
-    let failed_attempt = acquire_roster_mutation(&pool, 9).await.unwrap();
-    drop(failed_attempt);
-    let visible_after_failure: i64 =
-        sqlx::query_scalar(r#"SELECT COUNT(*) FROM "TeamMembers" WHERE user_id = $1"#)
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(visible_after_failure, 1);
-
-    let mut roster = acquire_roster_mutation(&pool, 9).await.unwrap();
-    let mut issuer = tokio::spawn({
-        let pool = pool.clone();
-        async move { crate::utils::single_flight::PgAdvisoryLock::acquire(&pool, "team-roster:9").await }
-    });
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), &mut issuer)
-            .await
-            .is_err(),
-        "credential issuer entered during retained teardown lock"
-    );
-    let visible_before: i64 =
-        sqlx::query_scalar(r#"SELECT COUNT(*) FROM "TeamMembers" WHERE user_id = $1"#)
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(
-        visible_before, 1,
-        "membership vanished before teardown succeeded"
-    );
-
-    remove_membership(roster.transaction_mut(), 9, user_id)
-        .await
-        .unwrap();
-    let visible_uncommitted: i64 =
-        sqlx::query_scalar(r#"SELECT COUNT(*) FROM "TeamMembers" WHERE user_id = $1"#)
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(
-        visible_uncommitted, 1,
-        "membership deletion leaked before commit"
-    );
-    roster.release().await.unwrap();
-
-    let acquired = tokio::time::timeout(std::time::Duration::from_secs(2), issuer)
-        .await
-        .expect("issuer remained blocked after roster commit")
-        .expect("issuer task failed")
-        .expect("issuer lock failed");
-    acquired.release().await.unwrap();
-    for table in ["TeamMembers", "UserParticipations"] {
-        let remaining: i64 = sqlx::query_scalar(&format!(
-            r#"SELECT COUNT(*) FROM "{table}" WHERE user_id = $1"#
-        ))
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(remaining, 0, "{table} did not commit atomically");
-    }
-
-    pool.close().await;
-    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-        .execute(&admin_pool)
-        .await
-        .expect("drop isolated test schema");
-}
+#[path = "revocation_tests/roster_transaction.rs"]
+mod roster_transaction;
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
@@ -179,13 +48,17 @@ async fn multi_game_revocation_is_atomic_and_deletion_has_one_owner() {
           practice_mode BOOLEAN NOT NULL,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
           ad_scoring_start_round INTEGER,
-          koth_scoring_start_round INTEGER
+          koth_scoring_start_round INTEGER,
+          poster_hash TEXT
         );
         CREATE TABLE "Teams" (
           id INTEGER PRIMARY KEY,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
-          invite_token TEXT NOT NULL
+          invite_token TEXT NOT NULL,
+          avatar_hash TEXT
         );
+        CREATE TABLE "Files" (
+          id SERIAL PRIMARY KEY, hash TEXT NOT NULL UNIQUE, reference_count BIGINT NOT NULL);
         CREATE TABLE "Participations" (
           id INTEGER PRIMARY KEY,
           game_id INTEGER NOT NULL,
@@ -198,8 +71,13 @@ async fn multi_game_revocation_is_atomic_and_deletion_has_one_owner() {
         );
         CREATE TABLE "GameChallenges" (
           id INTEGER PRIMARY KEY,
-          game_id INTEGER NOT NULL
+          game_id INTEGER NOT NULL,
+          original_archive_blob_path TEXT
         );
+        CREATE TABLE "Attachments" (local_file_id INTEGER);
+        CREATE TABLE "AdServiceSnapshots" (local_file_id INTEGER);
+        CREATE TABLE "AspNetUsers" (avatar_hash TEXT);
+        CREATE TABLE "Configs" (config_key TEXT NOT NULL, value TEXT);
         CREATE TABLE "Submissions" (
           id INTEGER PRIMARY KEY,
           participation_id INTEGER NOT NULL
@@ -214,10 +92,16 @@ async fn multi_game_revocation_is_atomic_and_deletion_has_one_owner() {
         );
         CREATE TABLE "TeamMembers" (team_id INTEGER NOT NULL);
         CREATE TABLE "UserParticipations" (team_id INTEGER NOT NULL);
-        INSERT INTO "Games" VALUES
+        INSERT INTO "Games" (
+          id, start_time_utc, practice_mode, deletion_pending,
+          ad_scoring_start_round, koth_scoring_start_round
+        ) VALUES
           (11, clock_timestamp() + interval '1 hour', FALSE, FALSE, NULL, NULL),
           (22, clock_timestamp() + interval '1 hour', FALSE, FALSE, NULL, NULL);
-        INSERT INTO "Teams" VALUES (9, FALSE, 'original-secret');
+        INSERT INTO "Teams" (id, deletion_pending, invite_token, avatar_hash) VALUES
+          (9, FALSE, 'original-secret', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+        INSERT INTO "Files" (hash, reference_count) VALUES
+          ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1);
         INSERT INTO "Participations"
           (id, game_id, team_id, status, token, writeup_id, division_id, suspicion_score)
         VALUES
@@ -539,10 +423,22 @@ async fn multi_game_revocation_is_atomic_and_deletion_has_one_owner() {
             .is_err(),
         "duplicate deletion entered external teardown concurrently"
     );
-    deletion_lease
+    let deleted_avatar = deletion_lease
         .finalize(9)
         .await
         .expect("fenced final cascade failed");
+    assert_eq!(
+        deleted_avatar.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    let remaining_avatar_refs: i64 = sqlx::query_scalar(r#"SELECT reference_count FROM "Files""#)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        remaining_avatar_refs, 0,
+        "team deletion leaked its avatar reference"
+    );
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(2), duplicate)
             .await
@@ -627,8 +523,6 @@ async fn inflight_submit_commits_before_team_deletion_checks_evidence() {
         .await
         .expect("create competition-evidence fixtures");
 
-    // Advisory locks are database-global rather than schema-scoped. A random
-    // game id prevents independently isolated tests from sharing this key.
     let game_id = (Uuid::new_v4().as_u128() % 1_000_000_000) as i32 + 1;
     sqlx::query(
         r#"INSERT INTO "Games"
@@ -653,8 +547,6 @@ async fn inflight_submit_commits_before_team_deletion_checks_evidence() {
     .await
     .unwrap();
 
-    // This is the lock held by the Jeopardy submit path after its live status
-    // check and until its Submission/FirstSolve transaction commits.
     let mut submit = pool.begin().await.unwrap();
     let submit_backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *submit)
@@ -686,9 +578,6 @@ async fn inflight_submit_commits_before_team_deletion_checks_evidence() {
         }
     });
 
-    // Wait until revocation is demonstrably behind the submit transaction's
-    // participation lock. In the vulnerable ordering this was the later UPDATE,
-    // after the no-evidence decision had already been made.
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             let submit_blocks_deletion: bool =

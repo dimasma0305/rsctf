@@ -44,6 +44,13 @@ A request to explain, diagnose, or review is read-only unless it also asks for c
 
 ## Build and completion gate
 
+Run every local Cargo compile or test through `scripts/bounded-cargo.sh`, and every
+frontend typecheck/test/build through `scripts/bounded-frontend.sh`. Never start raw
+builds concurrently from separate worktrees. Both wrappers share one compile slot and
+hard-cap CPU/memory on systemd hosts; Cargo also shares dependency artifacts. Focused
+checks still come first, but the final gates use the wrappers too. CI may use an
+equivalent stricter isolated runner.
+
 `cargo build` must have zero errors and zero warnings; `cargo test` must pass. Run the
 strict frontend typecheck, lint, tests, build, and relevant visual/Axe audits. Polled
 reads, A&D/KotH, BYOC, or performance changes also require the fixed-rate load workflow

@@ -71,11 +71,15 @@ pub(crate) async fn purge_expired_captures(state: &SharedState, batch: usize) ->
         .into_iter()
         .filter(|(id, _)| expired.contains(id))
         .take(batch)
-        .map(|(_, path)| path)
         .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Ok(0);
+    }
     let count = targets.len();
-    tokio::task::spawn_blocking(move || -> AppResult<()> {
-        for path in targets {
+    let deleted_challenge_ids = targets.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    crate::services::traffic::inventory::mark_reconcile_required(state.pg()).await?;
+    let deletion = tokio::task::spawn_blocking(move || -> AppResult<()> {
+        for (_, path) in targets {
             let metadata = std::fs::symlink_metadata(&path)
                 .map_err(|error| AppError::internal(error.to_string()))?;
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -94,7 +98,21 @@ pub(crate) async fn purge_expired_captures(state: &SharedState, batch: usize) ->
         Ok(())
     })
     .await
-    .map_err(|error| AppError::internal(error.to_string()))??;
+    .map_err(|error| AppError::internal(error.to_string()))
+    .and_then(|result| result);
+    if let Err(error) = deletion {
+        crate::services::traffic::inventory::mark_reconcile_required_after_failure(state.pg())
+            .await;
+        return Err(error);
+    }
+    if let Err(error) =
+        crate::services::traffic::inventory::delete_challenges(state.pg(), &deleted_challenge_ids)
+            .await
+    {
+        crate::services::traffic::inventory::mark_reconcile_required_after_failure(state.pg())
+            .await;
+        return Err(error);
+    }
     Ok(count)
 }
 

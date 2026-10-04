@@ -90,8 +90,29 @@ fn catalog_search_is_trimmed_bounded_and_optional() {
 }
 
 #[tokio::test]
+async fn challenge_catalog_query_accepts_an_exact_challenge_id() {
+    let app = Router::new().route(
+        "/",
+        get(|Query(query): Query<ChallengeCatalogQuery>| async move {
+            assert_eq!(query.challenge_id, Some(101));
+            StatusCode::NO_CONTENT
+        }),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/?challengeId=101")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_boundaries() {
+async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_division_boundaries() {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
     let admin = PgPoolOptions::new()
@@ -117,7 +138,10 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         r#"
         CREATE TABLE "Games" (
           id INTEGER PRIMARY KEY, title TEXT NOT NULL, hidden BOOLEAN NOT NULL,
-          start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
+          start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
+          summary TEXT NOT NULL DEFAULT '', poster_hash TEXT,
+          team_member_count_limit INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE "GameChallenges" (
           id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, title TEXT NOT NULL,
@@ -125,7 +149,8 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
           original_score INTEGER NOT NULL, min_score_rate DOUBLE PRECISION NOT NULL,
           difficulty DOUBLE PRECISION NOT NULL, accepted_count INTEGER NOT NULL,
           score_curve SMALLINT NOT NULL, is_enabled BOOLEAN NOT NULL,
-          review_status SMALLINT NOT NULL
+          review_status SMALLINT NOT NULL,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
         CREATE TABLE "Participations" (
           id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, team_id INTEGER NOT NULL,
@@ -142,9 +167,10 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
           division_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
           permissions INTEGER NOT NULL, PRIMARY KEY (division_id, challenge_id)
         );
-        CREATE TABLE "Submissions" (
+        CREATE TABLE "FirstSolves" (
           participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
-          status SMALLINT NOT NULL
+          submission_id INTEGER NOT NULL,
+          PRIMARY KEY (participation_id, challenge_id)
         );
         "#,
     )
@@ -155,31 +181,41 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
     let player = Uuid::new_v4();
     let other = Uuid::new_v4();
     sqlx::query(
-        r#"INSERT INTO "Games" VALUES
+        r#"INSERT INTO "Games"
+          (id, title, hidden, start_time_utc, end_time_utc) VALUES
           (1, 'Joined event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
           (2, 'Other event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
           (3, 'Pending event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
           (4, 'Future event', FALSE, clock_timestamp() + interval '1 hour', clock_timestamp() + interval '1 day'),
           (5, 'Hidden event', TRUE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
           (6, 'Denied division', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
-          (7, 'Allowed division', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day')"#,
+          (7, 'Allowed division', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
+          (8, 'Suspended event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
+          (9, 'Rejected event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
+          (10, 'Deleting event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day')"#,
     )
     .execute(&pool)
     .await
     .unwrap();
     sqlx::query(
-        r#"INSERT INTO "GameChallenges" VALUES
+        r#"INSERT INTO "GameChallenges"
+          (id, game_id, title, category, "Type", original_score, min_score_rate,
+           difficulty, accepted_count, score_curve, is_enabled, review_status) VALUES
           (101, 1, 'Visible Web', 3, 0, 1000, 0.01, 5, 2, 0, TRUE, 0),
           (102, 1, 'Live A&D', 3, 4, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (103, 1, 'Live KOTH', 3, 5, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (104, 1, 'Shared container', 3, 1, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (105, 1, 'Dynamic attachment', 3, 2, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (106, 1, 'Deleting challenge', 3, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (201, 2, 'Other Crypto', 1, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (301, 3, 'Pending Pwn', 2, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (401, 4, 'Future Reverse', 4, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (501, 5, 'Hidden Forensics', 6, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (601, 6, 'Denied Mobile', 8, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
-          (701, 7, 'Allowed Blockchain', 5, 3, 1000, 0.01, 5, 0, 0, TRUE, 0)"#,
+          (701, 7, 'Allowed Blockchain', 5, 3, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (801, 8, 'Suspended Misc', 0, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (901, 9, 'Rejected Misc', 0, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (1001, 10, 'Deleting Event Challenge', 0, 0, 1000, 0.01, 5, 0, 0, TRUE, 0)"#,
     )
     .execute(&pool)
     .await
@@ -188,7 +224,9 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         r#"INSERT INTO "Participations" VALUES
           (11, 1, 11, 1, NULL), (22, 2, 22, 1, NULL), (33, 3, 33, 0, NULL),
           (44, 4, 44, 1, NULL), (55, 5, 55, 1, NULL),
-          (66, 6, 66, 1, 60), (77, 7, 77, 1, 70)"#,
+          (66, 6, 66, 1, 60), (77, 7, 77, 1, 70),
+          (88, 8, 88, 3, NULL), (99, 9, 99, 2, NULL),
+          (100, 10, 100, 1, NULL)"#,
     )
     .execute(&pool)
     .await
@@ -196,7 +234,8 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
     sqlx::query(
         r#"INSERT INTO "UserParticipations" VALUES
           ($1, 1, 11, 11), ($2, 2, 22, 22), ($1, 3, 33, 33),
-          ($1, 4, 44, 44), ($1, 5, 55, 55), ($1, 6, 66, 66), ($1, 7, 77, 77)"#,
+          ($1, 4, 44, 44), ($1, 5, 55, 55), ($1, 6, 66, 66), ($1, 7, 77, 77),
+          ($1, 8, 88, 88), ($1, 9, 99, 99), ($1, 10, 100, 100)"#,
     )
     .bind(player)
     .bind(other)
@@ -207,10 +246,17 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(r#"INSERT INTO "Submissions" VALUES (11, 101, 1)"#)
+    sqlx::query(r#"INSERT INTO "FirstSolves" VALUES (11, 101, 1001)"#)
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::raw_sql(
+        r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = 10;
+           UPDATE "GameChallenges" SET deletion_pending = TRUE WHERE id = 106;"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let query = ChallengeCatalogQuery {
         count: 50,
@@ -226,6 +272,24 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
     assert_eq!(items.iter().find(|item| item.id == 101).unwrap().score, 820);
     assert_eq!(items.iter().find(|item| item.id == 102).unwrap().score, 0);
     assert_eq!(items.iter().find(|item| item.id == 103).unwrap().score, 0);
+    assert!(!items.iter().any(|item| item.id == 106 || item.id == 1001));
+
+    // A copied link resolves exactly one authorized challenge, independently
+    // of the catalog page; IDs cannot bypass any existing visibility gate.
+    for challenge_id in [101, 701, 106, 201, 301, 401, 501, 601, 801, 901, 1001, 9999] {
+        let exact = ChallengeCatalogQuery {
+            count: 1,
+            challenge_id: Some(challenge_id),
+            ..Default::default()
+        };
+        let (linked, total) = load_challenge_catalog(&pool, player, &exact).await.unwrap();
+        let allowed = matches!(challenge_id, 101 | 701);
+        assert_eq!(total, i64::from(allowed), "challenge {challenge_id}");
+        assert_eq!(linked.len(), usize::from(allowed));
+        if allowed {
+            assert_eq!(linked[0].id, challenge_id);
+        }
+    }
 
     let jeopardy = ChallengeCatalogQuery {
         count: 50,
@@ -283,6 +347,99 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         .unwrap();
     assert_eq!(total, 1);
     assert_eq!(unsolved_items[0].id, 701);
+
+    // Pages share one exact total and never overlap; a page past the end is
+    // empty and reports no total, exactly as the window-count version did.
+    let page = |skip| ChallengeCatalogQuery {
+        count: 2,
+        skip,
+        ..Default::default()
+    };
+    let (first, total) = load_challenge_catalog(&pool, player, &page(0))
+        .await
+        .unwrap();
+    assert_eq!(total, 6);
+    assert_eq!(
+        first.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [701, 102]
+    );
+    let (last, total) = load_challenge_catalog(&pool, player, &page(4))
+        .await
+        .unwrap();
+    assert_eq!(total, 6);
+    assert_eq!(
+        last.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [105, 101]
+    );
+    let (beyond, total) = load_challenge_catalog(&pool, player, &page(6))
+        .await
+        .unwrap();
+    assert!(beyond.is_empty());
+    assert_eq!(total, 0);
+
+    // The event catalog pages the same way over every visible event.
+    let games = |skip| GameListQuery {
+        count: 4,
+        skip,
+        search: None,
+        membership: GameMembershipFilter::All,
+    };
+    let (first, total) = load_game_list(&pool, Some(player), &games(0))
+        .await
+        .unwrap();
+    assert_eq!(
+        total, 9,
+        "hidden events are excluded from the visible total"
+    );
+    assert_eq!(first.len(), 4);
+    assert!(first.iter().all(|game| game.id != 5));
+    let (last, total) = load_game_list(&pool, Some(player), &games(8))
+        .await
+        .unwrap();
+    assert_eq!(total, 9);
+    assert_eq!(last.len(), 1);
+    let joined = GameListQuery {
+        count: 50,
+        skip: 0,
+        search: None,
+        membership: GameMembershipFilter::Joined,
+    };
+    let (joined_games, joined_total) = load_game_list(&pool, Some(player), &joined).await.unwrap();
+    assert_eq!(joined_total, 7);
+    assert!(joined_games.iter().all(|game| game.joined));
+    let (anonymous, anonymous_total) = load_game_list(&pool, None, &joined).await.unwrap();
+    assert!(anonymous.is_empty());
+    assert_eq!(anonymous_total, 0);
+
+    // Totals are exact up to the counting bound and clamp beyond it, so one
+    // page request never materializes an unbounded history.
+    sqlx::query(
+        r#"INSERT INTO "GameChallenges"
+             (id, game_id, title, category, "Type", original_score, min_score_rate,
+              difficulty, accepted_count, score_curve, is_enabled, review_status)
+           SELECT 10000 + n, 1, 'Bulk ' || n, 3, 0, 1000, 0.01, 5, 0, 0, TRUE, 0
+             FROM generate_series(1, $1) AS n"#,
+    )
+    .bind(MAX_COUNTED_CATALOG_ROWS)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (capped, total) = load_challenge_catalog(&pool, player, &page(0))
+        .await
+        .unwrap();
+    assert_eq!(total, MAX_COUNTED_CATALOG_ROWS);
+    assert_eq!(
+        capped.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [701, 102]
+    );
+    let bulk = ChallengeCatalogQuery {
+        count: 100,
+        skip: 900,
+        ..Default::default()
+    };
+    let (bulk_page, total) = load_challenge_catalog(&pool, player, &bulk).await.unwrap();
+    assert_eq!(total, MAX_COUNTED_CATALOG_ROWS);
+    assert_eq!(bulk_page.len(), 100);
 
     pool.close().await;
     assert!(schema.starts_with("challenge_catalog_"));

@@ -1,207 +1,59 @@
-//! Raw global-honeypot telemetry.
+//! Bounded global-honeypot telemetry handoff.
 //!
-//! A global HTTP bait is not scoped to one game, and an unauthenticated TCP
-//! source address is not a stable account identity. Neither can safely select
-//! one immutable participation while users may join overlapping games or share
-//! a NAT. Keep the forensic source rows, but never create participant suspicion
-//! evidence from this telemetry.
-
-use uuid::Uuid;
+//! Global HTTP/TCP baits cannot safely select one participation, so their
+//! aggregate rows remain non-actionable. Admission, sampling, queue bounds,
+//! and persistence live in `honeypot_telemetry`; this module keeps the stable
+//! suspicion-service entry points without putting PostgreSQL on request tasks.
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
-use crate::utils::error::{AppError, AppResult};
+use crate::services::honeypot_telemetry::HoneypotAdmission;
+use crate::utils::error::AppResult;
 
-const INSERT_RAW_HONEYPOT_HIT_SQL: &str = r#"
-    INSERT INTO "HoneypotHits"
-        (game_id, participation_id, user_id, bait, remote_ip,
-         user_agent, hit_at_utc)
-    VALUES (NULL, NULL, $1, $2, $3, $4, clock_timestamp())
-"#;
-
-fn database_error(error: sqlx::Error) -> AppError {
-    AppError::internal(error.to_string())
-}
-
-async fn persist_raw_honeypot_hit(
-    pool: &sqlx::PgPool,
-    user_id: Option<Uuid>,
-    bait: &str,
-    remote_ip: &str,
-    user_agent: Option<&str>,
-) -> AppResult<()> {
-    sqlx::query(INSERT_RAW_HONEYPOT_HIT_SQL)
-        .bind(user_id)
-        .bind(bait)
-        .bind(remote_ip)
-        .bind(user_agent)
-        .execute(pool)
-        .await
-        .map_err(database_error)?;
-    Ok(())
-}
-
-/// Persist an HTTP bait hit as raw telemetry. The authenticated account id is
-/// reliable and retained for forensic review, but a global route cannot select
-/// one game participation without racing concurrent membership changes.
-pub async fn record_honeypot_hit(
+/// Enqueue an admitted HTTP hit. Authentication is used only as optional
+/// forensic context; no game or participation is inferred from a global bait.
+pub(crate) fn record_honeypot_hit(
     st: &SharedState,
     user: Option<CurrentUser>,
     bait: &str,
-    remote_ip: Option<String>,
-    user_agent: Option<String>,
+    user_agent: Option<&str>,
+    admission: HoneypotAdmission,
 ) {
-    let user_id = user.as_ref().map(|user| user.id);
-    let remote_ip = remote_ip.unwrap_or_default();
-    if let Err(error) =
-        persist_raw_honeypot_hit(st.pg(), user_id, bait, &remote_ip, user_agent.as_deref()).await
-    {
-        tracing::warn!(%error, bait, "honeypot telemetry insert failed");
+    if !st.honeypot_telemetry.enqueue_http(
+        user.as_ref().map(|current| current.id),
+        bait,
+        user_agent,
+        admission,
+    ) {
+        tracing::debug!(bait, "honeypot HTTP telemetry queue saturated");
     }
 }
 
-/// Persist an unauthenticated TCP-listener hit as raw telemetry only. Even a
-/// currently unique address can later belong to another account or shared NAT.
-pub async fn record_honeypot_tcp_hit(st: &SharedState, bait: &str, remote_ip: Option<String>) {
-    let normalized_ip = remote_ip
-        .as_deref()
-        .and_then(|ip| crate::services::anti_cheat::hash_ip_identity(st.config.as_ref(), ip))
-        .map(|identity| identity.normalized)
-        .unwrap_or_default();
-    if let Err(error) = persist_raw_honeypot_hit(st.pg(), None, bait, &normalized_ip, None).await {
-        tracing::warn!(%error, bait, "honeypot TCP telemetry insert failed");
+/// Enqueue an admitted protocol hit without awaiting database pool admission.
+pub(crate) fn record_honeypot_tcp_hit(st: &SharedState, bait: &str, admission: HoneypotAdmission) {
+    if !st.honeypot_telemetry.enqueue_tcp(bait, admission) {
+        tracing::debug!(bait, "honeypot TCP telemetry queue saturated");
     }
 }
 
-/// Global honeypot rows are deliberately non-actionable, so reconciliation has
-/// no participant chain to derive. The stable entry point remains for callers
-/// that run every suspicion reconciler.
+/// Global honeypot aggregates deliberately have no participant chain.
 pub async fn run_honeypot_chain_checks(_st: &SharedState, _game_id: i32) -> AppResult<()> {
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-    use uuid::Uuid;
-
-    use super::{persist_raw_honeypot_hit, INSERT_RAW_HONEYPOT_HIT_SQL};
-
-    type RawHoneypotRow = (String, Option<i32>, Option<i32>, Option<Uuid>);
-
     #[test]
-    fn raw_insert_cannot_carry_participant_attribution() {
-        assert!(INSERT_RAW_HONEYPOT_HIT_SQL.contains("VALUES (NULL, NULL"));
-        assert!(!INSERT_RAW_HONEYPOT_HIT_SQL.contains("SuspicionEvaluationOutbox"));
-        assert!(!INSERT_RAW_HONEYPOT_HIT_SQL.contains("SuspicionEvents"));
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn authenticated_and_protocol_hits_are_raw_without_jobs_or_scores() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let admin = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .expect("connect test database");
-        let schema = format!("honeypot_raw_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-            .execute(&admin)
-            .await
-            .expect("create test schema");
-        let options = PgConnectOptions::from_str(&database_url)
-            .expect("parse test database URL")
-            .options([("search_path", schema.as_str())]);
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect_with(options)
-            .await
-            .expect("connect isolated pool");
-
-        sqlx::raw_sql(
-            r#"
-            CREATE TABLE "HoneypotHits" (
-              id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-              game_id INTEGER,
-              participation_id INTEGER,
-              user_id UUID,
-              bait TEXT NOT NULL CHECK (bait <> 'raw-failure'),
-              remote_ip TEXT NOT NULL,
-              user_agent TEXT,
-              hit_at_utc TIMESTAMPTZ NOT NULL
-            );
-            CREATE TABLE "SuspicionEvaluationOutbox" (
-              id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY
-            );
-            CREATE TABLE "SuspicionEvents" (
-              id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY
-            );
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("create raw telemetry fixture");
-
-        let authenticated_user = Uuid::new_v4();
-        persist_raw_honeypot_hit(
-            &pool,
-            Some(authenticated_user),
-            "http-authenticated",
-            "192.0.2.1",
-            Some("test-agent"),
-        )
-        .await
-        .expect("persist authenticated HTTP telemetry");
-        persist_raw_honeypot_hit(&pool, None, "tcp-unauthenticated", "192.0.2.1", None)
-            .await
-            .expect("persist unauthenticated TCP telemetry");
-        assert!(persist_raw_honeypot_hit(
-            &pool,
-            Some(authenticated_user),
-            "raw-failure",
-            "192.0.2.1",
-            None,
-        )
-        .await
-        .is_err());
-
-        let rows: Vec<RawHoneypotRow> = sqlx::query_as(
-            r#"SELECT bait, game_id, participation_id, user_id
-                 FROM "HoneypotHits"
-                ORDER BY id"#,
-        )
-        .fetch_all(&pool)
-        .await
-        .expect("load raw telemetry");
-        assert_eq!(
-            rows,
-            vec![
-                (
-                    "http-authenticated".to_string(),
-                    None,
-                    None,
-                    Some(authenticated_user),
-                ),
-                ("tcp-unauthenticated".to_string(), None, None, None),
-            ]
-        );
-        let (jobs, events): (i64, i64) = sqlx::query_as(
-            r#"SELECT (SELECT COUNT(*) FROM "SuspicionEvaluationOutbox"),
-                      (SELECT COUNT(*) FROM "SuspicionEvents")"#,
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("count non-actionable output");
-        assert_eq!((jobs, events), (0, 0));
-
-        pool.close().await;
-        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-            .execute(&admin)
-            .await
-            .expect("drop test schema");
+    fn source_contains_no_request_path_database_write_or_participant_attribution() {
+        let source = include_str!("honeypot.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("honeypot source keeps tests after production code")
+            .0;
+        assert!(!production.contains(".execute("));
+        assert!(!production.contains("SuspicionEvaluationOutbox"));
+        assert!(!production.contains("SuspicionEvents"));
+        assert!(production.contains("enqueue_http"));
+        assert!(production.contains("enqueue_tcp"));
     }
 }

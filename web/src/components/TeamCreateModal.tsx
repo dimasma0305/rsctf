@@ -1,41 +1,48 @@
-import {
-  Button,
-  Center,
-  Modal,
-  ModalProps,
-  Stack,
-  Text,
-  Textarea,
-  TextInput,
-  Title,
-  useMantineTheme,
-} from '@mantine/core'
+import { Button, Center, Stack, Text, Textarea, TextInput, Title, useMantineTheme } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiCloseCircle } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
+import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
+import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { TeamUpdateModel } from '@Api'
 
-interface TeamEditModalProps extends ModalProps {
+interface TeamCreateModalProps extends AccessibleModalProps {
   disallowCreate: boolean
   mutate: () => void
+  onTeamReady?: () => void
 }
 
-export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
-  const { disallowCreate, mutate, ...modalProps } = props
+export const TeamCreateModal: FC<TeamCreateModalProps> = (props) => {
+  const { disallowCreate, mutate, onTeamReady, onClose, ...modalProps } = props
   const [createTeam, setCreateTeam] = useState<TeamUpdateModel>({ name: '', bio: '' })
   const [disabled, setDisabled] = useState(false)
+  const owner = useRef(new RetryableMutationOwner())
   const theme = useMantineTheme()
 
   const { t } = useTranslation()
 
+  useEffect(
+    () => () => {
+      owner.current.cancel()
+    },
+    []
+  )
+
   const onCreateTeam = async () => {
+    const digest = JSON.stringify({
+      name: createTeam.name?.trim() ?? '',
+      bio: createTeam.bio ?? '',
+    })
+    const lease = owner.current.claim(digest)
+    if (!lease) return
     setDisabled(true)
 
     try {
-      const res = await api.team.teamCreateTeam(createTeam)
+      const res = await api.team.teamCreateTeam(createTeam, lease.operationId, { signal: lease.signal })
+      if (!owner.current.settle(lease, true)) return
       showNotification({
         color: 'teal',
         title: t('team.notification.create.success.title'),
@@ -43,17 +50,30 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
       setCreateTeam({ name: '', bio: '' })
+      onTeamReady?.()
       mutate()
-      modalProps.onClose()
+      onClose()
     } catch (e) {
+      if (!owner.current.settle(lease, false)) return
       showErrorMsg(e, t)
-    } finally {
       setDisabled(false)
     }
   }
 
+  const handleClose = () => {
+    if (owner.current.isActive()) return
+    owner.current.cancel()
+    onClose()
+  }
+
   return (
-    <Modal {...modalProps}>
+    <AccessibleModal
+      {...modalProps}
+      onClose={handleClose}
+      closeOnClickOutside={!disabled}
+      closeOnEscape={!disabled}
+      withCloseButton={!disabled}
+    >
       {disallowCreate ? (
         <Stack gap="lg" p={40} ta="center">
           <Center>
@@ -65,12 +85,26 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
           </Text>
         </Stack>
       ) : (
-        <Stack>
+        <Stack
+          component="form"
+          data-guide="team-create-workflow"
+          data-guide-stage={(createTeam.name?.trim().length ?? 0) > 0 ? 'submit' : 'input'}
+          data-guide-interaction-scope
+          onSubmit={(event) => {
+            event.preventDefault()
+            void onCreateTeam()
+          }}
+        >
           <Text>{t('team.content.create')}</Text>
           <TextInput
+            data-guide="team-create-name"
             label={t('team.label.name')}
+            description={t(
+              'team.content.create_name_hint',
+              'Type a team name. Create Team becomes available when the field is not empty.'
+            )}
             type="text"
-            placeholder="team"
+            placeholder={t('team.placeholder.name', 'Type your team name')}
             w="100%"
             disabled={disabled}
             maxLength={128}
@@ -89,11 +123,17 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
             maxLength={4096}
             onChange={(event) => setCreateTeam({ ...createTeam, bio: event.currentTarget.value })}
           />
-          <Button fullWidth variant="outline" onClick={onCreateTeam} disabled={disabled}>
+          <Button
+            type="submit"
+            fullWidth
+            variant="outline"
+            disabled={disabled || (createTeam.name?.trim().length ?? 0) === 0}
+            data-guide="team-create-submit"
+          >
             {t('team.button.create')}
           </Button>
         </Stack>
       )}
-    </Modal>
+    </AccessibleModal>
   )
 }
