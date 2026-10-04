@@ -10,15 +10,41 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
 
 jobs:
+  plan:
+    name: Select affected checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      server: ${{ steps.scope.outputs.server }}
+      byoc: ${{ steps.scope.outputs.byoc }}
+      worker: ${{ steps.scope.outputs.worker }}
+      web: ${{ steps.scope.outputs.web }}
+      docs: ${{ steps.scope.outputs.docs }}
+      deployment: ${{ steps.scope.outputs.deployment }}
+      security: ${{ steps.scope.outputs.security }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Plan complete PR diff or full publication gate
+        id: scope
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci-plan.mjs
+
   rust:
     name: Rust
+    needs: plan
+    if: needs.plan.outputs.server == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -60,12 +86,10 @@ jobs:
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: server
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-
-      - name: Check all targets
-        run: cargo check --all-targets --all-features --locked
 
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
@@ -92,8 +116,30 @@ jobs:
       - name: Run tests
         run: cargo test --all-targets --all-features --locked
 
+      - name: Stage same-run integration binaries
+        run: |
+          cargo test --lib --all-features --locked --no-run --message-format=json > "$RUNNER_TEMP/rsctf-test-artifacts.jsonl"
+          test_binary="$(jq -rs '[.[] | select(.reason == "compiler-artifact" and .target.name == "rsctf" and .profile.test == true and .executable != null)] | if length == 1 then .[0].executable else error("expected one rsctf library test binary") end' "$RUNNER_TEMP/rsctf-test-artifacts.jsonl")"
+          install -D -m 0755 "$test_binary" ci-artifacts/rsctf-tests
+          install -m 0755 target/debug/rsctf ci-artifacts/rsctf
+          # Keep symbols for backtraces, but do not transfer gigabytes of DWARF
+          # debug sections to jobs that only execute these already-tested files.
+          strip --strip-debug ci-artifacts/rsctf-tests ci-artifacts/rsctf
+          printf '%s\n' "$GITHUB_SHA" > ci-artifacts/source-sha
+
+      - name: Share tested binaries with isolated integration jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-server-${{ github.sha }}
+          path: ci-artifacts/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 1
+
   coverage:
     name: Rust coverage and database regressions
+    needs: plan
+    if: needs.plan.outputs.server == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -141,6 +187,7 @@ jobs:
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: coverage
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked --version 0.8.7
@@ -179,6 +226,8 @@ jobs:
 
   byoc-agent:
     name: BYOC agent
+    needs: plan
+    if: needs.plan.outputs.byoc == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -201,12 +250,10 @@ jobs:
         with:
           workspaces: agents/byoc-agent -> target
           shared-key: byoc-agent
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-
-      - name: Check all targets
-        run: cargo check --all-targets --locked
 
       - name: Run Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
@@ -216,6 +263,8 @@ jobs:
 
   worker-plane-linux:
     name: Worker plane (Linux)
+    needs: plan
+    if: needs.plan.outputs.worker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -242,6 +291,7 @@ jobs:
             lib/worker-protocol -> target
             agents/worker-agent -> target
           shared-key: worker-plane-linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check protocol formatting
         run: cargo fmt --manifest-path lib/worker-protocol/Cargo.toml --all -- --check
@@ -251,9 +301,6 @@ jobs:
 
       - name: Check protocol
         run: cargo check --manifest-path lib/worker-protocol/Cargo.toml --all-targets --locked
-
-      - name: Check agent
-        run: cargo check --manifest-path agents/worker-agent/Cargo.toml --all-targets --locked
 
       - name: Build release worker artifact
         run: >-
@@ -281,6 +328,8 @@ jobs:
 
   worker-plane-windows:
     name: Worker compatibility (Windows)
+    needs: plan
+    if: needs.plan.outputs.worker == 'true'
     runs-on: windows-latest
     timeout-minutes: 25
     env:
@@ -305,15 +354,13 @@ jobs:
             lib/worker-protocol -> target
             agents/worker-agent -> target
           shared-key: worker-plane-windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check protocol formatting
         run: cargo fmt --manifest-path lib/worker-protocol/Cargo.toml --all -- --check
 
       - name: Check agent formatting
         run: cargo fmt --manifest-path agents/worker-agent/Cargo.toml --all -- --check
-
-      - name: Check Windows target
-        run: cargo check --manifest-path agents/worker-agent/Cargo.toml --all-targets --target x86_64-pc-windows-msvc --locked
 
       - name: Run Windows Clippy
         run: cargo clippy --manifest-path agents/worker-agent/Cargo.toml --all-targets --target x86_64-pc-windows-msvc --locked -- -D warnings
@@ -372,6 +419,8 @@ jobs:
 
   helm-chart:
     name: Helm chart
+    needs: plan
+    if: needs.plan.outputs.deployment == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -396,7 +445,8 @@ jobs:
 
   kubernetes-callback:
     name: Kubernetes KotH callback isolation
-    needs: rust
+    needs: [plan, rust]
+    if: needs.plan.outputs.server == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -409,21 +459,16 @@ jobs:
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Download same-run tested binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          toolchain: 1.98.0
+          name: ci-server-${{ github.sha }}
+          path: ci-artifacts
 
-      - name: Restore Rust build cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: server
-
-      - name: Compile production-policy emitter
-        run: >-
-          cargo test --locked --lib
-          services::k8s::tests::emit_managed_koth_callback_policy_for_live_test
-          --no-run
+      - name: Verify binary source
+        run: |
+          test "$(cat ci-artifacts/source-sha)" = "$GITHUB_SHA"
+          chmod 0755 ci-artifacts/rsctf-tests
 
       - name: Install pinned Kubernetes tools
         run: |
@@ -441,10 +486,14 @@ jobs:
           sudo install -m 0755 /tmp/rsctf-kubectl /usr/local/bin/kubectl
 
       - name: Exercise callback DNS and NetworkPolicy
+        env:
+          RSCTF_K8S_TEST_BINARY: ${{ github.workspace }}/ci-artifacts/rsctf-tests
         run: ./scripts/test-kubernetes-koth-callback.sh
 
   web:
     name: React client
+    needs: plan
+    if: needs.plan.outputs.web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -483,6 +532,8 @@ jobs:
 
   dependency-security:
     name: Dependency security
+    needs: plan
+    if: needs.plan.outputs.security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -495,6 +546,15 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.98.0
+
+      - name: Restore pinned audit tool
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: audit-0.22.2
+          cache-targets: false
+          # PRs can consume main's cache, without filling storage with a copy
+          # of this identical tool for every dependency-update merge ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
@@ -544,6 +604,8 @@ jobs:
 
   cheat-acceptance:
     name: Isolated anti-cheat acceptance
+    needs: [plan, rust]
+    if: needs.plan.outputs.server == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -597,24 +659,21 @@ jobs:
       - name: Install native and PostgreSQL client dependencies
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends iptables libpcap-dev postgresql-client
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Download same-run tested application
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          toolchain: 1.98.0
-
-      - name: Restore anti-cheat acceptance build cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: cheat-acceptance
+          name: ci-server-${{ github.sha }}
+          path: target/debug
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
 
-      - name: Build and migrate the isolated application
+      - name: Verify and migrate the isolated application
         run: |
-          cargo build --locked
+          test "$(cat target/debug/source-sha)" = "$GITHUB_SHA"
+          chmod 0755 target/debug/rsctf
           RSCTF_ROLE=migrate ./target/debug/rsctf
 
       - name: Run compact anti-cheat acceptance
@@ -666,35 +725,24 @@ jobs:
 
   docs:
     name: Documentation
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    needs: plan
+    if: needs.plan.outputs.docs == 'true'
+    uses: ./.github/workflows/docs-build.yml
+
+  required:
+    name: Required CI checks
+    if: always()
+    needs: [plan, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, dependency-security, load-harness-contracts, cheat-acceptance, docs, repository-conventions]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 11.8.0
-          package_json_file: docs/package.json
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: docs/pnpm-lock.yaml
-
-      - name: Install documentation dependencies
-        run: pnpm --dir docs install --frozen-lockfile
-
-      - name: Generate journal PDFs
-        run: pnpm --dir docs pdf
-
-      - name: Build documentation
-        run: pnpm --dir docs build
+      - name: Reject failed or unexpectedly skipped gates
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci-plan.mjs verify
 
   repository-conventions:
     name: Repository conventions

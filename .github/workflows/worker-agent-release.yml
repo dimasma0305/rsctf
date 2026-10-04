@@ -93,8 +93,13 @@ jobs:
       - name: Restore worker build cache
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
-          workspaces: agents/worker-agent -> target
-          shared-key: worker-agent-release-${{ matrix.target }}
+          workspaces: |
+            lib/worker-protocol -> target
+            agents/worker-agent -> target
+          # Match the main CI cache's workspace, target and flags exactly.
+          shared-key: ${{ matrix.arch == 'amd64' && 'worker-plane-linux' || 'worker-plane-linux-arm64' }}
+          # Tag-scoped caches cannot warm the next release or main/PR builds.
+          save-if: false
 
       - name: Build release binary
         run: >-
@@ -150,8 +155,11 @@ jobs:
       - name: Restore worker build cache
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
-          workspaces: agents/worker-agent -> target
-          shared-key: worker-agent-release-x86_64-pc-windows-msvc
+          workspaces: |
+            lib/worker-protocol -> target
+            agents/worker-agent -> target
+          shared-key: worker-plane-windows
+          save-if: false
 
       - name: Build release executable
         run: >-

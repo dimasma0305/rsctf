@@ -6,10 +6,8 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/docs.yml"
-  pull_request:
-    paths:
-      - "docs/**"
-      - ".github/workflows/docs.yml"
+      - ".github/workflows/docs-build.yml"
+  # Pull requests are built once by ci.yml's reusable documentation job.
   workflow_dispatch:
 
 permissions:
@@ -22,52 +20,9 @@ concurrency:
 jobs:
   build:
     name: Build VitePress site
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 11.8.0
-          package_json_file: docs/package.json
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: docs/pnpm-lock.yaml
-
-      - name: Configure GitHub Pages
-        # Private repositories may intentionally have Pages disabled. Always
-        # build the docs, but only configure/deploy an existing Pages site.
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event.repository.has_pages
-        id: pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
-
-      - name: Install documentation dependencies
-        run: pnpm --dir docs install --frozen-lockfile
-
-      - name: Generate journal PDFs
-        run: pnpm --dir docs pdf
-
-      - name: Build documentation
-        run: pnpm --dir docs build
-        env:
-          DOCS_BASE: ${{ steps.pages.outputs.base_path }}/
-          DOCS_HOSTNAME: ${{ steps.pages.outputs.base_url && format('{0}/', steps.pages.outputs.base_url) || '' }}
-
-      - name: Upload GitHub Pages artifact
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event.repository.has_pages
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
-        with:
-          path: docs/.vitepress/dist
+    uses: ./.github/workflows/docs-build.yml
+    with:
+      pages: true
 
   deploy:
     name: Deploy GitHub Pages

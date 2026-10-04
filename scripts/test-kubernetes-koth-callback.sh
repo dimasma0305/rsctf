@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+run_rust_test() {
+  if [[ -n "${RSCTF_K8S_TEST_BINARY:-}" ]]; then
+    # CI supplies only an artifact from this same workflow run and source SHA.
+    # Locally, retain the bounded Cargo path when no artifact is supplied.
+    test -x "$RSCTF_K8S_TEST_BINARY"
+    "$RSCTF_K8S_TEST_BINARY" "$1" --ignored --exact
+  else
+    scripts/bounded-cargo.sh test --locked --lib "$1" -- --ignored --exact
+  fi
+}
+
 for command_name in kind kubectl; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "missing required command: $command_name" >&2
@@ -11,11 +22,17 @@ done
 cluster_name="rsctf-koth-callback-${RANDOM}"
 node_image='kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5'
 policy_directory=''
+kubeconfig_directory="$(mktemp -d /tmp/rsctf-koth-kubeconfig.XXXXXX)"
+# Never replace a developer's active Kubernetes context during the local gate.
+export KUBECONFIG="${kubeconfig_directory}/config"
 
 cleanup() {
   kind delete cluster --name "$cluster_name" >/dev/null 2>&1 || true
   if [[ -n "$policy_directory" && -d "$policy_directory" && ! -L "$policy_directory" ]]; then
     rm -r -- "$policy_directory"
+  fi
+  if [[ -d "$kubeconfig_directory" && ! -L "$kubeconfig_directory" ]]; then
+    rm -r -- "$kubeconfig_directory"
   fi
 }
 trap cleanup EXIT
@@ -132,9 +149,7 @@ RSCTF_K8S_AD_SERVICE_CIDR='10.96.0.0/12' \
 RSCTF_K8S_AD_INGRESS_CIDRS='192.0.2.0/24' \
 RSCTF_K8S_REJECTION_NAMESPACE='rsctf-rejection' \
 RSCTF_K8S_LIVE_RETRY='1' \
-  cargo test --locked --lib \
-    services::k8s::retry_tests::real_kubernetes_legacy_retry_and_authoritative_rollback \
-    -- --ignored --exact
+  run_rust_test services::k8s::retry_tests::real_kubernetes_legacy_retry_and_authoritative_rollback
 
 kubectl apply -f - <<'YAML'
 apiVersion: v1
@@ -245,9 +260,7 @@ emit_policy() {
   RSCTF_K8S_DNS_CIDRS="$dns_cidr" \
   RSCTF_K8S_POLICY_OUTPUT="$output" \
   RSCTF_K8S_POLICY_OPERATION_ID="$operation_id" \
-    cargo test --locked --lib \
-      services::k8s::tests::emit_managed_koth_callback_policy_for_live_test \
-      -- --ignored --exact
+    run_rust_test services::k8s::tests::emit_managed_koth_callback_policy_for_live_test
 }
 
 route_a_policy="${policy_directory}/route-a-original.json"
