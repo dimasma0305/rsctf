@@ -21,6 +21,12 @@ promotion, and immutable release publication remain mandatory.
   conventions and harness contracts. Agent/protocol changes retain the server
   integration gates. Unknown/shared paths and incomplete diffs run everything.
   Diffing uses Git history, not the API's capped list of changed files.
+- Report-only PRs also keep the planner, repository conventions, harness contracts
+  and fail-closed aggregate, without compiling unrelated components. This applies
+  only to `.github/WORKFLOW_PERFORMANCE.md`, `tests/load/README.md` and
+  `tests/load/REPORT.md`, none of which is a build input. It is not a blanket
+  Markdown exemption: workflows, test code, licensing, unknown paths and mixed
+  changes still select their required checks. Manual/publication runs remain full.
 - Every manual or reusable publication run executes the full suite. The final
   `Required CI checks` job runs even after failures and rejects missing,
   cancelled, failed, or unexpectedly skipped jobs. It is suitable as a stable

@@ -4,6 +4,11 @@ import { pathToFileURL } from 'node:url'
 
 export const components = ['server', 'byoc', 'worker', 'web', 'docs', 'deployment', 'security']
 const fullPlan = () => Object.fromEntries(components.map((name) => [name, true]))
+const reportPaths = new Set([
+  '.github/WORKFLOW_PERFORMANCE.md',
+  'tests/load/README.md',
+  'tests/load/REPORT.md',
+])
 
 // Only known, isolated PR paths can opt out of a gate. Unknown paths, deleted
 // shared files, workflow changes, and every publication/manual run fail closed.
@@ -17,7 +22,7 @@ export function planChecks(paths, eventName) {
       for (const name of ['byoc', 'server', 'deployment', 'security']) plan[name] = true
     } else if (path.startsWith('agents/worker-agent/') || path.startsWith('lib/worker-protocol/')) {
       for (const name of ['worker', 'server', 'deployment', 'security']) plan[name] = true
-    } else if (/^(README(?:\.[a-z-]+)?\.md|CHANGELOG\.md)$/.test(path)) {
+    } else if (reportPaths.has(path) || /^(README(?:\.[a-z-]+)?\.md|CHANGELOG\.md)$/.test(path)) {
       // Repository conventions and harness contracts still run for prose-only PRs.
     } else return fullPlan()
   }

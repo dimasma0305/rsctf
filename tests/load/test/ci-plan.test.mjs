@@ -11,10 +11,26 @@ const all = Object.fromEntries(components.map((name) => [name, true]))
 test('publication, manual, unknown and indeterminate changes always run the full suite', () => {
   for (const event of ['workflow_dispatch', 'workflow_call', 'push', undefined]) {
     assert.deepEqual(planChecks(['web/package.json'], event), all)
+    assert.deepEqual(planChecks(['.github/WORKFLOW_PERFORMANCE.md', 'tests/load/REPORT.md'], event), all)
   }
   for (const paths of [undefined, [], ['.github/workflows/ci.yml'], ['Cargo.lock'], ['build.rs'], ['src/new.rs'], ['scripts/ci-plan.mjs'], ['new-shared-config']]) {
     assert.deepEqual(planChecks(paths, 'pull_request'), all)
   }
+})
+
+test('only the exact non-build report paths omit unrelated component jobs on PRs', () => {
+  const reports = ['.github/WORKFLOW_PERFORMANCE.md', 'tests/load/README.md', 'tests/load/REPORT.md']
+  const none = Object.fromEntries(components.map((name) => [name, false]))
+  for (const paths of reports.map((path) => [path]).concat([reports])) {
+    assert.deepEqual(planChecks(paths, 'pull_request'), none)
+  }
+  for (const path of ['.github/WORKFLOW_PERFORMANCE.md.yml', 'tests/load/REPORT.md.js',
+    '.github/workflows/ci.yml', 'tests/load/k6/polled-read.js', 'tests/load/test/ci-plan.test.mjs',
+    'scripts/ci-plan.mjs', 'LICENSING.md', 'LICENSE.txt', 'build.rs']) {
+    assert.deepEqual(planChecks([...reports, path], 'pull_request'), all)
+  }
+  const web = planChecks([...reports, 'web/package.json'], 'pull_request')
+  assert.deepEqual(Object.keys(web).filter((name) => web[name]), ['web'])
 })
 
 test('leaf PRs select their checks without skipping cross-component Rust contracts', () => {
@@ -43,6 +59,22 @@ function results(plan) {
     ...Object.entries(jobComponents).map(([job, component]) => [job, { result: plan[component] === 'true' ? 'success' : 'skipped' }]),
   ])
 }
+
+test('report-only PRs retain every unconditional check and reject unsuccessful optional jobs', () => {
+  const plan = Object.fromEntries(Object.entries(planChecks(['tests/load/REPORT.md'], 'pull_request'))
+    .map(([name, selected]) => [name, String(selected)]))
+  assert.doesNotThrow(() => verifyChecks(plan, results(plan)))
+  for (const job of ['plan', 'repository-conventions', 'load-harness-contracts']) {
+    for (const result of ['failure', 'cancelled', 'skipped', undefined]) {
+      assert.throws(() => verifyChecks(plan, { ...results(plan), [job]: { result } }))
+    }
+  }
+  for (const job of Object.keys(jobComponents)) {
+    for (const result of ['failure', 'cancelled', undefined]) {
+      assert.throws(() => verifyChecks(plan, { ...results(plan), [job]: { result } }))
+    }
+  }
+})
 
 test('the aggregate gate accepts planned skips and rejects missing, failed, cancelled or unexpectedly skipped checks', () => {
   const plan = Object.fromEntries(Object.entries(planChecks(['web/a'], 'pull_request')).map(([key, value]) => [key, String(value)]))
@@ -97,6 +129,18 @@ test('the CLI handles complete git diffs, path moves, hostile filenames and unav
     assert.equal(run(base, git('rev-parse', 'HEAD')).server, 'true')
     assert.equal(run('0'.repeat(40), web).server, 'true')
     assert.equal(run('invalid', web).server, 'true')
+    const beforeReport = git('rev-parse', 'HEAD')
+    mkdirSync(join(root, '.github'))
+    writeFileSync(join(root, '.github', 'WORKFLOW_PERFORMANCE.md'), 'Measured results.\n')
+    git('add', '.')
+    git('commit', '-m', 'report only')
+    const report = git('rev-parse', 'HEAD')
+    assert.ok(Object.values(run(beforeReport, report)).every((selected) => selected === 'false'))
+    mkdirSync(join(root, '.github', 'workflows'))
+    writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'fixture\n')
+    git('add', '.')
+    git('commit', '-m', 'report plus workflow')
+    assert.ok(Object.values(run(beforeReport, git('rev-parse', 'HEAD'))).every((selected) => selected === 'true'))
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
