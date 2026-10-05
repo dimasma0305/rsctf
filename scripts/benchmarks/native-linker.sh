@@ -26,3 +26,7 @@ for binary in "$RSCTF_LINK_BENCH_DIR"/server-links/*.bin; do
   readelf -h -l -d "$binary" > "${binary}.elf.txt"
 done
 printf '%s\n' "$reference" > "$RSCTF_LINK_BENCH_DIR/verified-version.txt"
+for timing in "$RSCTF_LINK_BENCH_DIR"/server-links/*.seconds.log; do
+  printf '%s: ' "${timing##*/}"
+  tail -n 1 "$timing"
+done

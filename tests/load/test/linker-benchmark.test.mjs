@@ -14,6 +14,8 @@ test('native compiler owns only its disposable writable mount and cannot publish
   assert.match(workflow, /--cpus 4 --memory 12g --pids-limit 512/)
   assert.match(workflow, /--cap-drop ALL --security-opt no-new-privileges/)
   assert.match(workflow, /contents: read/)
+  assert.match(workflow, /^  workflow_dispatch:$/m)
+  assert.doesNotMatch(workflow, /^  (?:pull_request|pull_request_target|push|schedule):/m)
   assert.doesNotMatch(workflow, /packages: write|id-token: write|secrets\.|docker push|setup-qemu|cache@/)
 })
 test('linker experiment preserves the original output and replays identical inputs with both linkers', () => {

@@ -2,11 +2,6 @@ name: Native linker experiment
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/linker-benchmark.yml'
-      - 'scripts/benchmarks/linker-driver.sh'
-      - 'scripts/benchmarks/native-linker.sh'
 
 permissions:
   contents: read

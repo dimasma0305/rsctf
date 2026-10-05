@@ -490,3 +490,78 @@ critical-path benefit. This audit does not claim a universal minimum build time:
 runner capacity, future source changes and new measured compiler approaches can
 change that boundary. It retains the current tests, coverage, runtime performance
 and publication trust requirements.
+
+## Native linker and CI debug-information follow-up — 5 October 2026
+
+The [native ARM64 linker experiment](https://github.com/dimasma0305/rsctf/actions/runs/37254682530)
+used the exact pinned Rust 1.97.1 release builder, v0.1.138 application inputs,
+four CPUs and 12 GiB. Production remained at opt-level 3, fat LTO, one codegen
+unit and panic unwinding. One compilation supplied identical final server
+objects to GNU BFD 2.40 and Rust's bundled LLD 22.1.6. After one warmup per
+linker, three alternating measurements each gave:
+
+- BFD: **2.149 / 2.159 / 2.194s**, mean **2.167s**.
+- LLD: **0.324 / 0.339 / 0.323s**, mean **0.329s**.
+
+LLD saved **1.839s at the external-link step**. Root-package compilation took
+988.385s after subtracting the extra replay time; even removing the original
+2.207s external link entirely would save only **0.223%** of that work. LLVM
+code generation and fat LTO are not the external linker. This candidate fails
+the predeclared 10% build-improvement threshold; production therefore retains
+its current linker. No whole-build or runtime improvement is claimed, and
+there is no reason to add another linker dependency just for this result.
+
+All eight replay outputs reported the expected version and validated the
+example event's nine challenges without errors or warnings. Their ELF reports
+retained AArch64, RELRO, immediate binding and non-executable stacks. The build
+had no Rust warnings. These are independent feasibility checks, not a substitute
+for the fixed-rate runtime trials a qualifying production candidate would need.
+
+The initial attempt failed before compilation because a capability-dropped root
+container could not write the runner-owned bind mount. A local before/after
+reproduction verified matching the runner UID/GID with a disposable Cargo home;
+the corrected native run above passed. That failed setup is not a timing sample.
+
+`Native linker experiment` is now manual-only: ordinary PRs and publication do
+not run an extra native compile. Its read-only token cannot publish images;
+experimental binaries are neither cached, uploaded nor used by release jobs.
+The [initial full quality gate](https://github.com/dimasma0305/rsctf/actions/runs/37254682593)
+passed all 16 jobs in 9m10s. This validates the experiment harness, not a new
+workflow speedup. Raw logs and the controlled-comparison protocol are retained
+under `visual-audit-output/workflow-debug-linker/`.
+
+The separate CI-debug experiment compared the existing `debug=1` with
+`CARGO_PROFILE_DEV_DEBUG=line-tables-only`. Both used Rust 1.98.0, the same
+v0.1.138 sources/lockfile and all-feature application builds, two CPUs, 12 GiB,
+two Cargo workers, disabled incremental compilation and no compiler wrapper.
+Dependencies were already downloaded; each condition had its own initially
+empty target. The order was baseline cold, candidate cold, candidate warm,
+baseline warm; warm trials cleaned only package `rsctf` in their owned targets.
+
+| Application build | Existing debug=1 | Line tables only | Observed reduction |
+| --- | ---: | ---: | ---: |
+| Cold target | 854.94s | 841.57s | 1.56% |
+| Dependencies retained, root rebuilt | 175.54s | 172.29s | 1.85% |
+
+All four builds passed without warnings and reported v0.1.138. The baseline
+warm rebuild reproduced its cold binary SHA-256 exactly. The candidate reduced
+server binary size from 644,196,472 to 433,605,240 bytes, but failed the
+predeclared **10% compilation-improvement threshold in both conditions**.
+These are one sample per condition, not a statistically established speedup,
+and exclude cache transfer, tests and GitHub orchestration. The experiment
+stops at this feasibility gate: no full candidate coverage or runtime claim
+is made, and neither the active CI profile nor production profile changes.
+
+The committed follow-up consists only of a manual diagnostic workflow, its
+experiment scripts/tests and this report. None enters the application image,
+worker artifacts, installer or deployment bundle, so no new production release
+is needed. The 02:41 UTC read-only check on 2026-10-05 confirmed all four
+containers still healthy on the v0.1.138 digest recorded above, zero restarts,
+and exact HTTP 200 `healthz=ok`. These measurements do not change the previously
+reported CI/publication timings or claim that further optimization is impossible.
+
+Final local verification passed both focused benchmark contracts, Actionlint,
+Bash syntax checks and the full harness: 523 passes, zero failures and one
+existing environment-only skip. The approximately 8.5 GB of task-owned compiler
+targets were then cleaned through the bounded wrapper, after retaining timings,
+ELF metadata, hashes and logs. Existing developer caches were not touched.
