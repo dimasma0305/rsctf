@@ -1,0 +1,64 @@
+name: Native linker experiment
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/linker-benchmark.yml'
+      - 'scripts/benchmarks/linker-driver.sh'
+      - 'scripts/benchmarks/native-linker.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linker-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arm64:
+    # Experimental binaries are never published, cached or used as release evidence.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Prepare the exact release compiler
+        run: docker build --target chef --tag rsctf-linker-compiler .
+      - name: Measure identical native ARM64 link inputs
+        env:
+          EXPERIMENT_DIRECTORY: ${{ runner.temp }}/rsctf-linker-experiment
+        run: |
+          test "$(uname -m)" = aarch64
+          mkdir "$EXPERIMENT_DIRECTORY"
+          docker run --rm --name rsctf-linker-experiment \
+            --cpus 4 --memory 12g --pids-limit 512 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace" \
+            --mount "type=bind,src=$EXPERIMENT_DIRECTORY,dst=/experiment" \
+            --workdir /workspace \
+            --env GIT_CONFIG_COUNT=1 \
+            --env GIT_CONFIG_KEY_0=safe.directory \
+            --env GIT_CONFIG_VALUE_0=/workspace \
+            --env RUSTUP_TOOLCHAIN=1.97.1 \
+            --env RSCTF_CARGO_TARGET_DIR=/experiment/target \
+            --env RSCTF_CARGO_JOBS=4 \
+            --env RSCTF_LINK_BENCH_DIR=/experiment/results \
+            --env RSCTF_LINK_BENCH_LLD_DIR=/experiment/lld \
+            rsctf-linker-compiler timeout --signal=TERM --kill-after=30s 2700s \
+            bash scripts/benchmarks/native-linker.sh
+      - name: Retain measurements, not experimental executables
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: native-linker-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rsctf-linker-experiment/results/**/*.txt
+            ${{ runner.temp }}/rsctf-linker-experiment/results/**/*.log
+            ${{ runner.temp }}/rsctf-linker-experiment/results/**/*.sha256
+            ${{ runner.temp }}/rsctf-linker-experiment/results/**/*.nul
+            ${{ runner.temp }}/rsctf-linker-experiment/target/cargo-timings/*.html
+          if-no-files-found: error
+          retention-days: 3
