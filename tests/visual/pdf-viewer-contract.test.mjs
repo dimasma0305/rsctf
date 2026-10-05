@@ -28,3 +28,14 @@ test('both PDF.js contexts use upstream compatibility builds for supported older
   assert.match(vite, /replacement: 'pdfjs-dist\/legacy\/build\/pdf\.mjs'/)
   assert.match(viewer, /new URL\('pdfjs-dist\/legacy\/build\/pdf\.worker\.min\.mjs', import\.meta\.url\)/)
 })
+
+test('writeup audits wait for tab commits and rendered frames before collecting animations', () => {
+  const harness = readFileSync(new URL('./writeup-grading.mjs', import.meta.url), 'utf8')
+  const audit = harness.slice(harness.indexOf('const audit ='), harness.indexOf('\ntry {'))
+  const frames = audit.indexOf('requestAnimationFrame')
+  assert.ok(frames >= 0 && frames < audit.indexOf('document.getAnimations()'),
+    'a pending React commit can create an entrance animation after the old animation list was read')
+  assert.match(harness, /await clickText\('Projected scoreboard'\);\s*await wait\(`[^`]*aria-selected[^`]*Projected scoreboard[^`]*`\)\s*await audit\(name\+'-ranking'\)/)
+  assert.match(audit, /values:\['wcag2a','wcag2aa','wcag21aa'\]/,
+    'animation synchronization must not disable the accessibility rules')
+})
