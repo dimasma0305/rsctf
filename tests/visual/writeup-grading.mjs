@@ -34,6 +34,8 @@ const visit = async () => {
   }
 }
 const audit = async (name) => {
+  // A tab's React commit can register its entrance animation on the next frame.
+  await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
   await evaluate('Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().endTime!==Infinity).map(a=>a.finished.catch(()=>{})))')
   await evaluate(readFileSync('node_modules/axe-core/axe.min.js', 'utf8'))
   const r = await evaluate(`(async()=>({overflow:document.documentElement.scrollWidth>innerWidth+1,h1:document.querySelectorAll('h1').length,violations:(await axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))}))}))()`)
@@ -96,7 +98,9 @@ try {
     }
     assert.equal(pdfRequests,loadedPdfRequests,'Tab switches must not download the same PDF again')
     await audit(name+'-returned-review')
-    await clickText('Projected scoreboard'); await audit(name+'-ranking')
+    await clickText('Projected scoreboard');
+    await wait(`document.querySelector('[role="tab"][aria-selected="true"]').textContent==='Projected scoreboard'`)
+    await audit(name+'-ranking')
   }
   await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false})
   await visit()
