@@ -9,7 +9,7 @@ import 'react-pdf/dist/Page/TextLayer.css'
 import { showErrorMsg } from '@Utils/Shared'
 import classes from '@Styles/PDFViewer.module.css'
 
-pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
+pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/legacy/build/pdf.worker.min.mjs', import.meta.url).toString()
 
 interface PDFViewerProps {
   url?: string
@@ -82,6 +82,7 @@ export const PDFViewer: FC<PDFViewerProps> = memo(({ url, height, active = true 
           <Box ref={ref}>
             <Document
               file={url}
+              suspense={false}
               className={classes.doc}
               onLoadSuccess={({ numPages }) => {
                 setNumPages(numPages)
