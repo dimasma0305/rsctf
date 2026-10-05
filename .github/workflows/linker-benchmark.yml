@@ -35,6 +35,7 @@ jobs:
           mkdir "$EXPERIMENT_DIRECTORY"
           docker run --rm --name rsctf-linker-experiment \
             --cpus 4 --memory 12g --pids-limit 512 \
+            --user "$(id -u):$(id -g)" \
             --cap-drop ALL --security-opt no-new-privileges \
             --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace" \
             --mount "type=bind,src=$EXPERIMENT_DIRECTORY,dst=/experiment" \
@@ -43,6 +44,7 @@ jobs:
             --env GIT_CONFIG_KEY_0=safe.directory \
             --env GIT_CONFIG_VALUE_0=/workspace \
             --env RUSTUP_TOOLCHAIN=1.97.1 \
+            --env CARGO_HOME=/experiment/cargo \
             --env RSCTF_CARGO_TARGET_DIR=/experiment/target \
             --env RSCTF_CARGO_JOBS=4 \
             --env RSCTF_LINK_BENCH_DIR=/experiment/results \

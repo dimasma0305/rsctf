@@ -6,6 +6,16 @@ import { join, resolve } from 'node:path'
 import test from 'node:test'
 
 const driver = resolve(import.meta.dirname, '../../../scripts/benchmarks/linker-driver.sh')
+test('native compiler owns only its disposable writable mount and cannot publish artifacts', () => {
+  const workflow = readFileSync(resolve(import.meta.dirname, '../../../.github/workflows/linker-benchmark.yml'), 'utf8')
+  assert.match(workflow, /runs-on: ubuntu-24\.04-arm/)
+  assert.match(workflow, /--user "\$\(id -u\):\$\(id -g\)"/)
+  assert.match(workflow, /--env CARGO_HOME=\/experiment\/cargo/)
+  assert.match(workflow, /--cpus 4 --memory 12g --pids-limit 512/)
+  assert.match(workflow, /--cap-drop ALL --security-opt no-new-privileges/)
+  assert.match(workflow, /contents: read/)
+  assert.doesNotMatch(workflow, /packages: write|id-token: write|secrets\.|docker push|setup-qemu|cache@/)
+})
 test('linker experiment preserves the original output and replays identical inputs with both linkers', () => {
   const sysroot = spawnSync('rustc', ['--print', 'sysroot'], { encoding: 'utf8' })
   assert.equal(sysroot.status, 0)
