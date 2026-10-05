@@ -565,3 +565,147 @@ Bash syntax checks and the full harness: 523 passes, zero failures and one
 existing environment-only skip. The approximately 8.5 GB of task-owned compiler
 targets were then cleaned through the bounded wrapper, after retaining timings,
 ELF metadata, hashes and logs. Existing developer caches were not touched.
+
+## Research-backed compiler-profile follow-up — 5 October 2026
+
+This follow-up tests profile changes against frozen v0.1.138 source at
+`386ca669a6fce3bd702ab27b8b03d167e79b9ba7`. Protocol, input hashes, commands,
+logs, binary identities and Cargo timings are retained under
+`visual-audit-output/workflow-profile-research/`. No candidate is accepted on
+an upstream benchmark alone.
+
+### CI dependency optimization level
+
+The [Cargo profile documentation](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides-and-generics)
+notes that opt-level 1 permits sharing monomorphized generics across crates,
+whereas levels 2/3 do not. Compare the current dev dependency level 2 against
+level 1, keeping application opt-level 0, debug=1, Rust 1.98.0, two CPUs,
+12 GiB, two Cargo workers, disabled incremental compilation and no compiler
+cache wrapper. Both conditions use initially empty targets and already-downloaded
+dependency sources. All builds run through the bounded wrapper with warnings
+denied. Warm trials clean only package `rsctf`, retaining dependencies.
+
+| Application build | Dependency level 2 | Dependency level 1 | Observed reduction |
+| --- | ---: | ---: | ---: |
+| Cold target | 834.50s | 698.19s | 16.33% |
+| Dependencies retained, root rebuilt | 182.78s | 183.25s | -0.26% |
+
+Order: baseline cold, candidate cold, candidate warm, baseline warm. All four
+builds passed without warnings, reported the expected version and validated the
+nine bundled example challenges. Within each condition the warm server and
+sensor binaries reproduced their cold SHA-256 hashes exactly. The cold root
+library took 168.98s versus 165.89s, so most cold-build savings occurred before
+the application library, not in its generic/code-generation work.
+
+This is one sample per condition, not a statistically established speedup.
+The promising cold reduction did not reproduce as a >=10% improvement in the
+dependency-cached application rebuild. The candidate fails the predeclared
+warm-build feasibility gate; full candidate test/coverage comparisons were not
+run, and the active dev/test profile remains unchanged. These timings exclude
+dependency download, cache transfer, test execution and GitHub orchestration;
+they are not complete workflow timings.
+
+### Fat LTO with multiple codegen units
+
+Compare one and four codegen units with fat LTO retained, using the pinned
+Rust 1.97.1 release builder, two CPUs, 12 GiB, two workers and unchanged
+opt-level 3, stripping and panic unwinding. The compiler container has no
+network access or additional capabilities. Sixteen units is the bounded
+fallback if four does not meet the >=10% cold and warm compile gates.
+
+Initial cold samples took **1214.38s** (one unit) and **1117.39s** (four), a
+**7.99%** reduction, below the gate. Both passed with zero warnings, the expected
+version and nine valid example challenges. The four-unit server grew from
+60,631,632 to 70,259,792 bytes (**15.88%**). This does not establish a runtime
+regression, but binary size and compiler time are not runtime acceptance.
+
+Cargo timings explain why partitioning did not yield a proportionate total
+reduction: the root library fell from 506.76s to 279.15s, while the final server
+binary stage increased from 374.24s to 530.15s. Library frontend time was nearly
+unchanged (121.67s / 122.80s); its code-generation span fell from 385.09s to
+156.35s. Live compiler arguments confirmed that Cargo already uses
+`linker-plugin-lto` for the library; adding that flag is not a new optimization.
+
+The reversed-order warm comparison took **802.48s** (four units) and **877.13s**
+(one), an **8.51%** reduction. Both reproduced their cold server/sensor hashes
+exactly and again passed version and nine-challenge validation with zero warnings.
+Four units therefore fails both predeclared compile feasibility gates; it does
+not advance to runtime acceptance.
+
+The sixteen-unit fallback's cold build took **1207.64s**, only **0.56%** below
+the one-unit baseline and therefore below the same 10% gate. The library took
+277.11s, effectively the same as four units, while the final server stage rose
+to 621.47s. Its server is 74,125,648 bytes. It passed with zero warnings and the
+same executable/schema validation, but does not qualify for runtime acceptance.
+
+The final sixteen-unit warm build took **883.95s**, **0.78% slower** than the
+877.13s baseline. It passed with zero warnings and reproduced both cold binary
+hashes exactly. Neither release candidate passes the compile feasibility screen;
+no additional warm series, runtime acceptance load, or full candidate release gate
+was started. The prepared runtime harness is not evidence of a completed load test.
+
+All ten application builds in this follow-up passed executable/version/challenge
+validation without warnings. No active Cargo profile or workflow changed.
+These are single matched samples on a shared x86_64 KVM host, with two CPU quota
+and two compiler workers, not exclusive cores or a native GitHub runner. They are
+not statistically established speedups and do not establish performance under
+different runner parallelism. No runtime-performance claim follows from rejected
+compiler settings or binary size alone. Production remains unchanged.
+
+### LLVM code-volume diagnostic
+
+After both profile families failed their feasibility gates, the predeclared
+fallback followed the [Rust Performance Book's LLVM IR guidance](https://nnethercote.github.io/perf-book/compile-times.html#llvm-ir).
+The analyzer was [cargo-llvm-lines 0.4.48](https://github.com/dtolnay/cargo-llvm-lines/tree/d08bcd4d116abfea9e50141d5d68aae6a120e868),
+pinned to commit `d08bcd4d116abfea9e50141d5d68aae6a120e868` under its
+MIT/Apache-2.0 license. Its signed tag was verified by GitHub, source and lockfile
+were inspected, and installation used the bounded wrapper into a task-local
+prefix. A known three-function fixture first verified its four-line count and
+aggregation of two generic instantiations.
+
+The same Rust 1.97.1 release builder emitted the root library's diagnostic IR
+with `--emit=llvm-ir -Cno-prepopulate-passes -Cpasses=name-anon-globals`.
+The analyzer reported **12,037,960 counted IR lines across 244,488 function
+instantiations**, matching an independent streaming check. These are code-volume
+proxies, not per-function compilation time or runtime CPU measurements. The
+173.59s instrumented emission and 4.35s analysis are diagnostic costs, not an
+alternative release-build speedup.
+
+| Large project-owned async body | Counted IR lines |
+| --- | ---: |
+| [`services::cron::run_jobs`](../src/services/cron/mod.rs#L221) | 22,214 |
+| [`game::containers::perform_create_container`](../src/controllers/game/containers.rs#L136) | 14,753 |
+| [`game::submit::submit`](../src/controllers/game/submit.rs#L249) | 12,298 |
+| [`services::git_sync::import_manifest_inner`](../src/services/git_sync/mod.rs#L192) | 12,222 |
+
+Even the largest individual body accounts for only **0.18%** of the counted
+total. This evidence does not support promising a large compile-time reduction
+from rewriting one function. A separately measured follow-up could investigate
+async/type-heavy boundaries or repeat the profile comparison on the actual
+runner, preserving behavior and release/runtime gates. No speculative source
+refactor or extra compiler flag was introduced here.
+
+### Verification and retained evidence
+
+The focused harness checks passed all 20 tests. The full load-harness contract
+suite passed **523 tests**, with zero failures and one existing opt-in real
+Traefik upload test skipped because `RSCTF_TEST_TRAEFIK_IMAGE` was not configured.
+These validate the harness, not candidate backend behavior or runtime performance.
+Node syntax checks and `git diff --check` passed. Since no candidate was accepted
+and the only tracked change is this report, full application/frontend gates and
+an artifact release are not required for this follow-up.
+
+All ten server/sensor executables, timing reports, logs, protocols, tool/input
+hashes and the compressed diagnostic IR are retained in the local evidence
+directory. Executable copies and the IR compression round trip were verified
+by SHA-256 before cleaning the six task-owned Cargo targets through the bounded
+wrapper. Existing developer caches and production resources were untouched.
+The only committed change is prose; no new production deployment is required,
+and this follow-up does not reduce the previously reported GitHub workflow time.
+
+The 06:05–06:06 UTC read-only production check on 2026-10-05 returned HTTP 200
+with exact `healthz=ok`. All four containers were healthy with zero restarts,
+reported v0.1.138, and retained
+`ghcr.io/dimasma0305/rsctf@sha256:feec2a7e07632ab00f01a0b4c9403b897537778d5d4df42fe37fe1d631678af7`.
+The preceding 15 minutes of available container logs had no matching panic,
+migration-failure or HTTP-5xx diagnostics; those logs were sparse (two lines).
