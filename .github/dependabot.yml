@@ -62,7 +62,7 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
     ignore:
-      # react-pdf currently requires pdfjs-dist 5.4.296 exactly. Move both
+      # react-pdf currently requires pdfjs-dist 6.3.289 exactly. Move both
       # together through a future react-pdf upgrade so its API and worker stay
       # byte-for-byte aligned. These version-update selectors preserve
       # Dependabot security updates, unlike an unconditional dependency ignore.

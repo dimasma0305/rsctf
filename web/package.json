@@ -58,7 +58,7 @@
     "lz-string": "^1.5.0",
     "marked": "^18.0.14",
     "pako": "^3.0.2",
-    "pdfjs-dist": "5.4.296",
+    "pdfjs-dist": "6.3.289",
     "pixi.js": "^8.21.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

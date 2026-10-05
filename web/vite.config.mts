@@ -30,9 +30,11 @@ export default defineConfig(({ mode }) => {
   return {
     resolve: {
       tsconfigPaths: true,
-      alias: {
-        '@creepjs': path.resolve(__dirname, 'src/lib/creepjs/src'),
-      },
+      alias: [
+        { find: '@creepjs', replacement: path.resolve(__dirname, 'src/lib/creepjs/src') },
+        // React-PDF's engine and worker must both include upstream browser polyfills.
+        { find: /^pdfjs-dist$/, replacement: 'pdfjs-dist/legacy/build/pdf.mjs' },
+      ],
     },
     server: {
       port: 63000,
