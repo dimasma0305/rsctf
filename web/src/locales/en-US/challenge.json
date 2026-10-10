@@ -178,6 +178,10 @@
           "message": "Please note the instance expiration time",
           "title": "Instance’s lifetime has been extended"
         }
+      },
+      "starting": {
+        "message": "The container host is still preparing this instance. This can take a few minutes.",
+        "title": "Instance is still starting"
       }
     }
   },

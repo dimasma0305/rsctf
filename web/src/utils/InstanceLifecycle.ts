@@ -1,3 +1,6 @@
+import { isRetryableHttpError } from './HttpError'
+import { retryAfterMilliseconds } from './ProfileRetry'
+
 export const runInstanceExtension = async (extend: () => void | Promise<void>, onSuccess: () => void) => {
   await extend()
   onSuccess()
@@ -59,6 +62,70 @@ export const confirmCreatedInstance = async <T extends { context?: InstanceConte
   return latest?.context?.instanceId === created.id
 }
 
+export const INSTANCE_CREATE_RETRY_BUDGET_MS = 10 * 60_000
+const INSTANCE_CREATE_MIN_RETRY_MS = 2_000
+const INSTANCE_CREATE_MAX_BACKOFF_MS = 15_000
+
+export type InstanceCreateOutcome = 'created' | 'present' | 'unconfirmed' | 'abandoned'
+
+interface CreateReconciliation<T> {
+  /** Sends the same durable operation identity on every attempt. */
+  create: () => Promise<InstanceRuntimeResponse>
+  refresh: () => Promise<T | undefined>
+  /** False once the surface that owns this start has closed or moved on. */
+  shouldContinue: () => boolean
+  onRetryScheduled?: (delayMs: number) => void
+  sleep?: (milliseconds: number) => Promise<void>
+  now?: () => number
+  budgetMs?: number
+}
+
+const defaultSleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
+
+/** Honour Retry-After, otherwise back off from 2 s to 15 s between attempts. */
+export const instanceCreateRetryDelay = (error: unknown, attempt: number, now: number): number => {
+  const backoff = Math.min(INSTANCE_CREATE_MAX_BACKOFF_MS, INSTANCE_CREATE_MIN_RETRY_MS * 2 ** attempt)
+  return Math.max(backoff, retryAfterMilliseconds(error, now) ?? 0)
+}
+
+/**
+ * Keep one start alive across transient failures. An image build or slow
+ * launch can outlive a proxy, browser, or server wait deadline while the
+ * server-side owner keeps working; re-sending the same operation identity
+ * rejoins that owner instead of reporting a transient failure as a dead
+ * instance. Only a terminal rejection or an exhausted budget surfaces.
+ */
+export const createReconciledInstance = async <T extends { context?: InstanceContext }>({
+  create,
+  refresh,
+  shouldContinue,
+  onRetryScheduled,
+  sleep = defaultSleep,
+  now = Date.now,
+  budgetMs = INSTANCE_CREATE_RETRY_BUDGET_MS,
+}: CreateReconciliation<T>): Promise<InstanceCreateOutcome> => {
+  const startedAt = now()
+  for (let attempt = 0; ; attempt += 1) {
+    let created: InstanceRuntimeResponse
+    try {
+      created = await create()
+    } catch (error) {
+      if (!isRetryableHttpError(error)) throw error
+      const delay = instanceCreateRetryDelay(error, attempt, now())
+      if (now() - startedAt + delay > budgetMs) throw error
+      onRetryScheduled?.(delay)
+      await sleep(delay)
+      if (!shouldContinue()) return 'abandoned'
+      // The owner may have finished while this attempt failed in transit.
+      const latest = await refresh().catch(() => undefined)
+      if (latest?.context?.instanceId) return 'present'
+      if (!shouldContinue()) return 'abandoned'
+      continue
+    }
+    return (await confirmCreatedInstance(created, refresh)) ? 'created' : 'unconfirmed'
+  }
+}
+
 /** Apply an extension only while the cache still names the immutable runtime ID. */
 export const mergeExtendedInstanceContext = <T extends { context?: InstanceContext }>(
   latest: T | undefined,
@@ -77,8 +144,7 @@ export const extendReconciledInstance = async <T extends { context?: InstanceCon
 }: ExtensionReconciliation<T>): Promise<void> => {
   const latest = await refresh()
   const expectedContainerId = latest?.context?.instanceId
-  if (!expectedContainerId)
-    throw new Error('The refreshed challenge response is missing its instance identity.')
+  if (!expectedContainerId) throw new Error('The refreshed challenge response is missing its instance identity.')
 
   const extension = await extend(expectedContainerId)
   await publish(extension)

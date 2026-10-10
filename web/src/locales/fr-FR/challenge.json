@@ -169,6 +169,10 @@
           "message": "Veuillez noter l'heure d'expiration de l'instance",
           "title": "La durée de vie de l'instance a été prolongée"
         }
+      },
+      "starting": {
+        "message": "L'hôte de conteneurs prépare encore cette instance. Cela peut prendre quelques minutes.",
+        "title": "L'instance démarre encore"
       }
     }
   },

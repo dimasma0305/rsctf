@@ -169,6 +169,10 @@
           "message": "Por favor, tenga en cuenta la hora de expiración de la instancia",
           "title": "La vida útil de la instancia ha sido extendida"
         }
+      },
+      "starting": {
+        "message": "El host de contenedores todavía está preparando esta instancia. Esto puede tardar unos minutos.",
+        "title": "La instancia sigue iniciándose"
       }
     }
   },

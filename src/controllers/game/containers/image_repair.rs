@@ -1,4 +1,9 @@
+use super::eligibility::{
+    authorize_on_demand_build, ineligible_container_start_error, player_request_is_eligible_now,
+    ContainerRequestMode,
+};
 use super::*;
+use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::enums::ChallengeBuildStatus;
 
 static RUNTIME_IMAGE_BUILDS: std::sync::LazyLock<crate::utils::single_flight::SingleFlight<bool>> =
@@ -179,6 +184,77 @@ pub(crate) async fn repair_missing_legacy_image(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdmissionImagePlan<'a> {
+    Ready,
+    BuildQueued,
+    RepairMissing(&'a str),
+}
+
+fn admission_image_plan(
+    build_status: ChallengeBuildStatus,
+    missing_local_image: Option<&str>,
+) -> AdmissionImagePlan<'_> {
+    if build_status == ChallengeBuildStatus::Queued {
+        return AdmissionImagePlan::BuildQueued;
+    }
+    match missing_local_image {
+        Some(image) => AdmissionImagePlan::RepairMissing(image),
+        None => AdmissionImagePlan::Ready,
+    }
+}
+
+/// Materialize a queued or pruned image before a player start is admitted.
+/// `operations::spawn_owner` bounds an admitted launch to its deadline. A
+/// multi-minute build inside that window timed out the owner and failed its
+/// followers although the detached build kept running, so the player saw an
+/// error and then an instant success on the next click. Both builders are
+/// detached single flights: a cancelled waiter does not cancel them and a
+/// retried request rejoins. The admitted launch still takes its own locked
+/// definition snapshot, which remains the decisive recheck.
+pub(super) async fn prepare_image_before_admission(
+    st: &SharedState,
+    caller: LiveParticipationIdentity<'_>,
+    challenge: &game_challenge::Model,
+    shared: bool,
+) -> AppResult<()> {
+    let legacy_image = crate::services::challenge_workloads::resolve_runtime(st, challenge)
+        .ok()
+        .and_then(|runtime| runtime.legacy_image);
+    let mut missing_local_image = None;
+    if let Some(image) = legacy_image.as_deref() {
+        if crate::services::challenge_images::is_local_image_id(image)
+            && !st.containers.image_exists(image).await
+        {
+            missing_local_image = Some(image);
+        }
+    }
+    match admission_image_plan(challenge.build_status, missing_local_image) {
+        AdmissionImagePlan::Ready => Ok(()),
+        AdmissionImagePlan::BuildQueued => {
+            // The first-build transition keeps its exact authorization gate. A
+            // queued challenge that is not lazily buildable falls through to
+            // the admitted launch's own error.
+            if authorize_on_demand_build(st, caller, challenge).await? {
+                prepare_queued_image(st, challenge).await?;
+            }
+            Ok(())
+        }
+        AdmissionImagePlan::RepairMissing(image) => {
+            let mode = if shared {
+                ContainerRequestMode::Shared
+            } else {
+                ContainerRequestMode::PerTeam
+            };
+            if !player_request_is_eligible_now(st, caller, challenge.id, mode).await? {
+                return Err(ineligible_container_start_error(st, challenge));
+            }
+            repair_missing_legacy_image(st, challenge, image).await?;
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +281,37 @@ mod tests {
             runtime_image_repair_plan(LOCAL, false, false),
             RuntimeImageRepairPlan::Unavailable
         );
+    }
+
+    #[test]
+    fn admission_plan_builds_queued_images_and_repairs_only_missing_local_ids() {
+        assert_eq!(
+            admission_image_plan(ChallengeBuildStatus::Queued, None),
+            AdmissionImagePlan::BuildQueued
+        );
+        assert_eq!(
+            admission_image_plan(ChallengeBuildStatus::Success, Some(LOCAL)),
+            AdmissionImagePlan::RepairMissing(LOCAL)
+        );
+        assert_eq!(
+            admission_image_plan(ChallengeBuildStatus::Success, None),
+            AdmissionImagePlan::Ready
+        );
+    }
+
+    #[test]
+    fn player_create_prepares_its_image_before_the_bounded_operation_claim() {
+        let source = include_str!("../containers.rs");
+        let start = source.find("pub async fn create_container").unwrap();
+        let end = source.find("async fn perform_create_container").unwrap();
+        let create = &source[start..end];
+        let prepare = create
+            .find("prepare_image_before_admission")
+            .expect("player create must materialize or repair its image before admission");
+        let claim = create
+            .find("operations::claim_create")
+            .expect("player create must claim its durable operation");
+        assert!(prepare < claim);
     }
 
     #[test]

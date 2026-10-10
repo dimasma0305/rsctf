@@ -28,10 +28,7 @@ test('closed challenge modals own no detail, solver, A&D, or KotH polling key', 
   assert.match(hook, /revalidateOnFocus: revalidateOnFocus && pausedKey !== key/)
   assert.match(hook, /revalidateOnReconnect: revalidateOnReconnect && pausedKey !== key/)
   assert.match(hook, /failureCount\.current = 0[\s\S]*setPausedKey\(null\)[\s\S]*return cancel/)
-  assert.doesNotMatch(
-    hook,
-    /failureCount\.current = 0[\s\S]*setPausedKey\(null\)[\s\S]*cancel\(\)[\s\S]*return cancel/
-  )
+  assert.doesNotMatch(hook, /failureCount\.current = 0[\s\S]*setPausedKey\(null\)[\s\S]*cancel\(\)[\s\S]*return cancel/)
 })
 
 test('an open challenge detail is mutation-driven instead of periodically replacing cached content with a transient error', () => {
@@ -42,7 +39,7 @@ test('an open challenge detail is mutation-driven instead of periodically replac
   assert.match(detailOwner, /refreshInterval: 0/)
   assert.match(detailOwner, /revalidateOnFocus: false/)
   assert.match(detailOwner, /revalidateOnReconnect: false/)
-  assert.match(modal, /confirmCreatedInstance\(res\.data, mutate\)/)
+  assert.match(modal, /createReconciledInstance<ChallengeDetailModel>\(\{[\s\S]*refresh: mutate,[\s\S]*shouldContinue/)
   assert.match(modal, /refresh: mutate/)
   assert.match(
     modal,
