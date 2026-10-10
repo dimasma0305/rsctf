@@ -75,6 +75,15 @@ pub async fn create_container(
     }
     let requested_operation = operations::operation_request(&headers)?;
     let shared = uses_shared_container(&challenge);
+    // Build/repair the image first so the bounded owner deadline covers only the launch.
+    let caller = LiveParticipationIdentity {
+        user_id: user.id,
+        expected_security_stamp: &user.security_stamp,
+        game_id: id,
+        team_id: ctx.participation.team_id,
+        participation_id: ctx.participation.id,
+    };
+    image_repair::prepare_image_before_admission(&st, caller, &challenge, shared).await?;
     let operation_scope = if shared {
         format!("shared-challenge:{cid}")
     } else {

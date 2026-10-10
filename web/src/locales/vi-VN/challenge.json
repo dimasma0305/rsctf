@@ -169,6 +169,10 @@
           "message": "Vui lòng lưu ý thời gian hết hạn của instance",
           "title": "Thời gian của instance đã được gia hạn"
         }
+      },
+      "starting": {
+        "message": "Máy chủ container vẫn đang chuẩn bị instance này. Quá trình này có thể mất vài phút.",
+        "title": "Instance vẫn đang khởi động"
       }
     }
   },

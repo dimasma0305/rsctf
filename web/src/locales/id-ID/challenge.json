@@ -170,6 +170,10 @@
           "message": "Harap catat waktu kedaluwarsa instance",
           "title": "Masa berlaku instance telah diperpanjang"
         }
+      },
+      "starting": {
+        "message": "Host kontainer masih menyiapkan instance ini. Proses ini bisa memakan waktu beberapa menit.",
+        "title": "Instance masih dimulai"
       }
     }
   },

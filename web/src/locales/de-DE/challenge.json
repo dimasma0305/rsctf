@@ -169,6 +169,10 @@
           "message": "Bitte beachten Sie die Ablaufzeit der Instanz",
           "title": "Die Lebensdauer der Instanz wurde verlängert"
         }
+      },
+      "starting": {
+        "message": "Der Container-Host bereitet diese Instanz noch vor. Das kann einige Minuten dauern.",
+        "title": "Instanz startet noch"
       }
     }
   },

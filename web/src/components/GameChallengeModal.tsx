@@ -30,7 +30,7 @@ import { createFlagVerdictPoller, sameFlagVerdictIdentity, type FlagVerdictIdent
 import { resolveChallengeDeliveryGuide } from '@Utils/GuideState'
 import {
   clearDestroyedInstanceContext,
-  confirmCreatedInstance,
+  createReconciledInstance,
   destroyReconciledInstance,
   extendReconciledInstance,
   mergeExtendedInstanceContext,
@@ -445,15 +445,37 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const onCreate = async () => {
     if (!readEnabled || disabled) return
     setDisabled(true)
+    const startingNotificationId = `instance-starting:${gameId}:${challengeId}`
+    let waiting = false
     let operation: ContainerOperationOwner | undefined
 
     try {
       operation = retainContainerOperation('create', containerCreateOperationRef, operationScope)
-      const res = await api.game.gameCreateContainer(gameId, challengeId, {
-        headers: { 'X-RSCTF-Operation-Id': operation.id },
+      const headers = { 'X-RSCTF-Operation-Id': operation.id }
+      const outcome = await createReconciledInstance<ChallengeDetailModel>({
+        create: async () => (await api.game.gameCreateContainer(gameId, challengeId, { headers })).data,
+        refresh: mutate,
+        shouldContinue: () => {
+          const scope = currentScope.current
+          return scope.mounted && scope.opened && scope.gameId === gameId && scope.challengeId === challengeId
+        },
+        onRetryScheduled: () => {
+          if (waiting) return
+          waiting = true
+          showNotification({
+            id: startingNotificationId,
+            color: 'orange',
+            loading: true,
+            autoClose: false,
+            title: t('challenge.notification.instance.starting.title'),
+            message: t('challenge.notification.instance.starting.message'),
+          })
+        },
       })
-      if (!(await confirmCreatedInstance(res.data, mutate))) return
-      clearContainerOperation(containerCreateOperationRef, operation)
+      if (outcome === 'abandoned' || outcome === 'unconfirmed') return
+      // Only a confirmed receipt for this exact operation retires its identity;
+      // an instance that merely appeared keeps the ID for an exact server replay.
+      if (outcome === 'created') clearContainerOperation(containerCreateOperationRef, operation)
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.created.title'),
@@ -466,6 +488,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       }
       showErrorMsg(e, t)
     } finally {
+      if (waiting) notifications.hide(startingNotificationId)
       setDisabled(false)
     }
   }

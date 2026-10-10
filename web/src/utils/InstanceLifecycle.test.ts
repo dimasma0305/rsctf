@@ -3,8 +3,10 @@ import test from 'node:test'
 import {
   clearDestroyedInstanceContext,
   confirmCreatedInstance,
+  createReconciledInstance,
   destroyReconciledInstance,
   extendReconciledInstance,
+  instanceCreateRetryDelay,
   isInstanceExtensionWindowOpen,
   mergeExtendedInstanceContext,
   mergeInstanceContext,
@@ -489,4 +491,158 @@ test('destroy remains successful when only its post-delete confirmation refresh 
 
   assert.equal(result, 'destroyed')
   assert.equal(refreshes, 2)
+})
+
+const httpFailure = (status: number, retryAfter?: string) => ({
+  response: { status, headers: retryAfter === undefined ? {} : { 'retry-after': retryAfter } },
+})
+
+const createHarness = (snapshots: Array<ChallengeSnapshot | undefined>) => {
+  const slept: number[] = []
+  let clock = 1_000
+  return {
+    slept,
+    refreshes: 0,
+    sleep: async (milliseconds: number) => {
+      slept.push(milliseconds)
+      clock += milliseconds
+    },
+    now: () => clock,
+    refresh() {
+      this.refreshes += 1
+      return Promise.resolve(snapshots.shift())
+    },
+  }
+}
+
+const absent: ChallengeSnapshot = {
+  attempts: 0,
+  context: { closeTime: null, instanceId: null, instanceEntry: null },
+}
+const published: ChallengeSnapshot = {
+  attempts: 0,
+  context: { closeTime: 2_000, instanceId: ORIGINAL_ID, instanceEntry: REUSED_DIRECT_ENTRY },
+}
+
+test('a transient start failure resends the same operation until the server confirms it', async () => {
+  const harness = createHarness([absent, published])
+  const attempts: Array<'fail' | 'ok'> = []
+  const outcome = await createReconciledInstance<ChallengeSnapshot>({
+    create: async () => {
+      if (attempts.length === 0) {
+        attempts.push('fail')
+        throw httpFailure(503, '2')
+      }
+      attempts.push('ok')
+      return { id: ORIGINAL_ID }
+    },
+    refresh: () => harness.refresh(),
+    shouldContinue: () => true,
+    sleep: harness.sleep,
+    now: harness.now,
+  })
+  assert.equal(outcome, 'created')
+  assert.deepEqual(attempts, ['fail', 'ok'])
+  // The 2 s floor already covers the server's Retry-After.
+  assert.deepEqual(harness.slept, [2_000])
+  assert.equal(harness.refreshes, 2)
+})
+
+test('a larger Retry-After and later attempts stretch the wait without exceeding the backoff cap', () => {
+  assert.equal(instanceCreateRetryDelay(httpFailure(503, '7'), 0, 0), 7_000)
+  assert.equal(instanceCreateRetryDelay(httpFailure(503), 1, 0), 4_000)
+  assert.equal(instanceCreateRetryDelay(httpFailure(503), 6, 0), 15_000)
+})
+
+test('an instance that appears while the start request failed in transit is reported without resending', async () => {
+  const harness = createHarness([published])
+  let creates = 0
+  const outcome = await createReconciledInstance<ChallengeSnapshot>({
+    create: async () => {
+      creates += 1
+      throw new Error('network down')
+    },
+    refresh: () => harness.refresh(),
+    shouldContinue: () => true,
+    sleep: harness.sleep,
+    now: harness.now,
+  })
+  assert.equal(outcome, 'present')
+  assert.equal(creates, 1)
+})
+
+test('a terminal rejection surfaces immediately instead of retrying', async () => {
+  const harness = createHarness([])
+  let creates = 0
+  await assert.rejects(
+    createReconciledInstance<ChallengeSnapshot>({
+      create: async () => {
+        creates += 1
+        throw httpFailure(400)
+      },
+      refresh: () => harness.refresh(),
+      shouldContinue: () => true,
+      sleep: harness.sleep,
+      now: harness.now,
+    }),
+    (error: unknown) => (error as { response: { status: number } }).response.status === 400
+  )
+  assert.equal(creates, 1)
+  assert.deepEqual(harness.slept, [])
+})
+
+test('an exhausted retry budget surfaces the last transient failure', async () => {
+  const harness = createHarness([absent, absent, absent, absent])
+  let creates = 0
+  await assert.rejects(
+    createReconciledInstance<ChallengeSnapshot>({
+      create: async () => {
+        creates += 1
+        throw httpFailure(503)
+      },
+      refresh: () => harness.refresh(),
+      shouldContinue: () => true,
+      sleep: harness.sleep,
+      now: harness.now,
+      budgetMs: 10_000,
+    }),
+    (error: unknown) => (error as { response: { status: number } }).response.status === 503
+  )
+  // 2 s + 4 s fit the 10 s budget; the 8 s wait would not.
+  assert.deepEqual(harness.slept, [2_000, 4_000])
+  assert.equal(creates, 3)
+})
+
+test('closing the owning surface abandons the retry without clearing its durable identity', async () => {
+  const harness = createHarness([absent])
+  let open = true
+  let creates = 0
+  const outcome = await createReconciledInstance<ChallengeSnapshot>({
+    create: async () => {
+      creates += 1
+      open = false
+      throw httpFailure(503)
+    },
+    refresh: () => harness.refresh(),
+    shouldContinue: () => open,
+    sleep: harness.sleep,
+    now: harness.now,
+  })
+  assert.equal(outcome, 'abandoned')
+  assert.equal(creates, 1)
+  assert.equal(harness.refreshes, 0)
+})
+
+test('a confirmed receipt that no longer matches the cache is reported as unconfirmed', async () => {
+  const harness = createHarness([
+    { attempts: 0, context: { closeTime: 2_000, instanceId: REPLACEMENT_ID, instanceEntry: REUSED_DIRECT_ENTRY } },
+  ])
+  const outcome = await createReconciledInstance<ChallengeSnapshot>({
+    create: async () => ({ id: ORIGINAL_ID }),
+    refresh: () => harness.refresh(),
+    shouldContinue: () => true,
+    sleep: harness.sleep,
+    now: harness.now,
+  })
+  assert.equal(outcome, 'unconfirmed')
 })
