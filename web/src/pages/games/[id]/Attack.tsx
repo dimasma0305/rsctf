@@ -38,6 +38,8 @@ import { acceptedTerritorySolvers } from './arenaGlobeModel'
 import { createArenaInspector } from './arenaInspector'
 import type { JeopCategory } from './arenaJeopardy'
 import { arenaTeamInitials, arenaTeamLabel, arenaTeamPosition, initialArenaRanking } from './arenaPresentation'
+import { createArenaSpace } from './arenaSpace'
+import { createArenaTheater } from './arenaTheater'
 import arenaTheme from './arenaTheme.css?inline'
 import { createSoundEngine } from './audio'
 import { createFbRenderer } from './fbRenderer'
@@ -96,8 +98,14 @@ const ARENA_BODY = `
       <section class="panel arena-wrap" aria-labelledby="globeTitle">
         <div class="map-heading">
           <div><h2 id="globeTitle">Conquest globe</h2><p>Categories are continents. Challenges are countries.</p></div>
-          <button id="fsBtn" class="fs-btn" title="Fullscreen globe" aria-label="Fullscreen globe">⛶</button>
+          <button id="fsBtn" class="fs-btn" title="Theater mode" aria-label="Enter theater mode" aria-pressed="false">⛶</button>
         </div>
+        <div class="theater-hud" aria-hidden="true">
+          <span class="hud-conn" id="hudConn" hidden></span>
+          <span class="hud-tick" id="hudTick" hidden></span>
+          <span class="hud-count" id="hudCount" hidden></span>
+        </div>
+        <p class="theater-ticker" id="theaterTicker" aria-hidden="true"></p>
         <div class="arena" id="arena" tabindex="0" role="group" aria-label="3D conquest globe" aria-describedby="globeHelp">
           <canvas id="globeSurface" aria-hidden="true"></canvas>
           <svg id="territories" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
@@ -423,6 +431,19 @@ function runArena(
   const fxbg: any = $('fxbg')
   const ctxbg: any = fxbg.getContext('2d')
   const arena: any = $('arena')
+  // Decorative deep-space backdrop; repainted on size/theme changes, shifted per camera frame.
+  const space = createArenaSpace(root.querySelector('.arena-wrap') as HTMLElement)
+  const isDarkScheme = () => root.host.getAttribute('data-arena-scheme') !== 'light'
+  const schemeObserver = new MutationObserver(() => space.paint(isDarkScheme()))
+  schemeObserver.observe(root.host, { attributes: true, attributeFilter: ['data-arena-scheme'] })
+  // Team-colored glow on the globe's limb for an accepted capture or solve.
+  function pulseLimb(color: string) {
+    if (!motionEnabled) return
+    arena.style.setProperty('--pulse-color', color)
+    arena.classList.remove('pulse')
+    void arena.offsetWidth
+    arena.classList.add('pulse')
+  }
   // Pixi v8 WebGL FX renderer (its own overlay canvas); the 2D #fx is the fallback
   // used until fxRenderer.ready, or if WebGL init fails. See fxRenderer.ts.
   const fxRenderer = createFxRenderer(fx)
@@ -457,6 +478,7 @@ function runArena(
     arena.focus({ preventScroll: true })
   }
   const logEl: any = $('log')
+  const tickerEl: HTMLElement | null = $('theaterTicker')
   const rankEl: any = $('ranklist')
 
   function buildArena() {
@@ -660,6 +682,7 @@ function runArena(
   function sizeCanvas() {
     const r = arena.getBoundingClientRect()
     arenaRect = r
+    space.paint(isDarkScheme())
     const dpr = 1 // FX particle layers; the SVG stays vector-crisp regardless
     fx.width = r.width * dpr
     fx.height = r.height * dpr
@@ -1037,6 +1060,14 @@ function runArena(
     row.innerHTML = `<span class="ts">${clk()}</span><span class="tag ${cls}">${tag}</span>${html}`
     logEl.appendChild(row)
     while (logEl.children.length > 60) logEl.removeChild(logEl.firstChild)
+    if (tickerEl) {
+      const message = document.createElement('span')
+      message.innerHTML = html
+      tickerEl.textContent = `${clk()} · ${tag} · ${message.textContent}`
+      tickerEl.classList.remove('flash')
+      void tickerEl.offsetWidth
+      tickerEl.classList.add('flash')
+    }
     logDirty = true // scroll-to-bottom batched in the loop (avoids a forced reflow per event)
   }
 
@@ -1071,6 +1102,7 @@ function runArena(
         pulseBase(vic, vic.color)
       }
       floatText(atkr.x, atkr.y - 66, vic ? 'CAPTURE ACCEPTED' : pts > 0 ? '+' + pts : 'SOLVED', atkr.color)
+      if (!frozen) pulseLimb(atkr.color)
       if (vic) floatText(vic.x, vic.y - 66, isFB ? 'FIRST BLOOD' : 'PWNED', vic.color)
       if (isFB)
         addLog(
@@ -1648,6 +1680,8 @@ function runArena(
     // board, while the tab is hidden, and while frozen with no active FX (idle freeze).
     const fxActive = shots.length || sparks.length || fxq.length
     if (!slamCovering && !matchOver) jeop.tick(ts, dt)
+    space.parallax(Number(arena.dataset.globeYaw) || 0)
+    if (theater.isOn()) syncHud(ts)
     // !matchOver: after endMatch the opaque PODIUM win overlay (z97) covers the whole arena and
     // winRenderer runs its own loop on top — skip the ambient/jeop draw beneath it to save GPU.
     if (motionEnabled && !slamCovering && !matchOver && !document.hidden && (fxActive || !frozen)) {
@@ -2685,24 +2719,47 @@ function runArena(
       rebuildPreview()
     }
   })
-  // Keep the inspector reachable while exploring the fullscreen map.
-  const fsWrap: any = root.querySelector('.midrow')
-  const onFsChange = () => {
-    const fs = root.fullscreenElement === fsWrap
-    const b = $('fsBtn')
-    if (b) {
-      b.textContent = fs ? '✕' : '⛶'
-      b.setAttribute('aria-label', fs ? 'Exit fullscreen globe' : 'Fullscreen globe')
+  // Theater mode keeps the inspector reachable as a floating panel over the globe.
+  const theaterStage = root.querySelector('.midrow') as HTMLElement
+  const theater = createArenaTheater({
+    host: root.host as HTMLElement,
+    stage: theaterStage,
+    button: $('fsBtn'),
+    document,
+    onChange: (on) => {
+      sizeCanvas()
+      if (on && snd.isEnabled()) snd.startAmbient()
+      else snd.stopAmbient()
+    },
+    fullscreen:
+      typeof theaterStage.requestFullscreen === 'function'
+        ? {
+            request: (element) => element.requestFullscreen(),
+            exit: () => document.exitFullscreen?.(),
+            current: () => root.fullscreenElement ?? document.fullscreenElement,
+          }
+        : undefined,
+  })
+  $('fsBtn').onclick = () => theater.toggle()
+  const hud = { conn: $('hudConn'), tick: $('hudTick'), count: $('hudCount') }
+  let hudAt = 0
+  // Mirror the toolbar pills (which live outside the theater stage) into the HUD.
+  function syncHud(ts: number) {
+    if (ts - hudAt < 250) return
+    hudAt = ts
+    const pairs: [any, any][] = [
+      [hud.conn, $('connectionStatus')],
+      [hud.tick, $('roundPill')],
+      [hud.count, $('countPill')],
+    ]
+    for (const [target, source] of pairs) {
+      if (!target || !source) continue
+      const text = source.hidden ? '' : source.textContent
+      if (target.textContent !== text) target.textContent = text
+      target.hidden = !text
+      const state = source.getAttribute('data-state')
+      if (state !== null && target.getAttribute('data-state') !== state) target.setAttribute('data-state', state)
     }
-    sizeCanvas()
-  }
-  const fsBtn: any = $('fsBtn')
-  if (fsBtn && fsWrap) {
-    fsBtn.onclick = () => {
-      if (document.fullscreenElement) document.exitFullscreen?.()
-      else (fsWrap.requestFullscreen || fsWrap.webkitRequestFullscreen || (() => {})).call(fsWrap)
-    }
-    document.addEventListener('fullscreenchange', onFsChange)
   }
   const rankTabs: any = $('rankTabs')
   if (rankTabs)
@@ -2738,8 +2795,10 @@ function runArena(
       soundBtn.textContent = on ? 'Sound on' : 'Sound off'
       soundBtn.classList.toggle('on', on)
       soundBtn.setAttribute('aria-pressed', String(on))
-      if (on) snd.unlock()
-      else {
+      if (on) {
+        snd.unlock()
+        if (theater.isOn()) snd.startAmbient()
+      } else {
         stopIncomingSound?.()
         stopIncomingSound = null
         stopFirstBloodSound?.()
@@ -2899,7 +2958,9 @@ function runArena(
     stopFirstBloodSound?.()
     stopFirstBloodSound = null
     snd.close()
-    document.removeEventListener('fullscreenchange', onFsChange)
+    theater.destroy()
+    schemeObserver.disconnect()
+    space.destroy()
     jeop.destroy()
     inspector.destroy()
     fxRenderer.destroy()

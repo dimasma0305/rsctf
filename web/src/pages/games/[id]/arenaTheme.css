@@ -277,7 +277,53 @@ a:hover {
   justify-content: flex-start;
   padding: 16px;
   overflow: hidden;
+  isolation: isolate;
   background: radial-gradient(ellipse at 40% 42%, var(--arena-glow), transparent 72%), var(--panel);
+}
+/* Deep-space backdrop: below every in-flow control, above the panel background. */
+.space-nebula,
+.space-far,
+.space-near {
+  position: absolute;
+  inset: -10%;
+  width: 120%;
+  height: 120%;
+  z-index: -1;
+  pointer-events: none;
+}
+.space-nebula {
+  background:
+    radial-gradient(ellipse 55% 40% at 68% 22%, #3f6cb224, transparent 70%),
+    radial-gradient(ellipse 45% 35% at 22% 78%, #8a3c8a1f, transparent 70%),
+    radial-gradient(ellipse 70% 55% at 50% 50%, #0b1a2e00, #05101d66 85%);
+}
+.space-far,
+.space-near {
+  will-change: transform;
+}
+.space-near {
+  animation: spaceTwinkle 7s ease-in-out infinite alternate;
+}
+@keyframes spaceTwinkle {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+:host([data-motion='off']) .space-near {
+  animation: none;
+  opacity: 0.8;
+}
+:host([data-arena-scheme='light']) .space-nebula {
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 28%, #ffffff80, transparent 72%),
+    linear-gradient(180deg, #e3edf7 0%, #cfdfec 100%);
+}
+:host([data-arena-scheme='light']) .space-far,
+:host([data-arena-scheme='light']) .space-near {
+  display: none;
 }
 .map-heading {
   position: relative;
@@ -322,6 +368,29 @@ a:hover {
 }
 .arena:active {
   cursor: grabbing;
+}
+/* Team-colored limb pulse on an accepted capture or solve. */
+.arena::after {
+  content: '';
+  position: absolute;
+  inset: 6.5%;
+  border-radius: 50%;
+  opacity: 0;
+  box-shadow: 0 0 0 0 var(--pulse-color, transparent);
+  pointer-events: none;
+}
+.arena.pulse::after {
+  animation: limbPulse 900ms ease-out;
+}
+@keyframes limbPulse {
+  0% {
+    opacity: 0.9;
+    box-shadow: 0 0 18px 2px var(--pulse-color);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: 0 0 64px 26px var(--pulse-color);
+  }
 }
 #globeSurface,
 #worldScenery,
@@ -1038,15 +1107,184 @@ a:hover {
 .lg .em {
   color: var(--text);
 }
-.midrow:fullscreen {
-  align-items: start;
-  padding: 16px;
-  border-radius: 0;
-  overflow: auto;
+/* Theater mode: the globe owns the viewport; inspector and controls float as glass HUD. */
+.midrow.theater {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: block;
+  overflow: hidden;
   background: var(--bg);
 }
-.midrow:fullscreen .arena {
-  width: min(100%, 68dvh);
+/* The overlay fallback rides the popover top layer; reset its user-agent box. */
+.midrow.theater:popover-open {
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+}
+.midrow.theater .arena-wrap {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+}
+.midrow.theater .map-heading {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  right: 16px;
+  width: auto;
+  margin: 0;
+  z-index: 12;
+  align-items: center;
+}
+.midrow.theater .map-heading h2 {
+  font-size: 15px;
+}
+.midrow.theater .map-heading p,
+.midrow.theater .globe-help,
+.midrow.theater .map-shortcuts {
+  display: none;
+}
+.midrow.theater .arena {
+  width: min(86dvh, calc(100vw - 440px));
+}
+.theater-glass,
+.midrow.theater .globe-navigation,
+.midrow.theater .selection,
+.midrow.theater .inspector,
+.theater-hud > span,
+.theater-ticker {
+  border: 1px solid var(--line2);
+  background: color-mix(in srgb, var(--panel) 74%, transparent);
+  backdrop-filter: blur(12px);
+}
+.midrow.theater .globe-navigation {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 12;
+  margin: 0;
+  padding: 6px;
+  border-radius: 12px;
+}
+.midrow.theater .selection {
+  position: absolute;
+  left: 16px;
+  bottom: 18px;
+  z-index: 12;
+  max-width: min(360px, calc(100vw - 420px));
+  border-radius: 10px;
+}
+.midrow.theater .inspector {
+  position: absolute;
+  top: 64px;
+  right: 16px;
+  bottom: 18px;
+  width: 340px;
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+}
+.midrow.theater .inspector > [role='tabpanel'] {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.theater-hud {
+  display: none;
+  position: absolute;
+  top: 64px;
+  left: 16px;
+  z-index: 12;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.theater-hud > span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.theater-hud .hud-conn {
+  color: var(--dim);
+}
+.theater-hud .hud-conn[data-state='connected'] {
+  color: var(--good);
+}
+.theater-hud .hud-conn[data-state='reconnecting'],
+.theater-hud .hud-conn[data-state='offline'] {
+  color: var(--warn);
+}
+.midrow.theater .theater-hud {
+  display: flex;
+}
+.theater-ticker {
+  display: none;
+  position: absolute;
+  left: 16px;
+  right: 376px;
+  bottom: 74px;
+  z-index: 12;
+  max-width: 720px;
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--mantine-primary-color-filled);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.midrow.theater .theater-ticker:not(:empty) {
+  display: block;
+}
+.theater-ticker.flash {
+  animation: tickerIn 0.5s ease-out;
+}
+@keyframes tickerIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* Idle chrome recedes like player controls; any pointer, key, or focus brings it back. */
+.midrow.theater :is(.map-heading, .globe-navigation) {
+  transition:
+    opacity 0.3s ease,
+    visibility 0s;
+}
+.midrow.theater[data-idle='true'] :is(.map-heading, .globe-navigation) {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.8s ease,
+    visibility 0s linear 0.8s;
+}
+.midrow.theater[data-idle='true'] :is(.map-heading, .globe-navigation):focus-within {
+  opacity: 1;
+  visibility: visible;
 }
 .sr-only {
   position: absolute;
@@ -1097,7 +1335,39 @@ a:hover {
   #ranklist {
     max-height: 480px;
   }
-  .fs-btn {
+  .midrow.theater .arena-wrap {
+    place-items: start center;
+    padding-top: 104px;
+  }
+  .midrow.theater .arena {
+    width: min(calc(100vw - 16px), calc(100dvh - 104px - 36dvh - 124px));
+  }
+  .midrow.theater .map-heading {
+    top: 8px;
+    left: 12px;
+    right: 12px;
+  }
+  .theater-hud {
+    top: 56px;
+    left: 12px;
+  }
+  .midrow.theater .inspector {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: auto;
+    max-height: 36dvh;
+  }
+  .midrow.theater .globe-navigation {
+    left: 8px;
+    right: 8px;
+    bottom: calc(36dvh + 16px);
+    width: auto;
+    transform: none;
+  }
+  .midrow.theater .theater-ticker,
+  .midrow.theater .selection {
     display: none;
   }
   .arena-note {
