@@ -28,6 +28,9 @@ export interface SoundEngine {
   sfxSolve(): void
   sfxIncoming(durationSeconds?: number): () => void
   sfxFirstBlood(): () => void
+  /** Quiet looping bed for theater mode; starts once the context is running. */
+  startAmbient(): void
+  stopAmbient(): void
 }
 
 export function createSoundEngine(): SoundEngine {
@@ -55,6 +58,35 @@ export function createSoundEngine(): SoundEngine {
   }
   function markRunning(ac: any) {
     if (ac === AC && ac.state === 'running') unlocked = true
+    if (unlocked && ambientWanted) beginAmbient()
+  }
+  let ambientWanted = false, ambientStop: (() => void) | null = null
+  // Brown-noise wind under a slow lowpass sweep plus a sub drone. Both fade in over a few
+  // seconds and sit far below every event cue, so captures still cut through the bed.
+  function beginAmbient() {
+    const ac = runningAudio(); if (!ac || ambientStop) return
+    const t0 = ac.currentTime
+    const len = Math.max(1, Math.floor(ac.sampleRate * 4)), buf = ac.createBuffer(1, len, ac.sampleRate)
+    const d = buf.getChannelData(0); let last = 0
+    for (let i = 0; i < len; i++) { last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02; d[i] = last * 3.5 }
+    const wind = ac.createBufferSource(); wind.buffer = buf; wind.loop = true
+    const filt = ac.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.setValueAtTime(190, t0); filt.Q.value = 0.6
+    const lfo = ac.createOscillator(); lfo.type = 'sine'; lfo.frequency.setValueAtTime(0.045, t0)
+    const lfoGain = ac.createGain(); lfoGain.gain.value = 70; lfo.connect(lfoGain); lfoGain.connect(filt.frequency)
+    const windGain = ac.createGain(); windGain.gain.setValueAtTime(0.0001, t0); windGain.gain.exponentialRampToValueAtTime(0.05, t0 + 3)
+    const drone = ac.createOscillator(); drone.type = 'sine'; drone.frequency.setValueAtTime(55, t0)
+    const droneGain = ac.createGain(); droneGain.gain.setValueAtTime(0.0001, t0); droneGain.gain.exponentialRampToValueAtTime(0.022, t0 + 4)
+    wind.connect(filt); filt.connect(windGain); windGain.connect(masterGain)
+    drone.connect(droneGain); droneGain.connect(masterGain)
+    wind.start(t0); lfo.start(t0); drone.start(t0)
+    ambientStop = trackStop(() => {
+      ambientStop = null
+      try {
+        const t = ac.currentTime
+        for (const g of [windGain, droneGain]) { g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(Math.max(g.gain.value, 0.0001), t); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.2) }
+        for (const s of [wind, lfo, drone]) s.stop(t + 1.3)
+      } catch {}
+    })
   }
   function setMasterLevel(value: number) {
     if (!AC || !masterGain) return
@@ -138,6 +170,8 @@ export function createSoundEngine(): SoundEngine {
       else setMasterLevel(MASTER_LEVEL)
     },
     isEnabled() { return enabled },
+    startAmbient() { ambientWanted = true; beginAmbient() },
+    stopAmbient() { ambientWanted = false; ambientStop?.() },
     close() {
       stopActive()
       try { if (AC) AC.close() } catch {}

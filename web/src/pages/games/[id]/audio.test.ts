@@ -160,3 +160,29 @@ test('muting cancels active alarm and stinger graphs and blocks new sounds', asy
   assert.equal(context.sources.length, sourceCount)
   sound.close()
 })
+
+test('the ambient bed waits for an unlocked context, fades in once, and stops with mute', async () => {
+  installAudioWindow()
+  const sound = createSoundEngine()
+  sound.startAmbient()
+  assert.equal(FakeAudioContext.latest, null, 'no graph before the context is unlocked')
+
+  sound.unlock()
+  await Promise.resolve()
+  const context = FakeAudioContext.latest
+  assert.ok(context)
+  assert.equal(context.sources.length, 3, 'wind loop, filter LFO, and drone start once the context runs')
+  const [wind] = context.sources
+  assert.equal((wind as { loop?: boolean }).loop, true)
+  sound.startAmbient()
+  assert.equal(context.sources.length, 3, 'a second start never doubles the bed')
+
+  sound.setEnabled(false)
+  assert.deepEqual(context.sources.map((source) => source.stopCalls.length), [1, 1, 1])
+  sound.setEnabled(true)
+  sound.startAmbient()
+  assert.equal(context.sources.length, 6, 'the bed can restart after mute')
+  sound.stopAmbient()
+  assert.deepEqual(context.sources.slice(3).map((source) => source.stopCalls.length), [1, 1, 1])
+  sound.close()
+})

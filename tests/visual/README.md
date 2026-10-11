@@ -224,7 +224,7 @@ scripts/bounded-frontend.sh exec bash -c 'cd .. && exec node tests/visual/attack
 
 It covers 49 teams, shared navigation/theme, the rotating 3D world, challenge
 islands, accepted-solve presentation, mouse/touch/keyboard rotation, far-side
-selection, hash bookmarks, fullscreen, reduced motion, live reconnect/recovery,
+selection, hash bookmarks, theater mode, reduced motion, live reconnect/recovery,
 and preview freeze/end. It checks Axe, overflow and runtime errors from 320px to
 1920px, including the managed red accent in light mode. Results go to
 `visual-audit-output/attack-arena/` by default.
