@@ -139,6 +139,10 @@ jobs:
           RSCTF_DOCKER_SCOPE="ci-server-retry" \
             RSCTF_REAL_DOCKER_RETRY_IMAGE="$image_id" \
             cargo test --locked retryable_flag_adopts_one_real_docker_workload -- --nocapture
+          RSCTF_DOCKER_SCOPE="ci-server-image-repair" \
+            RSCTF_DOCKER_PROXY_BIND="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')" \
+            RSCTF_REAL_DOCKER_RETRY_IMAGE="rsctf-server-smoke:ci" \
+            cargo test --locked first_start_publishes_repaired_image_without_a_retry -- --nocapture
 
       - name: Validate bundled challenge repository with rsctf
         run: >-

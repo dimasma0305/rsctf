@@ -74,7 +74,6 @@ pub async fn create_container(
         ));
     }
     let requested_operation = operations::operation_request(&headers)?;
-    let shared = uses_shared_container(&challenge);
     // Build/repair the image first so the bounded owner deadline covers only the launch.
     let caller = LiveParticipationIdentity {
         user_id: user.id,
@@ -83,7 +82,8 @@ pub async fn create_container(
         team_id: ctx.participation.team_id,
         participation_id: ctx.participation.id,
     };
-    image_repair::prepare_image_before_admission(&st, caller, &challenge, shared).await?;
+    let challenge = image_repair::prepare_image_before_admission(&st, caller, challenge).await?;
+    let shared = uses_shared_container(&challenge);
     let operation_scope = if shared {
         format!("shared-challenge:{cid}")
     } else {
@@ -103,9 +103,8 @@ pub async fn create_container(
         .map_err(|error| AppError::internal(error.to_string()))?
         .flatten()
     };
-    // This is a pure definition projection. Queued lazy-build challenges bind
-    // their immutable fence after the build; already-resolved challenges bind
-    // it in the admission row so a concurrent save cannot change the intent.
+    // Bind the prepared definition in the admission row so a concurrent save
+    // cannot change the intent after admission.
     let expected_definition_fence =
         crate::services::challenge_workloads::resolve_runtime(&st, &challenge)
             .ok()

@@ -6,6 +6,9 @@ use super::*;
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::enums::ChallengeBuildStatus;
 
+#[cfg(test)]
+mod start_tests;
+
 static RUNTIME_IMAGE_BUILDS: std::sync::LazyLock<crate::utils::single_flight::SingleFlight<bool>> =
     std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 const RUNTIME_IMAGE_REPAIR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -212,13 +215,14 @@ fn admission_image_plan(
 /// detached single flights: a cancelled waiter does not cancel them and a
 /// retried request rejoins. The admitted launch still takes its own locked
 /// definition snapshot, which remains the decisive recheck.
+/// Return the fresh challenge after preparation publishes its image, so the
+/// admission fence and shared/per-team scope use that same definition.
 pub(super) async fn prepare_image_before_admission(
     st: &SharedState,
     caller: LiveParticipationIdentity<'_>,
-    challenge: &game_challenge::Model,
-    shared: bool,
-) -> AppResult<()> {
-    let legacy_image = crate::services::challenge_workloads::resolve_runtime(st, challenge)
+    challenge: game_challenge::Model,
+) -> AppResult<game_challenge::Model> {
+    let legacy_image = crate::services::challenge_workloads::resolve_runtime(st, &challenge)
         .ok()
         .and_then(|runtime| runtime.legacy_image);
     let mut missing_local_image = None;
@@ -229,29 +233,34 @@ pub(super) async fn prepare_image_before_admission(
             missing_local_image = Some(image);
         }
     }
-    match admission_image_plan(challenge.build_status, missing_local_image) {
-        AdmissionImagePlan::Ready => Ok(()),
+    let prepared = match admission_image_plan(challenge.build_status, missing_local_image) {
+        AdmissionImagePlan::Ready => false,
         AdmissionImagePlan::BuildQueued => {
             // The first-build transition keeps its exact authorization gate. A
             // queued challenge that is not lazily buildable falls through to
             // the admitted launch's own error.
-            if authorize_on_demand_build(st, caller, challenge).await? {
-                prepare_queued_image(st, challenge).await?;
+            if authorize_on_demand_build(st, caller, &challenge).await? {
+                prepare_queued_image(st, &challenge).await?
+            } else {
+                false
             }
-            Ok(())
         }
         AdmissionImagePlan::RepairMissing(image) => {
-            let mode = if shared {
+            let mode = if uses_shared_container(&challenge) {
                 ContainerRequestMode::Shared
             } else {
                 ContainerRequestMode::PerTeam
             };
             if !player_request_is_eligible_now(st, caller, challenge.id, mode).await? {
-                return Err(ineligible_container_start_error(st, challenge));
+                return Err(ineligible_container_start_error(st, &challenge));
             }
-            repair_missing_legacy_image(st, challenge, image).await?;
-            Ok(())
+            repair_missing_legacy_image(st, &challenge, image).await?
         }
+    };
+    if prepared {
+        load_playable_challenge(st, challenge.game_id, challenge.id).await
+    } else {
+        Ok(challenge)
     }
 }
 
