@@ -59,7 +59,10 @@ pub(super) fn zip_bytes_to_tar(
         let mut entry = archive
             .by_index(index)
             .map_err(|error| format!("ZIP read error: {error}"))?;
-        let raw_name = entry.name().to_string();
+        let raw_name = entry
+            .name()
+            .map_err(|error| format!("invalid ZIP entry name: {error}"))?
+            .into_owned();
         if raw_name.contains('\\') {
             return Err("entry path contains a backslash".to_string());
         }

@@ -89,7 +89,10 @@ fn zip_members(bytes: &[u8]) -> Vec<Segment<'static>> {
         if member.is_dir() {
             continue;
         }
-        let name = member.name().chars().take(120).collect::<String>();
+        let name = member
+            .name()
+            .map(|name| name.chars().take(120).collect::<String>())
+            .unwrap_or_else(|_| "<invalid ZIP entry name>".to_string());
         let cap = (member.compressed_size().saturating_mul(MAX_MEMBER_RATIO) + 64 * 1024)
             .min(MAX_MEMBER_BYTES as u64)
             .min(MAX_ARCHIVE_BYTES.saturating_sub(total) as u64);

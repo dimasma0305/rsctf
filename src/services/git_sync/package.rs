@@ -221,12 +221,15 @@ pub(super) async fn archived_context_fingerprint(
             if !entry.is_file() {
                 continue;
             }
+            let entry_name = entry.name().map_err(|error| {
+                AppError::bad_request(format!("invalid source archive entry name: {error}"))
+            })?;
             let name = match prefix.as_deref() {
-                Some(prefix) => match entry.name().strip_prefix(prefix) {
+                Some(prefix) => match entry_name.strip_prefix(prefix) {
                     Some(name) if !name.is_empty() => name.to_string(),
                     _ => continue,
                 },
-                None => entry.name().to_string(),
+                None => entry_name.into_owned(),
             };
             if files.len() >= MAX_REPO_FILES || entry.size() > MAX_REPO_FILE_BYTES {
                 return Err(AppError::bad_request(

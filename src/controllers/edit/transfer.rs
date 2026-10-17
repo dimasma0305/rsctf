@@ -615,7 +615,10 @@ pub(in crate::controllers::edit) fn read_game_import_archive_with_limits(
         let mut entry = archive
             .by_index(index)
             .map_err(|e| AppError::bad_request(format!("ZIP read error: {e}")))?;
-        let raw_name = entry.name().to_string();
+        let raw_name = entry
+            .name()
+            .map_err(|error| AppError::bad_request(format!("Invalid ZIP entry name: {error}")))?
+            .into_owned();
         if raw_name.contains('\\') {
             return Err(AppError::bad_request(
                 "Game import path contains a backslash",

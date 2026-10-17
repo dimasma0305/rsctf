@@ -86,8 +86,9 @@ async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "hostname"] }
 ed25519-dalek = "3"
-zip = { version = "8", default-features = false, features = ["deflate"] }
-rust_xlsxwriter = "0.99"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# Upstream 0.99.1 plus its zip 9 security update, pending the next release.
+rust_xlsxwriter = { git = "https://github.com/jmcnamara/rust_xlsxwriter.git", rev = "ade0a017439d169b2a9c4848fe1cb66919c0ca3d" }
 bollard = { version = "0.17", features = ["buildkit"] }
 tar = "0.4"
 # Upstream 0.14.0 plus its quick-xml >=0.41 security bump, pending the next

@@ -102,7 +102,7 @@ fn rewrite_archive(bytes: &[u8], rewrite: impl Fn(&str, Vec<u8>) -> Vec<u8>) -> 
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().to_string();
+        let name = entry.name().unwrap().into_owned();
         let mut content = Vec::new();
         entry.read_to_end(&mut content).unwrap();
         writer.start_file(&name, options).unwrap();
@@ -208,7 +208,14 @@ async fn archive_round_trips_a_multi_format_event_through_the_real_schema() {
     let source_snapshot = table_snapshot(&pool, seeded.game_id).await;
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
     let names = (0..archive.len())
-        .map(|index| archive.by_index(index).unwrap().name().to_string())
+        .map(|index| {
+            archive
+                .by_index(index)
+                .unwrap()
+                .name()
+                .unwrap()
+                .into_owned()
+        })
         .collect::<Vec<_>>();
     for expected in [
         "game.json",

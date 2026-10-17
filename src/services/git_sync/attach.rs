@@ -685,7 +685,14 @@ mod tests {
         assert_eq!(name, "dist.zip");
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
         let mut names: Vec<String> = (0..archive.len())
-            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .map(|index| {
+                archive
+                    .by_index(index)
+                    .unwrap()
+                    .name()
+                    .unwrap()
+                    .into_owned()
+            })
             .collect();
         names.sort();
         assert_eq!(names, ["Dockerfile", "app.py", "requirements.txt"]);
