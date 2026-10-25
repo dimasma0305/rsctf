@@ -638,10 +638,14 @@ jobs:
           fi
           echo "rsa is lockfile-only through disabled sqlx-mysql features."
 
-      - name: Audit Rust lockfile
+      - name: Audit Rust workspace lockfiles
         # rsa 0.9.10 is retained only in Cargo.lock metadata through sqlx-mysql.
         # The preceding graph check fails if that advisory ever becomes reachable.
-        run: cargo audit --ignore RUSTSEC-2023-0071
+        run: |
+          cargo audit --ignore RUSTSEC-2023-0071
+          cargo audit --file agents/byoc-agent/Cargo.lock
+          cargo audit --file agents/worker-agent/Cargo.lock
+          cargo audit --file lib/worker-protocol/Cargo.lock
 
   load-harness-contracts:
     name: Load harness contracts
