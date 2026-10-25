@@ -8,12 +8,66 @@ Keep `RSCTF_ROLE=all` for the normal one-replica installation. Move to roles
 only after the single process is healthy and measurements show that HTTP polling
 or round execution needs more capacity.
 
+## Scoreboard pages and timing metrics
+
+The web scoreboard requests `/api/game/{id}/scoreboard/page` with `skip` and
+`count` (default 30, maximum 100). Optional `divisionId`, `search` (128 UTF-8
+bytes), and `locateTeam` select a page from the canonical cached standings.
+The result retains the scoreboard metadata and adds `total`, `skip`, `count`,
+`located`, and `snapshotVersion`. Ranks, dynamic decay, blood bonuses, timelines,
+and the public freeze come from the same scoring implementation as the retained
+full-board API. Each response is a complete snapshot; navigating pages reads the
+current generation rather than retaining an obsolete event snapshot indefinitely.
+The existing full-board wire size bound still applies to the canonical snapshot.
+
+Pages use private conditional HTTP responses. Their validators include the
+query and visibility scope; unchanged reads reuse the parsed SWR value. Search
+and page misses coalesce, serialized pages use the existing bounded tiered cache,
+and Moka coalesces snapshot decoding with a 32 MiB conservative weight budget.
+There is no per-team or per-query permanent database projection.
+Live page reads use the same global request budget as the legacy full-board
+route; they do not consume the heavy-query bucket during push refreshes.
+An open team-details dialog retains the last observed row if the team moves
+off the page. Closing it, changing games, or changing viewers clears selection.
+
+`GET /api/game/{id}/scoreboard/ctftime` emits
+`{"standings":[{"pos":1,"team":"Example","score":100}]}`. It always uses the
+public freeze-aware standings, including for authenticated organizers. It rejects
+hidden/unlisted and pre-start events and preserves the event VPN gate. Only
+overall-ranked teams appear. The ordinary scoreboard and page continue to support
+direct links to unlisted events under the established visibility contract.
+This feed supports Jeopardy-only events; A&D/KotH or mixed-format games return a
+clear unsupported-format error instead of exporting incomplete Jeopardy totals.
+
+The admin-only `/api/admin/realtime/metrics` response includes `performance`:
+ordinary tiered-cache L1/L2 hits and misses, cache read duration, scoreboard rebuild
+duration, checker scheduling delay and execution duration, and started/completed/
+timeout/no-runway counts. Metrics are cumulative per process and reset on restart.
+Histogram `counts` are non-cumulative buckets with microsecond upper bounds; the
+last bucket includes all larger durations. Counts and durations are independent,
+best-effort atomic observations. They retain no game/team IDs, cache keys, or flags.
+The cache counters describe ordinary `TieredCache::get` calls, not authoritative
+credential operations or a deployment configured without Redis.
+
+`RSCTF_SCOREBOARD_BACKGROUND_REFRESH=true` enables optional read-ahead. HTTP roles
+refresh at most 64 recently viewed public/monitor variants, with two concurrent
+refreshes per process and a two-second work budget. A three-second shared cache
+lease coalesces replicas. Idle views expire after 30 seconds; ended views stop after
+a final refresh. Publication uses an authoritative compare-and-set so invalidation
+or a newer writer wins. The existing hard cache TTL and on-demand miss path remain
+in force. The default is `false`: read-ahead trades additional scoring work for
+lower cache-miss latency and should be enabled only after measuring that tradeoff.
+
+Running-instance pools are not enabled by these options. They require separate
+admission budgets and safe per-team secret assignment and consume idle RAM/disk;
+image pre-pull and smoke-start preflight remain the default startup preparation.
+
 ## Supported roles
 
 | Role | Replicas | Responsibilities |
 | --- | ---: | --- |
 | `all` | Exactly 1 | API, React client, hubs, maintenance, all A&D/KotH rounds, VPN/BYOC/SSH, packet capture, and migrations |
-| `web` | 1 or more | Public API, React client, and hubs; no scheduled/background ownership |
+| `web` | 1 or more | Public API, React client, and hubs; no round or deployment-maintenance ownership |
 | `control` | Exactly 1 | Stateful BYOC/container-exec API, maintenance, all round processing, VPN/BYOC/SSH, packet capture; no migrations |
 | `engine` | 1 or more | Health endpoints, maintenance election, and managed-container A&D/KotH rounds |
 | `network` | Exactly 1 | Stateful BYOC/container-exec API, VPN/BYOC/SSH, packet capture, and rounds for games containing BYOC services |

@@ -491,10 +491,16 @@ export const useGameScoreboardPoll = (
   numId: number,
   status: GameStatus,
   isTabActive: boolean,
-  { scoreboard, error, isValidating, mutate }: ReturnType<typeof useGameScoreboardRead>
+  { scoreboard, error, isValidating, mutate, key }: {
+    scoreboard: unknown
+    error: unknown
+    isValidating: boolean
+    mutate: () => Promise<unknown>
+    key?: string
+  }
 ) => {
   useCompletionPolling({
-    key: numId > 0 ? `/api/game/${numId}/scoreboard` : '',
+    key: numId > 0 ? (key ?? `/api/game/${numId}/scoreboard`) : '',
     // This read remains mounted for tab discovery. Include tab ownership in
     // the phase so returning to Jeopardy performs one fresh read immediately.
     phase: `${status}:${isTabActive ? 'active' : 'inactive'}`,

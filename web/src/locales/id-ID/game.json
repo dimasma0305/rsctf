@@ -79,6 +79,9 @@
     "find_my_team": "Cari Tim Saya"
   },
   "content": {
+    "scoreboard": {
+      "refresh_error": "Papan skor gagal diperbarui. Hasil sebelumnya ditampilkan."
+    },
     "starts_compact": "Mulai {{time}}",
     "ends_compact": "Berakhir {{time}}",
     "ended_compact": "Selesai {{time}}",

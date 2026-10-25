@@ -3897,6 +3897,14 @@ export interface GameJoinModel {
 }
 
 /** Scoreboard */
+export interface ScoreboardPageModel extends ScoreboardModel {
+  snapshotVersion: string;
+  total: number;
+  skip: number;
+  count: number;
+  located: boolean;
+}
+
 export interface ScoreboardModel {
   /**
    * Update time

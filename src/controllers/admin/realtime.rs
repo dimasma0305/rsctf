@@ -16,6 +16,7 @@ pub(super) struct RealtimeOperationalMetrics {
     websocket: WebSocketOperationalMetrics,
     fanout: EventBusOperationalMetrics,
     docker: DockerAdmissionMetrics,
+    performance: crate::services::observability::PerformanceMetrics,
 }
 
 pub(super) async fn realtime_metrics(
@@ -26,5 +27,6 @@ pub(super) async fn realtime_metrics(
         websocket: crate::hubs::admission::operational_metrics(),
         fanout: st.events.operational_metrics(),
         docker: crate::services::docker_admission::docker_admission().metrics(),
+        performance: crate::services::observability::snapshot(),
     })
 }

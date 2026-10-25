@@ -60,6 +60,7 @@ mod launch;
 mod metrics;
 mod network;
 mod orphans;
+mod readiness;
 #[cfg(test)]
 mod retry_tests;
 #[cfg(test)]
@@ -531,6 +532,7 @@ impl ContainerManager for KubernetesContainerManager {
                 claims: None,
             }),
             security_context: Some(security_context),
+            readiness_probe: readiness::probe(spec.expose_port),
             ..Default::default()
         };
 
@@ -788,16 +790,11 @@ impl ContainerManager for KubernetesContainerManager {
             (node_ip, node_port)
         };
 
-        let status = created_pod
-            .status
-            .as_ref()
-            .and_then(|st| st.phase.as_deref());
-
         Ok(ContainerInfo {
             id: name,
             ip,
             port,
-            status: map_phase(status).to_string(),
+            status: readiness::status(&created_pod).to_string(),
         })
     }
 
@@ -843,8 +840,6 @@ impl ContainerManager for KubernetesContainerManager {
             }
         })?;
 
-        let phase = pod.status.as_ref().and_then(|st| st.phase.as_deref());
-
         // Best-effort live usage from the metrics.k8s.io aggregated API
         // (metrics-server). RSCTF's `KubernetesManager` leaves these null; here
         // we opportunistically populate them and degrade to `None` on any error
@@ -853,7 +848,7 @@ impl ContainerManager for KubernetesContainerManager {
 
         Ok(ContainerStatus {
             id: id.to_string(),
-            status: map_phase(phase).to_string(),
+            status: readiness::status(&pod).to_string(),
             memory_bytes,
             cpu_usage,
         })

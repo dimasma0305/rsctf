@@ -50,6 +50,8 @@ struct AdProbeInput {
 }
 
 async fn run_scheduled_probe(input: AdProbeInput, timing: AdCheckerTiming) -> AdProbeResult {
+    use crate::services::observability as metrics;
+    use std::sync::atomic::Ordering::Relaxed;
     let flag_aware =
         input.checker_dir.is_some() && input.flag.as_deref().is_some_and(|value| !value.is_empty());
     let can_start = input.schedule.is_some_and(|schedule| {
@@ -62,7 +64,11 @@ async fn run_scheduled_probe(input: AdProbeInput, timing: AdCheckerTiming) -> Ad
     });
     let (status, message) = match (input.schedule, can_start) {
         (Some(schedule), true) => {
-            run_check(
+            metrics::CHECKER_SCHEDULING_DELAY
+                .observe(tokio::time::Instant::now().saturating_duration_since(input.starts_at));
+            metrics::CHECKER_STARTED.fetch_add(1, Relaxed);
+            let timer = metrics::CHECKER_EXECUTION.timer();
+            let result = run_check(
                 input.checker_dir.as_deref(),
                 &input.host,
                 input.port,
@@ -73,7 +79,10 @@ async fn run_scheduled_probe(input: AdProbeInput, timing: AdCheckerTiming) -> Ad
                 schedule.probe_budget,
                 input.timeout_is_platform_limited,
             )
-            .await
+            .await;
+            drop(timer);
+            metrics::CHECKER_COMPLETED.fetch_add(1, Relaxed);
+            result
         }
         (None, _) => (
             input.no_window_status,
@@ -91,6 +100,9 @@ async fn run_scheduled_probe(input: AdProbeInput, timing: AdCheckerTiming) -> Ad
             Some("checker capacity exhausted before safe probe runway".into()),
         ),
     };
+    if !can_start {
+        metrics::CHECKER_NO_RUNWAY.fetch_add(1, Relaxed);
+    }
     AdProbeResult {
         service_id: input.service_id,
         participation_id: input.participation_id,

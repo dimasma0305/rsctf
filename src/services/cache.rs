@@ -723,10 +723,22 @@ impl TieredCache {
 #[async_trait]
 impl Cache for TieredCache {
     async fn get(&self, key: &str) -> Option<Bytes> {
+        use crate::services::observability as metrics;
+        use std::sync::atomic::Ordering::Relaxed;
+        let _timer = metrics::CACHE_READ.timer();
         if let Some(v) = self.l1.get(key).await {
+            metrics::CACHE_L1_HITS.fetch_add(1, Relaxed);
             return Some(v);
         }
-        let v = self.l2.get(key).await?;
+        metrics::CACHE_L1_MISSES.fetch_add(1, Relaxed);
+        let timer = metrics::CACHE_L2_READ.timer();
+        let value = self.l2.get(key).await;
+        drop(timer);
+        let Some(v) = value else {
+            metrics::CACHE_L2_MISSES.fetch_add(1, Relaxed);
+            return None;
+        };
+        metrics::CACHE_L2_HITS.fetch_add(1, Relaxed);
         self.l1.set_shared(key, v.clone(), Some(self.l1_ttl));
         Some(v)
     }

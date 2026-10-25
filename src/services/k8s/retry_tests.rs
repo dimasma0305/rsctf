@@ -282,6 +282,31 @@ fn rename_mock_workload_as_legacy(
 }
 
 #[tokio::test]
+async fn opted_in_readiness_is_persisted_and_keeps_a_running_pod_pending() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+    let _environment = RestoreEnv::set(&[("RSCTF_K8S_READINESS_PROBE", "true")]);
+    let (manager, resources) = mock_manager(ServiceFailure::None);
+    let info = manager.create(retry_spec(false)).await.unwrap();
+    assert_eq!(info.status, "pending");
+    let path = format!("/api/v1/namespaces/rsctf-challenges/pods/{}", info.id);
+    {
+        let mut resources = resources.lock().unwrap();
+        let pod = resources.get_mut(&path).unwrap();
+        let container = &pod["spec"]["containers"][0];
+        assert_eq!(container["readinessProbe"]["tcpSocket"]["port"], 8080);
+        assert!(container.get("livenessProbe").is_none());
+        pod["status"]["conditions"] = serde_json::json!([{ "type": "Ready", "status": "True" }]);
+    }
+    assert_eq!(manager.query(&info.id).await.unwrap().status, "running");
+    // A launch created with a different probe policy cannot adopt this identity.
+    let _changed = RestoreEnv::set(&[("RSCTF_K8S_READINESS_PROBE", "false")]);
+    assert!(matches!(
+        manager.create(retry_spec(false)).await,
+        Err(AppError::Conflict(_))
+    ));
+}
+
+#[tokio::test]
 async fn changed_spec_or_rendered_policy_does_not_adopt_a_kubernetes_crash_orphan() {
     let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let _environment = RestoreEnv::set(&[

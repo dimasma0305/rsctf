@@ -54,6 +54,7 @@ async fn hidden_links_allow_normal_reads_without_challenge_or_operator_privilege
         assert!(info.get("inviteCode").is_none());
         for suffix in [
             "scoreboard",
+            "scoreboard/page",
             "scoreboard/combined",
             "ad/scoreboard",
             "ad/koth/scoreboard",
@@ -145,6 +146,7 @@ async fn hidden_links_allow_normal_reads_without_challenge_or_operator_privilege
         .is_none());
     for suffix in [
         "scoreboard",
+        "scoreboard/page",
         "scoreboard/combined",
         "ad/scoreboard",
         "ad/koth/scoreboard",

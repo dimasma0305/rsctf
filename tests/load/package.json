@@ -28,6 +28,8 @@
     "honeypot-bounds": "node honeypot-bounds.mjs",
     "scoreboard-evidence": "node scoreboard-evidence.mjs",
     "scoreboard-conditional": "node scoreboard-conditional.mjs",
+    "scoreboard-page": "node scoreboard-page.mjs",
+    "scoreboard-page-seed": "node scoreboard-page-fixture.mjs",
     "player": "node player.mjs",
     "ad-submit-batch": "node ad-submit-batch.mjs",
     "redis-outage": "node redis-outage.mjs",

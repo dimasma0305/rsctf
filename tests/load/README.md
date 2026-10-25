@@ -1477,6 +1477,57 @@ and the live ownership assertion are in
 
 ### Optimization ledger
 
+#### Bounded scoreboard pages
+
+`npm run scoreboard-page` compares the retained full response with its 30-team
+projection using the same release binary, database, host, fixed request rate, and
+account cohort. It checks all page rows against the canonical board, duplicate
+first solves, the CTFtime feed, and exact `healthz` before/after the run. Full
+latency distributions and application/PostgreSQL CPU/RAM samples are retained.
+This is an API-contract comparison, not a claim that rendering or caching alone
+made every platform operation faster.
+
+Use a dedicated empty migrated database. The seed refuses a nonempty database:
+
+```sh
+SCOREBOARD_DISPOSABLE_SEED=1 TEAMS=500 PG_CONTAINER=rsctf-benchmark-pg \
+  npm run scoreboard-page-seed
+
+# Use the printed GAME, a live native release-process PID, and the same settings
+# for full/page, followed by a CONDITIONAL=1 pair. Keep the JWT secret in the
+# existing environment; do not put real credentials in reports or command logs.
+GAME=1 TEAMS=500 RATE=10 VUS=8 DURATION=30s \
+  SCOREBOARD_APP_PID=1234 PG_CONTAINER=rsctf-benchmark-pg \
+  SCOREBOARD_CASE=full SUMMARY_JSON=/tmp/scoreboard-full.json npm run scoreboard-page
+```
+
+Repeat with `SCOREBOARD_CASE=page`, and then both with `CONDITIONAL=1`.
+Start at a rate the load generator can sustain: k6 parses each complete JSON
+body, which can consume more CPU than the cached API. A dropped-arrival run
+fails acceptance and must be kept separate from matched successful trials.
+Read-ahead comparisons require the same release binary restarted with only
+`RSCTF_SCOREBOARD_BACKGROUND_REFRESH` changed; report the additional scoring/DB
+work as well as latency. Remove the dedicated database/Redis containers and
+disposable files after the campaign; the runner deliberately does not delete
+fixture rows between matched runs. Results belong in `REPORT.md` with their
+limits before adding a measured optimization-ledger entry.
+
+With the same disposable player token, exercise real keyboard pagination, server
+search without losing focus, team lookup outside the loaded page, and 320px
+pagination. The interaction test introduces 250ms network latency to expose
+transient loading behavior and rejects any full-board download:
+
+It also simulates live score changes that move a selected team off the page.
+Desktop and compact dialogs must stay open until explicitly closed and must
+not reopen when that team returns. Only the test browser's response is changed;
+the fixture and its scores remain untouched.
+
+```sh
+RSCTF_VISUAL_TARGET=http://127.0.0.1:18189 RSCTF_VISUAL_GAME_ID=1 \
+  RSCTF_VISUAL_PLAYER_JWT_FILE=/tmp/disposable-player.jwt \
+  scripts/bounded-frontend.sh exec node ../tests/visual/scoreboard-page.mjs
+```
+
 The 4 October release-compiler experiment is reported in
 [`REPORT.md`](REPORT.md#release-compiler-runtime-acceptance--4-october-2026).
 Both the root-only and global ThinLTO/16 candidates failed the frozen runtime
@@ -1535,6 +1586,8 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 
 | Date | Change | Held-rate throughput | Direct work reduction | App CPU-s | Stack CPU-s | Relevant p95 | Result |
 | --- | --- | ---: | --- | ---: | ---: | ---: | --- |
+| 2026-10-25 | Bounded 30-team Jeopardy scoreboard pages | 10 → 10 req/s; two fresh trials each | gzip about 47,067 → 5,716 B (-87.86%); JSON -91.18% | — | — | Mean fresh-read p95 9.282 → 6.032 ms (-35.01%) | 0 errors/drops/integrity changes; app CPU +9.4%, PostgreSQL CPU +59.8%, fresh p99 +9.6%; scope and full costs in REPORT.md |
+| 2026-10-25 | Opt-in scoreboard read-ahead | 1 → 1 req/s; one 60-second pair | Rebuilds 11 → 17; extra work disclosed | — | — | Full-board p95 68.248 → 20.928 ms | App CPU +2.1%, peak memory +4.1%, Redis input 2.40x; remains off by default; idle expiry passes |
 | 2026-10-04 | Immersive scenery / cached world meshes and ocean | 2 → 2 country selections/s | One baseline / two final trials; lower renderer task time in all phases, no server throughput claim | — | — | Desktop rotation frame p95 33.30 → 16.80 ms in final 1; mobile focus p95 16.80 ms in both final trials | 0 browser/integrity errors; desktop worst-frame regressions, heap variation and pre-detail-limit attempt disclosed in REPORT.md |
 | 2026-10-04 | Detailed terrain / coordinated towns, shared lighting palette and early face culling | 2 → 2 country selections/s | One baseline / two final trials; added detail increases renderer work, no speed claim | — | — | Mobile frame p95 16.80 ms; desktop 33.30–33.40 ms in both final trials | 0 browser/integrity errors; pre-culling failure and final slow-frame/heap tradeoffs retained in REPORT.md |
 | 2026-10-04 | Spherical limb clipping / borders / settlements (visual acceptance) | 2 → 2 country selections/s | No optimization claim; maximum 24 settlements / 120 buildings | — | — | Desktop rotation frame p95 16.80 → 33.30 ms; mobile focus max 33.50 → 100.00 ms | 0 browser/integrity errors; extra render cost and worse tails disclosed in REPORT.md; 313,776 independent surface checks pass |

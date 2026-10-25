@@ -21,6 +21,35 @@ You need:
 - A CNI that enforces NetworkPolicy if you run untrusted dynamic challenges
 - A published rsctf image for your CPU architecture
 
+### Challenge readiness
+
+Set `RSCTF_K8S_READINESS_PROBE=true` on the process that creates challenge Pods to
+opt newly created workloads into a TCP readiness probe on their declared port.
+The probe runs every 15 seconds with a one-second timeout. A Pod with this probe
+is reported as pending until Kubernetes reports `Ready=True`; Services also use
+the Pod readiness condition when choosing endpoints. Legacy Pods without a probe
+retain their lifecycle behavior. No liveness/startup restart probe is installed,
+and competitive A&D checks continue to own SLA scoring.
+
+The probe configuration participates in the launch fingerprint. An operation
+created with a different probe setting cannot adopt the same workload identity;
+change the setting between provisioning operations rather than retrying an old
+operation with a different policy. The default is `false`, allowing challenge
+authors to verify their declared TCP port before opting in.
+
+For Helm, set the optional process flags through `extraEnv`:
+
+```yaml
+extraEnv:
+  - name: RSCTF_K8S_READINESS_PROBE
+    value: "true"
+  - name: RSCTF_SCOREBOARD_BACKGROUND_REFRESH
+    value: "true"
+```
+
+Read-ahead is independent of Pod readiness; enable either only after its relevant
+checks. See [scoreboard timing and cache behavior](scaling.md#scoreboard-pages-and-timing-metrics).
+
 Check your current target:
 
 ```bash

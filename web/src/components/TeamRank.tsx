@@ -102,9 +102,9 @@ export const TeamRank: FC<TeamRankProps> = ({ teamState, compact = false, ...pro
           <Popover.Target>
             <UnstyledButton
               className={classes.teamIdentity}
-              aria-label={`${rank?.name ?? '—'}: ${t('game.arena.team_options', 'Team details and token')}`}
+              aria-description={t('game.arena.team_options', 'Team details and token')}
             >
-              <Avatar src={rank?.avatar} alt="" size={28} radius="sm">
+              <Avatar src={rank?.avatar} alt="" aria-hidden="true" size={28} radius="sm">
                 {rank?.name?.slice(0, 1) ?? 'T'}
               </Avatar>
               <Text fw={650} size="sm" className={classes.teamName}>
