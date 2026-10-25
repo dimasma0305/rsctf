@@ -11,6 +11,7 @@ const capabilityCache = readFileSync(
   'utf8',
 );
 const cache = readFileSync(new URL('../../../src/services/cache.rs', import.meta.url), 'utf8');
+const cacheTests = readFileSync(new URL('../../../src/services/cache/tests.rs', import.meta.url), 'utf8');
 const revocation = readFileSync(
   new URL('../../../src/services/ad/engine/koth_auth.rs', import.meta.url),
   'utf8',
@@ -157,7 +158,7 @@ test('capability mutations disable before commit and ticket-finalize after it', 
   assert.match(capabilityCache, /asymmetric_authoritative_failure_aborts_or_leaves_cache_disabled/);
   assert.match(capabilityCache, /stale_finalizer_cannot_overwrite_a_newer_replica_mutation_marker/);
   assert.match(capabilityCache, /newest_replica_mutation_can_publish_after_a_stale_finalizer/);
-  assert.match(cache, /local_only_values_never_reach_the_shared_tier_or_another_replica/);
+  assert.match(cacheTests, /local_only_values_never_reach_the_shared_tier_or_another_replica/);
 
   const gameControlRelease = capabilityCache.slice(
     capabilityCache.indexOf('pub(crate) async fn release_game_control'),
