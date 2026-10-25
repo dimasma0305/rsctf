@@ -11,6 +11,8 @@ use super::*;
 
 const MAX_PAGE_SIZE: usize = 100;
 const MAX_SKIP: usize = 100_000;
+// Team validation counts Unicode scalars, each of which can use four UTF-8 bytes.
+const MAX_LOOKUP_BYTES: usize = crate::controllers::team::MAX_TEAM_NAME_CHARS * 4;
 const PROJECTION_TTL: Duration = Duration::from_secs(5);
 
 struct Snapshot {
@@ -53,7 +55,7 @@ impl ScoreboardPageQuery {
             || self
                 .locate_team
                 .as_ref()
-                .is_some_and(|value| value.len() > 256)
+                .is_some_and(|value| value.len() > MAX_LOOKUP_BYTES)
         {
             return Err(AppError::bad_request("Scoreboard search is too long"));
         }

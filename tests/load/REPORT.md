@@ -16,20 +16,21 @@
 
 ## Scoreboard page and read-ahead acceptance — 25 October 2026
 
-The 30-team projection reduced compressed fresh-response bytes by **87.70%**
+The 30-team projection reduced compressed fresh-response bytes by **87.86%**
 and decoded JSON by **91.18%** for the 500-team fixture. The equal-weight mean
-of two fresh-response p95s fell from **9.717 to 6.714 ms (-30.91%)**.
-Application CPU did not improve: the two sample means averaged 1.681% for
-full responses and 1.765% for pages, about 5% higher. Conditional reads were
-already inexpensive and the single page trial had a higher p95 and CPU mean.
-The accepted benefit is less transferred/parsed data with faster fresh reads
-on this workload, not a platform-wide CPU or memory reduction.
+of two fresh-response p95s fell from **9.282 to 6.032 ms (-35.01%)**.
+Resource costs increased: application CPU averaged 3.163% for full responses
+and 3.459% for pages (+9.36%); PostgreSQL CPU averaged
+9.010% versus 14.394% (+59.8%). Fresh page p99 also rose
+from 57.979 to 63.569 ms (+9.6%).
+The accepted benefit is less transferred/parsed data and faster fresh p95.
+This campaign provides no evidence of a server CPU or SQL-work reduction.
 
 ### Setup and scope
 
-The source starts at `3d9e07987269b3fdbae3e802363c370b8640bcc6`; all trials
-used one final native release binary, SHA-256
-`202ce8e2e99b3034dfc7a0d99af2c22674ae90d3827564ab5102bb290bd63408`.
+The source starts at `3d9e07987269b3fdbae3e802363c370b8640bcc6`; all final
+trials used one native release binary, SHA-256
+`fc65ab7cf3afb47383e2eb92f7e651a56506883a846731185c12146be31ed20d`.
 The original opt-level 3, fat LTO and one codegen unit remain unchanged.
 This is a same-binary comparison of the retained full API and the new page API,
 followed by a same-binary flag-off/flag-on read-ahead comparison. It does not
@@ -46,19 +47,19 @@ identical full/page/CTFtime integrity warm-up. Fresh trials used a fixed
 10 requests/s for 30 seconds, eight preallocated VUs, in full/page/page/full
 order. Conditional full/page trials used the same schedule. A deadline-boundary
 arrival accounts for 300 or 301 successful requests. Both conditional trials
-returned 304 for 292/300 requests (97.33%); their remaining eight requests were
+returned 304 for 293/301 requests (97.34%); their remaining eight requests were
 the initial per-VU reads. Pages retain the common timelines and challenge
 metadata, so their bodies include more than just 30 rows.
 
-The initial 200 requests/s, 80-VU full-board preflight failed: 1,277 requests
-completed, 4,712 arrivals dropped, and HTTP p95 reached 941.07 ms. k6 JSON
-parsing averaged 1.47 seconds under contention, while application CPU remained
-low. This was a saturated shared load client, not evidence of production
-capacity. That failed attempt is retained separately in the raw artifact.
-Both sides were then measured at 10 requests/s with the original zero-drop,
-zero-error and p95-under-800-ms gates intact. At that rate, full-body k6 parsing
-averaged 52–53 ms versus 5.4 ms for pages. This is Goja parsing in the load
-generator, not a Chromium parsing or rendering benchmark.
+An earlier candidate's initial 200 requests/s, 80-VU full-board preflight failed:
+1,277 requests completed, 4,712 arrivals dropped, and HTTP p95 reached 941.07 ms.
+k6 JSON parsing averaged 1.47 seconds under contention while application CPU
+remained low. This saturated shared load client does not establish production
+capacity. That failed attempt and the earlier eight-trial series are retained
+separately in the artifact and excluded from the final comparisons. Both final
+sides use 10 requests/s with the original zero-drop, zero-error and p95-under-
+800-ms gates intact. k6 parse timings describe its Goja engine, not Chromium
+parsing or rendering.
 
 ### Full latency distributions
 
@@ -67,16 +68,16 @@ read-ahead off/on rows are separate 60-second trials at 1 request/s and two VUs.
 
 | Trial | Requests | Average | p50 | p90 | p95 | p99 | Maximum |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| full-fresh-1 | 300 | 5.858 | 4.121 | 7.653 | 10.274 | 67.376 | 72.874 |
-| page-fresh-1 | 301 | 3.385 | 1.896 | 3.814 | 6.275 | 63.030 | 74.598 |
-| page-fresh-2 | 300 | 3.643 | 2.004 | 4.521 | 7.154 | 66.117 | 70.775 |
-| full-fresh-2 | 301 | 5.844 | 4.321 | 7.577 | 9.161 | 63.145 | 78.969 |
-| full-conditional | 300 | 3.288 | 1.728 | 3.828 | 5.485 | 63.159 | 70.959 |
-| page-conditional | 300 | 3.552 | 1.739 | 4.413 | 6.202 | 71.520 | 92.243 |
-| refresh-off | 61 | 17.746 | 7.595 | 63.293 | 72.673 | 85.686 | 86.923 |
-| refresh-on | 61 | 10.002 | 6.792 | 11.326 | 15.513 | 66.153 | 70.495 |
+| full-fresh-1 | 301 | 5.763 | 4.210 | 7.687 | 9.804 | 60.626 | 81.866 |
+| page-fresh-1 | 301 | 3.603 | 1.984 | 4.297 | 5.897 | 61.452 | 85.476 |
+| page-fresh-2 | 300 | 3.683 | 1.935 | 4.054 | 6.167 | 65.685 | 97.558 |
+| full-fresh-2 | 301 | 5.578 | 4.248 | 7.069 | 8.759 | 55.333 | 74.303 |
+| full-conditional | 301 | 3.456 | 1.740 | 4.777 | 7.672 | 58.645 | 68.296 |
+| page-conditional | 301 | 3.167 | 1.749 | 3.835 | 5.619 | 65.210 | 67.843 |
+| refresh-off | 60 | 15.838 | 7.375 | 59.696 | 68.248 | 73.147 | 76.722 |
+| refresh-on | 61 | 10.238 | 6.696 | 12.436 | 20.928 | 69.382 | 78.610 |
 
-Every accepted trial had zero HTTP failures, 5xx, dropped arrivals, semantic
+Every final trial had zero HTTP failures, 5xx, dropped arrivals, semantic
 violations, health failures, or fixture-integrity changes. Every page scan
 matched the canonical rows and version, the CTFtime feed matched public ranks,
 and duplicate first solves remained zero. The 10,000 first solves and 500-team
@@ -84,71 +85,88 @@ roster were unchanged before and after every run.
 
 | Fresh response | Compressed body bytes | Decoded JSON bytes |
 | --- | ---: | ---: |
-| Full standings | about 47,117 | 1,055,231 |
-| 30-team page | 5,793–5,794 | 93,124 |
+| Full standings | about 47,067 | 1,055,231 |
+| 30-team page | 5,716 | 93,124 |
 
-### Resource samples and the conditional-read tradeoff
+### Resource samples and conditional reads
 
 CPU is the mean percentage of one core; memory is the largest sampled value.
 PostgreSQL memory is Docker's reported usage, not RSS. The common integrity
 warm-up touches both APIs, so these memory samples do not isolate a page-only
-working set. Short, low-CPU trials on a shared host cannot establish small
-causal resource savings.
+working set. Resource means varied substantially across these short shared-host
+trials; their observed regressions are retained, and no causal resource savings
+or production capacity claim is made.
 
 | Trial | App CPU % | App peak MiB | PostgreSQL CPU % | PostgreSQL peak MiB | Health maximum ms |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| full-fresh-1 | 1.648 | 156.20 | 3.218 | 257.6 | 7.842 |
-| page-fresh-1 | 1.715 | 159.34 | 3.099 | 253.1 | 5.640 |
-| page-fresh-2 | 1.814 | 161.51 | 3.372 | 249.9 | 3.810 |
-| full-fresh-2 | 1.713 | 163.30 | 3.282 | 252.7 | 7.613 |
-| full-conditional | 1.585 | 167.47 | 2.979 | 254.3 | 3.477 |
-| page-conditional | 1.880 | 158.45 | 3.333 | 254.6 | 3.414 |
-| refresh-off | 1.089 | 148.83 | 2.031 | 257.2 | 4.607 |
-| refresh-on | 1.351 | 194.68 | 2.615 | 262.0 | 7.883 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| full-fresh-1 | 3.230 | 163.22 | 7.398 | 308.3 | 5.614 |
+| page-fresh-1 | 3.425 | 154.80 | 13.726 | 302.3 | 9.062 |
+| page-fresh-2 | 3.494 | 156.10 | 15.062 | 314.1 | 5.414 |
+| full-fresh-2 | 3.096 | 165.95 | 10.623 | 313.8 | 8.143 |
+| full-conditional | 3.395 | 137.57 | 17.733 | 313.9 | 4.290 |
+| page-conditional | 3.297 | 156.30 | 15.493 | 307.7 | 4.274 |
+| refresh-off | 2.489 | 151.95 | 12.439 | 304.3 | 5.493 |
+| refresh-on | 2.540 | 158.23 | 10.078 | 308.8 | 9.642 |
 
-The conditional page p95 was 6.202 ms versus 5.485 ms for full reads (+13.1%);
-app CPU was 1.880% versus 1.585%. This single pair establishes no performance
-win for unchanged reads. Both keep conditional 304 responses and frontend
-object reuse; page benefits apply when a body must actually be transferred.
+The conditional page p95 was 5.619 ms versus
+7.672 ms for full reads, while p99 was
+65.210 versus 58.645 ms.
+Both p50s were about 1.74 ms. This single pair establishes no broad improvement
+for unchanged reads. Both retain conditional 304 responses and frontend object
+reuse; the main page benefit is smaller bodies when a transfer is necessary.
 
 ### Optional read-ahead decision
 
 At one full-board read/s for 60 seconds, read-ahead reduced p95 from
-72.673 to 15.513 ms (-78.7%), but canonical rebuilds increased from 11 to 16.
-Application CPU rose from 1.089% to 1.351% (+24.1%), peak sampled memory from
-148.83 to 194.68 MiB (+30.8%), and PostgreSQL CPU from 2.031% to 2.615%.
-Redis input increased from 15,518,718 to 31,575,392 bytes (about 2.03x);
-output increased from 25,236,953 to 43,583,808 bytes (about 1.73x).
+68.248 to 20.928 ms (-69.3%),
+but canonical rebuilds increased from 11 to 17.
+Application CPU moved from 2.489% to 2.540% (+2.1%),
+peak sampled memory from 151.95 to 158.23 MiB (+4.1%),
+and PostgreSQL CPU from 12.439% to 10.078%.
+Redis input increased from 15,530,529 to 37,342,763 bytes (2.40x);
+output increased from 26,408,522 to 49,365,066 bytes (1.87x).
 These Redis/rebuild deltas include the common before/after integrity scans,
 unlike resource sampling, which brackets the k6 phase.
 
 The setting remains **false by default**. This one off/on pair demonstrates
-a latency/resource tradeoff, not a free optimization or a multi-replica capacity
-result. To exercise idle expiry, the enabled worker then received no board
-reads while its canonical Redis key was repeatedly removed. Rebuilds stopped
-at count 22 by 28 seconds and remained at 22 through 42 seconds, including the
-entire period after the 30-second interest window. Health and admin metrics
-requests did not renew interest. The real PostgreSQL regression separately
-confirmed that stale game metadata cannot overwrite a newer frozen snapshot.
+a latency/work tradeoff, not a free optimization or a multi-replica capacity
+result. PostgreSQL's lower sampled CPU does not remove the extra canonical
+scoring work or establish a database optimization. During idle acceptance,
+the enabled worker received no board reads while its canonical Redis key was
+repeatedly removed. Rebuilds stopped at count 24 by 28 seconds and remained
+at 24 through 42 seconds, including the entire period after the 30-second
+interest window. Health and admin metrics requests did not renew interest.
+The real PostgreSQL regression separately confirmed that stale game metadata
+cannot overwrite a newer frozen snapshot.
 
 ### Functional and browser evidence
 
-Local verification passed: warning-free all-target build and optimized build,
-formatting, Clippy, 1,827 ordinary Rust tests, four focused real-PostgreSQL
-checks, 738 frontend tests, 39 visual-harness tests, and 521 load-harness tests.
-The broader Rust suite retained 444 environment/database ignores; the load
+Local verification passed: warning-free all-target and optimized builds,
+formatting, Clippy, 1,827 ordinary Rust tests, five focused real-PostgreSQL
+checks, 739 frontend tests, 39 visual-harness tests, and 521 load-harness tests.
+The broader Rust suite retained 445 environment/database ignores; the load
 suite had three existing skips. This container's non-reaping PID 1 reproduced
 two process-cleanup test failures on unchanged main; the complete load suite
 passed under a local child-subreaper, with no repository workaround added.
 Compose security rendering and workflow YAML/script syntax checks also passed.
 
+Two page regressions were reproduced and fixed before the final campaign.
+Live page reads now share the legacy full-board global budget; they cannot
+spend the heavy-query bucket during solve notifications. The real database
+test permits a 40-read page burst, preserves the CTFtime query limit, and
+confirms the global limit still rejects request 151. An open team dialog
+retains its latest observed row when rankings move that team off-page,
+clears explicitly, and cannot reopen when the row returns. Selection is also
+cleared on game/viewer changes. Lookup accepts the full validated team-name
+length, including 128 four-byte Unicode scalars (512 UTF-8 bytes).
+
 The real browser passed keyboard pagination, search focus under 250-ms network
 latency, team lookup outside the loaded page, desktop 30-row and compact 10-row
-paging, and zero legacy full-board reads. Desktop, 390px mobile and 320px compact
-Axe audits had zero violations, overflow, unnamed controls or runtime errors.
-Screenshots were inspected; two narrow-screen visual warnings concerned the
-shared fixed navigation and truncated long team labels. These automated checks
-do not constitute a complete WCAG audit.
+paging, both dialog rank-change regressions, and zero legacy full-board reads.
+Desktop, 390px mobile and 320px compact Axe audits had zero violations,
+overflow, unnamed controls or runtime errors. Screenshots were inspected;
+two narrow-screen visual warnings concerned the shared fixed navigation and
+truncated long team labels. These checks do not constitute a complete WCAG audit.
 
 The final native metrics endpoint returned 401 anonymously, 403 to a player,
 and 200 to an administrator. K8s readiness was verified with a mock Kubernetes
@@ -169,7 +187,7 @@ Jeopardy totals. Running-instance pools remain deferred because they need
 resource admission and safe per-team secret assignment and consume idle RAM/disk.
 
 Sanitized summaries, all distributions, resource series, failed preflight,
-and idle/ACL acceptance are retained in
+earlier candidate trials, and idle/ACL/browser acceptance are retained in
 [`scoreboard-page-results.json`](scoreboard-page-results.json).
 Reproduction is in the [bounded-page harness instructions](README.md#bounded-scoreboard-pages).
 Task-created application/database/cache processes were stopped and the disposable

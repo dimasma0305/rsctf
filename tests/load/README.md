@@ -1517,6 +1517,11 @@ search without losing focus, team lookup outside the loaded page, and 320px
 pagination. The interaction test introduces 250ms network latency to expose
 transient loading behavior and rejects any full-board download:
 
+It also simulates live score changes that move a selected team off the page.
+Desktop and compact dialogs must stay open until explicitly closed and must
+not reopen when that team returns. Only the test browser's response is changed;
+the fixture and its scores remain untouched.
+
 ```sh
 RSCTF_VISUAL_TARGET=http://127.0.0.1:18189 RSCTF_VISUAL_GAME_ID=1 \
   RSCTF_VISUAL_PLAYER_JWT_FILE=/tmp/disposable-player.jwt \
@@ -1581,8 +1586,8 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 
 | Date | Change | Held-rate throughput | Direct work reduction | App CPU-s | Stack CPU-s | Relevant p95 | Result |
 | --- | --- | ---: | --- | ---: | ---: | ---: | --- |
-| 2026-10-25 | Bounded 30-team Jeopardy scoreboard pages | 10 → 10 req/s; two fresh trials each | gzip about 47,117 → 5,794 B (-87.70%); JSON -91.18% | — | — | Mean fresh-read p95 9.717 → 6.714 ms (-30.91%) | 0 errors/drops/integrity changes; app CPU about +5%, conditional p95 +13.1%; same-binary scope and failed 200-rps preflight in REPORT.md |
-| 2026-10-25 | Opt-in scoreboard read-ahead | 1 → 1 req/s; one 60-second pair | Rebuilds 11 → 16; extra work disclosed | — | — | Full-board p95 72.673 → 15.513 ms | App CPU +24.1%, peak memory +30.8%, Redis input 2.03x; remains off by default; idle expiry passes |
+| 2026-10-25 | Bounded 30-team Jeopardy scoreboard pages | 10 → 10 req/s; two fresh trials each | gzip about 47,067 → 5,716 B (-87.86%); JSON -91.18% | — | — | Mean fresh-read p95 9.282 → 6.032 ms (-35.01%) | 0 errors/drops/integrity changes; app CPU +9.4%, PostgreSQL CPU +59.8%, fresh p99 +9.6%; scope and full costs in REPORT.md |
+| 2026-10-25 | Opt-in scoreboard read-ahead | 1 → 1 req/s; one 60-second pair | Rebuilds 11 → 17; extra work disclosed | — | — | Full-board p95 68.248 → 20.928 ms | App CPU +2.1%, peak memory +4.1%, Redis input 2.40x; remains off by default; idle expiry passes |
 | 2026-10-04 | Immersive scenery / cached world meshes and ocean | 2 → 2 country selections/s | One baseline / two final trials; lower renderer task time in all phases, no server throughput claim | — | — | Desktop rotation frame p95 33.30 → 16.80 ms in final 1; mobile focus p95 16.80 ms in both final trials | 0 browser/integrity errors; desktop worst-frame regressions, heap variation and pre-detail-limit attempt disclosed in REPORT.md |
 | 2026-10-04 | Detailed terrain / coordinated towns, shared lighting palette and early face culling | 2 → 2 country selections/s | One baseline / two final trials; added detail increases renderer work, no speed claim | — | — | Mobile frame p95 16.80 ms; desktop 33.30–33.40 ms in both final trials | 0 browser/integrity errors; pre-culling failure and final slow-frame/heap tradeoffs retained in REPORT.md |
 | 2026-10-04 | Spherical limb clipping / borders / settlements (visual acceptance) | 2 → 2 country selections/s | No optimization claim; maximum 24 settlements / 120 buildings | — | — | Desktop rotation frame p95 16.80 → 33.30 ms; mobile focus max 33.50 → 100.00 ms | 0 browser/integrity errors; extra render cost and worse tails disclosed in REPORT.md; 313,776 independent surface checks pass |

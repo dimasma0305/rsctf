@@ -53,14 +53,13 @@ fn router_with_domains(
             "/api/game/{id}/participations/{participationId}",
             limited(Policy::Query, get(participation_detail)),
         )
-        // The scoreboard is fully cache-served (cheap), so the always-on Global
-        // window is protection enough — dropping the per-route Query decorator
-        // halves the limiter work on the single hottest endpoint. A deliberate
-        // divergence from RSCTF, which keeps a Query limit here.
+        // Both live scoreboard readers use the always-on Global budget. Push
+        // refreshes must not consume the much smaller heavy-query bucket.
+        // Page inputs, projection concurrency and cache memory remain bounded.
         .route("/api/game/{id}/scoreboard", get(scoreboard))
         .route(
             "/api/game/{id}/scoreboard/page",
-            limited(Policy::Query, get(scoreboard_page::scoreboard_page)),
+            get(scoreboard_page::scoreboard_page),
         )
         .route(
             "/api/game/{id}/scoreboard/ctftime",

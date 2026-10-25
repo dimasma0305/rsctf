@@ -25,6 +25,10 @@ query and visibility scope; unchanged reads reuse the parsed SWR value. Search
 and page misses coalesce, serialized pages use the existing bounded tiered cache,
 and Moka coalesces snapshot decoding with a 32 MiB conservative weight budget.
 There is no per-team or per-query permanent database projection.
+Live page reads use the same global request budget as the legacy full-board
+route; they do not consume the heavy-query bucket during push refreshes.
+An open team-details dialog retains the last observed row if the team moves
+off the page. Closing it, changing games, or changing viewers clears selection.
 
 `GET /api/game/{id}/scoreboard/ctftime` emits
 `{"standings":[{"pos":1,"team":"Example","score":100}]}`. It always uses the

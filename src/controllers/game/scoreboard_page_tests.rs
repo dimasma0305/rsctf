@@ -1,6 +1,69 @@
 use super::*;
 use axum::http::{header, HeaderMap, StatusCode};
 
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn live_page_refreshes_preserve_query_budget_and_global_admission() {
+    use super::super::ai_chats::tests::fixture;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    let f = fixture().await;
+    let token =
+        f.st.token
+            .issue(
+                f.alice.id,
+                f.alice.role,
+                &f.alice.name,
+                &f.alice.security_stamp,
+            )
+            .unwrap();
+    let app = super::super::router()
+        .layer(axum::middleware::from_fn_with_state(
+            f.st.clone(),
+            crate::middlewares::rate_limiter::global_middleware,
+        ))
+        .with_state(f.st.clone());
+    let page = format!("/api/game/{}/scoreboard/page?count=30", f.off_game);
+    let feed = format!("/api/game/{}/scoreboard/ctftime", f.off_game);
+    let request = |uri: &str| {
+        Request::builder()
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    // A burst of live notifications must not spend the heavy-query bucket.
+    for _ in 0..40 {
+        assert_eq!(
+            app.clone().oneshot(request(&page)).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+    // The export retains its query limit; exhausting it must not block pages.
+    for _ in 0..30 {
+        assert_eq!(
+            app.clone().oneshot(request(&feed)).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        app.clone().oneshot(request(&feed)).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    for _ in 0..79 {
+        assert_eq!(
+            app.clone().oneshot(request(&page)).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        app.oneshot(request(&page)).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    f.teardown().await;
+}
+
 fn fixture() -> Snapshot {
     let at = Utc::now();
     Snapshot {
@@ -107,12 +170,20 @@ fn hostile_inputs_are_bounded_and_a_shrinking_roster_clamps_the_page() {
             ..Default::default()
         },
         ScoreboardPageQuery {
-            locate_team: Some("x".repeat(257)),
+            locate_team: Some("x".repeat(513)),
             ..Default::default()
         },
     ] {
         assert!(query.bounded().is_err());
     }
+    let longest_name = "🧪".repeat(crate::controllers::team::MAX_TEAM_NAME_CHARS);
+    crate::controllers::team::validate_team_profile(Some(&longest_name), None).unwrap();
+    assert!(ScoreboardPageQuery {
+        locate_team: Some(longest_name),
+        ..Default::default()
+    }
+    .bounded()
+    .is_ok());
     let query = ScoreboardPageQuery {
         count: Some(usize::MAX),
         skip: Some(100_000),

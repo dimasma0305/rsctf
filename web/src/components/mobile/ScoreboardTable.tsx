@@ -30,6 +30,7 @@ import { ScrollingText } from '@Components/ScrollingText'
 import { MobileScoreboardItemModal } from '@Components/mobile/ScoreboardItemModal'
 import { BloodBonus, BloodsTypes, useBonusLabels } from '@Utils/Shared'
 import { useGame } from '@Hooks/useGame'
+import { useScoreboardSelection } from '@Hooks/useScoreboardSelection'
 import { ScoreboardItem } from '@Api'
 import classes from '@Styles/ScoreboardTable.module.css'
 
@@ -91,7 +92,7 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
   const { page: activePage, setPage, keyword, setKeyword } = paging
   const [bloodBonus, setBloodBonus] = useState(BloodBonus.default)
   const [highlightedTeam, setHighlightedTeam] = useState<string | null>(null)
-  const [selection, setSelection] = useState<{ gameId: number; itemId: number } | null>(null)
+  const { currentItem, selectItem, clearSelection } = useScoreboardSelection(numId, scoreboard?.items)
   const [itemDetailOpened, setItemDetailOpened] = useState(false)
   const { game } = useGame(numId)
   const myTeamName = game?.teamName ?? null
@@ -115,14 +116,12 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
 
   useEffect(() => {
     setHighlightedTeam(null)
-    setSelection(null)
+    clearSelection()
     setItemDetailOpened(false)
-  }, [id])
+  }, [id, clearSelection])
 
   const base = paging.skip
   const currentItems = scoreboard?.items
-  const currentItem =
-    selection?.gameId === numId ? (scoreboard?.items?.find((item) => item.id === selection.itemId) ?? null) : null
 
   useEffect(() => {
     if (!highlightedTeam || !scoreboard?.items?.some((item) => item.name === highlightedTeam)) return
@@ -268,7 +267,7 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
                     highlighted={highlightedTeam === item.name}
                     onOpenDetail={() => {
                       if (typeof item.id !== 'number') return
-                      setSelection({ gameId: numId, itemId: item.id })
+                      selectItem(item)
                       setItemDetailOpened(true)
                     }}
                   />
@@ -322,7 +321,7 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
         size="40rem"
         onClose={() => {
           setItemDetailOpened(false)
-          setSelection(null)
+          clearSelection()
         }}
         item={currentItem}
       />

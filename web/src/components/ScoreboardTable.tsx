@@ -42,6 +42,7 @@ import {
 import { filterJeopardyChallenges } from '@Utils/scoreboard'
 import type { ScoreboardPaging } from '@Utils/ScoreboardPage'
 import { useGame } from '@Hooks/useGame'
+import { useScoreboardSelection } from '@Hooks/useScoreboardSelection'
 import { ChallengeInfo, ChallengeCategory, ScoreboardItem, ScoreboardModel, SubmissionType } from '@Api'
 import misc from '@Styles/Misc.module.css'
 import classes from '@Styles/ScoreboardTable.module.css'
@@ -289,7 +290,7 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
   const myTeamName = game?.teamName ?? null
   // When a "find my team" click lands on a row we highlight it for 2.5s.
   const [highlightedTeam, setHighlightedTeam] = useState<string | null>(null)
-  const [selection, setSelection] = useState<{ gameId: number; itemId: number } | null>(null)
+  const { currentItem, selectItem, clearSelection } = useScoreboardSelection(numId, scoreboard?.items)
   const [itemDetailOpened, setItemDetailOpened] = useState(false)
   const divisionMap = useMemo(() => {
     const map = new Map<number, string>()
@@ -318,15 +319,12 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
 
   useEffect(() => {
     setHighlightedTeam(null)
-    setSelection(null)
+    clearSelection()
     setItemDetailOpened(false)
-  }, [id])
+  }, [id, clearSelection])
 
   const base = paging.skip
   const currentItems = scoreboard?.items
-
-  const currentItem =
-    selection?.gameId === numId ? (scoreboard?.items?.find((item) => item.id === selection.itemId) ?? null) : null
 
   useEffect(() => {
     if (!highlightedTeam || !scoreboard?.items?.some((item) => item.name === highlightedTeam)) return
@@ -464,7 +462,7 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
                       item={item}
                       onOpenDetail={() => {
                         if (typeof item.id !== 'number') return
-                        setSelection({ gameId: numId, itemId: item.id })
+                        selectItem(item)
                         setItemDetailOpened(true)
                       }}
                       challenges={jeopardyChallenges}
@@ -505,7 +503,7 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
         size="45rem"
         onClose={() => {
           setItemDetailOpened(false)
-          setSelection(null)
+          clearSelection()
         }}
         item={currentItem}
       />

@@ -9,7 +9,7 @@ const game = Number(process.env.RSCTF_VISUAL_GAME_ID)
 const team = process.env.RSCTF_VISUAL_TEAM_NAME || 'PLATFORM_BENCH_00500'
 const token = readFileSync(process.env.RSCTF_VISUAL_PLAYER_JWT_FILE || '', 'utf8').trim()
 if (!['localhost', '127.0.0.1', '::1'].includes(target.hostname) || !Number.isInteger(game) || game < 1
-    || token.length < 32 || token.length > 4096 || team.length > 256) {
+    || token.length < 32 || token.length > 4096 || Buffer.byteLength(team) > 512) {
   throw new Error('loopback target, GAME_ID, bounded team name and disposable PLAYER_JWT_FILE required')
 }
 const output = resolve(new URL('../../visual-audit-output/scoreboard-page/', import.meta.url).pathname)
@@ -17,6 +17,18 @@ rmSync(output, { recursive: true, force: true })
 mkdirSync(output, { recursive: true })
 const { cdp, close } = await launchBrowser()
 const requests = []
+let simulatedPage
+const interceptionErrors = []
+cdp.on('Fetch.requestPaused', event => {
+  const response = simulatedPage ? cdp.send('Fetch.fulfillRequest', {
+    requestId: event.requestId, responseCode: 200,
+    responseHeaders: [{ name: 'Content-Type', value: 'application/json' },
+      { name: 'ETag', value: '"scoreboard-dialog-regression"' },
+      { name: 'X-Scoreboard-Version', value: 'scoreboard-dialog-regression' }],
+    body: Buffer.from(JSON.stringify(simulatedPage)).toString('base64'),
+  }) : cdp.send('Fetch.continueRequest', { requestId: event.requestId })
+  response.catch(error => interceptionErrors.push(error.message))
+})
 cdp.on('Network.requestWillBeSent', ({ request }) => {
   const url = new URL(request.url)
   if (url.pathname.startsWith(`/api/game/${game}/scoreboard`)) requests.push(url.pathname + url.search)
@@ -47,11 +59,41 @@ const enter = async () => {
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
 }
 
+const modalSurvivesPageChange = async (skip, count) => {
+  const response = await fetch(`${target.origin}/api/game/${game}/scoreboard/page?skip=${skip}&count=${count + 1}`)
+  assert.equal(response.status, 200)
+  const next = await response.json()
+  const selectedName = next.items[0].name
+  await evaluate(`document.querySelector('[data-team-name] button').focus()`)
+  await enter()
+  await wait(`document.querySelector('[role="dialog"]')?.textContent.includes(${JSON.stringify(selectedName)})`)
+  simulatedPage = { ...next, count, items: next.items.slice(1), snapshotVersion: 'dialog-regression' }
+  await wait(`${firstRank} === ${skip + 2}`)
+  await new Promise(resolve => setTimeout(resolve, 500)) // Let modal exit transitions finish.
+  assert.equal(await evaluate(`Boolean(document.querySelector('[role="dialog"]'))`), true,
+    'a live update moving the team off the page must keep its details open')
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await wait(`!document.querySelector('[role="dialog"]')`)
+  simulatedPage = undefined
+  await wait(`${firstRank} === ${skip + 1}`)
+  assert.equal(await evaluate(`Boolean(document.querySelector('[role="dialog"]'))`), false,
+    'the returning team must not reopen explicitly closed details')
+}
+
 try {
   await cdp.send('Page.enable')
   await cdp.send('Page.bringToFront')
   await cdp.send('Runtime.enable')
   await cdp.send('Network.enable')
+  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `${target.origin}/api/game/${game}/scoreboard/page*` }] })
+  // Exercise real completion polling quickly, without waiting thirty seconds
+  // per simulated rank change. All other timer durations remain unchanged.
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `{
+    const original = window.setTimeout;
+    window.setTimeout = (callback, delay, ...args) => original(callback,
+      delay >= 20000 && delay <= 40000 ? 1000 : delay, ...args);
+  }` })
   await cdp.send('Network.setCookie', { name: 'RSCTF_Token', value: token, url: target.origin,
     secure: false, httpOnly: true, sameSite: 'Lax' })
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false })
@@ -64,6 +106,7 @@ try {
     /^next(?: page)?$/i.test(button.getAttribute('aria-label') || button.title)).focus()`)
   await enter()
   await wait(`${firstRank} === 31 && ${rows}.length === 30`)
+  await modalSurvivesPageChange(30, 30)
 
   await evaluate(`window.scoreboardSearch = (${search}); window.scoreboardSearch.focus()`)
   await cdp.send('Input.insertText', { text: '00500' })
@@ -83,6 +126,7 @@ try {
 
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 568, deviceScaleFactor: 1, mobile: true })
   await wait(`${rows}.length === 10 && ${firstRank} === 1`)
+  await modalSurvivesPageChange(0, 10)
   await evaluate(`(${mine}).focus()`)
   await enter()
   await wait(`${rows}.length === 10 && Array.from(${rows}).some(row => row.getAttribute('data-team-name') === ${JSON.stringify(team)})`)
@@ -90,7 +134,9 @@ try {
   const mobile = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
   writeFileSync(resolve(output, 'compact.png'), Buffer.from(mobile.data, 'base64'))
   assert.equal(requests.some(path => path === `/api/game/${game}/scoreboard`), false, 'the table must not download the full board')
+  assert.deepEqual(interceptionErrors, [])
   const result = { keyboardPagination: true, searchFocusRetained: true, lookupOutsidePage: true,
+    desktopDialogSurvivesRowMove: true, compactDialogSurvivesRowMove: true,
     desktopPageSize: 30, compactPageSize: 10, overflow: false, fullBoardReads: 0, requests }
   writeFileSync(resolve(output, 'result.json'), JSON.stringify(result, null, 2))
   console.log(JSON.stringify(result))
