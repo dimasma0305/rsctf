@@ -10,6 +10,7 @@ interface ScoreboardPaginationProps {
   onChange: (page: number) => void
   total: number
   boundaries?: number
+  disabled?: boolean
 }
 
 /**
@@ -17,7 +18,7 @@ interface ScoreboardPaginationProps {
  * and a compact status on narrow screens. It remains visible for a single
  * page so scoreboard footers do not shift as filters and data change.
  */
-export const ScoreboardPagination: FC<ScoreboardPaginationProps> = ({ value, onChange, total, boundaries = 1 }) => {
+export const ScoreboardPagination: FC<ScoreboardPaginationProps> = ({ value, onChange, total, boundaries = 1, disabled }) => {
   const { t } = useTranslation()
   const compact = useMediaQuery('(max-width: 47.99em)', false, { getInitialValueInEffect: false })
   const { page, totalPages } = getPaginationState(value, total)
@@ -41,6 +42,7 @@ export const ScoreboardPagination: FC<ScoreboardPaginationProps> = ({ value, onC
       className={classes.nav}
     >
       <Pagination.Root
+        disabled={disabled}
         value={page}
         onChange={onChange}
         total={totalPages}

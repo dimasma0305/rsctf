@@ -7,6 +7,7 @@ import {
   Center,
   Group,
   Loader,
+  LoadingOverlay,
   Paper,
   Select,
   Stack,
@@ -17,7 +18,6 @@ import {
   alpha,
   useMantineTheme,
 } from '@mantine/core'
-import { useDebouncedValue } from '@mantine/hooks'
 import { mdiAlertCircleOutline, mdiCrosshairsGps, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import cx from 'clsx'
@@ -36,7 +36,6 @@ import classes from '@Styles/ScoreboardTable.module.css'
 const RANK_WIDTH = 48
 const SOLVED_WIDTH = 58
 const SCORE_WIDTH = 68
-const ITEM_COUNT_PER_PAGE = 10
 
 const TableRow: FC<{
   item: ScoreboardItem
@@ -86,13 +85,11 @@ const TableRow: FC<{
   )
 })
 
-export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId, scoreboard, error }) => {
+export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId, scoreboard, error, paging }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
-  const [activePage, setPage] = useState(1)
+  const { page: activePage, setPage, keyword, setKeyword } = paging
   const [bloodBonus, setBloodBonus] = useState(BloodBonus.default)
-  const [keyword, setKeyword] = useState('')
-  const [debouncedKeyword] = useDebouncedValue(keyword, 250)
   const [highlightedTeam, setHighlightedTeam] = useState<string | null>(null)
   const [selection, setSelection] = useState<{ gameId: number; itemId: number } | null>(null)
   const [itemDetailOpened, setItemDetailOpened] = useState(false)
@@ -116,30 +113,22 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
     }
   }, [divisionOptions, divisionId, setDivisionId])
 
-  const filtered = useMemo(() => {
-    const ranked =
-      divisionId === null
-        ? scoreboard?.items?.filter((item) => item.rank > 0)
-        : scoreboard?.items?.filter((item) => (item.divisionId ?? null) === divisionId)
-    const normalized = debouncedKeyword.trim().toLowerCase()
-    return normalized ? ranked?.filter((item) => item.name?.toLowerCase().includes(normalized)) : ranked
-  }, [scoreboard, divisionId, debouncedKeyword])
-
-  useEffect(() => setPage(1), [divisionId, debouncedKeyword])
-
   useEffect(() => {
-    setPage(1)
-    setDivisionId(null)
-    setKeyword('')
     setHighlightedTeam(null)
     setSelection(null)
     setItemDetailOpened(false)
-  }, [id, setDivisionId])
+  }, [id])
 
-  const base = (activePage - 1) * ITEM_COUNT_PER_PAGE
-  const currentItems = filtered?.slice(base, base + ITEM_COUNT_PER_PAGE)
+  const base = paging.skip
+  const currentItems = scoreboard?.items
   const currentItem =
     selection?.gameId === numId ? (scoreboard?.items?.find((item) => item.id === selection.itemId) ?? null) : null
+
+  useEffect(() => {
+    if (!highlightedTeam || !scoreboard?.items?.some((item) => item.name === highlightedTeam)) return
+    const timer = window.setTimeout(() => setHighlightedTeam(null), 2500)
+    return () => window.clearTimeout(timer)
+  }, [highlightedTeam, scoreboard?.items])
 
   useEffect(() => {
     if (scoreboard) setBloodBonus(new BloodBonus(scoreboard.bloodBonus))
@@ -170,12 +159,9 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
   }
 
   const findMyTeam = () => {
-    if (!myTeamName || !filtered) return
-    const index = filtered.findIndex((item) => item.name === myTeamName)
-    if (index < 0) return
-    setPage(Math.floor(index / ITEM_COUNT_PER_PAGE) + 1)
+    if (!myTeamName) return
+    paging.findTeam(myTeamName)
     setHighlightedTeam(myTeamName)
-    window.setTimeout(() => setHighlightedTeam(null), 2500)
   }
 
   return (
@@ -211,7 +197,7 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
                 variant="light"
                 px="sm"
                 h={44}
-                aria-label={t('game.button.find_my_team', 'Find my team')}
+                aria-label={`${t('game.button.mine', 'Mine')}: ${t('game.button.find_my_team', 'Find my team')}`}
                 leftSection={<Icon path={mdiCrosshairsGps} size={0.85} />}
                 onClick={findMyTeam}
               >
@@ -221,13 +207,20 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
           </Group>
         </Stack>
 
+        {!!error && (
+          <Alert color="red" role="alert">
+            {t('game.content.scoreboard.refresh_error', 'The scoreboard could not be refreshed. Previous results are shown.')}
+          </Alert>
+        )}
         <Box
           pos="relative"
+          aria-busy={paging.pending}
           maw="100%"
           style={{ overflowX: 'auto' }}
           tabIndex={0}
           aria-label={t('game.label.score_table.caption', 'Team rankings and total scores')}
         >
+          <LoadingOverlay visible={paging.pending} loaderProps={{ role: 'status', 'aria-label': t('common.content.loading', 'Loading') }} />
           <Table className={classes.table}>
             <Table.Caption className="app-sr-only">
               {t('game.label.score_table.caption', 'Team rankings and total scores')}
@@ -312,9 +305,10 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
             {t('game.content.scoreboard_tip')}
           </Text>
           <ScoreboardPagination
+            disabled={paging.pending}
             value={activePage}
             onChange={setPage}
-            total={Math.ceil((filtered?.length ?? 1) / ITEM_COUNT_PER_PAGE)}
+            total={Math.ceil(paging.total / paging.count)}
           />
         </Group>
       </Stack>

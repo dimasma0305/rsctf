@@ -195,6 +195,16 @@ pub(super) fn valid_bundle(bytes: &[u8]) -> bool {
     )
 }
 
+/// The semantic digest is stored in the bundle header; reading it never hashes
+/// the full roster. Scope is already part of the digest.
+pub(super) fn semantic_version(bundle: &[u8]) -> AppResult<String> {
+    let ranges =
+        bundle_ranges(bundle).ok_or_else(|| AppError::internal("invalid scoreboard bundle"))?;
+    version_digest(bundle, &ranges)
+        .map(hex::encode)
+        .ok_or_else(|| AppError::internal("scoreboard bundle has no semantic version"))
+}
+
 /// Return the identity JSON representation from an atomic encoding bundle.
 /// The slice is zero-copy, so internal callers can deserialize the same cached
 /// board without rebuilding it or decompressing a negotiated response.

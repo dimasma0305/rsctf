@@ -672,6 +672,13 @@ jobs:
           RSCTF_JWT_SECRET: rsctf-load-harness-ci-only-secret
         run: npm test
 
+      - name: Check scoreboard benchmark and browser scripts
+        run: |
+          node --check scoreboard-page.mjs
+          node --check scoreboard-page-fixture.mjs
+          node --check k6/scoreboard-page.js
+          node --check ../visual/scoreboard-page.mjs
+
   cheat-acceptance:
     name: Isolated anti-cheat acceptance
     needs: [plan, rust]

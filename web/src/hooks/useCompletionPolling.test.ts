@@ -479,7 +479,7 @@ test('scoreboard route and KotH modal consume one owned snapshot per key', () =>
   const combinedTable = readFileSync('src/components/CombinedScoreboardTable.tsx', 'utf8')
   const kothPanel = readFileSync('src/components/KothChallengePanel.tsx', 'utf8')
 
-  assert.match(route, /useGameScoreboardRead\(numId\)/)
+  assert.match(route, /useScoreboardPage\(numId, divisionId, isMobile\)/)
   assert.match(route, /scoreboard === undefined \|\|/)
   assert.match(route, /<ScoreTimeLine divisionId=\{divisionId\} scoreboard=\{scoreboard\}/)
   for (const child of [standardTable, mobileTable, timeline]) assert.doesNotMatch(child, /useGameScoreboard\(/)

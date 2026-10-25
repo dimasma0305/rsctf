@@ -8,6 +8,7 @@ import {
   Grid,
   Group,
   Loader,
+  LoadingOverlay,
   Paper,
   Select,
   Stack,
@@ -19,7 +20,6 @@ import {
   useMantineColorScheme,
   useMantineTheme,
 } from '@mantine/core'
-import { useDebouncedValue } from '@mantine/hooks'
 import { mdiAccountGroup, mdiAlertCircleOutline, mdiCrosshairsGps, mdiMagnify, mdiFlagOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import cx from 'clsx'
@@ -40,6 +40,7 @@ import {
   PartialIconProps,
 } from '@Utils/Shared'
 import { filterJeopardyChallenges } from '@Utils/scoreboard'
+import type { ScoreboardPaging } from '@Utils/ScoreboardPage'
 import { useGame } from '@Hooks/useGame'
 import { ChallengeInfo, ChallengeCategory, ScoreboardItem, ScoreboardModel, SubmissionType } from '@Api'
 import misc from '@Styles/Misc.module.css'
@@ -265,24 +266,21 @@ const TableRow: FC<{
   )
 })
 
-const ITEM_COUNT_PER_PAGE = 30
-
 export interface ScoreboardProps {
+  paging: ScoreboardPaging
   divisionId: number | null
   setDivisionId: (div: number | null) => void
   scoreboard: ScoreboardModel | undefined
   error: unknown
 }
 
-export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId, scoreboard, error }) => {
+export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId, scoreboard, error, paging }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const { iconMap } = SubmissionTypeIconMap(1)
-  const [activePage, setPage] = useState(1)
+  const { page: activePage, setPage, keyword, setKeyword } = paging
   const [bloodBonus, setBloodBonus] = useState(BloodBonus.default)
 
-  const [keyword, setKeyword] = useState('')
-  const [debouncedKeyword] = useDebouncedValue(keyword, 400)
 
   // A&D / KotH challenges live on their own boards — keep them out of the jeopardy
   // columns (the shared payload includes them so the challenge list still works).
@@ -318,34 +316,29 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
     }
   }, [divisionMap, divisionId, setDivisionId])
 
-  const filteredList = useMemo(() => {
-    if (!scoreboard?.items) return []
-
-    const ranked =
-      divisionId !== null
-        ? scoreboard.items.filter((item) => (item.divisionId ?? null) === divisionId)
-        : scoreboard.items.filter((item) => item.rank > 0)
-    if (!!debouncedKeyword && debouncedKeyword.length > 0) {
-      const keyword = debouncedKeyword.toLowerCase()
-      return ranked.filter((item) => item.name?.toLowerCase().includes(keyword))
-    }
-    return ranked
-  }, [scoreboard, debouncedKeyword, divisionId])
-
   useEffect(() => {
-    setPage(1)
-    setDivisionId(null)
-    setKeyword('')
     setHighlightedTeam(null)
     setSelection(null)
     setItemDetailOpened(false)
-  }, [id, setDivisionId])
+  }, [id])
 
-  const base = (activePage - 1) * ITEM_COUNT_PER_PAGE
-  const currentItems = filteredList?.slice(base, base + ITEM_COUNT_PER_PAGE)
+  const base = paging.skip
+  const currentItems = scoreboard?.items
 
   const currentItem =
     selection?.gameId === numId ? (scoreboard?.items?.find((item) => item.id === selection.itemId) ?? null) : null
+
+  useEffect(() => {
+    if (!highlightedTeam || !scoreboard?.items?.some((item) => item.name === highlightedTeam)) return
+    const frame = requestAnimationFrame(() => {
+      document.querySelector(`[data-team-name="${CSS.escape(highlightedTeam)}"]`)?.scrollIntoView({
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+        block: 'center',
+      })
+    })
+    const timer = setTimeout(() => setHighlightedTeam(null), 2500)
+    return () => { cancelAnimationFrame(frame); clearTimeout(timer) }
+  }, [highlightedTeam, scoreboard?.items])
 
   const { t } = useTranslation()
 
@@ -405,19 +398,8 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
                 h={44}
                 leftSection={<Icon path={mdiCrosshairsGps} size={0.9} />}
                 onClick={() => {
-                  // Find my team in the filtered list; jump to its page
-                  // and flash the row briefly.
-                  const idx = filteredList.findIndex((it) => it.name === myTeamName)
-                  if (idx < 0) return
-                  const page = Math.floor(idx / ITEM_COUNT_PER_PAGE) + 1
-                  setPage(page)
+                  paging.findTeam(myTeamName)
                   setHighlightedTeam(myTeamName)
-                  // Scroll the highlighted row into view after render.
-                  requestAnimationFrame(() => {
-                    const el = document.querySelector(`[data-team-name="${CSS.escape(myTeamName)}"]`)
-                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                  })
-                  setTimeout(() => setHighlightedTeam(null), 2500)
                 }}
               >
                 {t('game.button.find_my_team')}
@@ -436,6 +418,11 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
             />
           </Grid.Col>
         </Grid>
+        {!!error && (
+          <Alert color="red" role="alert">
+            {t('game.content.scoreboard.refresh_error', 'The scoreboard could not be refreshed. Previous results are shown.')}
+          </Alert>
+        )}
         <Box className={classes.legend}>
           <Stack gap="xs">
             <Tooltip.Group>
@@ -455,7 +442,8 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
             </Text>
           </Stack>
         </Box>
-        <Box pos="relative">
+        <Box pos="relative" aria-busy={paging.pending}>
+          <LoadingOverlay visible={paging.pending} loaderProps={{ role: 'status', 'aria-label': t('common.content.loading', 'Loading') }} />
           <Table.ScrollContainer
             minWidth="100%"
             tabIndex={0}
@@ -487,7 +475,7 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
               </Table.Tbody>
             </Table>
           </Table.ScrollContainer>
-          {scoreboard && filteredList.length === 0 && (
+          {scoreboard && paging.total === 0 && (
             <Center mih="6rem">
               <Text size="sm" c="dimmed">
                 {t('game.content.scoreboard.no_teams', 'No teams ranked yet.')}
@@ -500,9 +488,10 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
             {t('game.content.scoreboard_tip')}
           </Text>
           <ScoreboardPagination
+            disabled={paging.pending}
             value={activePage}
             onChange={setPage}
-            total={Math.ceil((filteredList?.length ?? 1) / ITEM_COUNT_PER_PAGE)}
+            total={Math.ceil(paging.total / paging.count)}
             boundaries={2}
           />
         </Group>

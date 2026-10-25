@@ -376,6 +376,7 @@ pub async fn scoreboard(
         return Err(AppError::game_not_started());
     }
 
+    super::scoreboard_refresh::observe(&g, is_monitor);
     let bundle = build_scoreboard_bundle(&st, &g, is_monitor).await?;
     let validator_scope = if is_monitor {
         "standard-monitor"

@@ -181,7 +181,7 @@ fn build_timeline_series(item: &ScoreboardItem) -> Json {
 /// event-flush the cache, so this bounds solve-visibility staleness, while still
 /// collapsing every client's ~10s `/details` + `/scoreboard` poll into at most one
 /// full recompute per variant per window (they were recomputed on every request).
-const SCOREBOARD_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+pub(super) const SCOREBOARD_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 const PARTICIPANT_INDEX_MAX_GAMES: usize = 256;
 
 #[derive(Clone)]
@@ -251,7 +251,7 @@ fn participant_index_store(key: String, index: ParticipantScoreboardIndex) {
 /// Versioned cache keys keep a rolling old standard-scoreboard replica (which
 /// expects raw JSON) from serving the new atomic bundle as JSON. Cron/team/admin
 /// invalidation removes both this namespace and the preceding raw namespace.
-fn scoreboard_cache_key(g: &game::Model, is_monitor: bool) -> String {
+pub(super) fn scoreboard_cache_key(g: &game::Model, is_monitor: bool) -> String {
     if is_monitor {
         format!("_ScoreBoardWireV2_{}", g.id)
     } else {
@@ -347,16 +347,10 @@ pub(crate) async fn build_scoreboard_bundle(
             if let Some(bytes) = cached_scoreboard_bundle(&st2, &key2).await {
                 return Some(bytes);
             }
-            let model = build_scoreboard(&st2, &g2, is_monitor).await.ok()?;
+            let (model, built) = encode_current_scoreboard(&st2, &g2, is_monitor)
+                .await
+                .ok()?;
             participant_index_store(key2.clone(), participant_index_from_board(&model));
-            let raw = bytes::Bytes::from(serde_json::to_vec(&model).ok()?);
-            let built = super::scoreboard_encoding::build_stable_bundle(
-                raw,
-                key2.clone(),
-                b"\"updateTimeUtc\":",
-            )
-            .await
-            .ok()?;
             if built.cacheable {
                 let ttl = super::scoreboard_encoding::final_or_live_cache_ttl(
                     !g2.practice_mode && Utc::now() >= g2.end_time_utc,
@@ -368,6 +362,32 @@ pub(crate) async fn build_scoreboard_bundle(
         })
         .await;
     coalesced.ok_or_else(|| AppError::internal("scoreboard cache fill failed"))
+}
+
+pub(super) async fn encode_current_scoreboard(
+    st: &SharedState,
+    game: &game::Model,
+    monitor: bool,
+) -> AppResult<(ScoreboardModel, super::scoreboard_encoding::BuiltBoardBody)> {
+    let model = build_scoreboard(st, game, monitor).await?;
+    let (model, raw) = tokio::task::spawn_blocking(move || {
+        let raw =
+            serde_json::to_vec(&model).map_err(|error| AppError::internal(error.to_string()))?;
+        Ok::<_, AppError>((model, bytes::Bytes::from(raw)))
+    })
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))??;
+    let built = super::scoreboard_encoding::build_stable_bundle(
+        raw,
+        scoreboard_cache_key(game, monitor),
+        b"\"updateTimeUtc\":",
+    )
+    .await?;
+    Ok((model, built))
+}
+
+pub(super) fn index_scoreboard(key: String, model: &ScoreboardModel) {
+    participant_index_store(key, participant_index_from_board(model));
 }
 
 /// Identity JSON for internal projections. The body slice is zero-copy even
@@ -435,6 +455,7 @@ pub(crate) async fn build_scoreboard(
     g: &game::Model,
     is_monitor: bool,
 ) -> AppResult<ScoreboardModel> {
+    let _timer = crate::services::observability::SCOREBOARD_REBUILD.timer();
     let game_id = g.id;
 
     // Accepted participations.

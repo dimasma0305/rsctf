@@ -22,12 +22,12 @@ import {
   useCombinedScoreboard,
   useGame,
   useGameScoreboardPoll,
-  useGameScoreboardRead,
   useGameTeamInfo,
   useGameStatus,
   useKothScoreboard,
 } from '@Hooks/useGame'
 import { useScoreboardLiveRefresh } from '@Hooks/useScoreboardLiveRefresh'
+import { useScoreboardPage } from '@Hooks/useScoreboardPage'
 import classes from '@Styles/GameScoreboard.module.css'
 
 type ScoreboardTab = 'overall' | 'jeopardy' | 'ad' | 'koth'
@@ -48,13 +48,14 @@ const Scoreboard: FC = () => {
   const location = useLocation()
   // Keep the public catalog loaded even on direct #ad/#koth links. Anonymous
   // visitors cannot rely on the user-gated /Details response for tab discovery.
-  const scoreboardQuery = useGameScoreboardRead(numId)
+  const [divisionId, setDivisionId] = useState<number | null>(null)
+  useEffect(() => setDivisionId(null), [numId])
+  const isMobile = useIsMobile(1080)
+  const scoreboardQuery = useScoreboardPage(numId, divisionId, isMobile)
   const { scoreboard, error: scoreboardError, mutate: mutateJeopardyScoreboard } = scoreboardQuery
   const { game } = useGame(numId)
   const { finished, status } = useGameStatus(game)
 
-  const [divisionId, setDivisionId] = useState<number | null>(null)
-  const isMobile = useIsMobile(1080)
 
   // Derive presence of each engine to pick the board(s) to show. The three boards
   // are independent: jeopardy uses ScoreboardTable, A&D uses the official epoch
@@ -305,6 +306,7 @@ const Scoreboard: FC = () => {
               <KothScoreboardTable numId={numId} scoreboard={kothScoreboard} error={kothScoreboardError} />
             ) : (
               <MobileScoreboardTable
+                paging={scoreboardQuery.paging}
                 divisionId={divisionId}
                 setDivisionId={setDivisionId}
                 scoreboard={scoreboard}
@@ -326,6 +328,7 @@ const Scoreboard: FC = () => {
               <>
                 {showJeopardy && <ScoreTimeLine divisionId={divisionId} scoreboard={scoreboard} />}
                 <ScoreboardTable
+                  paging={scoreboardQuery.paging}
                   divisionId={divisionId}
                   setDivisionId={setDivisionId}
                   scoreboard={scoreboard}

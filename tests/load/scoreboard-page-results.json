@@ -1,0 +1,6204 @@
+{
+  "date": "2026-10-25 Asia/Makassar",
+  "baseCommit": "3d9e07987269b3fdbae3e802363c370b8640bcc6",
+  "binarySha256": "202ce8e2e99b3034dfc7a0d99af2c22674ae90d3827564ab5102bb290bd63408",
+  "profile": {
+    "optLevel": 3,
+    "lto": "fat",
+    "codegenUnits": 1
+  },
+  "host": {
+    "architecture": "x86_64",
+    "logicalCpus": 5,
+    "cgroupCpuQuota": 4,
+    "model": "AMD EPYC 9V74 80-Core Processor",
+    "node": "24.19.0",
+    "k6": "1.3.0"
+  },
+  "fixture": {
+    "teams": 500,
+    "challenges": 20,
+    "firstSolves": 10000,
+    "divisions": 2,
+    "postgres": "18.4",
+    "redis": "7-alpine"
+  },
+  "scope": "Same-binary full/page API contract comparison; separate off/on opt-in read-ahead comparison. This is not a comparison with an old main binary or a production capacity measurement. Each trial restarts the native process, resets only its dedicated Redis, and runs common full/page/export integrity warm-up. Redis and rebuild counter deltas include before/after integrity; resource sampling covers k6. No compiler/browser activity overlaps.",
+  "failedPreflight": {
+    "accepted": false,
+    "reason": "200 rps full-board JSON parsing saturated the shared load generator; retained separately, never treated as a capacity limit or optimization result. Subsequent matched runs use 10 rps on both sides, with unchanged acceptance thresholds.",
+    "rate": 200,
+    "vus": 80,
+    "duration": "30s",
+    "k6": {
+      "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {}
+      },
+      "metrics": {
+        "iteration_duration": {
+          "p(95)": 3511.3589084,
+          "p(99)": 4377.172417760001,
+          "max": 6275.862666,
+          "avg": 1829.9563619185574,
+          "med": 1730.917113,
+          "p(90)": 3161.4635838
+        },
+        "iterations": {
+          "count": 1277,
+          "rate": 41.056150650747064
+        },
+        "vus_max": {
+          "value": 80,
+          "min": 80,
+          "max": 80
+        },
+        "data_sent": {
+          "count": 504415,
+          "rate": 16217.17950704509
+        },
+        "scoreboard_304_ratio": {
+          "passes": 0,
+          "fails": 1277,
+          "value": 0
+        },
+        "http_req_duration{expected_response:true}": {
+          "avg": 324.33702475019595,
+          "med": 231.12407,
+          "p(90)": 736.2522620000005,
+          "p(95)": 941.0786300000005,
+          "p(99)": 1469.2802941200002,
+          "max": 3173.953218
+        },
+        "http_req_failed": {
+          "passes": 0,
+          "fails": 1277,
+          "value": 0
+        },
+        "scoreboard_200_ms": {
+          "avg": 324.33702475019595,
+          "med": 231.12407,
+          "p(90)": 736.2522620000005,
+          "p(95)": 941.0786300000005,
+          "p(99)": 1469.2802941200002,
+          "max": 3173.953218
+        },
+        "dropped_iterations": {
+          "count": 4712,
+          "rate": 151.49301634010976,
+          "thresholds": {
+            "count==0": true
+          }
+        },
+        "scoreboard_page_violation": {
+          "passes": 0,
+          "fails": 1277,
+          "thresholds": {
+            "rate==0": false
+          },
+          "value": 0
+        },
+        "server_5xx": {
+          "passes": 0,
+          "fails": 1277,
+          "thresholds": {
+            "rate==0": false
+          },
+          "value": 0
+        },
+        "scoreboard_decoded_bytes": {
+          "avg": 1055231,
+          "med": 1055231,
+          "p(90)": 1055231,
+          "p(95)": 1055231,
+          "p(99)": 1055231,
+          "max": 1055231
+        },
+        "scoreboard_encoded_bytes": {
+          "max": 47119,
+          "avg": 47117.361785434616,
+          "med": 47117,
+          "p(90)": 47119,
+          "p(95)": 47119,
+          "p(99)": 47119
+        },
+        "vus": {
+          "value": 19,
+          "min": 19,
+          "max": 80
+        },
+        "http_reqs": {
+          "count": 1277,
+          "rate": 41.056150650747064
+        },
+        "http_req_connecting": {
+          "max": 121.977483,
+          "avg": 2.050082462020361,
+          "med": 0,
+          "p(90)": 0,
+          "p(95)": 5.362861800000031,
+          "p(99)": 60.24584444000001
+        },
+        "http_req_blocked": {
+          "avg": 4.468508256851996,
+          "med": 0.007482,
+          "p(90)": 0.01587540000000002,
+          "p(95)": 6.445154800000104,
+          "p(99)": 68.84437152,
+          "max": 1621.819719
+        },
+        "http_req_tls_handshaking": {
+          "med": 0,
+          "p(90)": 0,
+          "p(95)": 0,
+          "p(99)": 0,
+          "max": 0,
+          "avg": 0
+        },
+        "http_req_waiting": {
+          "avg": 167.42074649804238,
+          "med": 153.645348,
+          "p(90)": 336.65172920000003,
+          "p(95)": 394.9002148,
+          "p(99)": 521.93118768,
+          "max": 643.856142
+        },
+        "http_req_receiving": {
+          "avg": 131.95676143774455,
+          "med": 4.085305,
+          "p(90)": 521.4570188000001,
+          "p(95)": 720.0136894,
+          "p(99)": 1288.8513293600001,
+          "max": 2339.277697
+        },
+        "http_req_duration": {
+          "avg": 324.33702475019595,
+          "med": 231.12407,
+          "p(90)": 736.2522620000005,
+          "p(95)": 941.0786300000005,
+          "p(99)": 1469.2802941200002,
+          "max": 3173.953218,
+          "thresholds": {
+            "p(95)<800": true
+          }
+        },
+        "scoreboard_parse_ms": {
+          "avg": 1476.7564604541894,
+          "med": 1349,
+          "p(90)": 2741.400000000001,
+          "p(95)": 3088.4000000000015,
+          "p(99)": 3904.8000000000006,
+          "max": 5385
+        },
+        "http_req_sending": {
+          "p(99)": 776.0344976000001,
+          "max": 1802.007608,
+          "avg": 24.959516814408772,
+          "med": 0.02611,
+          "p(90)": 0.3327648000000019,
+          "p(95)": 55.39737940000002
+        },
+        "data_received": {
+          "count": 61269645,
+          "rate": 1969847.9055895
+        }
+      }
+    },
+    "resources": {
+      "before": {
+        "teams": 500,
+        "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+        "firstSolveCount": 10000
+      },
+      "after": {
+        "teams": 500,
+        "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+        "firstSolveCount": 10000
+      },
+      "samples": [
+        {
+          "at": 3268.620411,
+          "appCpuPercent": 1.9759918101620724,
+          "appRssBytes": 136138752,
+          "postgresCpuPercent": 4.79,
+          "postgresMemory": "229.1MiB / 17.59GiB",
+          "healthMilliseconds": 12.505370999999286
+        },
+        {
+          "at": 5838.745527,
+          "appCpuPercent": 4.279947280200814,
+          "appRssBytes": 157855744,
+          "postgresCpuPercent": 4.45,
+          "postgresMemory": "234.9MiB / 17.59GiB",
+          "healthMilliseconds": 9.025942000000214
+        },
+        {
+          "at": 8422.865008,
+          "appCpuPercent": 1.9348950529427935,
+          "appRssBytes": 134492160,
+          "postgresCpuPercent": 3.9,
+          "postgresMemory": "237.5MiB / 17.59GiB",
+          "healthMilliseconds": 5.27566300000035
+        },
+        {
+          "at": 11002.635958,
+          "appCpuPercent": 3.8763131277216685,
+          "appRssBytes": 169914368,
+          "postgresCpuPercent": 4,
+          "postgresMemory": "239.8MiB / 17.59GiB",
+          "healthMilliseconds": 21.043295999999827
+        },
+        {
+          "at": 13570.953226,
+          "appCpuPercent": 2.72551996874243,
+          "appRssBytes": 133431296,
+          "postgresCpuPercent": 3.1,
+          "postgresMemory": "241.4MiB / 17.59GiB",
+          "healthMilliseconds": 7.575229000000036
+        },
+        {
+          "at": 16137.550163,
+          "appCpuPercent": 1.9481048730013346,
+          "appRssBytes": 133443584,
+          "postgresCpuPercent": 7.09,
+          "postgresMemory": "246MiB / 17.59GiB",
+          "healthMilliseconds": 4.072164999997767
+        },
+        {
+          "at": 18704.364369,
+          "appCpuPercent": 3.8958799497932977,
+          "appRssBytes": 133185536,
+          "postgresCpuPercent": 3,
+          "postgresMemory": "248MiB / 17.59GiB",
+          "healthMilliseconds": 4.367690999999468
+        },
+        {
+          "at": 21282.006221,
+          "appCpuPercent": 2.7156604376859717,
+          "appRssBytes": 127492096,
+          "postgresCpuPercent": 7.81,
+          "postgresMemory": "249.9MiB / 17.59GiB",
+          "healthMilliseconds": 3.153436000000511
+        },
+        {
+          "at": 23821.684077,
+          "appCpuPercent": 3.9375072615508886,
+          "appRssBytes": 133091328,
+          "postgresCpuPercent": 5.06,
+          "postgresMemory": "255.1MiB / 17.59GiB",
+          "healthMilliseconds": 9.74133399999846
+        },
+        {
+          "at": 26385.874005,
+          "appCpuPercent": 2.3399202744236036,
+          "appRssBytes": 125927424,
+          "postgresCpuPercent": 3.25,
+          "postgresMemory": "256.6MiB / 17.59GiB",
+          "healthMilliseconds": 6.777785000002041
+        },
+        {
+          "at": 28934.574856,
+          "appCpuPercent": 4.315924325008204,
+          "appRssBytes": 135421952,
+          "postgresCpuPercent": 3.93,
+          "postgresMemory": "258.7MiB / 17.59GiB",
+          "healthMilliseconds": 5.093348999998852
+        },
+        {
+          "at": 31501.886448,
+          "appCpuPercent": 2.3370751017120774,
+          "appRssBytes": 135872512,
+          "postgresCpuPercent": 2.8,
+          "postgresMemory": "260.2MiB / 17.59GiB",
+          "healthMilliseconds": 30.291244000000006
+        }
+      ],
+      "errors": []
+    }
+  },
+  "trials": [
+    {
+      "name": "full-fresh-1",
+      "mode": "full",
+      "conditional": false,
+      "background": false,
+      "rate": 10,
+      "duration": "30s",
+      "vus": 8,
+      "before": {
+        "redis": {
+          "total_commands_processed": 4531,
+          "total_net_input_bytes": 28489107,
+          "total_net_output_bytes": 60731177,
+          "keyspace_hits": 136,
+          "keyspace_misses": 2936,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 0,
+          "cacheL1Misses": 2,
+          "cacheL2Hits": 0,
+          "cacheL2Misses": 2,
+          "cacheRead": {
+            "count": 2,
+            "totalMicros": 346,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 2,
+            "totalMicros": 337,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "after": {
+        "redis": {
+          "total_commands_processed": 5590,
+          "total_net_input_bytes": 38377549,
+          "total_net_output_bytes": 87116787,
+          "keyspace_hits": 173,
+          "keyspace_misses": 3608,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 574,
+          "cacheL1Misses": 711,
+          "cacheL2Hits": 37,
+          "cacheL2Misses": 674,
+          "cacheRead": {
+            "count": 1285,
+            "totalMicros": 194180,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              571,
+              201,
+              486,
+              26,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 711,
+            "totalMicros": 192250,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              201,
+              483,
+              26,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 6,
+            "totalMicros": 268992,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              5,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "k6": {
+        "root_group": {
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {},
+          "checks": {}
+        },
+        "metrics": {
+          "http_req_duration": {
+            "max": 72.873694,
+            "avg": 5.857822163333333,
+            "med": 4.121387,
+            "p(90)": 7.6531198,
+            "p(95)": 10.273928100000004,
+            "p(99)": 67.37551741999998,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "http_req_connecting": {
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.23341134999999935,
+            "max": 0.386864,
+            "avg": 0.006588386666666665
+          },
+          "http_req_blocked": {
+            "p(99)": 0.3300175799999996,
+            "max": 0.494377,
+            "avg": 0.019524890000000007,
+            "med": 0.009825,
+            "p(90)": 0.011327000000000012,
+            "p(95)": 0.03195815000000002
+          },
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 300,
+            "value": 0
+          },
+          "http_req_sending": {
+            "avg": 0.04528547999999998,
+            "med": 0.039019,
+            "p(90)": 0.051757000000000004,
+            "p(95)": 0.06989245000000006,
+            "p(99)": 0.16769088999999957,
+            "max": 0.647379
+          },
+          "scoreboard_200_ms": {
+            "p(99)": 67.37551741999998,
+            "max": 72.873694,
+            "avg": 5.857822163333333,
+            "med": 4.121387,
+            "p(90)": 7.6531198,
+            "p(95)": 10.273928100000004
+          },
+          "data_sent": {
+            "count": 118500,
+            "rate": 3949.8832631750984
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "data_received": {
+            "count": 14393748,
+            "rate": 479777.42041822826
+          },
+          "vus": {
+            "value": 0,
+            "min": 0,
+            "max": 0
+          },
+          "iterations": {
+            "rate": 9.999704463734426,
+            "count": 300
+          },
+          "http_req_waiting": {
+            "p(90)": 3.7494118000000003,
+            "p(95)": 5.757736100000001,
+            "p(99)": 64.95725800999999,
+            "max": 67.638266,
+            "avg": 3.0564637900000005,
+            "med": 1.5525465
+          },
+          "http_req_receiving": {
+            "avg": 2.7560728933333363,
+            "med": 2.3969129999999996,
+            "p(90)": 4.112952900000002,
+            "p(95)": 5.177495400000002,
+            "p(99)": 8.599955309999999,
+            "max": 31.936791
+          },
+          "scoreboard_parse_ms": {
+            "p(95)": 59.05000000000001,
+            "p(99)": 66,
+            "max": 70,
+            "avg": 52.47666666666667,
+            "med": 52,
+            "p(90)": 57
+          },
+          "vus_max": {
+            "value": 8,
+            "min": 8,
+            "max": 8
+          },
+          "http_reqs": {
+            "count": 300,
+            "rate": 9.999704463734426
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 300,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_req_failed": {
+            "fails": 300,
+            "passes": 0,
+            "value": 0
+          },
+          "http_req_duration{expected_response:true}": {
+            "avg": 5.857822163333333,
+            "med": 4.121387,
+            "p(90)": 7.6531198,
+            "p(95)": 10.273928100000004,
+            "p(99)": 67.37551741999998,
+            "max": 72.873694
+          },
+          "scoreboard_decoded_bytes": {
+            "avg": 1055231,
+            "med": 1055231,
+            "p(90)": 1055231,
+            "p(95)": 1055231,
+            "p(99)": 1055231,
+            "max": 1055231
+          },
+          "http_req_tls_handshaking": {
+            "avg": 0,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0
+          },
+          "scoreboard_encoded_bytes": {
+            "avg": 47117.16,
+            "med": 47117,
+            "p(90)": 47118,
+            "p(95)": 47118,
+            "p(99)": 47118,
+            "max": 47118
+          },
+          "iteration_duration": {
+            "med": 58.193231499999996,
+            "p(90)": 65.7687566,
+            "p(95)": 69.36323,
+            "p(99)": 123.45563489999995,
+            "max": 132.338968,
+            "avg": 60.031196359999996
+          },
+          "server_5xx": {
+            "passes": 0,
+            "fails": 300,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          }
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3038.955808,
+            "appCpuPercent": 0.39513618415015234,
+            "appRssBytes": 113709056,
+            "postgresCpuPercent": 4.53,
+            "postgresMemory": "232.1MiB / 17.59GiB",
+            "healthMilliseconds": 3.6623549999994793
+          },
+          {
+            "at": 5564.026452,
+            "appCpuPercent": 2.7721996676145273,
+            "appRssBytes": 144617472,
+            "postgresCpuPercent": 2.7,
+            "postgresMemory": "238.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.0580819999995583
+          },
+          {
+            "at": 8094.585377,
+            "appCpuPercent": 1.5806784661218667,
+            "appRssBytes": 115441664,
+            "postgresCpuPercent": 2.82,
+            "postgresMemory": "241.9MiB / 17.59GiB",
+            "healthMilliseconds": 2.660561000000598
+          },
+          {
+            "at": 10619.876281,
+            "appCpuPercent": 0.39599398168980215,
+            "appRssBytes": 119574528,
+            "postgresCpuPercent": 6.15,
+            "postgresMemory": "245.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.355777999999191
+          },
+          {
+            "at": 13144.832049,
+            "appCpuPercent": 2.772325792282949,
+            "appRssBytes": 120119296,
+            "postgresCpuPercent": 2.27,
+            "postgresMemory": "246.6MiB / 17.59GiB",
+            "healthMilliseconds": 3.5015580000017508
+          },
+          {
+            "at": 15669.707423,
+            "appCpuPercent": 1.1881774565559213,
+            "appRssBytes": 120123392,
+            "postgresCpuPercent": 6.49,
+            "postgresMemory": "249.8MiB / 17.59GiB",
+            "healthMilliseconds": 3.9879779999973834
+          },
+          {
+            "at": 18199.969982,
+            "appCpuPercent": 2.37129541306231,
+            "appRssBytes": 121344000,
+            "postgresCpuPercent": 2.36,
+            "postgresMemory": "251.2MiB / 17.59GiB",
+            "healthMilliseconds": 2.2371710000006715
+          },
+          {
+            "at": 20735.82627,
+            "appCpuPercent": 0.7886882271145477,
+            "appRssBytes": 125079552,
+            "postgresCpuPercent": 2.48,
+            "postgresMemory": "252.4MiB / 17.59GiB",
+            "healthMilliseconds": 2.9451809999991383
+          },
+          {
+            "at": 23263.01909,
+            "appCpuPercent": 2.769871750427021,
+            "appRssBytes": 125935616,
+            "postgresCpuPercent": 1.93,
+            "postgresMemory": "254.4MiB / 17.59GiB",
+            "healthMilliseconds": 7.84241800000018
+          },
+          {
+            "at": 25798.506175,
+            "appCpuPercent": 1.1832046070153828,
+            "appRssBytes": 125960192,
+            "postgresCpuPercent": 1.97,
+            "postgresMemory": "255.6MiB / 17.59GiB",
+            "healthMilliseconds": 2.3700370000005933
+          },
+          {
+            "at": 28329.720514,
+            "appCpuPercent": 2.370403765320956,
+            "appRssBytes": 163790848,
+            "postgresCpuPercent": 1.71,
+            "postgresMemory": "256.1MiB / 17.59GiB",
+            "healthMilliseconds": 3.1188230000007025
+          },
+          {
+            "at": 30852.820635,
+            "appCpuPercent": 1.1890134580989147,
+            "appRssBytes": 131887104,
+            "postgresCpuPercent": 3.21,
+            "postgresMemory": "257.6MiB / 17.59GiB",
+            "healthMilliseconds": 3.580061000000569
+          }
+        ],
+        "errors": []
+      },
+      "accepted": true
+    },
+    {
+      "name": "page-fresh-1",
+      "mode": "page",
+      "conditional": false,
+      "background": false,
+      "rate": 10,
+      "duration": "30s",
+      "vus": 8,
+      "before": {
+        "redis": {
+          "total_commands_processed": 5598,
+          "total_net_input_bytes": 38378158,
+          "total_net_output_bytes": 87118578,
+          "keyspace_hits": 173,
+          "keyspace_misses": 3610,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 0,
+          "cacheL1Misses": 2,
+          "cacheL2Hits": 0,
+          "cacheL2Misses": 2,
+          "cacheRead": {
+            "count": 2,
+            "totalMicros": 364,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 2,
+            "totalMicros": 356,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "after": {
+        "redis": {
+          "total_commands_processed": 6695,
+          "total_net_input_bytes": 48687222,
+          "total_net_output_bytes": 115884493,
+          "keyspace_hits": 233,
+          "keyspace_misses": 4292,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 850,
+          "cacheL1Misses": 744,
+          "cacheL2Hits": 60,
+          "cacheL2Misses": 684,
+          "cacheRead": {
+            "count": 1594,
+            "totalMicros": 193988,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              841,
+              193,
+              536,
+              24,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 744,
+            "totalMicros": 191751,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              185,
+              535,
+              24,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 6,
+            "totalMicros": 263542,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              6,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "k6": {
+        "metrics": {
+          "iteration_duration": {
+            "p(90)": 11.187595,
+            "p(95)": 14.475318,
+            "p(99)": 70.647836,
+            "max": 79.400139,
+            "avg": 9.27921505315615,
+            "med": 7.553052
+          },
+          "vus_max": {
+            "value": 8,
+            "min": 8,
+            "max": 8
+          },
+          "scoreboard_encoded_bytes": {
+            "p(95)": 5793,
+            "p(99)": 5793,
+            "max": 5793,
+            "avg": 5793,
+            "med": 5793,
+            "p(90)": 5793
+          },
+          "data_received": {
+            "count": 2002854,
+            "rate": 66744.23309805802
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 301,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "data_sent": {
+            "rate": 4172.76840528887,
+            "count": 125216
+          },
+          "http_req_duration": {
+            "med": 1.896341,
+            "p(90)": 3.813969,
+            "p(95)": 6.274554,
+            "p(99)": 63.030188,
+            "max": 74.598072,
+            "avg": 3.3846248272425257,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "http_reqs": {
+            "count": 301,
+            "rate": 10.030693281944398
+          },
+          "http_req_receiving": {
+            "avg": 0.3066397176079737,
+            "med": 0.280274,
+            "p(90)": 0.424522,
+            "p(95)": 0.52246,
+            "p(99)": 0.734521,
+            "max": 0.766678
+          },
+          "server_5xx": {
+            "fails": 301,
+            "passes": 0,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_req_blocked": {
+            "p(95)": 0.014341,
+            "p(99)": 0.493176,
+            "max": 0.621114,
+            "avg": 0.02092261129568104,
+            "med": 0.009595,
+            "p(90)": 0.010746
+          },
+          "http_req_sending": {
+            "p(90)": 0.050486,
+            "p(95)": 0.06645,
+            "p(99)": 0.111959,
+            "max": 0.168225,
+            "avg": 0.04129952823920266,
+            "med": 0.038648
+          },
+          "scoreboard_parse_ms": {
+            "avg": 5.355481727574751,
+            "med": 5,
+            "p(90)": 7,
+            "p(95)": 8,
+            "p(99)": 9,
+            "max": 12
+          },
+          "vus": {
+            "value": 0,
+            "min": 0,
+            "max": 0
+          },
+          "scoreboard_decoded_bytes": {
+            "avg": 93124,
+            "med": 93124,
+            "p(90)": 93124,
+            "p(95)": 93124,
+            "p(99)": 93124,
+            "max": 93124
+          },
+          "scoreboard_200_ms": {
+            "avg": 3.3846248272425257,
+            "med": 1.896341,
+            "p(90)": 3.813969,
+            "p(95)": 6.274554,
+            "p(99)": 63.030188,
+            "max": 74.598072
+          },
+          "http_req_duration{expected_response:true}": {
+            "avg": 3.3846248272425257,
+            "med": 1.896341,
+            "p(90)": 3.813969,
+            "p(95)": 6.274554,
+            "p(99)": 63.030188,
+            "max": 74.598072
+          },
+          "iterations": {
+            "count": 301,
+            "rate": 10.030693281944398
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "http_req_connecting": {
+            "avg": 0.008712395348837207,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.388467,
+            "max": 0.557307
+          },
+          "http_req_tls_handshaking": {
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0,
+            "avg": 0,
+            "med": 0,
+            "p(90)": 0
+          },
+          "http_req_failed": {
+            "passes": 0,
+            "fails": 301,
+            "value": 0
+          },
+          "http_req_waiting": {
+            "avg": 3.0366855813953517,
+            "med": 1.533999,
+            "p(90)": 3.338921,
+            "p(95)": 5.717902,
+            "p(99)": 62.472445,
+            "max": 74.231178
+          },
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 301,
+            "value": 0
+          }
+        },
+        "root_group": {
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {},
+          "checks": {}
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3015.810416,
+            "appCpuPercent": 0.7919128908458998,
+            "appRssBytes": 115662848,
+            "postgresCpuPercent": 4.59,
+            "postgresMemory": "231.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.9820690000005925
+          },
+          {
+            "at": 5543.62183,
+            "appCpuPercent": 2.3735947890612694,
+            "appRssBytes": 145666048,
+            "postgresCpuPercent": 3.73,
+            "postgresMemory": "237.3MiB / 17.59GiB",
+            "healthMilliseconds": 3.6665720000000874
+          },
+          {
+            "at": 8074.698528,
+            "appCpuPercent": 1.580355112573519,
+            "appRssBytes": 120963072,
+            "postgresCpuPercent": 3.36,
+            "postgresMemory": "239.8MiB / 17.59GiB",
+            "healthMilliseconds": 3.1626200000009703
+          },
+          {
+            "at": 10600.549628,
+            "appCpuPercent": 0.7918123122934679,
+            "appRssBytes": 123060224,
+            "postgresCpuPercent": 5.52,
+            "postgresMemory": "242.1MiB / 17.59GiB",
+            "healthMilliseconds": 2.5994300000002113
+          },
+          {
+            "at": 13123.704582,
+            "appCpuPercent": 2.377975237108644,
+            "appRssBytes": 138383360,
+            "postgresCpuPercent": 2.58,
+            "postgresMemory": "244.1MiB / 17.59GiB",
+            "healthMilliseconds": 4.706393000000389
+          },
+          {
+            "at": 15651.198229,
+            "appCpuPercent": 1.1869466036287928,
+            "appRssBytes": 139096064,
+            "postgresCpuPercent": 5.81,
+            "postgresMemory": "247MiB / 17.59GiB",
+            "healthMilliseconds": 3.0438199999989592
+          },
+          {
+            "at": 18178.807996,
+            "appCpuPercent": 2.769414840609769,
+            "appRssBytes": 155197440,
+            "postgresCpuPercent": 2.07,
+            "postgresMemory": "248.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.3034930000030727
+          },
+          {
+            "at": 20710.569513,
+            "appCpuPercent": 1.1849457304157298,
+            "appRssBytes": 148889600,
+            "postgresCpuPercent": 1.79,
+            "postgresMemory": "249.3MiB / 17.59GiB",
+            "healthMilliseconds": 3.003805000000284
+          },
+          {
+            "at": 23236.648577,
+            "appCpuPercent": 2.3752225674595895,
+            "appRssBytes": 167084032,
+            "postgresCpuPercent": 1.99,
+            "postgresMemory": "250.6MiB / 17.59GiB",
+            "healthMilliseconds": 5.6402799999996205
+          },
+          {
+            "at": 25763.686936,
+            "appCpuPercent": 1.1871604518053942,
+            "appRssBytes": 155774976,
+            "postgresCpuPercent": 1.77,
+            "postgresMemory": "250.7MiB / 17.59GiB",
+            "healthMilliseconds": 3.2903239999977814
+          },
+          {
+            "at": 28288.21521,
+            "appCpuPercent": 2.7727952473706385,
+            "appRssBytes": 154370048,
+            "postgresCpuPercent": 1.83,
+            "postgresMemory": "252.2MiB / 17.59GiB",
+            "healthMilliseconds": 2.8905890000023646
+          },
+          {
+            "at": 30812.164909,
+            "appCpuPercent": 1.188613228381141,
+            "appRssBytes": 146702336,
+            "postgresCpuPercent": 2.15,
+            "postgresMemory": "253.1MiB / 17.59GiB",
+            "healthMilliseconds": 3.4857389999997395
+          }
+        ],
+        "errors": []
+      },
+      "accepted": true
+    },
+    {
+      "name": "page-fresh-2",
+      "mode": "page",
+      "conditional": false,
+      "background": false,
+      "rate": 10,
+      "duration": "30s",
+      "vus": 8,
+      "before": {
+        "redis": {
+          "total_commands_processed": 6703,
+          "total_net_input_bytes": 48687831,
+          "total_net_output_bytes": 115886285,
+          "keyspace_hits": 233,
+          "keyspace_misses": 4294,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 0,
+          "cacheL1Misses": 2,
+          "cacheL2Hits": 0,
+          "cacheL2Misses": 2,
+          "cacheRead": {
+            "count": 2,
+            "totalMicros": 263,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 2,
+            "totalMicros": 253,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "after": {
+        "redis": {
+          "total_commands_processed": 7804,
+          "total_net_input_bytes": 60247371,
+          "total_net_output_bytes": 144652582,
+          "keyspace_hits": 294,
+          "keyspace_misses": 4978,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 844,
+          "cacheL1Misses": 747,
+          "cacheL2Hits": 61,
+          "cacheL2Misses": 686,
+          "cacheRead": {
+            "count": 1591,
+            "totalMicros": 228057,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              836,
+              111,
+              615,
+              29,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 747,
+            "totalMicros": 225930,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              106,
+              612,
+              29,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 7,
+            "totalMicros": 320772,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              7,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "k6": {
+        "root_group": {
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {},
+          "checks": {}
+        },
+        "metrics": {
+          "http_reqs": {
+            "count": 300,
+            "rate": 9.999691152872282
+          },
+          "http_req_failed": {
+            "passes": 0,
+            "fails": 300,
+            "value": 0
+          },
+          "http_req_connecting": {
+            "max": 0.389399,
+            "avg": 0.005790136666666668,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.21314935999999982
+          },
+          "http_req_tls_handshaking": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0,
+            "avg": 0,
+            "med": 0
+          },
+          "http_req_waiting": {
+            "med": 1.6710935,
+            "p(90)": 4.140772200000002,
+            "p(95)": 6.849159250000009,
+            "p(99)": 65.73880582999998,
+            "max": 70.422317,
+            "avg": 3.279496163333334
+          },
+          "scoreboard_parse_ms": {
+            "med": 5,
+            "p(90)": 7,
+            "p(95)": 8,
+            "p(99)": 10.009999999999991,
+            "max": 12,
+            "avg": 5.483333333333333
+          },
+          "iterations": {
+            "count": 300,
+            "rate": 9.999691152872282
+          },
+          "http_req_duration{expected_response:true}": {
+            "p(90)": 4.5210941,
+            "p(95)": 7.153817200000009,
+            "p(99)": 66.11735453999998,
+            "max": 70.775261,
+            "avg": 3.643169333333336,
+            "med": 2.004209
+          },
+          "scoreboard_encoded_bytes": {
+            "avg": 5794,
+            "med": 5794,
+            "p(90)": 5794,
+            "p(95)": 5794,
+            "p(99)": 5794,
+            "max": 5794
+          },
+          "scoreboard_decoded_bytes": {
+            "p(99)": 93124,
+            "max": 93124,
+            "avg": 93124,
+            "med": 93124,
+            "p(90)": 93124,
+            "p(95)": 93124
+          },
+          "http_req_blocked": {
+            "med": 0.0100605,
+            "p(90)": 0.011846000000000004,
+            "p(95)": 0.023738050000000014,
+            "p(99)": 0.3227363999999999,
+            "max": 0.475789,
+            "avg": 0.019617923333333332
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "scoreboard_200_ms": {
+            "p(99)": 66.11735453999998,
+            "max": 70.775261,
+            "avg": 3.643169333333336,
+            "med": 2.004209,
+            "p(90)": 4.5210941,
+            "p(95)": 7.153817200000009
+          },
+          "data_received": {
+            "count": 1996500,
+            "rate": 66547.94462236504
+          },
+          "server_5xx": {
+            "fails": 300,
+            "passes": 0,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_req_receiving": {
+            "p(90)": 0.4147970000000002,
+            "p(95)": 0.4781313000000002,
+            "p(99)": 0.7875627899999951,
+            "max": 2.131772,
+            "avg": 0.3222968499999999,
+            "med": 0.2886615
+          },
+          "data_sent": {
+            "count": 124800,
+            "rate": 4159.87151959487
+          },
+          "http_req_sending": {
+            "avg": 0.04137632,
+            "med": 0.037231,
+            "p(90)": 0.05327220000000003,
+            "p(95)": 0.08094560000000002,
+            "p(99)": 0.11957611999999998,
+            "max": 0.146351
+          },
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 300,
+            "value": 0
+          },
+          "iteration_duration": {
+            "avg": 9.70991800333333,
+            "med": 8.0477735,
+            "p(90)": 11.282162100000003,
+            "p(95)": 14.843005700000003,
+            "p(99)": 71.39002277999997,
+            "max": 75.825344
+          },
+          "http_req_duration": {
+            "avg": 3.643169333333336,
+            "med": 2.004209,
+            "p(90)": 4.5210941,
+            "p(95)": 7.153817200000009,
+            "p(99)": 66.11735453999998,
+            "max": 70.775261,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "vus_max": {
+            "min": 8,
+            "max": 8,
+            "value": 8
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 300,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "vus": {
+            "value": 0,
+            "min": 0,
+            "max": 0
+          }
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3039.61019,
+            "appCpuPercent": 0.3956353206000931,
+            "appRssBytes": 127721472,
+            "postgresCpuPercent": 4.59,
+            "postgresMemory": "229MiB / 17.59GiB",
+            "healthMilliseconds": 3.7141439999995782
+          },
+          {
+            "at": 5565.541015,
+            "appCpuPercent": 2.7712556221724722,
+            "appRssBytes": 169353216,
+            "postgresCpuPercent": 3.17,
+            "postgresMemory": "234.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.130160999999134
+          },
+          {
+            "at": 8093.565905,
+            "appCpuPercent": 1.582262902482736,
+            "appRssBytes": 128143360,
+            "postgresCpuPercent": 3.49,
+            "postgresMemory": "237.5MiB / 17.59GiB",
+            "healthMilliseconds": 2.2629909999996016
+          },
+          {
+            "at": 10615.927764,
+            "appCpuPercent": 1.1893614666332457,
+            "appRssBytes": 128253952,
+            "postgresCpuPercent": 5.49,
+            "postgresMemory": "240.1MiB / 17.59GiB",
+            "healthMilliseconds": 3.4849469999990106
+          },
+          {
+            "at": 13142.448271,
+            "appCpuPercent": 2.7706088197605125,
+            "appRssBytes": 150503424,
+            "postgresCpuPercent": 2.46,
+            "postgresMemory": "241.3MiB / 17.59GiB",
+            "healthMilliseconds": 3.028487999999925
+          },
+          {
+            "at": 15664.698487,
+            "appCpuPercent": 1.1894141116410157,
+            "appRssBytes": 155127808,
+            "postgresCpuPercent": 6.14,
+            "postgresMemory": "242.9MiB / 17.59GiB",
+            "healthMilliseconds": 3.080881000001682
+          },
+          {
+            "at": 18191.662471,
+            "appCpuPercent": 2.7701225835912036,
+            "appRssBytes": 167006208,
+            "postgresCpuPercent": 2.25,
+            "postgresMemory": "243.8MiB / 17.59GiB",
+            "healthMilliseconds": 2.8988920000010694
+          },
+          {
+            "at": 20716.367186,
+            "appCpuPercent": 1.1882577721569314,
+            "appRssBytes": 157003776,
+            "postgresCpuPercent": 5.28,
+            "postgresMemory": "245.7MiB / 17.59GiB",
+            "healthMilliseconds": 1.8008010000012291
+          },
+          {
+            "at": 23239.392614,
+            "appCpuPercent": 2.774446869348,
+            "appRssBytes": 165187584,
+            "postgresCpuPercent": 1.88,
+            "postgresMemory": "246.6MiB / 17.59GiB",
+            "healthMilliseconds": 2.9183610000000044
+          },
+          {
+            "at": 25765.561023,
+            "appCpuPercent": 0.7917128536935961,
+            "appRssBytes": 153255936,
+            "postgresCpuPercent": 1.79,
+            "postgresMemory": "247.5MiB / 17.59GiB",
+            "healthMilliseconds": 1.7274909999978263
+          },
+          {
+            "at": 28299.354136,
+            "appCpuPercent": 2.762656494756994,
+            "appRssBytes": 164855808,
+            "postgresCpuPercent": 1.84,
+            "postgresMemory": "248.7MiB / 17.59GiB",
+            "healthMilliseconds": 3.8102790000011737
+          },
+          {
+            "at": 30826.590934,
+            "appCpuPercent": 1.5827563143926664,
+            "appRssBytes": 152993792,
+            "postgresCpuPercent": 2.08,
+            "postgresMemory": "249.9MiB / 17.59GiB",
+            "healthMilliseconds": 3.1403509999981907
+          }
+        ],
+        "errors": []
+      },
+      "accepted": true
+    },
+    {
+      "name": "full-fresh-2",
+      "mode": "full",
+      "conditional": false,
+      "background": false,
+      "rate": 10,
+      "duration": "30s",
+      "vus": 8,
+      "before": {
+        "redis": {
+          "total_commands_processed": 7812,
+          "total_net_input_bytes": 60247980,
+          "total_net_output_bytes": 144654375,
+          "keyspace_hits": 294,
+          "keyspace_misses": 4980,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 0,
+          "cacheL1Misses": 2,
+          "cacheL2Hits": 0,
+          "cacheL2Misses": 2,
+          "cacheRead": {
+            "count": 2,
+            "totalMicros": 332,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 2,
+            "totalMicros": 324,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "after": {
+        "redis": {
+          "total_commands_processed": 8875,
+          "total_net_input_bytes": 70136904,
+          "total_net_output_bytes": 171040350,
+          "keyspace_hits": 332,
+          "keyspace_misses": 5654,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 575,
+          "cacheL1Misses": 714,
+          "cacheL2Hits": 38,
+          "cacheL2Misses": 676,
+          "cacheRead": {
+            "count": 1289,
+            "totalMicros": 197438,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              570,
+              121,
+              575,
+              23,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 714,
+            "totalMicros": 195597,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              117,
+              575,
+              22,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 6,
+            "totalMicros": 285819,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              4,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "k6": {
+        "metrics": {
+          "iteration_duration": {
+            "avg": 60.90576828239202,
+            "med": 58.497639,
+            "p(90)": 67.192242,
+            "p(95)": 72.107442,
+            "p(99)": 117.174903,
+            "max": 140.587269
+          },
+          "vus_max": {
+            "value": 8,
+            "min": 8,
+            "max": 8
+          },
+          "http_req_failed": {
+            "passes": 0,
+            "fails": 301,
+            "value": 0
+          },
+          "data_sent": {
+            "count": 118895,
+            "rate": 3955.763603160769
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 301,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "server_5xx": {
+            "passes": 0,
+            "fails": 301,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_req_waiting": {
+            "p(99)": 58.409107,
+            "max": 77.853666,
+            "avg": 3.0936914385382055,
+            "med": 1.606187,
+            "p(90)": 3.298315,
+            "p(95)": 4.729273
+          },
+          "iterations": {
+            "count": 301,
+            "rate": 10.01459140040701
+          },
+          "http_req_sending": {
+            "p(90)": 0.058218,
+            "p(95)": 0.082325,
+            "p(99)": 0.151238,
+            "max": 0.623402,
+            "avg": 0.04704970764119601,
+            "med": 0.040491
+          },
+          "scoreboard_parse_ms": {
+            "p(95)": 62,
+            "p(99)": 68,
+            "max": 84,
+            "avg": 53.16943521594684,
+            "med": 52,
+            "p(90)": 59
+          },
+          "http_reqs": {
+            "count": 301,
+            "rate": 10.01459140040701
+          },
+          "http_req_connecting": {
+            "avg": 0.009178581395348837,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.404743,
+            "max": 0.507387
+          },
+          "http_req_receiving": {
+            "avg": 2.7028668039867116,
+            "med": 2.495192,
+            "p(90)": 3.760584,
+            "p(95)": 5.573754,
+            "p(99)": 7.642722,
+            "max": 10.302041
+          },
+          "scoreboard_200_ms": {
+            "avg": 5.843607950166112,
+            "med": 4.3206,
+            "p(90)": 7.576886,
+            "p(95)": 9.160927,
+            "p(99)": 63.144624,
+            "max": 78.968711
+          },
+          "http_req_blocked": {
+            "avg": 0.021812189368770767,
+            "med": 0.009884,
+            "p(90)": 0.011327,
+            "p(95)": 0.014983,
+            "p(99)": 0.47972,
+            "max": 0.595089
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "http_req_tls_handshaking": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0,
+            "avg": 0,
+            "med": 0
+          },
+          "data_received": {
+            "rate": 480493.7406175832,
+            "count": 14441789
+          },
+          "vus": {
+            "value": 0,
+            "min": 0,
+            "max": 0
+          },
+          "http_req_duration": {
+            "p(99)": 63.144624,
+            "max": 78.968711,
+            "avg": 5.843607950166112,
+            "med": 4.3206,
+            "p(90)": 7.576886,
+            "p(95)": 9.160927,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "scoreboard_encoded_bytes": {
+            "max": 47119,
+            "avg": 47117.365448504985,
+            "med": 47117,
+            "p(90)": 47119,
+            "p(95)": 47119,
+            "p(99)": 47119
+          },
+          "scoreboard_decoded_bytes": {
+            "p(90)": 1055231,
+            "p(95)": 1055231,
+            "p(99)": 1055231,
+            "max": 1055231,
+            "avg": 1055231,
+            "med": 1055231
+          },
+          "http_req_duration{expected_response:true}": {
+            "p(95)": 9.160927,
+            "p(99)": 63.144624,
+            "max": 78.968711,
+            "avg": 5.843607950166112,
+            "med": 4.3206,
+            "p(90)": 7.576886
+          },
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 301,
+            "value": 0
+          }
+        },
+        "root_group": {
+          "checks": {},
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {}
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3071.970951,
+            "appCpuPercent": 0.791987055757225,
+            "appRssBytes": 127598592,
+            "postgresCpuPercent": 4.28,
+            "postgresMemory": "230.2MiB / 17.59GiB",
+            "healthMilliseconds": 5.668918000000303
+          },
+          {
+            "at": 5606.872441,
+            "appCpuPercent": 2.3669558851377683,
+            "appRssBytes": 159264768,
+            "postgresCpuPercent": 4.58,
+            "postgresMemory": "236.8MiB / 17.59GiB",
+            "healthMilliseconds": 5.632282999999916
+          },
+          {
+            "at": 8150.457106,
+            "appCpuPercent": 1.1794378387636648,
+            "appRssBytes": 126812160,
+            "postgresCpuPercent": 3.03,
+            "postgresMemory": "240.3MiB / 17.59GiB",
+            "healthMilliseconds": 2.2062349999996513
+          },
+          {
+            "at": 10683.763052,
+            "appCpuPercent": 1.1842233287048856,
+            "appRssBytes": 126824448,
+            "postgresCpuPercent": 5.95,
+            "postgresMemory": "242.7MiB / 17.59GiB",
+            "healthMilliseconds": 3.4122930000012275
+          },
+          {
+            "at": 13209.806415,
+            "appCpuPercent": 2.77113215969761,
+            "appRssBytes": 130080768,
+            "postgresCpuPercent": 2.35,
+            "postgresMemory": "244MiB / 17.59GiB",
+            "healthMilliseconds": 3.2520949999998265
+          },
+          {
+            "at": 15738.296588,
+            "appCpuPercent": 1.1864788054289976,
+            "appRssBytes": 130084864,
+            "postgresCpuPercent": 6.46,
+            "postgresMemory": "246.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.089629000001878
+          },
+          {
+            "at": 18266.897199,
+            "appCpuPercent": 2.3728539706502505,
+            "appRssBytes": 130727936,
+            "postgresCpuPercent": 2.39,
+            "postgresMemory": "247.4MiB / 17.59GiB",
+            "healthMilliseconds": 3.074447000002692
+          },
+          {
+            "at": 20790.7207,
+            "appCpuPercent": 1.1886726622568196,
+            "appRssBytes": 130719744,
+            "postgresCpuPercent": 2.07,
+            "postgresMemory": "248.8MiB / 17.59GiB",
+            "healthMilliseconds": 6.231919000001653
+          },
+          {
+            "at": 23318.749763,
+            "appCpuPercent": 2.3733904359785454,
+            "appRssBytes": 138551296,
+            "postgresCpuPercent": 1.96,
+            "postgresMemory": "249.4MiB / 17.59GiB",
+            "healthMilliseconds": 7.61259599999903
+          },
+          {
+            "at": 25851.248673,
+            "appCpuPercent": 1.1846007072911244,
+            "appRssBytes": 138596352,
+            "postgresCpuPercent": 2.21,
+            "postgresMemory": "250MiB / 17.59GiB",
+            "healthMilliseconds": 2.9474349999982223
+          },
+          {
+            "at": 28375.741043,
+            "appCpuPercent": 2.3767154424000068,
+            "appRssBytes": 171233280,
+            "postgresCpuPercent": 2.28,
+            "postgresMemory": "251.4MiB / 17.59GiB",
+            "healthMilliseconds": 3.410714999998163
+          },
+          {
+            "at": 30902.772589,
+            "appCpuPercent": 1.582884869930311,
+            "appRssBytes": 136540160,
+            "postgresCpuPercent": 1.82,
+            "postgresMemory": "252.7MiB / 17.59GiB",
+            "healthMilliseconds": 2.1491580000001704
+          }
+        ],
+        "errors": []
+      },
+      "accepted": true
+    },
+    {
+      "name": "full-conditional",
+      "mode": "full",
+      "conditional": true,
+      "background": false,
+      "rate": 10,
+      "duration": "30s",
+      "vus": 8,
+      "before": {
+        "redis": {
+          "total_commands_processed": 8883,
+          "total_net_input_bytes": 70137513,
+          "total_net_output_bytes": 171042143,
+          "keyspace_hits": 332,
+          "keyspace_misses": 5656,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 0,
+          "cacheL1Misses": 2,
+          "cacheL2Hits": 0,
+          "cacheL2Misses": 2,
+          "cacheRead": {
+            "count": 2,
+            "totalMicros": 478,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 2,
+            "totalMicros": 462,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "after": {
+        "redis": {
+          "total_commands_processed": 9943,
+          "total_net_input_bytes": 80025989,
+          "total_net_output_bytes": 197428102,
+          "keyspace_hits": 370,
+          "keyspace_misses": 6328,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 573,
+          "cacheL1Misses": 712,
+          "cacheL2Hits": 38,
+          "cacheL2Misses": 674,
+          "cacheRead": {
+            "count": 1285,
+            "totalMicros": 227010,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              571,
+              153,
+              528,
+              31,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 712,
+            "totalMicros": 225205,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              155,
+              525,
+              30,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 6,
+            "totalMicros": 280117,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              5,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "k6": {
+        "root_group": {
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {},
+          "checks": {}
+        },
+        "metrics": {
+          "scoreboard_304_ratio": {
+            "passes": 292,
+            "fails": 8,
+            "thresholds": {
+              "rate>0.7": false
+            },
+            "value": 0.9733333333333334
+          },
+          "iterations": {
+            "count": 300,
+            "rate": 9.999858225343367
+          },
+          "server_5xx": {
+            "fails": 300,
+            "passes": 0,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_req_tls_handshaking": {
+            "avg": 0,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0
+          },
+          "http_req_duration{expected_response:true}": {
+            "p(90)": 3.827740600000001,
+            "p(95)": 5.485256300000004,
+            "p(99)": 63.15873340999999,
+            "max": 70.959347,
+            "avg": 3.287603396666666,
+            "med": 1.7281105
+          },
+          "http_req_connecting": {
+            "avg": 0.007366826666666665,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.26005670999999897,
+            "max": 0.491623
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 300,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_req_duration": {
+            "p(95)": 5.485256300000004,
+            "p(99)": 63.15873340999999,
+            "max": 70.959347,
+            "avg": 3.287603396666666,
+            "med": 1.7281105,
+            "p(90)": 3.827740600000001,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "http_req_sending": {
+            "avg": 0.038430136666666656,
+            "med": 0.0331095,
+            "p(90)": 0.052941100000000005,
+            "p(95)": 0.07284650000000001,
+            "p(99)": 0.13024898999999993,
+            "max": 0.18532
+          },
+          "http_req_receiving": {
+            "p(90)": 0.0884931,
+            "p(95)": 0.11261520000000004,
+            "p(99)": 3.115816249999997,
+            "max": 5.519636,
+            "avg": 0.14798996999999992,
+            "med": 0.056009
+          },
+          "data_received": {
+            "count": 615388,
+            "rate": 20512.642511925347
+          },
+          "iteration_duration": {
+            "max": 71.297845,
+            "avg": 4.9986023633333385,
+            "med": 2.017251,
+            "p(90)": 4.1197481000000025,
+            "p(95)": 7.3087812000000225,
+            "p(99)": 64.58644286999997
+          },
+          "http_req_failed": {
+            "passes": 0,
+            "fails": 300,
+            "value": 0
+          },
+          "scoreboard_encoded_bytes": {
+            "avg": 47117,
+            "med": 47117,
+            "p(90)": 47117,
+            "p(95)": 47117,
+            "p(99)": 47117,
+            "max": 47117
+          },
+          "scoreboard_decoded_bytes": {
+            "p(90)": 1055231,
+            "p(95)": 1055231,
+            "p(99)": 1055231,
+            "max": 1055231,
+            "avg": 1055231,
+            "med": 1055231
+          },
+          "vus": {
+            "value": 0,
+            "min": 0,
+            "max": 0
+          },
+          "data_sent": {
+            "count": 148284,
+            "rate": 4942.72992362272
+          },
+          "http_reqs": {
+            "count": 300,
+            "rate": 9.999858225343367
+          },
+          "vus_max": {
+            "value": 8,
+            "min": 8,
+            "max": 8
+          },
+          "scoreboard_200_ms": {
+            "max": 10.757112,
+            "avg": 6.4957407499999995,
+            "med": 5.7127385,
+            "p(90)": 9.105886199999999,
+            "p(95)": 9.931499099999998,
+            "p(99)": 10.591989419999999
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "http_req_waiting": {
+            "avg": 3.101183290000001,
+            "med": 1.6365859999999999,
+            "p(90)": 3.4556153000000003,
+            "p(95)": 4.668064950000003,
+            "p(99)": 63.04654297999999,
+            "max": 70.830685
+          },
+          "http_req_blocked": {
+            "p(99)": 0.3411214299999991,
+            "max": 0.677473,
+            "avg": 0.01929624,
+            "med": 0.0087935,
+            "p(90)": 0.011169,
+            "p(95)": 0.023816250000000042
+          },
+          "scoreboard_parse_ms": {
+            "p(90)": 54.3,
+            "p(95)": 54.65,
+            "p(99)": 54.93,
+            "max": 55,
+            "avg": 51.5,
+            "med": 51.5
+          }
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3048.28592,
+            "appCpuPercent": 0.7922662354655216,
+            "appRssBytes": 137293824,
+            "postgresCpuPercent": 3.85,
+            "postgresMemory": "230.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.3256060000003345
+          },
+          {
+            "at": 5572.090477,
+            "appCpuPercent": 2.3773631691718986,
+            "appRssBytes": 175603712,
+            "postgresCpuPercent": 3.55,
+            "postgresMemory": "236.3MiB / 17.59GiB",
+            "healthMilliseconds": 3.124141000000236
+          },
+          {
+            "at": 8096.058485,
+            "appCpuPercent": 1.1886046061167033,
+            "appRssBytes": 148570112,
+            "postgresCpuPercent": 2.69,
+            "postgresMemory": "239.6MiB / 17.59GiB",
+            "healthMilliseconds": 1.905947000001106
+          },
+          {
+            "at": 10620.060619,
+            "appCpuPercent": 1.188588535480216,
+            "appRssBytes": 154009600,
+            "postgresCpuPercent": 5.54,
+            "postgresMemory": "242.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.4026950000006764
+          },
+          {
+            "at": 13146.100016,
+            "appCpuPercent": 1.9793832217890779,
+            "appRssBytes": 148221952,
+            "postgresCpuPercent": 2.32,
+            "postgresMemory": "244.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.4769069999983913
+          },
+          {
+            "at": 15671.017539,
+            "appCpuPercent": 1.1881576220499777,
+            "appRssBytes": 148164608,
+            "postgresCpuPercent": 5.96,
+            "postgresMemory": "247.2MiB / 17.59GiB",
+            "healthMilliseconds": 2.8029119999991963
+          },
+          {
+            "at": 18194.297435,
+            "appCpuPercent": 2.37785748997225,
+            "appRssBytes": 145190912,
+            "postgresCpuPercent": 2.49,
+            "postgresMemory": "248.3MiB / 17.59GiB",
+            "healthMilliseconds": 3.067416999998386
+          },
+          {
+            "at": 20718.030012,
+            "appCpuPercent": 0.7924769915112925,
+            "appRssBytes": 143527936,
+            "postgresCpuPercent": 1.98,
+            "postgresMemory": "249.6MiB / 17.59GiB",
+            "healthMilliseconds": 1.990217999999004
+          },
+          {
+            "at": 23240.169313,
+            "appCpuPercent": 2.775421641946811,
+            "appRssBytes": 142696448,
+            "postgresCpuPercent": 1.69,
+            "postgresMemory": "250.9MiB / 17.59GiB",
+            "healthMilliseconds": 2.7863949999991746
+          },
+          {
+            "at": 25766.25495,
+            "appCpuPercent": 0.7917387956709244,
+            "appRssBytes": 142745600,
+            "postgresCpuPercent": 1.91,
+            "postgresMemory": "251.6MiB / 17.59GiB",
+            "healthMilliseconds": 3.123290999999881
+          },
+          {
+            "at": 28290.052495,
+            "appCpuPercent": 2.377369774325538,
+            "appRssBytes": 173404160,
+            "postgresCpuPercent": 2.02,
+            "postgresMemory": "253.3MiB / 17.59GiB",
+            "healthMilliseconds": 3.0411959999983083
+          },
+          {
+            "at": 30816.13158,
+            "appCpuPercent": 1.187611273856851,
+            "appRssBytes": 146935808,
+            "postgresCpuPercent": 1.75,
+            "postgresMemory": "254.3MiB / 17.59GiB",
+            "healthMilliseconds": 2.2448629999998957
+          }
+        ],
+        "errors": []
+      },
+      "accepted": true
+    },
+    {
+      "name": "page-conditional",
+      "mode": "page",
+      "conditional": true,
+      "background": false,
+      "rate": 10,
+      "duration": "30s",
+      "vus": 8,
+      "before": {
+        "redis": {
+          "total_commands_processed": 9951,
+          "total_net_input_bytes": 80026598,
+          "total_net_output_bytes": 197429895,
+          "keyspace_hits": 370,
+          "keyspace_misses": 6330,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 0,
+          "cacheL1Misses": 2,
+          "cacheL2Hits": 0,
+          "cacheL2Misses": 2,
+          "cacheRead": {
+            "count": 2,
+            "totalMicros": 344,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 2,
+            "totalMicros": 336,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "after": {
+        "redis": {
+          "total_commands_processed": 11052,
+          "total_net_input_bytes": 91586117,
+          "total_net_output_bytes": 226196168,
+          "keyspace_hits": 431,
+          "keyspace_misses": 7014,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 844,
+          "cacheL1Misses": 747,
+          "cacheL2Hits": 61,
+          "cacheL2Misses": 686,
+          "cacheRead": {
+            "count": 1591,
+            "totalMicros": 242645,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              839,
+              192,
+              520,
+              38,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 747,
+            "totalMicros": 240455,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              191,
+              516,
+              38,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 7,
+            "totalMicros": 355038,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              5,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "k6": {
+        "root_group": {
+          "checks": {},
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {}
+        },
+        "metrics": {
+          "http_req_failed": {
+            "fails": 300,
+            "passes": 0,
+            "value": 0
+          },
+          "server_5xx": {
+            "passes": 0,
+            "fails": 300,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "scoreboard_304_ratio": {
+            "fails": 8,
+            "passes": 292,
+            "thresholds": {
+              "rate>0.7": false
+            },
+            "value": 0.9733333333333334
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "iterations": {
+            "count": 300,
+            "rate": 9.999629314074648
+          },
+          "scoreboard_encoded_bytes": {
+            "max": 5793,
+            "avg": 5793,
+            "med": 5793,
+            "p(90)": 5793,
+            "p(95)": 5793,
+            "p(99)": 5793
+          },
+          "http_req_duration": {
+            "avg": 3.551566536666667,
+            "med": 1.7388979999999998,
+            "p(90)": 4.412980500000006,
+            "p(95)": 6.201857100000001,
+            "p(99)": 71.51999774,
+            "max": 92.243286,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "scoreboard_parse_ms": {
+            "med": 5,
+            "p(90)": 6,
+            "p(95)": 6,
+            "p(99)": 6,
+            "max": 6,
+            "avg": 5.375
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 300,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "data_sent": {
+            "count": 154584,
+            "rate": 5152.608992956385
+          },
+          "vus_max": {
+            "value": 8,
+            "min": 8,
+            "max": 8
+          },
+          "data_received": {
+            "count": 284788,
+            "rate": 9492.581443655636
+          },
+          "iteration_duration": {
+            "max": 92.843592,
+            "avg": 4.022787650000003,
+            "med": 2.0327925000000002,
+            "p(90)": 5.780495500000002,
+            "p(95)": 8.431767899999999,
+            "p(99)": 71.96731264999998
+          },
+          "http_req_sending": {
+            "p(95)": 0.07198310000000001,
+            "p(99)": 0.10862148999999995,
+            "max": 0.155764,
+            "avg": 0.04018067333333331,
+            "med": 0.034357,
+            "p(90)": 0.055505000000000006
+          },
+          "http_req_receiving": {
+            "p(99)": 0.4171927799999999,
+            "max": 1.170654,
+            "avg": 0.08026169000000004,
+            "med": 0.058653,
+            "p(90)": 0.11251120000000002,
+            "p(95)": 0.18635175000000018
+          },
+          "vus": {
+            "max": 0,
+            "value": 0,
+            "min": 0
+          },
+          "http_req_duration{expected_response:true}": {
+            "avg": 3.551566536666667,
+            "med": 1.7388979999999998,
+            "p(90)": 4.412980500000006,
+            "p(95)": 6.201857100000001,
+            "p(99)": 71.51999774,
+            "max": 92.243286
+          },
+          "scoreboard_200_ms": {
+            "med": 3.1039465,
+            "p(90)": 5.8573892999999995,
+            "p(95)": 7.288669149999997,
+            "p(99)": 8.433693029999999,
+            "max": 8.719949,
+            "avg": 3.7400166249999995
+          },
+          "http_req_tls_handshaking": {
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0,
+            "avg": 0,
+            "med": 0,
+            "p(90)": 0
+          },
+          "scoreboard_decoded_bytes": {
+            "p(99)": 93124,
+            "max": 93124,
+            "avg": 93124,
+            "med": 93124,
+            "p(90)": 93124,
+            "p(95)": 93124
+          },
+          "http_req_blocked": {
+            "p(99)": 0.4299707199999993,
+            "max": 1.893137,
+            "avg": 0.02560010000000001,
+            "med": 0.009164,
+            "p(90)": 0.012138099999999999,
+            "p(95)": 0.020957150000000098
+          },
+          "http_req_connecting": {
+            "p(99)": 0.36502756999999947,
+            "max": 1.798815,
+            "avg": 0.012476593333333334,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0
+          },
+          "http_reqs": {
+            "rate": 9.999629314074648,
+            "count": 300
+          },
+          "http_req_waiting": {
+            "avg": 3.4311241733333313,
+            "med": 1.634687,
+            "p(90)": 4.296373,
+            "p(95)": 5.935437700000001,
+            "p(99)": 71.40554999999998,
+            "max": 92.121553
+          }
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3111.033038,
+            "appCpuPercent": 0.7915792022935868,
+            "appRssBytes": 116514816,
+            "postgresCpuPercent": 4.62,
+            "postgresMemory": "231.8MiB / 17.59GiB",
+            "healthMilliseconds": 3.354025999999976
+          },
+          {
+            "at": 5637.947298,
+            "appCpuPercent": 2.770177093385037,
+            "appRssBytes": 148828160,
+            "postgresCpuPercent": 4.47,
+            "postgresMemory": "237.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.4144500000002154
+          },
+          {
+            "at": 8168.294253,
+            "appCpuPercent": 1.9760136016604095,
+            "appRssBytes": 123416576,
+            "postgresCpuPercent": 2.91,
+            "postgresMemory": "240.4MiB / 17.59GiB",
+            "healthMilliseconds": 3.2912240000005113
+          },
+          {
+            "at": 10695.927703,
+            "appCpuPercent": 1.186880953802855,
+            "appRssBytes": 123424768,
+            "postgresCpuPercent": 6.54,
+            "postgresMemory": "242.8MiB / 17.59GiB",
+            "healthMilliseconds": 2.9934620000003633
+          },
+          {
+            "at": 13221.022213,
+            "appCpuPercent": 2.7721734660933537,
+            "appRssBytes": 127488000,
+            "postgresCpuPercent": 2.71,
+            "postgresMemory": "245.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.075234999998429
+          },
+          {
+            "at": 15753.166155,
+            "appCpuPercent": 1.1847667702612772,
+            "appRssBytes": 127434752,
+            "postgresCpuPercent": 6.02,
+            "postgresMemory": "247.4MiB / 17.59GiB",
+            "healthMilliseconds": 2.742710000002262
+          },
+          {
+            "at": 18276.312662,
+            "appCpuPercent": 2.3779831981036845,
+            "appRssBytes": 131887104,
+            "postgresCpuPercent": 2.18,
+            "postgresMemory": "248.4MiB / 17.59GiB",
+            "healthMilliseconds": 1.8492689999984577
+          },
+          {
+            "at": 20800.854531,
+            "appCpuPercent": 1.5844458945671775,
+            "appRssBytes": 131911680,
+            "postgresCpuPercent": 1.93,
+            "postgresMemory": "248.9MiB / 17.59GiB",
+            "healthMilliseconds": 1.7319920000009006
+          },
+          {
+            "at": 23323.70411,
+            "appCpuPercent": 2.378263075985001,
+            "appRssBytes": 144605184,
+            "postgresCpuPercent": 2.26,
+            "postgresMemory": "251.2MiB / 17.59GiB",
+            "healthMilliseconds": 2.523464999998396
+          },
+          {
+            "at": 25848.942391,
+            "appCpuPercent": 0.7920044674786072,
+            "appRssBytes": 142512128,
+            "postgresCpuPercent": 2.07,
+            "postgresMemory": "252.1MiB / 17.59GiB",
+            "healthMilliseconds": 2.439912000001641
+          },
+          {
+            "at": 28371.885782,
+            "appCpuPercent": 3.170899524950934,
+            "appRssBytes": 166150144,
+            "postgresCpuPercent": 2.08,
+            "postgresMemory": "253.4MiB / 17.59GiB",
+            "healthMilliseconds": 3.1829319999997097
+          },
+          {
+            "at": 30902.818931,
+            "appCpuPercent": 1.5804447468636,
+            "appRssBytes": 137216000,
+            "postgresCpuPercent": 2.2,
+            "postgresMemory": "254.6MiB / 17.59GiB",
+            "healthMilliseconds": 3.401437000000442
+          }
+        ],
+        "errors": []
+      },
+      "accepted": true
+    },
+    {
+      "name": "refresh-off",
+      "mode": "full",
+      "conditional": false,
+      "background": false,
+      "rate": 1,
+      "duration": "60s",
+      "vus": 2,
+      "before": {
+        "redis": {
+          "total_commands_processed": 11060,
+          "total_net_input_bytes": 91586726,
+          "total_net_output_bytes": 226197964,
+          "keyspace_hits": 431,
+          "keyspace_misses": 7016,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 0,
+          "cacheL1Misses": 2,
+          "cacheL2Hits": 0,
+          "cacheL2Misses": 2,
+          "cacheRead": {
+            "count": 2,
+            "totalMicros": 388,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 2,
+            "totalMicros": 379,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "after": {
+        "redis": {
+          "total_commands_processed": 11441,
+          "total_net_input_bytes": 107105444,
+          "total_net_output_bytes": 251434917,
+          "keyspace_hits": 471,
+          "keyspace_misses": 7226,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 85,
+          "cacheL1Misses": 252,
+          "cacheL2Hits": 40,
+          "cacheL2Misses": 212,
+          "cacheRead": {
+            "count": 337,
+            "totalMicros": 92116,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              85,
+              79,
+              150,
+              22,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 252,
+            "totalMicros": 91406,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              82,
+              147,
+              22,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 11,
+            "totalMicros": 494112,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              8,
+              3,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "k6": {
+        "metrics": {
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 61,
+            "value": 0
+          },
+          "http_req_duration": {
+            "avg": 17.74598890163934,
+            "med": 7.59507,
+            "p(90)": 63.292591,
+            "p(95)": 72.672623,
+            "p(99)": 85.68598639999999,
+            "max": 86.923055,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 61,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "scoreboard_encoded_bytes": {
+            "p(90)": 47117,
+            "p(95)": 47119,
+            "p(99)": 47119,
+            "max": 47119,
+            "avg": 47117.13114754098,
+            "med": 47117
+          },
+          "http_req_sending": {
+            "avg": 0.03726444262295082,
+            "med": 0.034723,
+            "p(90)": 0.048042,
+            "p(95)": 0.057347,
+            "p(99)": 0.08114639999999997,
+            "max": 0.095664
+          },
+          "http_req_receiving": {
+            "avg": 3.4815667868852453,
+            "med": 3.077806,
+            "p(90)": 5.087363,
+            "p(95)": 6.721464,
+            "p(99)": 7.155386,
+            "max": 7.18001
+          },
+          "scoreboard_parse_ms": {
+            "max": 69,
+            "avg": 54.967213114754095,
+            "med": 54,
+            "p(90)": 59,
+            "p(95)": 61,
+            "p(99)": 66.6
+          },
+          "vus": {
+            "value": 0,
+            "min": 0,
+            "max": 0
+          },
+          "server_5xx": {
+            "fails": 61,
+            "passes": 0,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "scoreboard_200_ms": {
+            "avg": 17.74598890163934,
+            "med": 7.59507,
+            "p(90)": 63.292591,
+            "p(95)": 72.672623,
+            "p(99)": 85.68598639999999,
+            "max": 86.923055
+          },
+          "http_reqs": {
+            "count": 61,
+            "rate": 1.0156540667055947
+          },
+          "iteration_duration": {
+            "avg": 74.471482852459,
+            "med": 64.508466,
+            "p(90)": 121.634707,
+            "p(95)": 133.269304,
+            "p(99)": 145.2834482,
+            "max": 146.94137
+          },
+          "http_req_failed": {
+            "passes": 0,
+            "fails": 61,
+            "value": 0
+          },
+          "data_sent": {
+            "count": 24095,
+            "rate": 401.18335634870994
+          },
+          "vus_max": {
+            "max": 2,
+            "value": 2,
+            "min": 2
+          },
+          "scoreboard_decoded_bytes": {
+            "med": 1055231,
+            "p(90)": 1055231,
+            "p(95)": 1055231,
+            "p(99)": 1055231,
+            "max": 1055231,
+            "avg": 1055231
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "http_req_blocked": {
+            "p(90)": 0.011427,
+            "p(95)": 0.018648,
+            "p(99)": 0.3112299999999999,
+            "max": 0.354901,
+            "avg": 0.019986000000000007,
+            "med": 0.009585
+          },
+          "http_req_tls_handshaking": {
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0,
+            "avg": 0,
+            "med": 0,
+            "p(90)": 0
+          },
+          "http_req_connecting": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.22856939999999987,
+            "max": 0.281049,
+            "avg": 0.007780852459016393,
+            "med": 0
+          },
+          "http_req_duration{expected_response:true}": {
+            "p(95)": 72.672623,
+            "p(99)": 85.68598639999999,
+            "max": 86.923055,
+            "avg": 17.74598890163934,
+            "med": 7.59507,
+            "p(90)": 63.292591
+          },
+          "http_req_waiting": {
+            "avg": 14.227157672131149,
+            "med": 3.888299,
+            "p(90)": 61.09739,
+            "p(95)": 70.619895,
+            "p(99)": 82.9195972,
+            "max": 84.673321
+          },
+          "data_received": {
+            "count": 2926727,
+            "rate": 48730.19966700107
+          },
+          "iterations": {
+            "count": 61,
+            "rate": 1.0156540667055947
+          }
+        },
+        "root_group": {
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {},
+          "checks": {},
+          "name": ""
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3022.687374,
+            "appCpuPercent": 0.3960273073517134,
+            "appRssBytes": 116412416,
+            "postgresCpuPercent": 3.13,
+            "postgresMemory": "227.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.1386570000004212
+          },
+          {
+            "at": 5547.476591,
+            "appCpuPercent": 0.7921453349584708,
+            "appRssBytes": 118321152,
+            "postgresCpuPercent": 5.55,
+            "postgresMemory": "231.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.702419000000191
+          },
+          {
+            "at": 8071.435038,
+            "appCpuPercent": 1.5848121448886914,
+            "appRssBytes": 120741888,
+            "postgresCpuPercent": 2.28,
+            "postgresMemory": "234.9MiB / 17.59GiB",
+            "healthMilliseconds": 2.338960999999472
+          },
+          {
+            "at": 10599.018643,
+            "appCpuPercent": 0.3956347865296428,
+            "appRssBytes": 120811520,
+            "postgresCpuPercent": 1.88,
+            "postgresMemory": "236.9MiB / 17.59GiB",
+            "healthMilliseconds": 3.526503999999477
+          },
+          {
+            "at": 13129.50941,
+            "appCpuPercent": 1.580721041216112,
+            "appRssBytes": 156057600,
+            "postgresCpuPercent": 2.01,
+            "postgresMemory": "240.2MiB / 17.59GiB",
+            "healthMilliseconds": 4.6069100000004255
+          },
+          {
+            "at": 15656.749679,
+            "appCpuPercent": 0.7913770702899481,
+            "appRssBytes": 119963648,
+            "postgresCpuPercent": 1.82,
+            "postgresMemory": "241.1MiB / 17.59GiB",
+            "healthMilliseconds": 3.0476009999983944
+          },
+          {
+            "at": 18183.59194,
+            "appCpuPercent": 1.9787543042046676,
+            "appRssBytes": 140591104,
+            "postgresCpuPercent": 1.76,
+            "postgresMemory": "244.3MiB / 17.59GiB",
+            "healthMilliseconds": 3.1002410000000964
+          },
+          {
+            "at": 20711.439234,
+            "appCpuPercent": 0.39559351641753043,
+            "appRssBytes": 113954816,
+            "postgresCpuPercent": 3.04,
+            "postgresMemory": "244.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.114582000001974
+          },
+          {
+            "at": 23236.697645,
+            "appCpuPercent": 0.3959990770227754,
+            "appRssBytes": 113954816,
+            "postgresCpuPercent": 1.64,
+            "postgresMemory": "245.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.497361000001547
+          },
+          {
+            "at": 25763.519841,
+            "appCpuPercent": 1.978770017104915,
+            "appRssBytes": 138788864,
+            "postgresCpuPercent": 1.39,
+            "postgresMemory": "246.9MiB / 17.59GiB",
+            "healthMilliseconds": 2.9581269999980577
+          },
+          {
+            "at": 28286.794301,
+            "appCpuPercent": 0.3963104354490236,
+            "appRssBytes": 108863488,
+            "postgresCpuPercent": 1.43,
+            "postgresMemory": "247.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.1260399999991932
+          },
+          {
+            "at": 30810.454186,
+            "appCpuPercent": 0.3962499090878885,
+            "appRssBytes": 110440448,
+            "postgresCpuPercent": 4.8,
+            "postgresMemory": "248.8MiB / 17.59GiB",
+            "healthMilliseconds": 3.0982069999990927
+          },
+          {
+            "at": 33332.573708,
+            "appCpuPercent": 1.982459576711524,
+            "appRssBytes": 111243264,
+            "postgresCpuPercent": 1.3,
+            "postgresMemory": "249MiB / 17.59GiB",
+            "healthMilliseconds": 1.8994469999961439
+          },
+          {
+            "at": 35857.607836,
+            "appCpuPercent": 0.3960342511457732,
+            "appRssBytes": 111194112,
+            "postgresCpuPercent": 1.73,
+            "postgresMemory": "249.3MiB / 17.59GiB",
+            "healthMilliseconds": 3.0410110000011628
+          },
+          {
+            "at": 38382.462589,
+            "appCpuPercent": 1.9803119344029851,
+            "appRssBytes": 128667648,
+            "postgresCpuPercent": 1.42,
+            "postgresMemory": "250.7MiB / 17.59GiB",
+            "healthMilliseconds": 3.094199999999546
+          },
+          {
+            "at": 40911.473801,
+            "appCpuPercent": 0.7908229075893879,
+            "appRssBytes": 100397056,
+            "postgresCpuPercent": 1.34,
+            "postgresMemory": "251.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.064775999999256
+          },
+          {
+            "at": 43441.446071,
+            "appCpuPercent": 2.3715674954808907,
+            "appRssBytes": 136478720,
+            "postgresCpuPercent": 1.57,
+            "postgresMemory": "252.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.0801290000017616
+          },
+          {
+            "at": 45969.203221,
+            "appCpuPercent": 0.3956076239364996,
+            "appRssBytes": 102133760,
+            "postgresCpuPercent": 1.29,
+            "postgresMemory": "252.8MiB / 17.59GiB",
+            "healthMilliseconds": 1.862080999999307
+          },
+          {
+            "at": 48494.458548,
+            "appCpuPercent": 0.3959995606416556,
+            "appRssBytes": 103288832,
+            "postgresCpuPercent": 3.82,
+            "postgresMemory": "253.7MiB / 17.59GiB",
+            "healthMilliseconds": 2.653755999999703
+          },
+          {
+            "at": 51019.405334,
+            "appCpuPercent": 1.9802397530606808,
+            "appRssBytes": 138211328,
+            "postgresCpuPercent": 1.06,
+            "postgresMemory": "253.8MiB / 17.59GiB",
+            "healthMilliseconds": 2.0545119999951567
+          },
+          {
+            "at": 53542.531171,
+            "appCpuPercent": 0.7926675596877892,
+            "appRssBytes": 105328640,
+            "postgresCpuPercent": 1.07,
+            "postgresMemory": "254.4MiB / 17.59GiB",
+            "healthMilliseconds": 3.7361799999998766
+          },
+          {
+            "at": 56066.430361,
+            "appCpuPercent": 1.5848493536701067,
+            "appRssBytes": 135626752,
+            "postgresCpuPercent": 1.04,
+            "postgresMemory": "254.8MiB / 17.59GiB",
+            "healthMilliseconds": 2.6682180000061635
+          },
+          {
+            "at": 58591.385867,
+            "appCpuPercent": 0.7920931657003231,
+            "appRssBytes": 102821888,
+            "postgresCpuPercent": 1.29,
+            "postgresMemory": "255.3MiB / 17.59GiB",
+            "healthMilliseconds": 2.9529679999977816
+          },
+          {
+            "at": 61118.508185,
+            "appCpuPercent": 1.5828280141048547,
+            "appRssBytes": 133836800,
+            "postgresCpuPercent": 1.09,
+            "postgresMemory": "257.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.7063950000010664
+          }
+        ],
+        "errors": []
+      },
+      "accepted": true
+    },
+    {
+      "name": "refresh-on",
+      "mode": "full",
+      "conditional": false,
+      "background": true,
+      "rate": 1,
+      "duration": "60s",
+      "vus": 2,
+      "before": {
+        "redis": {
+          "total_commands_processed": 11449,
+          "total_net_input_bytes": 107106053,
+          "total_net_output_bytes": 251436715,
+          "keyspace_hits": 471,
+          "keyspace_misses": 7228,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 0,
+          "cacheL1Misses": 2,
+          "cacheL2Hits": 0,
+          "cacheL2Misses": 2,
+          "cacheRead": {
+            "count": 2,
+            "totalMicros": 612,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 2,
+            "totalMicros": 602,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "after": {
+        "redis": {
+          "total_commands_processed": 11884,
+          "total_net_input_bytes": 138681445,
+          "total_net_output_bytes": 295020523,
+          "keyspace_hits": 533,
+          "keyspace_misses": 7437,
+          "evicted_keys": 0
+        },
+        "performance": {
+          "cacheL1Hits": 85,
+          "cacheL1Misses": 254,
+          "cacheL2Hits": 48,
+          "cacheL2Misses": 206,
+          "cacheRead": {
+            "count": 339,
+            "totalMicros": 96420,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              84,
+              64,
+              161,
+              30,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "cacheL2Read": {
+            "count": 254,
+            "totalMicros": 95640,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              63,
+              162,
+              29,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerSchedulingDelay": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerExecution": {
+            "count": 0,
+            "totalMicros": 0,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkerStarted": 0,
+          "checkerCompleted": 0,
+          "checkerTimedOut": 0,
+          "checkerNoRunway": 0,
+          "scoreboardRebuild": {
+            "count": 16,
+            "totalMicros": 683333,
+            "upperBoundsMicros": [
+              10,
+              100,
+              1000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              500000,
+              1000000,
+              5000000,
+              30000000,
+              18446744073709552000
+            ],
+            "counts": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              13,
+              3,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "k6": {
+        "root_group": {
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {},
+          "checks": {},
+          "name": "",
+          "path": ""
+        },
+        "metrics": {
+          "iterations": {
+            "count": 61,
+            "rate": 1.0156565443840102
+          },
+          "http_req_connecting": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.20103759999999998,
+            "max": 0.218785,
+            "avg": 0.006688377049180328,
+            "med": 0
+          },
+          "http_req_sending": {
+            "max": 0.123626,
+            "avg": 0.03751014754098362,
+            "med": 0.034643,
+            "p(90)": 0.042294,
+            "p(95)": 0.061182,
+            "p(99)": 0.10243819999999995
+          },
+          "http_req_receiving": {
+            "med": 3.005699,
+            "p(90)": 5.001912,
+            "p(95)": 6.549488,
+            "p(99)": 8.4475514,
+            "max": 8.546873,
+            "avg": 3.336729622950819
+          },
+          "data_sent": {
+            "count": 24095,
+            "rate": 401.18433503168404
+          },
+          "scoreboard_200_ms": {
+            "avg": 10.001604639344265,
+            "med": 6.792158,
+            "p(90)": 11.326215,
+            "p(95)": 15.51318,
+            "p(99)": 66.15335319999998,
+            "max": 70.494544
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 61,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "server_5xx": {
+            "passes": 0,
+            "fails": 61,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "scoreboard_304_ratio": {
+            "fails": 61,
+            "passes": 0,
+            "value": 0
+          },
+          "iteration_duration": {
+            "avg": 67.5100359672131,
+            "med": 63.276399,
+            "p(90)": 80.011284,
+            "p(95)": 90.196275,
+            "p(99)": 126.09129599999997,
+            "max": 137.327871
+          },
+          "http_req_duration{expected_response:true}": {
+            "max": 70.494544,
+            "avg": 10.001604639344265,
+            "med": 6.792158,
+            "p(90)": 11.326215,
+            "p(95)": 15.51318,
+            "p(99)": 66.15335319999998
+          },
+          "vus": {
+            "value": 0,
+            "min": 0,
+            "max": 0
+          },
+          "http_req_failed": {
+            "fails": 61,
+            "passes": 0,
+            "value": 0
+          },
+          "scoreboard_decoded_bytes": {
+            "avg": 1055231,
+            "med": 1055231,
+            "p(90)": 1055231,
+            "p(95)": 1055231,
+            "p(99)": 1055231,
+            "max": 1055231
+          },
+          "vus_max": {
+            "max": 2,
+            "value": 2,
+            "min": 2
+          },
+          "http_reqs": {
+            "rate": 1.0156565443840102,
+            "count": 61
+          },
+          "scoreboard_parse_ms": {
+            "p(95)": 66,
+            "p(99)": 75.8,
+            "max": 77,
+            "avg": 55.80327868852459,
+            "med": 55,
+            "p(90)": 62
+          },
+          "http_req_duration": {
+            "max": 70.494544,
+            "avg": 10.001604639344265,
+            "med": 6.792158,
+            "p(90)": 11.326215,
+            "p(95)": 15.51318,
+            "p(99)": 66.15335319999998,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "data_received": {
+            "count": 2926744,
+            "rate": 48730.60159568255
+          },
+          "http_req_tls_handshaking": {
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0,
+            "avg": 0
+          },
+          "http_req_blocked": {
+            "p(90)": 0.010877,
+            "p(95)": 0.024347,
+            "p(99)": 0.2848865999999999,
+            "max": 0.31464,
+            "avg": 0.01910399999999999,
+            "med": 0.009434
+          },
+          "http_req_waiting": {
+            "max": 67.954648,
+            "avg": 6.62736486885246,
+            "med": 3.535288,
+            "p(90)": 7.3554,
+            "p(95)": 8.875379,
+            "p(99)": 63.62671299999999
+          },
+          "scoreboard_encoded_bytes": {
+            "p(99)": 47119,
+            "max": 47119,
+            "avg": 47117.40983606558,
+            "med": 47117,
+            "p(90)": 47118,
+            "p(95)": 47119
+          }
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "9da91d0ef993c61c345289351852e435ca386e4fb3ced187c366b07f75513fac",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3086.864284,
+            "appCpuPercent": 0.39497258747065384,
+            "appRssBytes": 133795840,
+            "postgresCpuPercent": 8.36,
+            "postgresMemory": "230.8MiB / 17.59GiB",
+            "healthMilliseconds": 4.164496999999756
+          },
+          {
+            "at": 5622.958821,
+            "appCpuPercent": 2.365842405503356,
+            "appRssBytes": 147537920,
+            "postgresCpuPercent": 3.16,
+            "postgresMemory": "234.9MiB / 17.59GiB",
+            "healthMilliseconds": 7.882941000000756
+          },
+          {
+            "at": 8157.790601,
+            "appCpuPercent": 1.972517482008215,
+            "appRssBytes": 178253824,
+            "postgresCpuPercent": 2.25,
+            "postgresMemory": "239.7MiB / 17.59GiB",
+            "healthMilliseconds": 2.068713000000571
+          },
+          {
+            "at": 10687.577554,
+            "appCpuPercent": 0.395290203712265,
+            "appRssBytes": 141193216,
+            "postgresCpuPercent": 5.43,
+            "postgresMemory": "242.9MiB / 17.59GiB",
+            "healthMilliseconds": 3.2434469999989233
+          },
+          {
+            "at": 13213.581979,
+            "appCpuPercent": 1.9794106259334834,
+            "appRssBytes": 148017152,
+            "postgresCpuPercent": 2.32,
+            "postgresMemory": "245.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.6528350000007777
+          },
+          {
+            "at": 15738.995189,
+            "appCpuPercent": 0.3959748036639123,
+            "appRssBytes": 148017152,
+            "postgresCpuPercent": 1.84,
+            "postgresMemory": "246MiB / 17.59GiB",
+            "healthMilliseconds": 2.921341000001121
+          },
+          {
+            "at": 18266.762902,
+            "appCpuPercent": 1.978029853884759,
+            "appRssBytes": 145059840,
+            "postgresCpuPercent": 1.43,
+            "postgresMemory": "248.7MiB / 17.59GiB",
+            "healthMilliseconds": 2.9779170000001614
+          },
+          {
+            "at": 20793.559884,
+            "appCpuPercent": 0.3957579525081133,
+            "appRssBytes": 145063936,
+            "postgresCpuPercent": 1.48,
+            "postgresMemory": "249.8MiB / 17.59GiB",
+            "healthMilliseconds": 2.8836649999975634
+          },
+          {
+            "at": 23318.558635,
+            "appCpuPercent": 2.7722785990399856,
+            "appRssBytes": 204140544,
+            "postgresCpuPercent": 1.81,
+            "postgresMemory": "251.1MiB / 17.59GiB",
+            "healthMilliseconds": 5.3628610000014305
+          },
+          {
+            "at": 25844.709195,
+            "appCpuPercent": 0.7917184476922077,
+            "appRssBytes": 162906112,
+            "postgresCpuPercent": 1.62,
+            "postgresMemory": "252.1MiB / 17.59GiB",
+            "healthMilliseconds": 3.300325000000157
+          },
+          {
+            "at": 28370.71166,
+            "appCpuPercent": 1.9794121618167138,
+            "appRssBytes": 195067904,
+            "postgresCpuPercent": 5.31,
+            "postgresMemory": "254.3MiB / 17.59GiB",
+            "healthMilliseconds": 3.6078100000013364
+          },
+          {
+            "at": 30897.655553,
+            "appCpuPercent": 2.3744096640296877,
+            "appRssBytes": 158896128,
+            "postgresCpuPercent": 1.26,
+            "postgresMemory": "255.5MiB / 17.59GiB",
+            "healthMilliseconds": 2.2817249999970954
+          },
+          {
+            "at": 33422.624488,
+            "appCpuPercent": 0.39604447648382646,
+            "appRssBytes": 158371840,
+            "postgresCpuPercent": 1.23,
+            "postgresMemory": "255.6MiB / 17.59GiB",
+            "healthMilliseconds": 2.5382170000011683
+          },
+          {
+            "at": 35948.902625,
+            "appCpuPercent": 1.9791961648124725,
+            "appRssBytes": 187994112,
+            "postgresCpuPercent": 2.09,
+            "postgresMemory": "256.4MiB / 17.59GiB",
+            "healthMilliseconds": 1.9729890000016894
+          },
+          {
+            "at": 38473.543496,
+            "appCpuPercent": 0.39609594041147944,
+            "appRssBytes": 144285696,
+            "postgresCpuPercent": 1.25,
+            "postgresMemory": "256.6MiB / 17.59GiB",
+            "healthMilliseconds": 3.0974280000009458
+          },
+          {
+            "at": 40998.507814,
+            "appCpuPercent": 1.9802260033363384,
+            "appRssBytes": 170405888,
+            "postgresCpuPercent": 1.17,
+            "postgresMemory": "258.1MiB / 17.59GiB",
+            "healthMilliseconds": 2.1709130000017467
+          },
+          {
+            "at": 43521.555078,
+            "appCpuPercent": 0.39634612251163903,
+            "appRssBytes": 142811136,
+            "postgresCpuPercent": 1.28,
+            "postgresMemory": "258.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.3152459999982966
+          },
+          {
+            "at": 46065.758849,
+            "appCpuPercent": 0.7861005564086162,
+            "appRssBytes": 144883712,
+            "postgresCpuPercent": 7.67,
+            "postgresMemory": "259.8MiB / 17.59GiB",
+            "healthMilliseconds": 2.9699540000001434
+          },
+          {
+            "at": 48591.56231,
+            "appCpuPercent": 3.1673089864374013,
+            "appRssBytes": 136736768,
+            "postgresCpuPercent": 1.28,
+            "postgresMemory": "259.7MiB / 17.59GiB",
+            "healthMilliseconds": 2.4333039999983157
+          },
+          {
+            "at": 51115.545206,
+            "appCpuPercent": 0.39619919833244366,
+            "appRssBytes": 136736768,
+            "postgresCpuPercent": 1.03,
+            "postgresMemory": "260MiB / 17.59GiB",
+            "healthMilliseconds": 2.976023000002897
+          },
+          {
+            "at": 53644.209074,
+            "appCpuPercent": 1.9773288428226983,
+            "appRssBytes": 159232000,
+            "postgresCpuPercent": 1.02,
+            "postgresMemory": "260.6MiB / 17.59GiB",
+            "healthMilliseconds": 6.539075000000594
+          },
+          {
+            "at": 56177.55212,
+            "appCpuPercent": 0.7894706574215763,
+            "appRssBytes": 139194368,
+            "postgresCpuPercent": 1.28,
+            "postgresMemory": "260.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.3139740000042366
+          },
+          {
+            "at": 58703.575492,
+            "appCpuPercent": 0,
+            "appRssBytes": 138670080,
+            "postgresCpuPercent": 4.08,
+            "postgresMemory": "260.8MiB / 17.59GiB",
+            "healthMilliseconds": 2.9244259999977658
+          },
+          {
+            "at": 61230.600789,
+            "appCpuPercent": 2.374333176293493,
+            "appRssBytes": 133218304,
+            "postgresCpuPercent": 3.12,
+            "postgresMemory": "262MiB / 17.59GiB",
+            "healthMilliseconds": 2.1598079999967013
+          }
+        ],
+        "errors": []
+      },
+      "accepted": true
+    }
+  ],
+  "acceptance": {
+    "acl": {
+      "anonymous": 401,
+      "player": 403,
+      "admin": 200
+    },
+    "idle": [
+      {
+        "elapsed": 0,
+        "rebuilds": 16
+      },
+      {
+        "elapsed": 2,
+        "rebuilds": 16
+      },
+      {
+        "elapsed": 4,
+        "rebuilds": 16
+      },
+      {
+        "elapsed": 6,
+        "rebuilds": 17
+      },
+      {
+        "elapsed": 8,
+        "rebuilds": 18
+      },
+      {
+        "elapsed": 10,
+        "rebuilds": 18
+      },
+      {
+        "elapsed": 12,
+        "rebuilds": 18
+      },
+      {
+        "elapsed": 14,
+        "rebuilds": 19
+      },
+      {
+        "elapsed": 16,
+        "rebuilds": 19
+      },
+      {
+        "elapsed": 18,
+        "rebuilds": 19
+      },
+      {
+        "elapsed": 20,
+        "rebuilds": 20
+      },
+      {
+        "elapsed": 22,
+        "rebuilds": 21
+      },
+      {
+        "elapsed": 24,
+        "rebuilds": 21
+      },
+      {
+        "elapsed": 26,
+        "rebuilds": 21
+      },
+      {
+        "elapsed": 28,
+        "rebuilds": 22
+      },
+      {
+        "elapsed": 30,
+        "rebuilds": 22
+      },
+      {
+        "elapsed": 32,
+        "rebuilds": 22
+      },
+      {
+        "elapsed": 34,
+        "rebuilds": 22
+      },
+      {
+        "elapsed": 36,
+        "rebuilds": 22
+      },
+      {
+        "elapsed": 38,
+        "rebuilds": 22
+      },
+      {
+        "elapsed": 40,
+        "rebuilds": 22
+      },
+      {
+        "elapsed": 42,
+        "rebuilds": 22
+      }
+    ]
+  },
+  "production": "Not deployed: this environment has no configured production SSH/VPN credentials."
+}

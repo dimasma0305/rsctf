@@ -145,7 +145,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
             openDelay={350}
             disabled={!compact}
           >
-            <Link to="/" className={classes.brandLink} aria-label={t('common.tab.home', 'Home')}>
+            <Link to="/" className={classes.brandLink} aria-label={compact ? t('common.tab.home', 'Home') : undefined}>
               {compact ? <LogoBox size="36px" /> : <LogoHeader logoSize="36px" />}
             </Link>
           </Tooltip>
@@ -239,7 +239,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
             <Menu.Target>
               <UnstyledButton
                 className={classes.link}
-                aria-label={t('common.tab.language', 'Language')}
+                aria-label={compact ? t('common.tab.language', 'Language') : undefined}
                 title={compact ? t('common.tab.language', 'Language') : undefined}
               >
                 <span className={classes.linkIcon} aria-hidden="true">
@@ -300,10 +300,10 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
               <UnstyledButton
                 className={classes.accountButton}
                 data-guide="account-menu"
-                aria-label={t('common.tab.account.title', 'Account')}
+                aria-label={compact ? t('common.tab.account.title', 'Account') : undefined}
                 title={compact ? t('common.tab.account.title', 'Account') : undefined}
               >
-                <Avatar src={user?.avatar} radius="md" size={36}>
+                <Avatar src={user?.avatar} alt="" aria-hidden="true" radius="md" size={36}>
                   {user?.userName?.slice(0, 1) ?? <Icon path={mdiAccountCircleOutline} size={0.9} />}
                 </Avatar>
                 {!compact && (

@@ -1,7 +1,6 @@
-//! The A&D SLA checker — the process-sandboxed checker executor, its
-//! exit-code → [`AdCheckStatus`] mapping, verdict persistence, and the pure
-//! in-memory scheduler marker used by the tests.
+//! A&D SLA checker execution, exit-code classification, and scheduling.
 use super::*;
+use crate::services::observability::CHECKER_TIMED_OUT;
 use futures::StreamExt;
 
 mod ad;
@@ -442,14 +441,20 @@ async fn run_check(
         {
             Ok(Ok(_)) => (AdCheckStatus::Ok, None),
             Ok(Err(_)) => (AdCheckStatus::Offline, Some("tcp probe failed".to_string())),
-            Err(_) if timeout_is_platform_limited => (
-                AdCheckStatus::InternalError,
-                Some("platform deadline exhausted the checker probe budget".to_string()),
-            ),
-            Err(_) => (
-                AdCheckStatus::Offline,
-                Some("tcp probe timed out".to_string()),
-            ),
+            Err(_) => {
+                CHECKER_TIMED_OUT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if timeout_is_platform_limited {
+                    (
+                        AdCheckStatus::InternalError,
+                        Some("platform deadline exhausted the checker probe budget".to_string()),
+                    )
+                } else {
+                    (
+                        AdCheckStatus::Offline,
+                        Some("tcp probe timed out".to_string()),
+                    )
+                }
+            }
         };
     };
 
@@ -561,14 +566,20 @@ async fn run_check(
             map_exit_code(code as i64, true),
             (code != 0).then(|| format!("checker exit {code}")),
         ),
-        Ok(super::sandbox::SandboxOutcome::TimedOut) if timeout_is_platform_limited => (
-            AdCheckStatus::InternalError,
-            Some("platform deadline exhausted the checker probe budget".to_string()),
-        ),
-        Ok(super::sandbox::SandboxOutcome::TimedOut) => (
-            AdCheckStatus::Offline,
-            Some("checker timed out".to_string()),
-        ),
+        Ok(super::sandbox::SandboxOutcome::TimedOut) => {
+            CHECKER_TIMED_OUT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if timeout_is_platform_limited {
+                (
+                    AdCheckStatus::InternalError,
+                    Some("platform deadline exhausted the checker probe budget".to_string()),
+                )
+            } else {
+                (
+                    AdCheckStatus::Offline,
+                    Some("checker timed out".to_string()),
+                )
+            }
+        }
         Err(e) => (
             AdCheckStatus::InternalError,
             Some(bounded_diagnostic(format!("sandbox spawn error: {e}"))),

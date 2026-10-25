@@ -59,6 +59,14 @@ fn router_with_domains(
         // divergence from RSCTF, which keeps a Query limit here.
         .route("/api/game/{id}/scoreboard", get(scoreboard))
         .route(
+            "/api/game/{id}/scoreboard/page",
+            limited(Policy::Query, get(scoreboard_page::scoreboard_page)),
+        )
+        .route(
+            "/api/game/{id}/scoreboard/ctftime",
+            limited(Policy::Query, get(scoreboard_page::ctftime_scoreboard)),
+        )
+        .route(
             "/api/game/{id}/scoreboard/combined",
             get(combined_scoreboard),
         )
