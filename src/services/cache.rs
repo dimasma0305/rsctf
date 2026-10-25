@@ -229,6 +229,51 @@ impl InMemoryCache {
             max_bytes,
         }
     }
+
+    /// Retain an immutable L2 response without allocating a second payload.
+    fn set_shared(&self, key: &str, value: Bytes, ttl: Option<Duration>) {
+        self.set_value(key, value.len(), ttl, || value);
+    }
+
+    fn set_value(
+        &self,
+        key: &str,
+        value_len: usize,
+        ttl: Option<Duration>,
+        value: impl FnOnce() -> Bytes,
+    ) {
+        let now = Instant::now();
+        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+        state.remove(key);
+        if now.duration_since(state.last_expired_sweep) >= EXPIRED_SWEEP_INTERVAL
+            || state.map.len() >= self.max_entries
+            || state
+                .payload_bytes
+                .saturating_add(key.len())
+                .saturating_add(value_len)
+                > self.max_bytes
+        {
+            state.sweep_expired(now);
+        }
+        let entry_bytes = key.len().saturating_add(value_len);
+        if entry_bytes > self.max_bytes {
+            return;
+        }
+        let generation = state.next_generation;
+        state.next_generation = state.next_generation.wrapping_add(1);
+        state.map.insert(
+            key.to_string(),
+            Entry {
+                value: value(),
+                expires_at: ttl.map(|duration| now + duration),
+                generation,
+            },
+        );
+        state.payload_bytes = state.payload_bytes.saturating_add(entry_bytes);
+        state.order.push_back((generation, key.to_string()));
+        state.order_key_bytes = state.order_key_bytes.saturating_add(key.len());
+        state.evict_to_limits(self.max_entries, self.max_bytes);
+    }
 }
 
 impl Default for InMemoryCache {
@@ -340,37 +385,7 @@ impl Cache for InMemoryCache {
     }
 
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
-        let now = Instant::now();
-        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
-        state.remove(key);
-        if now.duration_since(state.last_expired_sweep) >= EXPIRED_SWEEP_INTERVAL
-            || state.map.len() >= self.max_entries
-            || state
-                .payload_bytes
-                .saturating_add(key.len())
-                .saturating_add(value.len())
-                > self.max_bytes
-        {
-            state.sweep_expired(now);
-        }
-        let entry_bytes = key.len().saturating_add(value.len());
-        if entry_bytes > self.max_bytes {
-            return;
-        }
-        let generation = state.next_generation;
-        state.next_generation = state.next_generation.wrapping_add(1);
-        state.map.insert(
-            key.to_string(),
-            Entry {
-                value: Bytes::copy_from_slice(value),
-                expires_at: ttl.map(|duration| now + duration),
-                generation,
-            },
-        );
-        state.payload_bytes = state.payload_bytes.saturating_add(entry_bytes);
-        state.order.push_back((generation, key.to_string()));
-        state.order_key_bytes = state.order_key_bytes.saturating_add(key.len());
-        state.evict_to_limits(self.max_entries, self.max_bytes);
+        self.set_value(key, value.len(), ttl, || Bytes::copy_from_slice(value));
     }
 
     async fn set_local(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
@@ -712,7 +727,7 @@ impl Cache for TieredCache {
             return Some(v);
         }
         let v = self.l2.get(key).await?;
-        self.l1.set(key, v.as_ref(), Some(self.l1_ttl)).await;
+        self.l1.set_shared(key, v.clone(), Some(self.l1_ttl));
         Some(v)
     }
 
@@ -806,134 +821,4 @@ impl Cache for TieredCache {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn in_memory_get_and_remove_is_single_use() {
-        let cache = InMemoryCache::new();
-        cache
-            .set("one-time", b"value", Some(Duration::from_secs(60)))
-            .await;
-        assert_eq!(
-            cache.get_and_remove("one-time").await.as_deref(),
-            Some(b"value".as_slice())
-        );
-        assert!(cache.get_and_remove("one-time").await.is_none());
-        assert!(cache.get("one-time").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn in_memory_compare_and_remove_checks_value() {
-        let cache = InMemoryCache::new();
-        cache.set("current", b"new", None).await;
-        assert!(!cache.compare_and_remove("current", b"old").await);
-        assert!(cache.compare_and_remove("current", b"new").await);
-        assert!(cache.get("current").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn in_memory_set_if_absent_never_overwrites_a_live_value() {
-        let cache = InMemoryCache::new();
-        assert!(
-            cache
-                .set_if_absent("reserved", b"first", Some(Duration::from_secs(60)))
-                .await
-        );
-        assert!(
-            !cache
-                .set_if_absent("reserved", b"second", Some(Duration::from_secs(60)))
-                .await
-        );
-        assert_eq!(
-            cache.get("reserved").await.as_deref(),
-            Some(b"first".as_slice())
-        );
-
-        cache.set("expired", b"old", Some(Duration::ZERO)).await;
-        assert!(cache.set_if_absent("expired", b"fresh", None).await);
-        assert_eq!(
-            cache.get("expired").await.as_deref(),
-            Some(b"fresh".as_slice())
-        );
-    }
-
-    #[tokio::test]
-    async fn in_memory_cache_evicts_old_entries_at_the_entry_limit() {
-        let cache = InMemoryCache::with_limits(2, 1_024);
-        cache.set("first", b"1", None).await;
-        cache.set("second", b"2", None).await;
-        cache.set("third", b"3", None).await;
-
-        assert!(cache.get("first").await.is_none());
-        assert_eq!(cache.get("second").await.as_deref(), Some(b"2".as_slice()));
-        assert_eq!(cache.get("third").await.as_deref(), Some(b"3".as_slice()));
-    }
-
-    #[tokio::test]
-    async fn in_memory_cache_enforces_payload_bytes_and_sweeps_expiry() {
-        let cache = InMemoryCache::with_limits(8, 10);
-        cache.set("old", b"123", Some(Duration::ZERO)).await;
-        cache.set("large", b"12345", None).await;
-
-        // `large` occupies exactly ten key+value bytes. The expired entry was
-        // swept before pressure eviction, so the live value remains available.
-        assert!(cache.get("old").await.is_none());
-        assert_eq!(
-            cache.get("large").await.as_deref(),
-            Some(b"12345".as_slice())
-        );
-
-        cache.set("too-large", b"12", None).await;
-        assert!(cache.get("too-large").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn in_memory_hits_clone_bytes_without_copying_payload() {
-        let cache = InMemoryCache::new();
-        cache.set("shared", b"payload", None).await;
-        let first = cache.get("shared").await.unwrap();
-        let second = cache.get("shared").await.unwrap();
-        assert_eq!(first.as_ptr(), second.as_ptr());
-    }
-
-    #[tokio::test]
-    async fn authoritative_read_bypasses_another_replicas_stale_l1() {
-        let shared: Arc<dyn Cache> = Arc::new(InMemoryCache::new());
-        let first = TieredCache::new(Arc::clone(&shared), Duration::from_secs(60));
-        let second = TieredCache::new(shared, Duration::from_secs(60));
-
-        first.set("version", b"old", None).await;
-        assert_eq!(
-            first.get("version").await.as_deref(),
-            Some(b"old".as_slice())
-        );
-
-        second.set_authoritative("version", b"new", None).await;
-        assert_eq!(
-            first.get("version").await.as_deref(),
-            Some(b"old".as_slice())
-        );
-        assert_eq!(
-            first.get_authoritative("version").await.as_deref(),
-            Some(b"new".as_slice())
-        );
-    }
-
-    #[tokio::test]
-    async fn local_only_values_never_reach_the_shared_tier_or_another_replica() {
-        let shared: Arc<dyn Cache> = Arc::new(InMemoryCache::new());
-        let first = TieredCache::new(Arc::clone(&shared), Duration::from_secs(60));
-        let second = TieredCache::new(Arc::clone(&shared), Duration::from_secs(60));
-
-        first
-            .set_local("bearer", b"plaintext-secret", Some(Duration::from_secs(10)))
-            .await;
-        assert_eq!(
-            first.get_local("bearer").await.as_deref(),
-            Some(b"plaintext-secret".as_slice())
-        );
-        assert!(shared.get("bearer").await.is_none());
-        assert!(second.get_local("bearer").await.is_none());
-    }
-}
+mod tests;
