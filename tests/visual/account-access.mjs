@@ -327,7 +327,7 @@ try {
       viewport +
         '-closed-registration-allows-authenticated-confirmation-resend',
       async () => {
-        await visit('/account/pending?from=' + encoded, {
+        await visit('/account/login?from=' + encoded, {
           config: { allowRegister: false, allowPasswordRegistration: false },
           pendingConfirmation: true
         })
@@ -464,6 +464,11 @@ try {
         destination
       )
       await audit('pending-with-email')
+      const resend = await evaluate(
+        'new URL(document.querySelector("a[href^=\\"/account/register?resend=1\\"]").href).search'
+      )
+      assert.equal(new URLSearchParams(resend).get('resend'), '1')
+      assert.equal(new URLSearchParams(resend).get('from'), destination)
     }
   )
   await check(

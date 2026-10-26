@@ -251,6 +251,16 @@ const Login: FC = () => {
       <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to={accountPath('/account/recovery', from)}>
         {t('account.anchor.recovery')}
       </Anchor>
+      {(config.allowRegister === false || config.allowPasswordRegistration === false) && (
+        <Anchor
+          fz="xs"
+          className={misc.alignSelfEnd}
+          component={Link}
+          to={accountPath('/account/register?resend=1', from)}
+        >
+          {t('account.registration.resend_title')}
+        </Anchor>
+      )}
       <Grid grow w="100%">
         {config.allowRegister !== false && (
           <Grid.Col span={2}>
