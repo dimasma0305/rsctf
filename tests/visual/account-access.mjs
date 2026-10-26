@@ -124,7 +124,9 @@ const audit = async (name) => {
   )
   assert.deepEqual(violations, [], 'WCAG violations')
   assert.equal(
-    await evaluate('document.documentElement.scrollWidth > innerWidth + 1'),
+    await evaluate(
+      'document.documentElement.scrollWidth > document.documentElement.clientWidth + 1'
+    ),
     false,
     'Horizontal overflow'
   )
@@ -206,7 +208,7 @@ try {
       width,
       height,
       deviceScaleFactor: 1,
-      mobile: false
+      mobile: width <= 390
     })
     await check(viewport + '-initial-profile-keeps-draft', async () => {
       await visit('/account/login', { holdInitialProfile: true })
