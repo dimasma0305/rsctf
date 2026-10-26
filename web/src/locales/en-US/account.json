@@ -32,6 +32,28 @@
     "recovery": "Forgot password?"
   },
   "oauth": {
+    "divider": "or continue with",
+    "google": "Continue with Google",
+    "discord": "Continue with Discord",
+    "error": {
+      "title": "Sign-in failed",
+      "info_title": "Approval pending",
+      "await_approval": "Your account is awaiting administrator approval. Contact the organizers if you need help.",
+      "register_disabled": "Registration is closed. Existing users can still sign in. Contact an administrator to request an account.",
+      "email_unverified": "Verify your email address with the external provider, then start sign-in again from this page.",
+      "email_conflict": "This account is not activated yet. Complete any required verification or contact an administrator for approval.",
+      "no_email": "The provider did not share an email address. Allow email access when signing in, or contact an administrator.",
+      "email_domain": "This platform does not allow your email domain. Contact an administrator for help.",
+      "account_disabled": "This account has been disabled. Contact an administrator for help.",
+      "anti_cheat": "A platform policy blocked sign-in. Contact an administrator for help.",
+      "state_mismatch": "This sign-in request does not match the one started in this browser. Start external sign-in again from this page in the same tab.",
+      "state_expired": "Your sign-in request expired or has already been used. Start external sign-in again from this page.",
+      "invalid_callback": "External sign-in was canceled or returned an incomplete response. Start sign-in again from this page.",
+      "not_configured": "External sign-in is unavailable. Contact an administrator for help.",
+      "provider_unavailable": "The external provider could not complete sign-in. Start again from this page, or contact an administrator if it keeps failing.",
+      "policy": "An account policy blocked sign-in. Contact an administrator for help.",
+      "generic": "External sign-in could not be completed. Start again from this page, or contact an administrator if it keeps failing."
+    },
     "fingerprint_disabled_title": "External sign-in unavailable",
     "fingerprint_disabled_detail": "Browser Fingerprinting is enabled, but an external-provider redirect cannot return a validated fingerprint. Use your username or email and password.",
     "registration_only_description": "New accounts must be created through an approved external provider.",
@@ -64,6 +86,7 @@
       "message": "Please click the button below to verify the account."
     },
     "verify_email": {
+      "missing_context": "If you just registered, check the inbox you used. Return to registration if you need a new confirmation message.",
       "message": "You're almost there!<br/>We sent an email to:",
       "not_received": {
         "list": "<0>Check your spam or junk folder.</0><1>You can re-register with the same email; your most recent registration information will be used once verified.</1>",
@@ -72,6 +95,15 @@
       "title": "Verify Email"
     },
     "welcome": "Hello, {{decodeEmail}}👋"
+  },
+  "registration": {
+    "resend_title": "Resend confirmation email",
+    "resend_link": "Already registered? Request another confirmation email",
+    "resend_description": "Enter the same email, username, and password you used to register. An existing unconfirmed account can request another message even when registration is closed.",
+    "closed_title": "Registration is closed",
+    "closed_description": "New accounts cannot be created right now. Existing users can still sign in. Contact an administrator if you need an account.",
+    "policy_error_title": "Registration is unavailable",
+    "policy_error": "The registration settings could not be loaded. Retry to check whether registration is open."
   },
   "label": {
     "bio": "Description",

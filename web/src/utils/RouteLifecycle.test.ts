@@ -15,6 +15,27 @@ import {
   viewerScopedKey,
 } from './ViewerIdentity'
 
+test('initial anonymous resolution preserves public account drafts without sharing authenticated state', () => {
+  for (const path of [
+    '/account/login',
+    '/account/register',
+    '/account/recovery',
+    '/account/reset',
+    '/account/pending',
+    '/account/confirm',
+    '/account/verify',
+  ]) {
+    const key = (scope: string) => routeLifecycleKey(path, '?from=%2Fgames%2F19', scope)
+    assert.equal(key('session-pending'), key('anonymous'), path)
+    assert.notEqual(key('anonymous'), key('user:a:User'), path)
+    assert.notEqual(key('user:a:User'), key('user:b:User'), path)
+    assert.notEqual(key('user:a:User'), key('user:a:Admin'), path)
+  }
+  for (const path of ['/account/profile', '/account/login-extra', '/admin/settings', '/games/19/challenges']) {
+    assert.notEqual(routeLifecycleKey(path, '', 'session-pending'), routeLifecycleKey(path, '', 'anonymous'), path)
+  }
+})
+
 test('settings panels preserve drafts but account, role, path, and other query changes reset them', () => {
   const key = (search: string, scope = 'user:a:Admin', path = '/admin/settings') =>
     routeLifecycleKey(path, search, scope)
@@ -28,6 +49,45 @@ test('settings panels preserve drafts but account, role, path, and other query c
   assert.notEqual(key('?section=email'), key('?section=email', 'user:a:Admin', '/admin/users'))
   for (const path of ['/admin/games/19/info-extra', '/admin/settings-extra', '/account/profile']) {
     assert.notEqual(key('?section=platform', 'user:a:Admin', path), key('?section=email', 'user:a:Admin', path))
+  }
+})
+
+test('mounted account drafts survive anonymous resolution and clear on actual identity replacement', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/account/login' })
+  const restoreDom = installTestDom(browser)
+  const { MemoryRouter } = await import('react-router')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  let typeDraft: (() => void) | undefined
+  const Probe: FC = () => {
+    const [draft, setDraft] = useState('')
+    typeDraft = () => setDraft('typed before the profile returned')
+    return createElement('output', null, draft)
+  }
+  const App: FC<{ scope: string }> = ({ scope }) =>
+    createElement(
+      MemoryRouter,
+      { initialEntries: ['/account/login'] },
+      createElement(ViewerIdentityScope, { scope }, createElement(RouteLifecycleBoundary, null, createElement(Probe)))
+    )
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  try {
+    await act(async () => root.render(createElement(App, { scope: 'session-pending' })))
+    await act(async () => typeDraft?.())
+    await act(async () => root.render(createElement(App, { scope: 'anonymous' })))
+    assert.equal(container.textContent, 'typed before the profile returned')
+    for (const scope of ['user:a:User', 'user:b:User', 'user:b:Admin', 'anonymous']) {
+      await act(async () => root.render(createElement(App, { scope })))
+      assert.equal(container.textContent, '', scope)
+      await act(async () => typeDraft?.())
+    }
+  } finally {
+    await act(async () => root.unmount())
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
   }
 })
 

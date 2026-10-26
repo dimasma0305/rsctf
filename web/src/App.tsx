@@ -17,6 +17,7 @@ import { PlayerGuideProvider } from '@Components/guide/PlayerGuide'
 import { shouldRedirectOnUnauthorized } from '@Utils/AuthState'
 import { localCacheProvider } from '@Utils/Cache'
 import { useLanguage } from '@Utils/I18n'
+import { readProfile } from '@Utils/ProfileRead'
 import { useCustomTheme } from '@Utils/ThemeOverride'
 import { RouteLifecycleBoundary, viewerIdentityMiddleware, ViewerIdentityProvider } from '@Utils/ViewerIdentity'
 import { useBanner } from '@Hooks/useConfig'
@@ -38,6 +39,8 @@ import './styles/Motion.css'
 let authRedirectInFlight = false
 const authAwareFetcher = async (args: Parameters<typeof rawFetcher>[0]) => {
   try {
+    const path = typeof args === 'string' ? args : args[0]
+    if (path === '/api/account/profile') return await readProfile(localCacheProvider(), () => rawFetcher(args))
     return await rawFetcher(args)
   } catch (e: unknown) {
     const status = (e as { status?: number } | undefined)?.status

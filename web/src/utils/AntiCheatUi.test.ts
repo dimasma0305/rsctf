@@ -102,7 +102,7 @@ test('OAuth entry points fail closed when browser fingerprint enforcement is ena
   assert.match(oauthButtons, /External sign-in unavailable/)
   assert.match(oauthButtons, /external-provider redirect cannot return/)
   assert.ok(
-    oauthButtons.indexOf('if (config.enableBrowserFingerprint)') < oauthButtons.indexOf('const from = params.get'),
+    oauthButtons.indexOf('if (config.enableBrowserFingerprint)') < oauthButtons.indexOf('window.location.href'),
     'fingerprint policy must be checked before OAuth navigation is constructed'
   )
   assert.match(settings, /accountPolicy\?\.enableBrowserFingerprint[\s\S]*oauth\.fingerprint_disabled/)
