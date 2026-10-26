@@ -1,13 +1,13 @@
 //! Browser request-boundary protections for the cookie-authenticated SPA.
 
 use axum::extract::{Request, State};
-use axum::http::header::{CONTENT_SECURITY_POLICY, COOKIE, HOST, ORIGIN, REFERER};
+use axum::http::header::{CONTENT_SECURITY_POLICY, HOST, ORIGIN, REFERER};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
 use crate::app_state::SharedState;
-use crate::middlewares::privilege_authentication::SESSION_COOKIE;
+use crate::middlewares::privilege_authentication::session_cookie_from_headers;
 use crate::utils::error::AppError;
 
 const CSP_VALUE: &str = "base-uri 'self'; frame-ancestors 'none'; object-src 'none'; \
@@ -80,14 +80,7 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 }
 
 fn has_session_cookie(headers: &HeaderMap) -> bool {
-    let Some(cookies) = headers.get(COOKIE).and_then(|value| value.to_str().ok()) else {
-        return false;
-    };
-    cookies.split(';').any(|pair| {
-        pair.trim()
-            .split_once('=')
-            .is_some_and(|(name, value)| name == SESSION_COOKIE && !value.is_empty())
-    })
+    session_cookie_from_headers(headers).is_some()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -152,7 +145,7 @@ fn normalize_authority(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::header::AUTHORIZATION;
+    use axum::http::header::{AUTHORIZATION, COOKIE};
 
     fn headers(host: &str, origin: Option<&str>) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -236,6 +229,24 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert!(!csrf_violation(&bearer_only, None, true));
+    }
+
+    #[test]
+    fn split_cookie_headers_cannot_bypass_cross_origin_mutation_checks() {
+        let request = Request::builder()
+            .method(Method::POST)
+            .header(HOST, "ctf.example")
+            .header(ORIGIN, "https://evil.example")
+            .header(COOKIE, "preferences=compact")
+            .header(COOKIE, "RSCTF_Token=session")
+            .body(Body::empty())
+            .unwrap();
+        assert!(csrf_violation(&request, None, true));
+        let mut same_site = request;
+        same_site
+            .headers_mut()
+            .insert(ORIGIN, "https://ctf.example".parse().unwrap());
+        assert!(!csrf_violation(&same_site, None, true));
     }
 
     #[test]
