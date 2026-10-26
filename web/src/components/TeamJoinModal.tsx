@@ -31,10 +31,31 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
 }) => {
   const [joining, setJoining] = useState(false)
   const joinOperationRef = useRef<AbortController | null>(null)
+  const openedRef = useRef(modalProps.opened)
+  openedRef.current = modalProps.opened
   const { t } = useTranslation()
   const validCode = isValidTeamInviteCode(code)
 
-  useEffect(() => () => joinOperationRef.current?.abort(), [])
+  useEffect(
+    () => () => {
+      joinOperationRef.current?.abort()
+      joinOperationRef.current = null
+    },
+    []
+  )
+
+  useEffect(() => {
+    if (!modalProps.opened) {
+      joinOperationRef.current?.abort()
+      joinOperationRef.current = null
+      setJoining(false)
+    }
+  }, [modalProps.opened])
+
+  const handleClose = () => {
+    if (joinOperationRef.current) return
+    modalProps.onClose()
+  }
 
   const onJoinTeam = async () => {
     if (joinOperationRef.current) return
@@ -49,6 +70,12 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
     }
 
     const controller = new AbortController()
+    const requestUrl = window.location.href
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      joinOperationRef.current === controller &&
+      openedRef.current &&
+      window.location.href === requestUrl
     joinOperationRef.current = controller
     setJoining(true)
     try {
@@ -63,9 +90,11 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
                 }
               })()
             : { code }
-          await api.team.teamAccept(identity)
+          if (!isCurrent()) return
+          await api.team.teamAccept(identity, { signal: controller.signal })
         },
         onAccepted: () => {
+          if (!isCurrent()) return
           showNotification({
             color: 'teal',
             title: t('team.notification.join.success'),
@@ -78,17 +107,25 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
           modalProps.onClose()
         },
         onRejected: (error) => {
-          if (!controller.signal.aborted) showErrorMsg(error, t)
+          if (isCurrent()) showErrorMsg(error, t)
         },
       })
     } finally {
-      if (joinOperationRef.current === controller) joinOperationRef.current = null
-      setJoining(false)
+      if (joinOperationRef.current === controller) {
+        joinOperationRef.current = null
+        if (openedRef.current && window.location.href === requestUrl) setJoining(false)
+      }
     }
   }
 
   return (
-    <AccessibleModal {...modalProps}>
+    <AccessibleModal
+      {...modalProps}
+      onClose={handleClose}
+      closeOnClickOutside={!joining}
+      closeOnEscape={!joining}
+      withCloseButton={!joining}
+    >
       <Stack
         component="form"
         data-guide="team-join-workflow"
@@ -111,6 +148,9 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
           placeholder="team:0:01234567890123456789012345678901"
           w="100%"
           value={code}
+          disabled={joining}
+          error={code.length > 0 && !validCode ? t('team.notification.join.wrong_invite_code') : undefined}
+          styles={{ error: { color: 'var(--app-text-primary)' } }}
           onChange={(event) => onCodeChange(event.currentTarget.value)}
         />
         <Button

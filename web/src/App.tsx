@@ -15,6 +15,7 @@ import { RoutePrefetcher } from '@Components/RoutePrefetcher'
 import { WsrxProvider } from '@Components/WsrxProvider'
 import { PlayerGuideProvider } from '@Components/guide/PlayerGuide'
 import { shouldRedirectOnUnauthorized } from '@Utils/AuthState'
+import { boundedCacheMiddleware } from '@Utils/BoundedCacheMiddleware'
 import { localCacheProvider } from '@Utils/Cache'
 import { useLanguage } from '@Utils/I18n'
 import { readProfile } from '@Utils/ProfileRead'
@@ -176,7 +177,7 @@ export const App: FC = () => (
       keepPreviousData: false,
       provider: localCacheProvider,
       fetcher: authAwareFetcher,
-      use: [viewerIdentityMiddleware],
+      use: [viewerIdentityMiddleware, boundedCacheMiddleware],
     }}
   >
     <ThemedApp />

@@ -1,0 +1,343 @@
+{
+  "sourceSha": "9ebf91ba957cd6cfe28d9aa88a4d4c13200f92b0",
+  "baselineSha": "9ebf91ba957cd6cfe28d9aa88a4d4c13200f92b0",
+  "createdAt": "2026-10-26T14:50:20.885Z",
+  "cache": [
+    {
+      "mode": "baseline",
+      "responses": 1000,
+      "responsesPerSecond": 100,
+      "reads": 10000,
+      "hits": 5120,
+      "payloadBytes": 262144,
+      "elapsedMs": 9995.615259,
+      "cpuMs": 526.722,
+      "postGcHeapBytes": 138572376,
+      "retainedPayloadBytes": 134217728,
+      "retainedEntries": 512,
+      "estimatedCacheBytes": null,
+      "writeLatencyMs": {
+        "count": 1000,
+        "avg": 0.012108583000010295,
+        "p50": 0.008332000001246342,
+        "p90": 0.014241999999285326,
+        "p95": 0.02808299999992414,
+        "p99": 0.09805900000037582,
+        "max": 0.4259939999992639
+      },
+      "readLatencyMs": {
+        "count": 10000,
+        "avg": 0.0005468632999950842,
+        "p50": 0.00008000000002539309,
+        "p90": 0.0009620000000722939,
+        "p95": 0.002703999999539519,
+        "p99": 0.007722000000285334,
+        "max": 0.18449899999995978
+      },
+      "scheduleLatenessMs": {
+        "count": 1000,
+        "avg": 0.04390518399996936,
+        "p50": 0,
+        "p90": 0.1711729999999534,
+        "p95": 0.23963800000001356,
+        "p99": 0.47049700000002304,
+        "max": 3.5202020000000402
+      }
+    },
+    {
+      "mode": "candidate",
+      "responses": 1000,
+      "responsesPerSecond": 100,
+      "reads": 10000,
+      "hits": 10000,
+      "payloadBytes": 262144,
+      "elapsedMs": 9995.445791,
+      "cpuMs": 535.094,
+      "postGcHeapBytes": 20830496,
+      "retainedPayloadBytes": 16515072,
+      "retainedEntries": 64,
+      "estimatedCacheBytes": 33052156,
+      "writeLatencyMs": {
+        "count": 1000,
+        "avg": 0.025846710999999543,
+        "p50": 0.018298000000413595,
+        "p90": 0.03715600000032282,
+        "p95": 0.06972500000028958,
+        "p99": 0.1690249999999196,
+        "max": 0.49367699999947945
+      },
+      "readLatencyMs": {
+        "count": 10000,
+        "avg": 0.0010468006999944375,
+        "p50": 0.00019100000008620555,
+        "p90": 0.00277399999959016,
+        "p95": 0.004046000000016647,
+        "p99": 0.01580400000057125,
+        "max": 0.22726299999976618
+      },
+      "scheduleLatenessMs": {
+        "count": 1000,
+        "avg": 0.03458778399997182,
+        "p50": 0,
+        "p90": 0.10284899999987829,
+        "p95": 0.18582100000003265,
+        "p99": 0.4301949999999124,
+        "max": 4.2818319999996675
+      }
+    },
+    {
+      "mode": "candidate",
+      "responses": 1000,
+      "responsesPerSecond": 100,
+      "reads": 10000,
+      "hits": 10000,
+      "payloadBytes": 262144,
+      "elapsedMs": 9996.138682,
+      "cpuMs": 518.907,
+      "postGcHeapBytes": 20830496,
+      "retainedPayloadBytes": 16515072,
+      "retainedEntries": 64,
+      "estimatedCacheBytes": 33052156,
+      "writeLatencyMs": {
+        "count": 1000,
+        "avg": 0.021344480000017957,
+        "p50": 0.016916000000492204,
+        "p90": 0.03203799999937473,
+        "p95": 0.047572000000400294,
+        "p99": 0.1095259999992777,
+        "max": 0.19070800000008603
+      },
+      "readLatencyMs": {
+        "count": 10000,
+        "avg": 0.0010691389000008734,
+        "p50": 0.00019099999917671084,
+        "p90": 0.0021429999999327265,
+        "p95": 0.0037449999999807915,
+        "p99": 0.018328000000110478,
+        "max": 0.8635959999992338
+      },
+      "scheduleLatenessMs": {
+        "count": 1000,
+        "avg": 0.03488599599997697,
+        "p50": 0,
+        "p90": 0.08374999999978172,
+        "p95": 0.13790299999999434,
+        "p99": 0.30983100000003105,
+        "max": 4.32024199999978
+      }
+    },
+    {
+      "mode": "baseline",
+      "responses": 1000,
+      "responsesPerSecond": 100,
+      "reads": 10000,
+      "hits": 5120,
+      "payloadBytes": 262144,
+      "elapsedMs": 9994.877106000002,
+      "cpuMs": 431.066,
+      "postGcHeapBytes": 138572376,
+      "retainedPayloadBytes": 134217728,
+      "retainedEntries": 512,
+      "estimatedCacheBytes": null,
+      "writeLatencyMs": {
+        "count": 1000,
+        "avg": 0.009165166000010664,
+        "p50": 0.007040000000415603,
+        "p90": 0.011397000000215485,
+        "p95": 0.014221999999790569,
+        "p99": 0.06536899999991874,
+        "max": 0.3361379999987548
+      },
+      "readLatencyMs": {
+        "count": 10000,
+        "avg": 0.00034067350000064635,
+        "p50": 0.00007999999979801942,
+        "p90": 0.0007509999995818362,
+        "p95": 0.0013119999994160025,
+        "p99": 0.0026839999999879183,
+        "max": 0.2082749999999578
+      },
+      "scheduleLatenessMs": {
+        "count": 1000,
+        "avg": 0.021116512000026715,
+        "p50": 0,
+        "p90": 0.0723089999999047,
+        "p95": 0.11615500000152679,
+        "p99": 0.23392899999998917,
+        "max": 1.9185209999996005
+      }
+    }
+  ],
+  "retention": [
+    {
+      "activeRowsPreserved": 32,
+      "initialExpired": 16384,
+      "latencyMs": {
+        "count": 10,
+        "avg": 4.6878549,
+        "p50": 3.5452790000000003,
+        "p90": 6.626016,
+        "p95": 10.548955000000001,
+        "p99": 10.548955000000001,
+        "max": 10.548955000000001
+      },
+      "mode": "baseline",
+      "passIntervalMs": 1000,
+      "passes": 10,
+      "productionIntervalMs": 30000,
+      "remainingExpired": 15104,
+      "removed": 1280,
+      "resources": [
+        {
+          "at": "2026-10-26T14:51:02.705Z",
+          "cpuPercent": "5.58%",
+          "memory": "93.52MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:04.726Z",
+          "cpuPercent": "0.23%",
+          "memory": "93.53MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:06.748Z",
+          "cpuPercent": "0.29%",
+          "memory": "93.6MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:08.772Z",
+          "cpuPercent": "0.26%",
+          "memory": "93.5MiB / 512MiB"
+        }
+      ]
+    },
+    {
+      "activeRowsPreserved": 32,
+      "initialExpired": 16384,
+      "latencyMs": {
+        "count": 10,
+        "avg": 18.080932,
+        "p50": 16.189367,
+        "p90": 22.507453,
+        "p95": 23.062541,
+        "p99": 23.062541,
+        "max": 23.062541
+      },
+      "mode": "candidate",
+      "passIntervalMs": 1000,
+      "passes": 10,
+      "productionIntervalMs": 30000,
+      "remainingExpired": 6144,
+      "removed": 10240,
+      "resources": [
+        {
+          "at": "2026-10-26T14:51:12.801Z",
+          "cpuPercent": "1.83%",
+          "memory": "91.54MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:14.825Z",
+          "cpuPercent": "1.73%",
+          "memory": "91.61MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:16.848Z",
+          "cpuPercent": "1.28%",
+          "memory": "91.4MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:18.873Z",
+          "cpuPercent": "1.00%",
+          "memory": "91.49MiB / 512MiB"
+        }
+      ]
+    },
+    {
+      "activeRowsPreserved": 32,
+      "initialExpired": 16384,
+      "latencyMs": {
+        "count": 10,
+        "avg": 20.2689365,
+        "p50": 20.046509,
+        "p90": 25.474313,
+        "p95": 25.645984,
+        "p99": 25.645984,
+        "max": 25.645984
+      },
+      "mode": "candidate",
+      "passIntervalMs": 1000,
+      "passes": 10,
+      "productionIntervalMs": 30000,
+      "remainingExpired": 6144,
+      "removed": 10240,
+      "resources": [
+        {
+          "at": "2026-10-26T14:51:22.908Z",
+          "cpuPercent": "1.55%",
+          "memory": "91.48MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:24.939Z",
+          "cpuPercent": "1.32%",
+          "memory": "91.61MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:26.968Z",
+          "cpuPercent": "1.35%",
+          "memory": "91.34MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:28.996Z",
+          "cpuPercent": "1.27%",
+          "memory": "91.49MiB / 512MiB"
+        }
+      ]
+    },
+    {
+      "activeRowsPreserved": 32,
+      "initialExpired": 16384,
+      "latencyMs": {
+        "count": 10,
+        "avg": 4.4130566,
+        "p50": 3.471086,
+        "p90": 6.659535,
+        "p95": 9.708009,
+        "p99": 9.708009,
+        "max": 9.708009
+      },
+      "mode": "baseline",
+      "passIntervalMs": 1000,
+      "passes": 10,
+      "productionIntervalMs": 30000,
+      "remainingExpired": 15104,
+      "removed": 1280,
+      "resources": [
+        {
+          "at": "2026-10-26T14:51:33.025Z",
+          "cpuPercent": "0.33%",
+          "memory": "93.33MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:35.048Z",
+          "cpuPercent": "0.25%",
+          "memory": "93.23MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:37.074Z",
+          "cpuPercent": "0.32%",
+          "memory": "93.71MiB / 512MiB"
+        },
+        {
+          "at": "2026-10-26T14:51:39.099Z",
+          "cpuPercent": "0.29%",
+          "memory": "93.67MiB / 512MiB"
+        }
+      ]
+    }
+  ],
+  "candidateSources": {
+    "web/src/utils/Cache.ts": "eea0fc0b9d7194f9dead8ef3089dc9eab3c28a6691126425a8467833ae61f9cc",
+    "web/src/utils/CacheWeight.ts": "5c5118c76d28348c34b6bdf409ba7070717256ab239edf0581c0a57ada22f48a",
+    "src/services/mutation_retention/cleanup.rs": "040c1604663715c087cdd263ea01c441fdded220ea9fbb8fa5ef3e32c657ef6f"
+  },
+  "retentionBinarySha256": "bb783e91f8a27f7368ded2b688d5bb361e13dad6e86e49c64dccb922e5be6c98"
+}

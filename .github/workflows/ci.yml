@@ -71,7 +71,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path tests/load/retention-audit/Cargo.toml -- --check
+
+      - name: Check isolated cleanup benchmark
+        run: cargo check --manifest-path tests/load/retention-audit/Cargo.toml --locked
 
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
@@ -599,12 +604,17 @@ jobs:
       - name: Exercise account access in Chromium
         run: node tests/visual/account-access.mjs
 
+      - name: Exercise team invites and canceled requests in Chromium
+        run: node tests/visual/team-access.mjs
+
       - name: Retain account access browser diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: account-access-${{ github.sha }}
-          path: visual-audit-output/account-access/
+          path: |
+            visual-audit-output/account-access/
+            visual-audit-output/team-access/
           if-no-files-found: ignore
           retention-days: 3
 
@@ -658,6 +668,7 @@ jobs:
           cargo audit --file agents/byoc-agent/Cargo.lock
           cargo audit --file agents/worker-agent/Cargo.lock
           cargo audit --file lib/worker-protocol/Cargo.lock
+          cargo audit --file tests/load/retention-audit/Cargo.lock
 
   load-harness-contracts:
     name: Load harness contracts
@@ -684,12 +695,15 @@ jobs:
           RSCTF_JWT_SECRET: rsctf-load-harness-ci-only-secret
         run: npm test
 
-      - name: Check scoreboard benchmark and browser scripts
+      - name: Check benchmark and browser scripts
         run: |
           node --check scoreboard-page.mjs
           node --check scoreboard-page-fixture.mjs
           node --check k6/scoreboard-page.js
           node --check ../visual/scoreboard-page.mjs
+          node --check client-retention-audit.mjs
+          node --check client-cache-audit-worker.mjs
+          node --check ../visual/team-access.mjs
 
   cheat-acceptance:
     name: Isolated anti-cheat acceptance

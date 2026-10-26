@@ -1477,6 +1477,38 @@ and the live ownership assertion are in
 
 ### Optimization ledger
 
+#### Client cache memory and expired-record catch-up — 26 October 2026
+
+`client-retention-audit.mjs` compares the v0.1.145 cache with the production
+candidate module at 100 responses/second and 1,000 hot-key reads/second. Each
+trial starts a fresh process and uses AB/BA ordering. It also runs the actual
+cleanup engine in an isolated optimized Rust executable against disposable
+PostgreSQL, using ten passes at one pass/second. This accelerates the production
+30-second schedule; it measures work per pass, not platform HTTP throughput.
+
+```sh
+scripts/bounded-cargo.sh build --release --locked \
+  --manifest-path tests/load/retention-audit/Cargo.toml
+
+RSCTF_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test \
+PG_CONTAINER=your-disposable-postgres \
+RSCTF_RETENTION_AUDIT_BIN="$(git rev-parse --path-format=absolute --git-common-dir)/rsctf-target/release/rsctf-retention-audit" \
+SUMMARY_DIR=/tmp/rsctf-client-retention-audit \
+scripts/bounded-frontend.sh exec node ../tests/load/client-retention-audit.mjs
+```
+
+The database driver creates and drops only its own unique schema. The optional
+`PG_CONTAINER` selects a local managed Docker container for CPU/RAM sampling;
+omit it when using a native PostgreSQL service. `SUMMARY_DIR` retains raw timing
+samples, full latency summaries, CPU/heap measurements, and source/binary hashes.
+The cache-only comparison can run without `RSCTF_RETENTION_AUDIT_BIN`.
+
+The retained experiment reduced post-GC cache-process heap by about 85% and
+preserved the synthetic hot key. Cleanup removed eight times as many expired
+rows per pass. Cache CPU and cleanup latency increased; no HTTP latency or
+server CPU improvement is claimed. See [the report](REPORT.md#client-cache-memory-and-expired-record-catch-up--26-october-2026)
+and [machine-readable results](results/client-retention-v146.json).
+
 #### Bounded scoreboard pages
 
 `npm run scoreboard-page` compares the retained full response with its 30-team
