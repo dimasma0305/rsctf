@@ -260,7 +260,7 @@ try {
       await visit('/account/login?from=' + encoded, {
         config: { allowPasswordRegistration: false }
       })
-      await click('a[href^="/account/register"]')
+      await click('a[href^="/account/register?from="]')
       await wait(
         'document.querySelector("#main-content h1")?.textContent === "Register" && location.pathname === "/account/register"'
       )
