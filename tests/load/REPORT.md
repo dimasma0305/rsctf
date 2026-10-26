@@ -14,6 +14,81 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Client cache memory and expired-record catch-up — 26 October 2026
+
+These are component measurements against v0.1.145 (`9ebf91ba`), with candidate
+source SHA-256 hashes and the optimized cleanup executable hash retained in
+[the results](results/client-retention-v146.json). The candidate checkout was
+uncommitted during measurement; `sourceSha` identifies its base revision, while
+`candidateSources` identifies the exact measured changes.
+
+### Client cache
+
+Each fresh process received 1,000 distinct 256-KiB responses at 100/second plus
+10,000 reads of one hot key at 1,000/second. Every response performed three SWR
+metadata writes sharing one immutable data object. Production TypeScript was
+bundled/minified, and baseline/candidate/candidate/baseline ordering was used.
+
+| Metric | v0.1.145 | Candidate |
+| --- | ---: | ---: |
+| Retained response payload | 128 MiB | 15.75 MiB |
+| Post-GC process heap, mean of two trials | 138,572,336 B | 20,830,444 B |
+| Synthetic hot-key hits | 5,120 / 10,000 | 10,000 / 10,000 |
+| Process CPU over each ten-second trial, mean | 439.691 ms | 460.421 ms |
+| Three-write p95, equal-weight mean of trial p95s | 0.0206 ms | 0.0435 ms |
+| Read p95, equal-weight mean of trial p95s | 0.0021 ms | 0.0033 ms |
+
+The accepted benefit is retained memory (-85.0% for process heap, -87.7% for
+cached payload) and protection of frequently read entries. Component CPU rose
+4.7%, about 21 ms over ten seconds of this workload. An earlier JSON-stringify
+weigher cost roughly twice the baseline CPU; the bounded graph estimator avoids
+allocating another serialized response. It handles cycles and backing buffers,
+and caps traversal work. Immutable data weights are reused for metadata writes.
+
+The 32-MiB budget is an estimated data-weight budget, alongside the 512-entry
+limit. Mounted hooks retain their working models, including oversized responses,
+until their last consumer leaves. The policy therefore protects inactive cache
+memory; it is not a hard cap on a page's live working set or total browser heap.
+Security retirement overrides active leases and fences late private responses.
+
+### Expired-record cleanup
+
+The same PostgreSQL 18 container (one CPU, 512-MiB memory limit, 32-MiB shared
+buffers) served all four AB/BA trials. Every trial seeded 8,192 expired records
+and 16 live records in each of two indexed tables. One scheduled pass/second
+accelerated the real 30-second cadence without changing batch/page limits.
+The small Rust driver compiled the production cleanup engine by path at
+optimization level 3, fat LTO, one codegen unit, and normal panic unwinding.
+
+| Metric over ten scheduled passes | v0.1.145 | Candidate |
+| --- | ---: | ---: |
+| Expired records deleted, both tables | 1,280 | 10,240 |
+| Expired records remaining | 15,104 | 6,144 |
+| Live records preserved | 32 / 32 | 32 / 32 |
+| Pass p95, equal-weight mean of two trial p95s | 12.31 ms | 47.83 ms |
+
+Catch-up clears eight times as many rows per scheduled pass by starting up to
+eight 64-row pages per table, alternating tables. Extra pages stop after a
+200-ms scheduling budget; SQL statements have 50-ms execution and 10-ms lock
+limits. Pool admission and transaction commit are outside the scheduling budget.
+Locked rows are skipped, and a failed pass rolls back atomically. The transaction's
+stable expiration cutoff permits an index range bound before live rows. Three real
+PostgreSQL regressions also verify locked-row handling, live-row preservation,
+rollback, subsequent pool usability, and an expiration index condition with 50,000 live rows.
+
+PostgreSQL CPU/RAM samples and full avg/p50/p90/p95/p99/max distributions are
+retained. Resource samples can include fixture setup, so they are contextual
+observations rather than evidence of a database CPU reduction. More work per
+pass costs more query time; the benefit is a smaller expiration backlog.
+
+### Limits and reproduction
+
+These results do not measure reclaimed disk space/VACUUM, whole-platform HTTP latency, application CPU,
+browser DOM/rendering memory, HTTP 5xx, or production replica health. The SQL
+driver exercises the cleanup engine, not the runtime-role supervisor or pool
+admission wrapper. See the [optimization ledger](README.md#client-cache-memory-and-expired-record-catch-up--26-october-2026)
+for the reproducible commands. `SUMMARY_DIR` retains the raw per-trial samples.
+
 ## Scoreboard page and read-ahead acceptance — 25 October 2026
 
 The 30-team projection reduced compressed fresh-response bytes by **87.86%**

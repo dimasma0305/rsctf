@@ -1,6 +1,6 @@
 import { Anchor, Button, TextInput } from '@mantine/core'
 import { useInputState } from '@mantine/hooks'
-import { showNotification, updateNotification } from '@mantine/notifications'
+import { hideNotification, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useRef, useState } from 'react'
@@ -25,10 +25,18 @@ const Recovery: FC = () => {
   const { t } = useTranslation()
 
   usePageTitle(t('account.title.recovery'))
-  useEffect(() => () => recoveryOperationRef.current?.controller.abort(), [])
+  useEffect(
+    () => () => {
+      recoveryOperationRef.current?.controller.abort()
+      hideNotification('recovery-status')
+    },
+    []
+  )
 
   const onRecovery = async (event: React.SyntheticEvent) => {
     event.preventDefault()
+    const requestRoute = window.location.pathname + window.location.search
+    const sameRoute = () => window.location.pathname + window.location.search === requestRoute
     const acquired = beginMailOperation(recoveryOperationRef.current, email.trim().toLowerCase())
     if (!acquired.started) return
     const operation = acquired.owner
@@ -38,13 +46,13 @@ const Recovery: FC = () => {
 
     try {
       const { valid, token } = await getToken()
+      if (operation.controller.signal.aborted || !sameRoute()) return
 
       if (!valid) {
         showNotification({
           color: 'orange',
           title: t('account.notification.captcha.not_valid'),
           message: t('common.error.try_later'),
-          loading: true,
         })
         return
       }
@@ -66,6 +74,7 @@ const Recovery: FC = () => {
         },
         { signal: operation.controller.signal }
       )
+      if (operation.controller.signal.aborted || !sameRoute()) return
       completed = true
 
       updateNotification({
@@ -79,7 +88,7 @@ const Recovery: FC = () => {
       })
       cleanUp(true)
     } catch (err: any) {
-      if (operation.controller.signal.aborted) return
+      if (operation.controller.signal.aborted || !sameRoute()) return
       updateNotification({
         id: 'recovery-status',
         color: 'red',
@@ -91,9 +100,13 @@ const Recovery: FC = () => {
       })
       cleanUp(false)
     } finally {
+      if (!sameRoute()) {
+        operation.controller.abort()
+        hideNotification('recovery-status')
+      }
       if (recoveryOperationRef.current === operation)
         recoveryOperationRef.current = finishMailOperation(operation, completed)
-      setDisabled(false)
+      if (!operation.controller.signal.aborted && sameRoute()) setDisabled(false)
     }
   }
 

@@ -25,15 +25,7 @@ export const RecentGame: FC<RecentGameProps> = ({ game, ...others }) => {
   const statusText = getGameStatusLabel(t, status)
 
   return (
-    <Card
-      {...others}
-      component={Link}
-      to={`/games/${game.id}`}
-      withBorder
-      padding="sm"
-      className={classes.card}
-      aria-label={`${title ?? t('game.content.recent_games.untitled', 'Untitled game')} — ${statusText}`}
-    >
+    <Card {...others} component={Link} to={`/games/${game.id}`} withBorder padding="sm" className={classes.card}>
       <Group wrap="nowrap" align="stretch" gap="sm">
         <Box
           className={classes.visual}

@@ -26,19 +26,21 @@ const Teams: FC = () => {
   const { config } = useConfig()
   const { preferences: guidePreferences, completeTeamSetup } = usePlayerGuide()
 
-  const [joinOpened, setJoinOpened] = useState(false)
-  const [joinTeamCode, setJoinTeamCode] = useState('')
   const [searchParams, setSearchParams] = useSearchParams()
+  // URLSearchParams already decodes the value. Keep the invite until the
+  // dialog closes: changing this query retires the route and its form state.
+  const [joinOpened, setJoinOpened] = useState(() => Boolean(searchParams.get('join')))
+  const [joinTeamCode, setJoinTeamCode] = useState(() => searchParams.get('join') ?? '')
 
-  // Auto-open join modal when arriving via invite link (?join=code)
-  useEffect(() => {
-    const code = searchParams.get('join')
-    if (code) {
-      setJoinTeamCode(decodeURIComponent(code))
-      setJoinOpened(true)
-      setSearchParams({}, { replace: true })
+  const closeJoin = () => {
+    setJoinTeamCode('')
+    setJoinOpened(false)
+    if (searchParams.has('join')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('join')
+      setSearchParams(next, { replace: true })
     }
-  }, [])
+  }
 
   const [createOpened, setCreateOpened] = useState(false)
   const [editOpened, setEditOpened] = useState(false)
@@ -179,10 +181,7 @@ const Teams: FC = () => {
           title={t('team.button.join')}
           code={joinTeamCode}
           onCodeChange={setJoinTeamCode}
-          onClose={() => {
-            setJoinTeamCode('')
-            setJoinOpened(false)
-          }}
+          onClose={closeJoin}
           mutate={mutateTeams}
           onTeamReady={completeTeamSetup}
           enableBrowserFingerprint={config.enableBrowserFingerprint}

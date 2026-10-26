@@ -205,7 +205,6 @@ export const WorkspaceBar: FC = () => {
           }}
           aria-haspopup="dialog"
           aria-keyshortcuts="Control+k Meta+k"
-          aria-label={t('common.workspace.search_label', 'Search pages')}
         >
           {t('common.workspace.search_label', 'Search pages')} <Kbd className={classes.shortcut}>Ctrl / ⌘ K</Kbd>
         </Button>
