@@ -30,3 +30,9 @@ test('account return paths reject external URLs, browser slash normalization and
   }
   assert.equal(accountReturnPath('/posts/hello%20world'), '/posts/hello%20world')
 })
+
+test('account detours preserve an explicit confirmation-resend mode', () => {
+  const link = new URL(accountPath('/account/register?resend=1', '/games/19#challenge'), 'https://rsctf.test')
+  assert.equal(link.searchParams.get('resend'), '1')
+  assert.equal(link.searchParams.get('from'), '/games/19#challenge')
+})

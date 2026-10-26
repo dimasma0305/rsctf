@@ -61,7 +61,6 @@
     "registration_unavailable": "OAuth registration is temporarily unavailable. Contact an administrator."
   },
   "button": {
-    "return_to_register": "Return to registration",
     "change_avatar": "Change avatar",
     "accept_tos": "Accept & Continue",
     "change_password": "Change Password",
@@ -98,6 +97,9 @@
     "welcome": "Hello, {{decodeEmail}}👋"
   },
   "registration": {
+    "resend_title": "Resend confirmation email",
+    "resend_link": "Already registered? Request another confirmation email",
+    "resend_description": "Enter the same email, username, and password you used to register. An existing unconfirmed account can request another message even when registration is closed.",
     "closed_title": "Registration is closed",
     "closed_description": "New accounts cannot be created right now. Existing users can still sign in. Contact an administrator if you need an account.",
     "policy_error_title": "Registration is unavailable",

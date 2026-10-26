@@ -38,7 +38,7 @@ export function accountAccessFixture() {
     return state
   }
   reset()
-  const response = async (url, method) => {
+  const response = async (url, method, body) => {
     const owner = state
     const path = url.pathname
     const call = { path, method, settled: false }
@@ -80,9 +80,23 @@ export function accountAccessFixture() {
       owner.authenticated = true
       result = { body: { status: 200 } }
     } else if (path === '/api/account/register' && method === 'POST') {
-      const status = owner.options.registerStatus || 'LoggedIn'
-      owner.authenticated = status === 'LoggedIn'
-      result = { body: { status: 200, data: status } }
+      if (owner.options.config?.allowRegister === false) {
+        const pending =
+          owner.options.pendingConfirmation &&
+          body?.userName === 'audit-user' &&
+          body?.email === 'audit@example.invalid' &&
+          body?.password === 'FixturePassword123!'
+        result = pending
+          ? { body: { status: 200, data: 'EmailConfirmationRequired' } }
+          : {
+              status: 403,
+              body: { title: 'Registration is closed', status: 403 }
+            }
+      } else {
+        const status = owner.options.registerStatus || 'LoggedIn'
+        owner.authenticated = status === 'LoggedIn'
+        result = { body: { status: 200, data: status } }
+      }
     } else if (path.startsWith('/api/oauth/'))
       result = { body: { audit: 'OAuth navigation intercepted' } }
     else if (path.startsWith('/hub'))

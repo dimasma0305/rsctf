@@ -166,7 +166,11 @@ try {
   })
   cdp.on('Fetch.requestPaused', ({ requestId, request }) => {
     const task = (async () => {
-      const r = await fixture.response(new URL(request.url), request.method)
+      const r = await fixture.response(
+        new URL(request.url),
+        request.method,
+        request.postData ? JSON.parse(request.postData) : undefined
+      )
       await cdp.send('Fetch.fulfillRequest', {
         requestId,
         responseCode: r.status || 200,
@@ -318,6 +322,53 @@ try {
       await audit(viewport + '-closed-registration')
     })
     await check(
+      viewport +
+        '-closed-registration-allows-authenticated-confirmation-resend',
+      async () => {
+        await visit('/account/pending?from=' + encoded, {
+          config: { allowRegister: false, allowPasswordRegistration: false },
+          pendingConfirmation: true
+        })
+        await click('a[href^="/account/register?resend=1"]')
+        await wait('document.querySelector("#main-content input[type=email]")')
+        assert.equal(
+          await evaluate(
+            'document.querySelector("#main-content h1").textContent'
+          ),
+          'Resend confirmation email'
+        )
+        assert.equal(
+          await evaluate(
+            'document.querySelectorAll("#main-content input[type=password]").length'
+          ),
+          1
+        )
+        assert.equal(
+          await evaluate(
+            'Array.from(document.querySelectorAll("#main-content button")).some(button => /Discord|Google/.test(button.textContent))'
+          ),
+          false
+        )
+        await audit(viewport + '-resend-confirmation')
+        await fill('#main-content input[type=email]', 'audit@example.invalid')
+        await fill('#main-content input[type=text]', 'audit-user')
+        await fill('#main-content input[type=password]', 'FixturePassword123!')
+        await click('button[type=submit]')
+        await wait('location.pathname === "/account/pending"')
+        assert.equal(
+          await evaluate('new URLSearchParams(location.search).get("from")'),
+          destination
+        )
+        assert.equal(
+          await evaluate(
+            'document.body.innerText.includes("audit@example.invalid")'
+          ),
+          true
+        )
+        assert.equal(fixture.state.authenticated, false)
+      }
+    )
+    await check(
       viewport + '-oauth-errors-are-persistent-and-translated',
       async () => {
         await visit(
@@ -411,6 +462,53 @@ try {
         destination
       )
       await audit('pending-with-email')
+    }
+  )
+  await check(
+    'closed-registration-does-not-admit-an-unknown-confirmation-account',
+    async () => {
+      await visit('/account/register?resend=1', {
+        config: { allowRegister: false }
+      })
+      await wait('document.querySelector("#main-content input[type=email]")')
+      await fill('#main-content input[type=email]', 'unknown@example.invalid')
+      await fill('#main-content input[type=text]', 'unknown-user')
+      await fill('#main-content input[type=password]', 'FixturePassword123!')
+      await click('button[type=submit]')
+      await settled('/api/account/register')
+      await wait('document.body.innerText.includes("Registration is closed")')
+      assert.equal(await evaluate('location.pathname'), '/account/register')
+      assert.equal(fixture.state.authenticated, false)
+      assert.equal(
+        fixture.state.calls.find(
+          (call) => call.path === '/api/account/register'
+        ).status,
+        403
+      )
+    }
+  )
+  await check(
+    'closed-registration-rejects-wrong-confirmation-password',
+    async () => {
+      await visit('/account/register?resend=1', {
+        config: { allowRegister: false },
+        pendingConfirmation: true
+      })
+      await wait('document.querySelector("#main-content input[type=email]")')
+      await fill('#main-content input[type=email]', 'audit@example.invalid')
+      await fill('#main-content input[type=text]', 'audit-user')
+      await fill('#main-content input[type=password]', 'IncorrectPassword123!')
+      await click('button[type=submit]')
+      await settled('/api/account/register')
+      await wait('document.body.innerText.includes("Registration is closed")')
+      assert.equal(await evaluate('location.pathname'), '/account/register')
+      assert.equal(fixture.state.authenticated, false)
+      assert.equal(
+        fixture.state.calls.find(
+          (call) => call.path === '/api/account/register'
+        ).status,
+        403
+      )
     }
   )
   await check(

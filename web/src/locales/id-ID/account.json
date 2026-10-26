@@ -59,7 +59,6 @@
     "registration_unavailable": "Pendaftaran OAuth sedang tidak tersedia. Hubungi administrator."
   },
   "button": {
-    "return_to_register": "Kembali ke pendaftaran",
     "change_avatar": "Ubah avatar",
     "accept_tos": "Setuju & Lanjutkan",
     "change_password": "Ubah Kata Sandi",
@@ -96,6 +95,9 @@
     "welcome": "Halo, {{decodeEmail}}👋"
   },
   "registration": {
+    "resend_title": "Kirim ulang email konfirmasi",
+    "resend_link": "Sudah mendaftar? Minta email konfirmasi lagi",
+    "resend_description": "Masukkan email, nama pengguna, dan kata sandi yang sama seperti saat mendaftar. Akun yang belum terverifikasi tetap dapat meminta pesan baru meskipun pendaftaran ditutup.",
     "closed_title": "Pendaftaran ditutup",
     "closed_description": "Akun baru belum dapat dibuat saat ini. Pengguna yang sudah memiliki akun tetap dapat masuk. Hubungi administrator jika memerlukan akun.",
     "policy_error_title": "Pendaftaran tidak tersedia",

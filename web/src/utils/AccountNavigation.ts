@@ -6,5 +6,5 @@ export const accountReturnPath = (value: string | null | undefined): string =>
 
 export const accountPath = (path: string, from: string | null | undefined): string => {
   const destination = accountReturnPath(from)
-  return destination === '/' ? path : `${path}?from=${encodeURIComponent(destination)}`
+  return destination === '/' ? path : `${path}${path.includes('?') ? '&' : '?'}from=${encodeURIComponent(destination)}`
 }

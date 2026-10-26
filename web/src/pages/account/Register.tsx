@@ -40,6 +40,12 @@ const Register: FC = () => {
   const [searchParams] = useSearchParams()
   const from = accountReturnPath(searchParams.get('from'))
   const bootstrapMode = searchParams.get('bootstrap') === '1'
+  // Open registration already supports authenticated pending-account retries.
+  // Expose that existing flow separately when new password signup is closed.
+  const resendMode =
+    !bootstrapMode &&
+    (config.allowRegister === false || config.allowPasswordRegistration === false) &&
+    searchParams.get('resend') === '1'
   const { captchaRef, getToken, cleanUp } = useCaptchaRef()
 
   const { t } = useTranslation()
@@ -68,7 +74,7 @@ const Register: FC = () => {
     [undefined, undefined],
   ])
 
-  usePageTitle(t('account.title.register'))
+  usePageTitle(t(resendMode ? 'account.registration.resend_title' : 'account.title.register'))
 
   useEffect(
     () => () => {
@@ -94,7 +100,7 @@ const Register: FC = () => {
     const operation = acquired.owner
     registerOperationRef.current = operation
 
-    if (pwd !== retypedPwd) {
+    if (!resendMode && pwd !== retypedPwd) {
       showNotification({
         color: 'red',
         title: t('common.error.check_input'),
@@ -239,12 +245,15 @@ const Register: FC = () => {
     )
   }
 
-  if (!bootstrapMode && config.allowRegister === false) {
+  if (!bootstrapMode && !resendMode && config.allowRegister === false) {
     return (
       <AccountView
         title={t('account.registration.closed_title')}
         description={t('account.registration.closed_description')}
       >
+        <Anchor component={Link} to={accountPath('/account/register?resend=1', from)}>
+          {t('account.registration.resend_link')}
+        </Anchor>
         <Anchor component={Link} to={accountPath('/account/login', from)}>
           {t('account.anchor.login')}
         </Anchor>
@@ -252,7 +261,7 @@ const Register: FC = () => {
     )
   }
 
-  if (!bootstrapMode && config.allowPasswordRegistration === false) {
+  if (!bootstrapMode && !resendMode && config.allowPasswordRegistration === false) {
     const providerAvailable = Boolean(config.enableGoogleAuth || config.enableDiscordAuth)
     return (
       <AccountView title={t('account.title.register')} description={t('account.oauth.registration_only_description')}>
@@ -271,8 +280,12 @@ const Register: FC = () => {
 
   return (
     <AccountView
-      title={t('account.title.register')}
-      description={t('account.content.register.description', 'Create an account and get ready for the next challenge.')}
+      title={t(resendMode ? 'account.registration.resend_title' : 'account.title.register')}
+      description={
+        resendMode
+          ? t('account.registration.resend_description')
+          : t('account.content.register.description', 'Create an account and get ready for the next challenge.')
+      }
       onSubmit={onRegister}
     >
       {bootstrapMode && (
@@ -311,16 +324,34 @@ const Register: FC = () => {
         disabled={disabled}
         onChange={(event) => setUname(event.currentTarget.value)}
       />
-      <StrengthPasswordInput value={pwd} onChange={(event) => setPwd(event.currentTarget.value)} disabled={disabled} />
-      <PasswordInput
-        required
-        label={t('account.label.password_retype')}
-        value={retypedPwd}
-        onChange={(event) => setRetypedPwd(event.currentTarget.value)}
-        disabled={disabled}
-        w="100%"
-        error={retypedPwd.length > 0 && pwd !== retypedPwd && t('account.password.not_match')}
-      />
+      {resendMode ? (
+        <PasswordInput
+          required
+          label={t('account.label.password')}
+          autoComplete="current-password"
+          value={pwd}
+          onChange={(event) => setPwd(event.currentTarget.value)}
+          disabled={disabled}
+          w="100%"
+        />
+      ) : (
+        <>
+          <StrengthPasswordInput
+            value={pwd}
+            onChange={(event) => setPwd(event.currentTarget.value)}
+            disabled={disabled}
+          />
+          <PasswordInput
+            required
+            label={t('account.label.password_retype')}
+            value={retypedPwd}
+            onChange={(event) => setRetypedPwd(event.currentTarget.value)}
+            disabled={disabled}
+            w="100%"
+            error={retypedPwd.length > 0 && pwd !== retypedPwd && t('account.password.not_match')}
+          />
+        </>
+      )}
       <Captcha action="register" ref={captchaRef} />
       <TermsOfService
         confirmMode
@@ -340,9 +371,9 @@ const Register: FC = () => {
         {t('account.anchor.login')}
       </Anchor>
       <Button type="submit" fullWidth disabled={disabled}>
-        {t('account.button.register')}
+        {t(resendMode ? 'account.registration.resend_title' : 'account.button.register')}
       </Button>
-      <OAuthButtons />
+      {!resendMode && <OAuthButtons />}
     </AccountView>
   )
 }

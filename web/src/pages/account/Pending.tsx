@@ -41,8 +41,8 @@ const EmailConfirmationPending: FC = () => {
             </Trans>
           </List>
         </Stack>
-        <Anchor component={Link} to={accountPath('/account/register', params.get('from'))}>
-          {t('account.button.return_to_register')}
+        <Anchor component={Link} to={accountPath('/account/register?resend=1', params.get('from'))}>
+          {t('account.registration.resend_title')}
         </Anchor>
         <Anchor
           fz="xs"
