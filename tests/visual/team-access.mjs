@@ -347,6 +347,65 @@ try {
         assert.equal(await evaluate("location.pathname"), "/");
       },
     );
+    for (const rejectJoin of [false, true])
+      await check(
+        name + "-hash-back-preserves-pending-join-" + rejectJoin,
+        async () => {
+          await visit("/teams?join=" + encodeURIComponent(code), {
+            holdJoin: true,
+            rejectJoin,
+          });
+          await click('a[href="#main-content"]');
+          await wait('location.hash === "#main-content"');
+          await click("[data-guide=team-join-submit]");
+          await until(() => state.joins === 1, "pending join before hash Back");
+          const history = await cdp.send("Page.getNavigationHistory");
+          await cdp.send("Page.navigateToHistoryEntry", {
+            entryId: history.entries[history.currentIndex - 1].id,
+          });
+          await wait('location.hash === ""');
+          state.releaseJoin();
+          if (rejectJoin) {
+            await wait(
+              '!document.querySelector("[data-guide=team-join-submit]").disabled',
+            );
+            assert.equal(
+              await evaluate(
+                'document.querySelector("[role=dialog] input").value',
+              ),
+              code,
+            );
+            await wait('document.body.innerText.includes("Invite expired")');
+            await key("Escape");
+          } else
+            await wait(
+              'document.body.innerText.includes("Successfully joined team")',
+            );
+          await wait('!document.querySelector("[role=dialog]")');
+          assert.equal(state.joins, 1);
+        },
+      );
+    await check(name + "-recovery-survives-hash-only-back", async () => {
+      await visit("/account/recovery", { guest: true });
+      await evaluate('location.hash = "main-content"');
+      await wait('location.hash === "#main-content"');
+      await fill("input[type=email]", "fixture@example.invalid");
+      await click("button[type=submit]");
+      await until(() => state.recoveries === 1, "recovery before hash Back");
+      const history = await cdp.send("Page.getNavigationHistory");
+      await cdp.send("Page.navigateToHistoryEntry", {
+        entryId: history.entries[history.currentIndex - 1].id,
+      });
+      await wait('location.hash === ""');
+      state.releaseRecovery();
+      await wait('!document.querySelector("button[type=submit]").disabled');
+      assert.equal(
+        await evaluate('document.querySelector("input[type=email]").value'),
+        "fixture@example.invalid",
+      );
+      assert.equal(state.recoveries, 1);
+      await audit(name + "-recovery-hash-back");
+    });
     await check(name + "-rejected-join-keeps-code-and-can-retry", async () => {
       await visit("/teams?join=" + encodeURIComponent(code), {
         rejectJoin: true,

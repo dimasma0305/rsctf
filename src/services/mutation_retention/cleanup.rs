@@ -6,16 +6,16 @@ const CLEANUP_BATCH: i64 = 64;
 const MAX_PAGES_PER_TABLE: usize = 8;
 const WORK_BUDGET: Duration = Duration::from_millis(200);
 
-const DELETES: [&str; 2] = [
+pub(super) const DELETES: [&str; 2] = [
     r#"DELETE FROM "MutationOperations" WHERE ctid IN (
            SELECT ctid FROM "MutationOperations"
-            WHERE expires_at_utc <= clock_timestamp()
+            WHERE expires_at_utc <= CURRENT_TIMESTAMP
             ORDER BY expires_at_utc
             LIMIT $1 FOR UPDATE SKIP LOCKED
        )"#,
     r#"DELETE FROM "AccountLinkAttempts" WHERE token_digest IN (
            SELECT token_digest FROM "AccountLinkAttempts"
-            WHERE expires_at_utc <= clock_timestamp()
+            WHERE expires_at_utc <= CURRENT_TIMESTAMP
             ORDER BY expires_at_utc
             LIMIT $1 FOR UPDATE SKIP LOCKED
        )"#,
@@ -43,6 +43,8 @@ pub struct RetentionProgress {
 /// busy table cannot monopolize a pass. The time budget stops additional pages;
 /// individual SQL statements also have server-enforced lock/execution limits.
 /// Pool admission and COMMIT are outside this query-scheduling budget.
+/// CURRENT_TIMESTAMP fixes the cutoff at transaction start and permits an
+/// expiration-index range bound, including a final partial page before live rows.
 pub(crate) async fn purge_in_transaction(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<RetentionProgress, sqlx::Error> {

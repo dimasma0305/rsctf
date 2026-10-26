@@ -32,15 +32,15 @@ bundled/minified, and baseline/candidate/candidate/baseline ordering was used.
 | Metric | v0.1.145 | Candidate |
 | --- | ---: | ---: |
 | Retained response payload | 128 MiB | 15.75 MiB |
-| Post-GC process heap, mean of two trials | 138,572,376 B | 20,830,496 B |
+| Post-GC process heap, mean of two trials | 138,572,336 B | 20,830,444 B |
 | Synthetic hot-key hits | 5,120 / 10,000 | 10,000 / 10,000 |
-| Process CPU over each ten-second trial, mean | 478.894 ms | 527.001 ms |
-| Three-write p95, equal-weight mean of trial p95s | 0.0212 ms | 0.0586 ms |
-| Read p95, equal-weight mean of trial p95s | 0.0020 ms | 0.0039 ms |
+| Process CPU over each ten-second trial, mean | 439.691 ms | 460.421 ms |
+| Three-write p95, equal-weight mean of trial p95s | 0.0206 ms | 0.0435 ms |
+| Read p95, equal-weight mean of trial p95s | 0.0021 ms | 0.0033 ms |
 
 The accepted benefit is retained memory (-85.0% for process heap, -87.7% for
 cached payload) and protection of frequently read entries. Component CPU rose
-10.0%, about 48 ms over ten seconds of this workload. An earlier JSON-stringify
+4.7%, about 21 ms over ten seconds of this workload. An earlier JSON-stringify
 weigher cost roughly twice the baseline CPU; the bounded graph estimator avoids
 allocating another serialized response. It handles cycles and backing buffers,
 and caps traversal work. Immutable data weights are reused for metadata writes.
@@ -65,15 +65,16 @@ optimization level 3, fat LTO, one codegen unit, and normal panic unwinding.
 | Expired records deleted, both tables | 1,280 | 10,240 |
 | Expired records remaining | 15,104 | 6,144 |
 | Live records preserved | 32 / 32 | 32 / 32 |
-| Pass p95, equal-weight mean of two trial p95s | 10.13 ms | 24.35 ms |
+| Pass p95, equal-weight mean of two trial p95s | 12.31 ms | 47.83 ms |
 
 Catch-up clears eight times as many rows per scheduled pass by starting up to
 eight 64-row pages per table, alternating tables. Extra pages stop after a
 200-ms scheduling budget; SQL statements have 50-ms execution and 10-ms lock
 limits. Pool admission and transaction commit are outside the scheduling budget.
-Locked rows are skipped, and a failed pass rolls back atomically. Two real
+Locked rows are skipped, and a failed pass rolls back atomically. The transaction's
+stable expiration cutoff permits an index range bound before live rows. Three real
 PostgreSQL regressions also verify locked-row handling, live-row preservation,
-rollback, and subsequent pool usability.
+rollback, subsequent pool usability, and an expiration index condition with 50,000 live rows.
 
 PostgreSQL CPU/RAM samples and full avg/p50/p90/p95/p99/max distributions are
 retained. Resource samples can include fixture setup, so they are contextual

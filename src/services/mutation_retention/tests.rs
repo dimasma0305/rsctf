@@ -105,3 +105,31 @@ async fn blocked_maintenance_rolls_back_and_leaves_the_pool_usable() {
     assert_eq!(next.removed_mutations, 512);
     finish(admin, pool, schema).await;
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn expiration_cutoff_bounds_the_index_scan_before_live_rows() {
+    let (admin, pool, schema) = fixture().await;
+    sqlx::raw_sql(r#"
+        DELETE FROM "MutationOperations" WHERE id > 7 AND id <= 1000;
+        INSERT INTO "MutationOperations" SELECT n, clock_timestamp()+INTERVAL '1 day' FROM generate_series(1004,51003) n;
+        INSERT INTO "AccountLinkAttempts" SELECT decode(lpad(to_hex(n),8,'0'),'hex'), clock_timestamp()+INTERVAL '1 day' FROM generate_series(1004,51003) n;
+        ANALYZE "MutationOperations"; ANALYZE "AccountLinkAttempts";
+    "#).execute(&pool).await.unwrap();
+    for delete in super::cleanup::DELETES {
+        let plan = sqlx::query_scalar::<_, String>(&format!("EXPLAIN {delete}"))
+            .bind(64_i64)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("Index Cond:") && line.contains("expires_at_utc")),
+            "expiration must bound the index range, not filter live rows: {plan:#?}"
+        );
+    }
+    let progress = purge_expired(&pool).await.unwrap();
+    assert_eq!(progress.removed_mutations, 7);
+    assert_eq!(progress.removed_links, 512);
+    finish(admin, pool, schema).await;
+}

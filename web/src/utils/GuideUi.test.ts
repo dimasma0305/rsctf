@@ -278,7 +278,7 @@ test('the novice path teaches every action on the real player controls', () => {
   assert.match(teamJoinModal, /onRejected: \(error\) => \{[\s\S]*isCurrent\(\)[\s\S]*showErrorMsg\(error, t\)/)
   assert.doesNotMatch(teamJoinModal, /finally[\s\S]*onCodeChange\(''\)/)
   assert.match(teamJoinModal, /!controller\.signal\.aborted/)
-  assert.match(teamJoinModal, /window\.location\.href === requestUrl/)
+  assert.match(teamJoinModal, /window\.location\.pathname \+ window\.location\.search === requestRoute/)
   assert.match(teamsPage, /mutate=\{mutateTeams\}/)
   assert.match(teamJoinModal, /<AccessibleModal/)
   assert.match(

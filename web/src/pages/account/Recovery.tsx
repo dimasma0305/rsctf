@@ -35,7 +35,8 @@ const Recovery: FC = () => {
 
   const onRecovery = async (event: React.SyntheticEvent) => {
     event.preventDefault()
-    const requestUrl = window.location.href
+    const requestRoute = window.location.pathname + window.location.search
+    const sameRoute = () => window.location.pathname + window.location.search === requestRoute
     const acquired = beginMailOperation(recoveryOperationRef.current, email.trim().toLowerCase())
     if (!acquired.started) return
     const operation = acquired.owner
@@ -45,7 +46,7 @@ const Recovery: FC = () => {
 
     try {
       const { valid, token } = await getToken()
-      if (operation.controller.signal.aborted || window.location.href !== requestUrl) return
+      if (operation.controller.signal.aborted || !sameRoute()) return
 
       if (!valid) {
         showNotification({
@@ -73,7 +74,7 @@ const Recovery: FC = () => {
         },
         { signal: operation.controller.signal }
       )
-      if (operation.controller.signal.aborted || window.location.href !== requestUrl) return
+      if (operation.controller.signal.aborted || !sameRoute()) return
       completed = true
 
       updateNotification({
@@ -87,7 +88,7 @@ const Recovery: FC = () => {
       })
       cleanUp(true)
     } catch (err: any) {
-      if (operation.controller.signal.aborted || window.location.href !== requestUrl) return
+      if (operation.controller.signal.aborted || !sameRoute()) return
       updateNotification({
         id: 'recovery-status',
         color: 'red',
@@ -99,13 +100,13 @@ const Recovery: FC = () => {
       })
       cleanUp(false)
     } finally {
-      if (window.location.href !== requestUrl) {
+      if (!sameRoute()) {
         operation.controller.abort()
         hideNotification('recovery-status')
       }
       if (recoveryOperationRef.current === operation)
         recoveryOperationRef.current = finishMailOperation(operation, completed)
-      if (!operation.controller.signal.aborted && window.location.href === requestUrl) setDisabled(false)
+      if (!operation.controller.signal.aborted && sameRoute()) setDisabled(false)
     }
   }
 

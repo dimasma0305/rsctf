@@ -70,12 +70,12 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
     }
 
     const controller = new AbortController()
-    const requestUrl = window.location.href
+    const requestRoute = window.location.pathname + window.location.search
     const isCurrent = () =>
       !controller.signal.aborted &&
       joinOperationRef.current === controller &&
       openedRef.current &&
-      window.location.href === requestUrl
+      window.location.pathname + window.location.search === requestRoute
     joinOperationRef.current = controller
     setJoining(true)
     try {
@@ -113,7 +113,7 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
     } finally {
       if (joinOperationRef.current === controller) {
         joinOperationRef.current = null
-        if (openedRef.current && window.location.href === requestUrl) setJoining(false)
+        if (openedRef.current) setJoining(false)
       }
     }
   }
