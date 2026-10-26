@@ -28,6 +28,17 @@ pub fn session_cookie_value(cookies: &str) -> Option<&str> {
     })
 }
 
+/// HTTP/2 clients and reverse proxies can split cookies across field lines.
+/// Share the same lookup with CSRF and WebSocket authentication so every
+/// boundary recognizes the session that the browser actually sent.
+pub(crate) fn session_cookie_from_headers(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find_map(session_cookie_value)
+}
+
 /// `Set-Cookie` value that persists a session for `ttl_secs`.
 pub fn set_session_cookie(token: &str, ttl_secs: i64, secure: bool) -> String {
     let secure = if secure { "; Secure" } else { "" };
@@ -227,8 +238,7 @@ pub(crate) fn session_token(headers: &axum::http::HeaderMap) -> Option<String> {
         }
     }
     // 2. Session cookie (the SPA's normal auth)
-    let cookies = headers.get(COOKIE).and_then(|v| v.to_str().ok())?;
-    session_cookie_value(cookies)
+    session_cookie_from_headers(headers)
         .filter(|token| token.len() <= MAX_SESSION_TOKEN_BYTES)
         .map(str::to_owned)
 }
@@ -400,6 +410,30 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_cookie_headers_preserve_session_and_bearer_precedence() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.append(COOKIE, "preferences=compact".parse().unwrap());
+        headers.append(COOKIE, "RSCTF_Token=session".parse().unwrap());
+        assert_eq!(session_cookie_from_headers(&headers), Some("session"));
+        assert_eq!(session_token(&headers).as_deref(), Some("session"));
+        headers.insert(AUTHORIZATION, "Bearer explicit-token".parse().unwrap());
+        assert_eq!(session_token(&headers).as_deref(), Some("explicit-token"));
+        headers.insert(AUTHORIZATION, "Bearer ".parse().unwrap());
+        assert_eq!(session_token(&headers), None);
+        headers.remove(AUTHORIZATION);
+        headers.insert(COOKIE, "Other=x".parse().unwrap());
+        headers.append(COOKIE, "NotRSCTF_Token=wrong".parse().unwrap());
+        assert_eq!(session_token(&headers), None);
+        headers.append(
+            COOKIE,
+            format!("RSCTF_Token={}", "a".repeat(MAX_SESSION_TOKEN_BYTES + 1))
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(session_token(&headers), None);
+    }
 
     #[test]
     fn session_cookie_is_secure_by_default_at_call_sites() {

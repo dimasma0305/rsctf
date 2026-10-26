@@ -8,7 +8,6 @@
 //! the `AppState` event bus and keep alive with pings (`{"type":6}`).
 
 use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::http::header::COOKIE;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -21,7 +20,7 @@ use tokio::time::{interval, timeout_at, Duration, Instant};
 use crate::app_state::{HubEvent, SharedState};
 use crate::hubs::admission;
 use crate::middlewares::privilege_authentication::{
-    authenticate_token, session_cookie_value, AdminUser, CurrentUser, MonitorUser,
+    authenticate_token, session_cookie_from_headers, AdminUser, CurrentUser, MonitorUser,
     MAX_SESSION_TOKEN_BYTES,
 };
 use crate::services::event_bus::EventReceiver;
@@ -220,8 +219,7 @@ pub fn hub_token(params: &HashMap<String, String>, headers: &HeaderMap) -> Optio
     if let Some(t) = params.get("access_token").or_else(|| params.get("token")) {
         return (!t.is_empty() && t.len() <= MAX_SESSION_TOKEN_BYTES).then(|| t.clone());
     }
-    let cookies = headers.get(COOKIE).and_then(|v| v.to_str().ok())?;
-    session_cookie_value(cookies)
+    session_cookie_from_headers(headers)
         .filter(|token| !token.is_empty() && token.len() <= MAX_SESSION_TOKEN_BYTES)
         .map(str::to_owned)
 }
@@ -537,6 +535,7 @@ pub(crate) fn event_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::COOKIE;
 
     fn cookie_headers(token: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -547,6 +546,22 @@ mod tests {
                 .expect("valid cookie"),
         );
         headers
+    }
+
+    #[test]
+    fn hub_session_is_found_after_an_unrelated_cookie_header() {
+        let mut headers = HeaderMap::new();
+        headers.append(COOKIE, "preferences=compact".parse().unwrap());
+        headers.append(COOKIE, "RSCTF_Token=hub-session".parse().unwrap());
+        assert_eq!(
+            hub_token(&HashMap::new(), &headers).as_deref(),
+            Some("hub-session")
+        );
+        let params = HashMap::from([("access_token".to_string(), "explicit-token".to_string())]);
+        assert_eq!(
+            hub_token(&params, &headers).as_deref(),
+            Some("explicit-token")
+        );
     }
 
     #[test]

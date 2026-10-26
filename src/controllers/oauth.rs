@@ -44,6 +44,9 @@ use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::Role;
 use crate::utils::error::AppError;
 
+#[path = "oauth_response.rs"]
+mod response;
+
 /// SPA login route; every unhappy path funnels here.
 const LOGIN_PATH: &str = "/account/login";
 const OAUTH_STATE_COOKIE: &str = "RSCTF_OAuthState";
@@ -222,12 +225,15 @@ fn oauth_state_cookie(value: &str, max_age: u64, secure: bool) -> String {
 }
 
 fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    let cookies = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
-    cookies.split(';').find_map(|pair| {
-        pair.trim()
-            .strip_prefix(name)
-            .and_then(|value| value.strip_prefix('='))
-    })
+    headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|cookies| cookies.split(';'))
+        .find_map(|pair| {
+            let (cookie_name, value) = pair.trim().split_once('=')?;
+            (cookie_name == name).then_some(value)
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -386,14 +392,8 @@ async fn callback(
     Query(q): Query<CallbackQuery>,
 ) -> Response {
     let secure = st.config.cookie_secure;
-    let mut response = match callback_inner(st, provider, headers, q, peer).await {
-        Ok(resp) => resp,
-        Err(_) => login_redirect(),
-    };
-    if let Ok(value) = HeaderValue::from_str(&oauth_state_cookie("", 0, secure)) {
-        response.headers_mut().append(SET_COOKIE, value);
-    }
-    response
+    let result = callback_inner(st, provider.clone(), headers, q, peer).await;
+    response::callback_response(result, &provider, secure)
 }
 
 async fn callback_inner(
@@ -403,12 +403,22 @@ async fn callback_inner(
     q: CallbackQuery,
     peer: SocketAddr,
 ) -> Result<Response, AppError> {
+    let provider = provider.to_lowercase();
+    let p = lookup_provider(&provider).ok_or_else(|| AppError::bad_request("unknown provider"))?;
+    callback_with_provider(st, p, headers, q, peer).await
+}
+
+async fn callback_with_provider(
+    st: SharedState,
+    p: Provider,
+    headers: HeaderMap,
+    q: CallbackQuery,
+    peer: SocketAddr,
+) -> Result<Response, AppError> {
     let identity_policy = anti_cheat::load_policy_flags(st.pg()).await?;
     if !oauth_identity_policy_supported(identity_policy) {
         return Err(AppError::Forbidden);
     }
-    let provider = provider.to_lowercase();
-    let p = lookup_provider(&provider).ok_or_else(|| AppError::bad_request("unknown provider"))?;
     let credentials = OAuthSettings::load(st.pg()).await?;
     let credentials = credentials
         .provider(p.name)
@@ -832,8 +842,29 @@ fn rand_suffix() -> u32 {
 }
 
 #[cfg(test)]
+#[path = "oauth_integration_tests.rs"]
+mod integration_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_state_is_read_from_every_cookie_header() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            axum::http::header::COOKIE,
+            HeaderValue::from_static("preferences=compact"),
+        );
+        headers.append(
+            axum::http::header::COOKIE,
+            HeaderValue::from_static("RSCTF_OAuthState=browser-state"),
+        );
+        assert_eq!(
+            cookie_value(&headers, OAUTH_STATE_COOKIE),
+            Some("browser-state")
+        );
+    }
 
     #[test]
     fn rejects_unverified_provider_email() {
