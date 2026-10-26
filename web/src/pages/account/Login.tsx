@@ -1,6 +1,6 @@
-import { Anchor, Button, Grid, PasswordInput, TextInput } from '@mantine/core'
+import { Alert, Anchor, Button, Grid, PasswordInput, TextInput } from '@mantine/core'
 import { useDisclosure, useInputState } from '@mantine/hooks'
-import { showNotification, updateNotification } from '@mantine/notifications'
+import { hideNotification, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useRef, useState } from 'react'
@@ -10,9 +10,11 @@ import { AccountView } from '@Components/AccountView'
 import { Captcha, useCaptchaRef } from '@Components/Captcha'
 import { OAuthButtons } from '@Components/OAuthButtons'
 import { TermsOfService } from '@Components/TermsOfService'
+import { accountPath, accountReturnPath } from '@Utils/AccountNavigation'
+import { completeSignIn } from '@Utils/CompleteSignIn'
 import { encryptApiData } from '@Utils/Crypto'
 import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
-import { setAuthSession } from '@Utils/AuthState'
+import { oauthFailure } from '@Utils/OAuthFailure'
 import { tryGetClientError } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -24,6 +26,8 @@ import classes from './Login.module.css'
 const Login: FC = () => {
   const params = useSearchParams()[0]
   const navigate = useNavigate()
+  const from = accountReturnPath(params.get('from'))
+  const oauthError = oauthFailure(params.get('error'))
 
   const [pwd, setPwd] = useInputState('')
   const [uname, setUname] = useInputState('')
@@ -42,50 +46,18 @@ const Login: FC = () => {
 
   usePageTitle(t('account.title.login'))
 
-  // Surface OAuth callback errors redirected here as ?error=oauth_* (the backend redirects
-  // to /account/login on any external sign-in failure or admin-approval-pending outcome).
-  useEffect(() => {
-    const error = params.get('error')
-    if (!error?.startsWith('oauth_')) return
-
-    const messages: Record<string, string> = {
-      oauth_await_approval: t(
-        'account.oauth.error.await_approval',
-        'Your account was created and is awaiting administrator approval.'
-      ),
-      oauth_register_disabled: t('account.oauth.error.register_disabled', 'Registration is currently disabled.'),
-      oauth_email_unverified: t(
-        'account.oauth.error.email_unverified',
-        'Your provider account email is not verified, so it cannot be used to sign in.'
-      ),
-      oauth_email_conflict: t(
-        'account.oauth.error.email_conflict',
-        'An unverified account already uses this email. Verify that account or contact an administrator.'
-      ),
-      oauth_no_email: t('account.oauth.error.no_email', 'The provider did not share an email address.'),
-      oauth_email_domain: t('account.oauth.error.email_domain', 'Your email domain is not allowed on this platform.'),
-      oauth_account_disabled: t('account.oauth.error.account_disabled', 'This account has been disabled.'),
-      oauth_anti_cheat: t(
-        'account.oauth.error.anti_cheat',
-        'Sign-in was blocked by an anti-cheat policy (duplicate IP or device).'
-      ),
-    }
-    const isInfo = error === 'oauth_await_approval'
-    showNotification({
-      color: isInfo ? 'orange' : 'red',
-      title: isInfo
-        ? t('account.oauth.error.info_title', 'Almost there')
-        : t('account.oauth.error.title', 'Sign-in failed'),
-      message:
-        messages[error] ??
-        t('account.oauth.error.generic', 'External sign-in failed. Please try again or use your password.'),
-      icon: <Icon path={isInfo ? mdiCheck : mdiClose} size={1} />,
-    })
-  }, [])
-
-  useEffect(() => () => loginOperationRef.current?.controller.abort(), [])
+  useEffect(
+    () => () => {
+      if (loginOperationRef.current) {
+        loginOperationRef.current.controller.abort()
+        hideNotification('login-status')
+      }
+    },
+    []
+  )
 
   const executeLogin = async (consentGranted = false) => {
+    const requestUrl = window.location.href
     let operation = loginOperationRef.current
     if (operation?.running) return
     if (operation && !consentGranted) return
@@ -125,6 +97,7 @@ const Login: FC = () => {
 
     try {
       const { valid, token } = await getToken()
+      if (operation.controller.signal.aborted || window.location.href !== requestUrl) return
       if (!valid) {
         showNotification({
           color: 'orange',
@@ -147,35 +120,40 @@ const Login: FC = () => {
         ? await collectEncryptedFingerprintIdentity(t, config.apiPublicKey, operation.controller.signal)
         : undefined
 
-      await api.account.accountLogIn({
-        userName: uname,
-        password: await encryptApiData(t, pwd, config.apiPublicKey),
-        challenge: token,
-        fingerprint: fingerprintPayload?.fingerprint,
-        fingerprintProof: fingerprintPayload?.fingerprintProof,
+      const password = await encryptApiData(t, pwd, config.apiPublicKey)
+      if (operation.controller.signal.aborted || window.location.href !== requestUrl) return
+      await api.account.accountLogIn(
+        {
+          userName: uname,
+          password,
+          challenge: token,
+          fingerprint: fingerprintPayload?.fingerprint,
+          fingerprintProof: fingerprintPayload?.fingerprintProof,
+        },
+        { signal: operation.controller.signal }
+      )
+      await completeSignIn({
+        signal: operation.controller.signal,
+        isCurrent: () => window.location.href === requestUrl,
+        loadProfile: async (signal) => (await api.account.accountProfile({ signal })).data,
+        publishProfile: (profile) => {
+          loginOperationRef.current = null
+          updateNotification({
+            id: 'login-status',
+            color: 'teal',
+            title: t('account.notification.login.success.title'),
+            message: t('account.notification.login.success.message'),
+            icon: <Icon path={mdiCheck} size={1} />,
+            autoClose: true,
+            loading: false,
+          })
+          cleanUp(true)
+          return mutate(profile, { revalidate: false })
+        },
+        navigate: () => navigate(from, { replace: true }),
       })
-
-      updateNotification({
-        id: 'login-status',
-        color: 'teal',
-        title: t('account.notification.login.success.title'),
-        message: t('account.notification.login.success.message'),
-        icon: <Icon path={mdiCheck} size={1} />,
-        autoClose: true,
-        loading: false,
-      })
-      // A profile probe can already be in flight from the anonymous login
-      // screen. Revalidating that SWR key here may reuse its stale 401 and leave
-      // the successful session on this page until the user submits again.
-      // Fetch once after Set-Cookie has been processed, then publish that exact
-      // authenticated profile into the shared cache before navigating.
-      const profile = await api.account.accountProfile()
-      setAuthSession(true)
-      await mutate(profile.data, { revalidate: false })
-      cleanUp(true)
-      navigate(params.get('from') ?? '/', { replace: true })
     } catch (err: any) {
-      if (operation.controller.signal.aborted) return
+      if (operation.controller.signal.aborted || window.location.href !== requestUrl) return
       const { title, message } = tryGetClientError(err, t)
       updateNotification({
         id: 'login-status',
@@ -188,8 +166,12 @@ const Login: FC = () => {
       })
       cleanUp(false)
     } finally {
+      if (window.location.href !== requestUrl && loginOperationRef.current === operation) {
+        operation.controller.abort()
+        hideNotification('login-status')
+      }
       if (loginOperationRef.current === operation) loginOperationRef.current = null
-      setDisabled(false)
+      if (!operation.controller.signal.aborted && window.location.href === requestUrl) setDisabled(false)
     }
   }
 
@@ -204,6 +186,15 @@ const Login: FC = () => {
       description={t('account.content.login.description', 'Welcome back. Enter your account details to continue.')}
       onSubmit={onLogin}
     >
+      {oauthError && (
+        <Alert
+          role="alert"
+          color={oauthError.pending ? 'orange' : 'red'}
+          title={t(oauthError.pending ? 'account.oauth.error.info_title' : 'account.oauth.error.title')}
+        >
+          {t(oauthError.messageKey)}
+        </Alert>
+      )}
       <TextInput
         data-guide="account-access"
         required
@@ -257,15 +248,17 @@ const Login: FC = () => {
           void executeLogin(true)
         }}
       />
-      <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to="/account/recovery">
+      <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to={accountPath('/account/recovery', from)}>
         {t('account.anchor.recovery')}
       </Anchor>
       <Grid grow w="100%">
-        <Grid.Col span={2}>
-          <Button fullWidth variant="outline" component={Link} to="/account/register">
-            {t('account.button.register')}
-          </Button>
-        </Grid.Col>
+        {config.allowRegister !== false && (
+          <Grid.Col span={2}>
+            <Button fullWidth variant="outline" component={Link} to={accountPath('/account/register', from)}>
+              {t('account.button.register')}
+            </Button>
+          </Grid.Col>
+        )}
         <Grid.Col span={2}>
           <Button type="submit" fullWidth disabled={disabled}>
             {t('account.button.login')}

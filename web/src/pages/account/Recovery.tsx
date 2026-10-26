@@ -5,9 +5,10 @@ import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { AccountView } from '@Components/AccountView'
 import { Captcha, useCaptchaRef } from '@Components/Captcha'
+import { accountPath } from '@Utils/AccountNavigation'
 import { beginMailOperation, finishMailOperation, type MailOperationOwner } from '@Utils/MailOperation'
 import { tryGetErrorMsg } from '@Utils/Shared'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -15,6 +16,7 @@ import api from '@Api'
 import misc from '@Styles/Misc.module.css'
 
 const Recovery: FC = () => {
+  const [params] = useSearchParams()
   const [email, setEmail] = useInputState('')
   const [disabled, setDisabled] = useState(false)
   const recoveryOperationRef = useRef<MailOperationOwner | null>(null)
@@ -112,7 +114,12 @@ const Recovery: FC = () => {
         onChange={(event) => setEmail(event.currentTarget.value)}
       />
       <Captcha action="recovery" ref={captchaRef} />
-      <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to="/account/login">
+      <Anchor
+        fz="xs"
+        className={misc.alignSelfEnd}
+        component={Link}
+        to={accountPath('/account/login', params.get('from'))}
+      >
         {t('account.anchor.login')}
       </Anchor>
       <Button type="submit" disabled={disabled} fullWidth>

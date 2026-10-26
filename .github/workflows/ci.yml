@@ -596,6 +596,18 @@ jobs:
       - name: Build frontend
         run: pnpm --dir web build
 
+      - name: Exercise account access in Chromium
+        run: node tests/visual/account-access.mjs
+
+      - name: Retain account access browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: account-access-${{ github.sha }}
+          path: visual-audit-output/account-access/
+          if-no-files-found: ignore
+          retention-days: 3
+
   dependency-security:
     name: Dependency security
     needs: plan

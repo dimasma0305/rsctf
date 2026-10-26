@@ -1,6 +1,6 @@
-import { Alert, Anchor, Button, PasswordInput, Text, TextInput } from '@mantine/core'
+import { Alert, Anchor, Button, Loader, PasswordInput, Text, TextInput } from '@mantine/core'
 import { useDisclosure, useInputState } from '@mantine/hooks'
-import { showNotification, updateNotification } from '@mantine/notifications'
+import { hideNotification, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useRef, useState } from 'react'
@@ -11,12 +11,15 @@ import { Captcha, useCaptchaRef } from '@Components/Captcha'
 import { OAuthButtons } from '@Components/OAuthButtons'
 import { StrengthPasswordInput } from '@Components/StrengthPasswordInput'
 import { TermsOfService } from '@Components/TermsOfService'
+import { accountPath, accountReturnPath } from '@Utils/AccountNavigation'
+import { completeSignIn } from '@Utils/CompleteSignIn'
 import { encryptApiData } from '@Utils/Crypto'
 import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
 import { beginMailOperation, finishMailOperation, type MailOperationOwner } from '@Utils/MailOperation'
 import { tryGetClientError } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
+import { useUser } from '@Hooks/useUser'
 import api, { RegisterStatus } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
@@ -30,10 +33,12 @@ const Register: FC = () => {
   const [accepted, setAccepted] = useState(false)
   const [tosOpened, { open: openTos, close: closeTos }] = useDisclosure(false)
   const registerOperationRef = useRef<MailOperationOwner | null>(null)
-  const { config } = useConfig()
+  const { config, loading: configLoading, error: configError, mutate: reloadConfig } = useConfig()
+  const { mutate: mutateProfile } = useUser()
 
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
+  const from = accountReturnPath(searchParams.get('from'))
   const bootstrapMode = searchParams.get('bootstrap') === '1'
   const { captchaRef, getToken, cleanUp } = useCaptchaRef()
 
@@ -65,9 +70,18 @@ const Register: FC = () => {
 
   usePageTitle(t('account.title.register'))
 
-  useEffect(() => () => registerOperationRef.current?.controller.abort(), [])
+  useEffect(
+    () => () => {
+      if (registerOperationRef.current) {
+        registerOperationRef.current.controller.abort()
+        hideNotification('register-status')
+      }
+    },
+    []
+  )
 
   const executeRegister = async (consentGranted = false) => {
+    const requestUrl = window.location.href
     const signature = JSON.stringify([
       uname.trim(),
       email.trim().toLowerCase(),
@@ -101,6 +115,7 @@ const Register: FC = () => {
 
     try {
       const { valid, token } = await getToken()
+      if (operation.controller.signal.aborted || window.location.href !== requestUrl) return
       if (!valid) {
         showNotification({
           color: 'orange',
@@ -123,10 +138,12 @@ const Register: FC = () => {
         ? await collectEncryptedFingerprintIdentity(t, config.apiPublicKey, operation.controller.signal)
         : undefined
 
+      const password = await encryptApiData(t, pwd, config.apiPublicKey)
+      if (operation.controller.signal.aborted || window.location.href !== requestUrl) return
       const res = await api.account.accountRegister(
         {
           userName: uname,
-          password: await encryptApiData(t, pwd, config.apiPublicKey),
+          password,
           email: email,
           challenge: token,
           fingerprint: fingerprintPayload?.fingerprint,
@@ -136,27 +153,44 @@ const Register: FC = () => {
         },
         { signal: operation.controller.signal }
       )
+      if (operation.controller.signal.aborted || window.location.href !== requestUrl) return
       completed = true
       const data = RegisterStatusMap.get(res.data.data)
       if (data) {
-        updateNotification({
-          id: 'register-status',
-          color: 'teal',
-          title: data.title,
-          message: data.message,
-          icon: <Icon path={mdiCheck} size={1} />,
-          loading: false,
-          autoClose: true,
-        })
-        cleanUp(true)
-
-        if (res.data.data === RegisterStatus.LoggedIn) navigate('/')
-        else if (res.data.data === RegisterStatus.EmailConfirmationRequired)
-          navigate('/account/pending', { state: { email } })
-        else navigate('/account/login')
+        const publishSuccess = () =>
+          updateNotification({
+            id: 'register-status',
+            color: 'teal',
+            title: data.title,
+            message: data.message,
+            icon: <Icon path={mdiCheck} size={1} />,
+            loading: false,
+            autoClose: true,
+          })
+        if (res.data.data === RegisterStatus.LoggedIn) {
+          await completeSignIn({
+            signal: operation.controller.signal,
+            isCurrent: () => window.location.href === requestUrl,
+            loadProfile: async (signal) => (await api.account.accountProfile({ signal })).data,
+            publishProfile: (profile) => {
+              registerOperationRef.current = null
+              publishSuccess()
+              cleanUp(true)
+              return mutateProfile(profile, { revalidate: false })
+            },
+            navigate: () => navigate(from, { replace: true }),
+          })
+        } else {
+          registerOperationRef.current = null
+          publishSuccess()
+          cleanUp(true)
+          if (res.data.data === RegisterStatus.EmailConfirmationRequired)
+            navigate(accountPath('/account/pending', from), { state: { email } })
+          else navigate(accountPath('/account/login', from))
+        }
       }
     } catch (err: any) {
-      if (operation.controller.signal.aborted) return
+      if (operation.controller.signal.aborted || window.location.href !== requestUrl) return
       const { title, message } = tryGetClientError(err, t)
 
       updateNotification({
@@ -170,15 +204,52 @@ const Register: FC = () => {
       })
       cleanUp(false)
     } finally {
+      if (window.location.href !== requestUrl && registerOperationRef.current === operation) {
+        operation.controller.abort()
+        hideNotification('register-status')
+      }
       if (registerOperationRef.current === operation)
         registerOperationRef.current = finishMailOperation(operation, completed)
-      setDisabled(false)
+      if (!operation.controller.signal.aborted && window.location.href === requestUrl) setDisabled(false)
     }
   }
 
   const onRegister = async (event: React.SyntheticEvent) => {
     event.preventDefault()
     await executeRegister()
+  }
+
+  if (configLoading || configError) {
+    return (
+      <AccountView title={t('account.title.register')}>
+        {configLoading ? (
+          <Loader role="status" aria-label={t('common.content.loading', 'Loading')} />
+        ) : (
+          <Alert role="alert" color="red" title={t('account.registration.policy_error_title')}>
+            <Text size="sm">{t('account.registration.policy_error')}</Text>
+            <Button type="button" mt="sm" onClick={() => void reloadConfig()}>
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Alert>
+        )}
+        <Anchor component={Link} to={accountPath('/account/login', from)}>
+          {t('account.anchor.login')}
+        </Anchor>
+      </AccountView>
+    )
+  }
+
+  if (!bootstrapMode && config.allowRegister === false) {
+    return (
+      <AccountView
+        title={t('account.registration.closed_title')}
+        description={t('account.registration.closed_description')}
+      >
+        <Anchor component={Link} to={accountPath('/account/login', from)}>
+          {t('account.anchor.login')}
+        </Anchor>
+      </AccountView>
+    )
   }
 
   if (!bootstrapMode && config.allowPasswordRegistration === false) {
@@ -191,7 +262,7 @@ const Register: FC = () => {
           </Text>
         </Alert>
         {providerAvailable && <OAuthButtons />}
-        <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to="/account/login">
+        <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to={accountPath('/account/login', from)}>
           {t('account.anchor.login')}
         </Anchor>
       </AccountView>
@@ -265,7 +336,7 @@ const Register: FC = () => {
           void executeRegister(true)
         }}
       />
-      <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to="/account/login">
+      <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to={accountPath('/account/login', from)}>
         {t('account.anchor.login')}
       </Anchor>
       <Button type="submit" fullWidth disabled={disabled}>

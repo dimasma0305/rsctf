@@ -146,6 +146,11 @@ const ROUTE_PANEL_PARAMETERS: ReadonlyArray<readonly [RegExp, readonly string[]]
 ]
 
 export const routeLifecycleKey = (pathname: string, search: string, scope: string | null) => {
+  // Initial anonymous resolution is not an account replacement. Keep public
+  // account-form drafts while it resolves; authenticated identities and all
+  // protected routes retain their existing hard lifecycle boundary.
+  const publicAccountForm = /^\/account\/(?:login|register|recovery|reset|pending|confirm|verify)\/?$/.test(pathname)
+  const routeScope = publicAccountForm && (scope === 'session-pending' || scope === 'anonymous') ? 'anonymous' : scope
   // Keep legacy query bookmarks compatible while tabs migrate to fragments.
   // Only the named presentation parameters on these exact routes can retain
   // drafts and request owners. Viewer, role, path, and data-scope queries still
@@ -156,7 +161,7 @@ export const routeLifecycleKey = (pathname: string, search: string, scope: strin
     for (const parameter of panelParameters) query.delete(parameter)
     search = query.size ? `?${query}` : ''
   }
-  return `${scope ?? 'unscoped'}\u0000${pathname}\u0000${search}`
+  return `${routeScope ?? 'unscoped'}\u0000${pathname}\u0000${search}`
 }
 
 export const RouteLifecycleBoundary: FC<PropsWithChildren> = ({ children }) => {

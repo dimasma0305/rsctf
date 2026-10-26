@@ -32,11 +32,34 @@
     "recovery": "Lupa kata sandi?"
   },
   "oauth": {
+    "divider": "atau lanjutkan dengan",
+    "google": "Lanjutkan dengan Google",
+    "discord": "Lanjutkan dengan Discord",
+    "error": {
+      "title": "Gagal masuk",
+      "info_title": "Menunggu persetujuan",
+      "await_approval": "Akunmu sedang menunggu persetujuan administrator. Hubungi penyelenggara jika perlu bantuan.",
+      "register_disabled": "Pendaftaran ditutup. Pengguna yang sudah memiliki akun tetap dapat masuk. Hubungi administrator untuk meminta akun.",
+      "email_unverified": "Verifikasi alamat email di penyedia eksternal, lalu mulai proses masuk lagi dari halaman ini.",
+      "email_conflict": "Akun ini belum diaktifkan. Selesaikan verifikasi yang diperlukan atau hubungi administrator untuk persetujuan.",
+      "no_email": "Penyedia tidak membagikan alamat email. Izinkan akses email saat masuk, atau hubungi administrator.",
+      "email_domain": "Platform ini tidak mengizinkan domain emailmu. Hubungi administrator untuk bantuan.",
+      "account_disabled": "Akun ini telah dinonaktifkan. Hubungi administrator untuk bantuan.",
+      "anti_cheat": "Kebijakan platform memblokir proses masuk. Hubungi administrator untuk bantuan.",
+      "state_mismatch": "Permintaan masuk ini tidak sesuai dengan yang dimulai di browser ini. Mulai proses masuk eksternal lagi dari halaman ini pada tab yang sama.",
+      "state_expired": "Permintaan masukmu sudah kedaluwarsa atau telah digunakan. Mulai proses masuk eksternal lagi dari halaman ini.",
+      "invalid_callback": "Proses masuk eksternal dibatalkan atau mengembalikan respons yang tidak lengkap. Mulai proses masuk lagi dari halaman ini.",
+      "not_configured": "Proses masuk eksternal tidak tersedia. Hubungi administrator untuk bantuan.",
+      "provider_unavailable": "Penyedia eksternal tidak dapat menyelesaikan proses masuk. Mulai lagi dari halaman ini, atau hubungi administrator jika masalah berlanjut.",
+      "policy": "Kebijakan akun memblokir proses masuk. Hubungi administrator untuk bantuan.",
+      "generic": "Proses masuk eksternal tidak dapat diselesaikan. Mulai lagi dari halaman ini, atau hubungi administrator jika masalah berlanjut."
+    },
     "registration_only_description": "Akun baru harus dibuat melalui penyedia eksternal yang disetujui.",
     "registration_only_notice": "Pilih Google atau Discord di bawah untuk membuat akun. Pengguna lama dapat kembali ke halaman masuk dengan kata sandi.",
     "registration_unavailable": "Pendaftaran OAuth sedang tidak tersedia. Hubungi administrator."
   },
   "button": {
+    "return_to_register": "Kembali ke pendaftaran",
     "change_avatar": "Ubah avatar",
     "accept_tos": "Setuju & Lanjutkan",
     "change_password": "Ubah Kata Sandi",
@@ -62,6 +85,7 @@
       "message": "Silakan klik tombol di bawah ini untuk memverifikasi akun."
     },
     "verify_email": {
+      "missing_context": "Jika baru mendaftar, periksa kotak masuk email yang kamu gunakan. Kembali ke pendaftaran jika memerlukan pesan konfirmasi baru.",
       "message": "Hampir selesai!<br/>Kami telah mengirim email ke:",
       "not_received": {
         "list": "<0>Periksa folder spam atau junk kamu.</0><1>Kamu dapat mendaftar ulang dengan email yang sama; informasi pendaftaran terbaru akan digunakan setelah verifikasi.</1>",
@@ -70,6 +94,12 @@
       "title": "Verifikasi Email"
     },
     "welcome": "Halo, {{decodeEmail}}👋"
+  },
+  "registration": {
+    "closed_title": "Pendaftaran ditutup",
+    "closed_description": "Akun baru belum dapat dibuat saat ini. Pengguna yang sudah memiliki akun tetap dapat masuk. Hubungi administrator jika memerlukan akun.",
+    "policy_error_title": "Pendaftaran tidak tersedia",
+    "policy_error": "Pengaturan pendaftaran tidak dapat dimuat. Coba lagi untuk memeriksa apakah pendaftaran dibuka."
   },
   "label": {
     "accept_tos": "Saya setuju dengan <1>Ketentuan Layanan</1>",

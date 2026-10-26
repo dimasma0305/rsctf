@@ -4,6 +4,7 @@ import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router'
+import { accountReturnPath } from '@Utils/AccountNavigation'
 import { useConfig } from '@Hooks/useConfig'
 
 // @mdi/js dropped third-party brand glyphs, so inline the Discord mark (24x24 viewBox,
@@ -45,7 +46,7 @@ export const OAuthButtons: FC = () => {
     )
   }
 
-  const from = params.get('from') ?? '/'
+  const from = accountReturnPath(params.get('from'))
   const go = (provider: string) => {
     window.location.href = `/api/oauth/${provider}?returnUrl=${encodeURIComponent(from)}`
   }

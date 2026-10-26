@@ -22,6 +22,15 @@
  * the earlier successful profile load already set it true.
  */
 let authed = false
+let signInRevision = 0
+
+/** Only a completed, fresh-profile sign-in advances this request fence. */
+export const commitAuthSession = (): void => {
+  authed = true
+  signInRevision += 1
+}
+
+export const authSessionRevision = (): number => signInRevision
 
 export const setAuthSession = (value: boolean): void => {
   authed = value
@@ -59,8 +68,7 @@ const PUBLIC_PAGE_PATTERNS: RegExp[] = [
   /^\/about\/?$/, // about
 ]
 
-export const isPublicPage = (pathname: string): boolean =>
-  PUBLIC_PAGE_PATTERNS.some((re) => re.test(pathname))
+export const isPublicPage = (pathname: string): boolean => PUBLIC_PAGE_PATTERNS.some((re) => re.test(pathname))
 
 /**
  * Pure decision for the global fetcher: should a failed request bounce the
