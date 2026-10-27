@@ -11,6 +11,11 @@ its routing table. Read every reference it selects before editing. That skill co
 the authoritative architecture, raw-SQL, wire-format, frontend/accessibility,
 performance, verification, and production-release checklists.
 
+For fast navigation, begin with the skill's
+[application map](.agents/skills/rsctf-engineering/references/application-map.md).
+It connects features and symptoms to frontend/backend owners, runtime roles, and
+focused checks. Update the relevant map when those entry points change.
+
 A request to explain, diagnose, or review is read-only unless it also asks for changes.
 
 ## Fast non-negotiables
