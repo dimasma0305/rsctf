@@ -28,8 +28,7 @@ use axum::Router;
 use chrono::{DateTime, Utc};
 use rust_xlsxwriter::Workbook;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set,
+    ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -323,11 +322,7 @@ pub struct ClientFlagContext {
 /// ONE challenge-owned container to every team — a `StaticContainer` with
 /// `enable_shared_container` and a valid image/port. It has no per-team
 /// `GameInstance`; its container id lives on `game_challenge.shared_container_id`.
-pub(crate) fn uses_shared_container(c: &game_challenge::Model) -> bool {
-    c.challenge_type == ChallengeType::StaticContainer
-        && c.enable_shared_container
-        && crate::services::challenge_workloads::has_runtime(c)
-}
+pub(crate) use crate::services::player_containers::uses_shared_container;
 
 /// RSCTF `ChallengeDetailModel` (player view).
 #[derive(Debug, Serialize)]
@@ -365,30 +360,7 @@ pub struct ClientChallengeVariant {
     pub artifact_hash: String,
 }
 
-/// RSCTF `ContainerInfoModel`.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContainerInfoModel {
-    pub id: String,
-    pub status: ContainerStatus,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub started_at: DateTime<Utc>,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub expect_stop_at: DateTime<Utc>,
-    pub entry: String,
-}
-
-impl From<&container::Model> for ContainerInfoModel {
-    fn from(c: &container::Model) -> Self {
-        Self {
-            id: c.id.to_string(),
-            status: c.status,
-            started_at: c.started_at,
-            expect_stop_at: c.expect_stop_at,
-            entry: c.entry(),
-        }
-    }
-}
+pub use crate::services::player_containers::ContainerInfoModel;
 
 /// RSCTF `Submission` (monitor feed).
 #[derive(Debug, Serialize)]
@@ -797,33 +769,12 @@ fn parse_answer_result(name: &str) -> Option<AnswerResult> {
     }
 }
 
-async fn load_game(st: &SharedState, id: i32) -> AppResult<game::Model> {
-    game::Entity::find_by_id(id)
-        .filter(sea_orm::sea_query::Expr::cust(
-            "\"Games\".deletion_pending = FALSE",
-        ))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Game not found"))
-}
+use crate::services::game_cache::load_game;
 
 /// Load a challenge through the player-visible boundary. Player actions must not
 /// expose disabled or unapproved challenge material even when its numeric id is
 /// guessed directly.
-pub(crate) async fn load_playable_challenge(
-    st: &SharedState,
-    game_id: i32,
-    challenge_id: i32,
-) -> AppResult<game_challenge::Model> {
-    game_challenge::Entity::find()
-        .filter(game_challenge::Column::Id.eq(challenge_id))
-        .filter(game_challenge::Column::GameId.eq(game_id))
-        .filter(game_challenge::Column::IsEnabled.eq(true))
-        .filter(game_challenge::Column::ReviewStatus.eq(ChallengeReviewStatus::Active))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Challenge not found"))
-}
+pub(crate) use crate::services::player_containers::load_playable_challenge;
 
 /// Load a challenge scoped to its game without applying player visibility. This
 /// is used only for cleanup paths that must remain available after a challenge is
@@ -841,60 +792,7 @@ pub(crate) async fn load_scoped_challenge(
         .ok_or_else(|| AppError::not_found("Challenge not found"))
 }
 
-/// One-second, read-only game-row cache for hot board endpoints. Mutation paths
-/// use [`load_game`]; explicit invalidation handles organizer timing edits.
-static GAME_ROW_CACHE: std::sync::LazyLock<
-    std::sync::RwLock<HashMap<i32, (game::Model, std::time::Instant)>>,
-> = std::sync::LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
-
-/// Coalesce concurrent reloads at the one-second TTL boundary, including
-/// negative and failed lookups so an invalid id or database outage cannot
-/// trigger a follower recompute herd.
-static GAME_SF: std::sync::LazyLock<crate::utils::single_flight::SingleFlight<GameLoadFlight>> =
-    std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
-
-const GAME_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
-
-pub(crate) async fn load_game_cached(st: &SharedState, id: i32) -> AppResult<game::Model> {
-    let generation = game_row_cache_generation(id);
-    if let Ok(cache) = GAME_ROW_CACHE.read() {
-        if let Some((g, at)) = cache.get(&id) {
-            if at.elapsed() < GAME_CACHE_TTL {
-                return Ok(g.clone());
-            }
-        }
-    }
-    // Miss: single-flight the DB load. Preserve the public 404 contract while
-    // broadcasting transient failures as one generic 500.
-    let st2 = st.clone();
-    let coalesced = GAME_SF
-        .run(&format!("game:{id}:v{generation}"), move || async move {
-            if let Ok(cache) = GAME_ROW_CACHE.read() {
-                if let Some((g, at)) = cache.get(&id) {
-                    if at.elapsed() < GAME_CACHE_TTL {
-                        return GameLoadFlight::Found(g.clone());
-                    }
-                }
-            }
-            match load_game(&st2, id).await {
-                Ok(g) => {
-                    cache_game_row_if_current(id, g.clone(), generation);
-                    GameLoadFlight::Found(g)
-                }
-                Err(AppError::NotFound(_)) => GameLoadFlight::NotFound,
-                Err(error) => {
-                    tracing::warn!(game = id, %error, "game cache fill failed");
-                    GameLoadFlight::Failed
-                }
-            }
-        })
-        .await;
-    match coalesced {
-        GameLoadFlight::Found(g) => Ok(g),
-        GameLoadFlight::NotFound => Err(AppError::not_found("Game not found")),
-        GameLoadFlight::Failed => Err(AppError::internal("game cache fill failed")),
-    }
-}
+pub(crate) use crate::services::game_cache::load_game_cached;
 
 /// Resolve a user's participation in a game via the UserParticipations link.
 ///
@@ -958,9 +856,7 @@ pub use cheat_compare::*;
 pub use cheat_evidence::*;
 pub use combined_scoreboard::*;
 pub use containers::*;
-pub(crate) use containers::{
-    prepare_queued_image, repair_missing_legacy_image, sweep_container_operations,
-};
+pub(crate) use containers::{prepare_queued_image, repair_missing_legacy_image};
 use lookups::*;
 pub use participation_review::*;
 pub use play::*;

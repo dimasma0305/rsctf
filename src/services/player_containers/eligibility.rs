@@ -19,7 +19,7 @@ fn runtime_error_or_forbidden(runtime_error: Option<AppError>) -> AppError {
 /// If the caller already passed the play and visibility checks, prefer a
 /// concrete runtime-definition error over a generic 403 so a failed immutable
 /// image build is not misreported as an authorization problem.
-pub(super) fn ineligible_container_start_error(
+pub(crate) fn ineligible_container_start_error(
     st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> AppError {
@@ -29,7 +29,7 @@ pub(super) fn ineligible_container_start_error(
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum ContainerRequestMode {
+pub(crate) enum ContainerRequestMode {
     PerTeam,
     Shared,
 }
@@ -37,7 +37,7 @@ pub(super) enum ContainerRequestMode {
 /// Authorize the resource-intensive first-build transition without retaining
 /// a database checkout while Docker works. The caller must revalidate again at
 /// the actual provisioning boundary.
-pub(super) async fn authorize_on_demand_build(
+pub(crate) async fn authorize_on_demand_build(
     st: &SharedState,
     caller: LiveParticipationIdentity<'_>,
     challenge: &game_challenge::Model,
@@ -78,7 +78,7 @@ pub(super) async fn authorize_on_demand_build(
 /// caches are unsuitable for a create/delete exclusion boundary because an operator
 /// can reject a participation, disable a challenge, or change its container mode while
 /// a request waits for the lock or for the backend runtime.
-pub(super) async fn player_container_request_is_eligible(
+pub(crate) async fn player_container_request_is_eligible(
     connection: &mut sqlx::PgConnection,
     caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
@@ -90,7 +90,7 @@ pub(super) async fn player_container_request_is_eligible(
 /// Run the mutable player/runtime eligibility predicate on one short checkout.
 /// Runtime probes and mutations must happen only after this connection is
 /// returned to the pool, then repeat the predicate at publication.
-pub(super) async fn player_request_is_eligible_now(
+pub(crate) async fn player_request_is_eligible_now(
     st: &SharedState,
     caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
@@ -111,7 +111,7 @@ pub(super) async fn player_request_is_eligible_now(
 /// Exact pre-build authorization for the one transition where an active,
 /// recoverable challenge is intentionally still Queued. Every post-build and
 /// response boundary continues to require Success.
-pub(super) async fn player_container_start_request_is_eligible(
+pub(crate) async fn player_container_start_request_is_eligible(
     connection: &mut sqlx::PgConnection,
     caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
@@ -266,7 +266,7 @@ async fn shared_game_is_available(
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
-pub(super) async fn load_eligible_shared_challenge(
+pub(crate) async fn load_eligible_shared_challenge(
     st: &SharedState,
     challenge_id: i32,
 ) -> AppResult<game_challenge::Model> {

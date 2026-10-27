@@ -6,9 +6,6 @@ use super::*;
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::enums::ChallengeBuildStatus;
 
-#[cfg(test)]
-mod start_tests;
-
 static RUNTIME_IMAGE_BUILDS: std::sync::LazyLock<crate::utils::single_flight::SingleFlight<bool>> =
     std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 const RUNTIME_IMAGE_REPAIR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -62,7 +59,8 @@ pub(crate) async fn prepare_queued_image(
             RUNTIME_IMAGE_REPAIR_TIMEOUT,
             move || async move {
                 let outcome =
-                    crate::controllers::edit::ensure_challenge_image(&st, &challenge).await;
+                    crate::services::challenge_builds::ensure_challenge_image(&st, &challenge)
+                        .await;
                 let image = outcome.image_digest.as_deref();
                 let ready = outcome.status == ChallengeBuildStatus::Success
                     && match image {
@@ -141,10 +139,11 @@ pub(crate) async fn repair_missing_legacy_image(
                     &flight_key,
                     RUNTIME_IMAGE_REPAIR_TIMEOUT,
                     move || async move {
-                        let outcome = crate::controllers::edit::repair_missing_challenge_image(
-                            &st, &challenge,
-                        )
-                        .await;
+                        let outcome =
+                            crate::services::challenge_builds::repair_missing_challenge_image(
+                                &st, &challenge,
+                            )
+                            .await;
                         let repaired_image = outcome.image_digest.as_deref().filter(|value| {
                             crate::services::challenge_images::is_local_image_id(value)
                         });
@@ -217,7 +216,7 @@ fn admission_image_plan(
 /// definition snapshot, which remains the decisive recheck.
 /// Return the fresh challenge after preparation publishes its image, so the
 /// admission fence and shared/per-team scope use that same definition.
-pub(super) async fn prepare_image_before_admission(
+pub(crate) async fn prepare_image_before_admission(
     st: &SharedState,
     caller: LiveParticipationIdentity<'_>,
     challenge: game_challenge::Model,
@@ -310,7 +309,7 @@ mod tests {
 
     #[test]
     fn player_create_prepares_its_image_before_the_bounded_operation_claim() {
-        let source = include_str!("../containers.rs");
+        let source = include_str!("../../controllers/game/containers.rs");
         let start = source.find("pub async fn create_container").unwrap();
         let end = source.find("async fn perform_create_container").unwrap();
         let create = &source[start..end];

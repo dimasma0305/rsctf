@@ -5,7 +5,6 @@ pub use creation::add_game;
 #[cfg(test)]
 pub(crate) use creation::apply_ad_creation_settings;
 mod update_support;
-pub(crate) use update_support::process_configuration_effects;
 
 /// RSCTF `Models/Request/Edit/GameInfoModel` — used for both create/update
 /// (inbound) and the get/delete responses (outbound). The `start`/`end`/

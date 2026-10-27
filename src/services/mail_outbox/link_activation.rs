@@ -3,7 +3,7 @@
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::controllers::account::REGISTRATION_LOCK_ID;
+use super::REGISTRATION_LOCK_ID;
 use crate::utils::error::{AppError, AppResult};
 
 const LINK_LOCK_SEED: i64 = 194_207;

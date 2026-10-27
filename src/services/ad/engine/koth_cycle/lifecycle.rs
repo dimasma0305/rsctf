@@ -315,7 +315,7 @@ async fn destroy_old(st: &SharedState, cycle: &CycleRow) -> AppResult<()> {
     invalidated_games.sort_unstable();
     invalidated_games.dedup();
     for game_id in invalidated_games {
-        crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
+        crate::services::scoreboard_invalidation::invalidate_live_hill_snapshot(st, game_id).await;
     }
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
     if let Some(container_id) = cycle.old_container_id.as_deref() {
@@ -556,7 +556,8 @@ async fn publish_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    crate::controllers::game::ad::invalidate_live_hill_snapshot(st, cycle.game_id).await;
+    crate::services::scoreboard_invalidation::invalidate_live_hill_snapshot(st, cycle.game_id)
+        .await;
     Ok(())
 }
 
@@ -634,7 +635,8 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
     .await?;
     release_game_control(control, st.cache.as_ref(), cycle.game_id, activated).await?;
     // Active is the first phase allowed to publish the replacement endpoint.
-    crate::controllers::game::ad::invalidate_live_hill_snapshot(st, cycle.game_id).await;
+    crate::services::scoreboard_invalidation::invalidate_live_hill_snapshot(st, cycle.game_id)
+        .await;
     Ok(())
 }
 

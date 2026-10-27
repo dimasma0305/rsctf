@@ -576,7 +576,7 @@ async fn reconcile_desired_state(
             }
             tokio::time::timeout(BULK_DELETE_STEP_BUDGET, async {
                 if effect_is_container(effect) {
-                    super::super::lifecycle::destroy_challenge_containers_by_id(
+                    crate::services::challenge_lifecycle::destroy_challenge_containers_by_id(
                         st,
                         game_id,
                         effect.challenge_id,

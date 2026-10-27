@@ -5,7 +5,7 @@ use crate::utils::error::{AppError, AppResult};
 #[path = "publication_tests.rs"]
 mod tests;
 
-pub(super) struct TeamPublication<'a> {
+pub(crate) struct TeamPublication<'a> {
     pub container_id: uuid::Uuid,
     pub backend_id: &'a str,
     pub image: &'a str,
@@ -22,7 +22,7 @@ pub(super) struct TeamPublication<'a> {
 
 /// Publish the runtime owner, optional dynamic flag, and instance link as one
 /// conditional transaction on the caller's advisory-lock connection.
-pub(super) async fn publish_team_container_locked(
+pub(crate) async fn publish_team_container_locked(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     publication: TeamPublication<'_>,
 ) -> AppResult<crate::models::data::container::Model> {
@@ -213,7 +213,7 @@ pub(crate) async fn refresh_shared_container_lease_locked(
     Ok(result.rows_affected() != 0)
 }
 
-pub(super) async fn revoke_published_team_container(
+pub(crate) async fn revoke_published_team_container(
     st: &SharedState,
     backend_id: &str,
     container_id: uuid::Uuid,
@@ -304,7 +304,7 @@ async fn clear_destroyed_team_container(
         .map_err(|error| AppError::internal(error.to_string()))
 }
 
-pub(super) async fn revoke_published_shared_container(
+pub(crate) async fn revoke_published_shared_container(
     st: &SharedState,
     challenge_id: i32,
     container_id: uuid::Uuid,
@@ -318,7 +318,7 @@ pub(super) async fn revoke_published_shared_container(
     )
     .await?;
     for game_id in game_ids {
-        crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
+        crate::services::scoreboard_invalidation::invalidate_live_hill_snapshot(st, game_id).await;
     }
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
     crate::services::traffic::destroy_container_after_capture_fence(st, backend_id).await?;

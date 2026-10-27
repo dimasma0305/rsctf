@@ -301,7 +301,7 @@ pub(super) async fn finish_attachment_post_commit(
     post_commit: AttachmentPostCommit,
 ) {
     for hash in &post_commit.invalidate_hashes {
-        crate::controllers::assets::invalidate_asset_gate(st, hash).await;
+        crate::services::asset_invalidation::invalidate_asset_gate(st, hash).await;
     }
     if let Some((operation_id, owner_scope)) = post_commit.receipt {
         if let Err(error) = sqlx::query(

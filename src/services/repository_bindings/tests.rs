@@ -47,7 +47,7 @@ fn safe_retained_updates_do_not_block_missing_challenge_reconciliation() {
 
 #[test]
 fn scans_release_the_mutable_checkout_before_importing_snapshot_files() {
-    let source = include_str!("repo_bindings.rs");
+    let source = include_str!("../repository_bindings.rs");
     let snapshot = source
         .find(".immutable_snapshot(&dest, id)")
         .expect("scan creates an immutable checkout snapshot");

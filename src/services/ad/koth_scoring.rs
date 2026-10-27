@@ -4,12 +4,13 @@ use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
 
 mod evidence;
+mod formula;
 mod rollup;
 
 use rollup::load_rollup_snapshot;
 pub(crate) use rollup::{invalidate_rollups_for_end_change, lock_epoch_rollups};
 
-use super::scoring_formula::{
+use self::formula::{
     aggregate_epoch_hills, evidence_fraction, score_api_epoch_hill, score_epoch_hill,
     weighted_epoch_average, KothApiEpochHillEvidence, KothEpochHillEvidence, WeightedHillScore,
 };
@@ -51,79 +52,79 @@ struct TeamEvidenceRow {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct KothCellAggregate {
+pub(crate) struct KothCellAggregate {
     /// Event-average local hill score from finalized epochs, before field-best
     /// normalization.
-    pub(super) settled_points: f64,
+    pub(crate) settled_points: f64,
     /// Event-average local hill score including open epochs.
-    pub(super) projected_points: f64,
+    pub(crate) projected_points: f64,
     /// `settled_points` scaled by the hill's settled field-best multiplier.
-    pub(super) settled_normalized_points: f64,
+    pub(crate) settled_normalized_points: f64,
     /// `projected_points` scaled by the hill's projected field-best multiplier.
-    pub(super) projected_normalized_points: f64,
-    pub(super) acquisition_rate: f64,
-    pub(super) control_rate: f64,
-    pub(super) reliability_rate: f64,
-    pub(super) acquisition_windows: i64,
-    pub(super) controlled_ticks: i64,
-    pub(super) responsible_ticks: i64,
-    pub(super) healthy_responsible_ticks: i64,
+    pub(crate) projected_normalized_points: f64,
+    pub(crate) acquisition_rate: f64,
+    pub(crate) control_rate: f64,
+    pub(crate) reliability_rate: f64,
+    pub(crate) acquisition_windows: i64,
+    pub(crate) controlled_ticks: i64,
+    pub(crate) responsible_ticks: i64,
+    pub(crate) healthy_responsible_ticks: i64,
     projected_weight: f64,
     settled_weight: f64,
     service_weight: f64,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct KothEpochAggregate {
-    pub(super) epoch: i32,
-    pub(super) points: f64,
-    pub(super) epoch_weight: f64,
-    pub(super) finalized: bool,
+pub(crate) struct KothEpochAggregate {
+    pub(crate) epoch: i32,
+    pub(crate) points: f64,
+    pub(crate) epoch_weight: f64,
+    pub(crate) finalized: bool,
     /// Exact cumulative prefix used by the timeline. Recent durable epochs can
     /// start after epoch one, so replaying only the displayed suffix is wrong.
-    pub(super) cumulative_points_numerator: f64,
-    pub(super) cumulative_epoch_weight: f64,
+    pub(crate) cumulative_points_numerator: f64,
+    pub(crate) cumulative_epoch_weight: f64,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct KothTeamAggregate {
+pub(crate) struct KothTeamAggregate {
     /// Official event score: the hill-share weighted mean of every hill's
     /// field-best normalized settled score.
-    pub(super) settled_total: f64,
+    pub(crate) settled_total: f64,
     /// Live projection of the same aggregate including open epochs.
-    pub(super) projected_total: f64,
-    pub(super) acquisition_rate: f64,
-    pub(super) control_rate: f64,
-    pub(super) reliability_rate: f64,
-    pub(super) cells: HashMap<i32, KothCellAggregate>,
-    pub(super) epochs: Vec<KothEpochAggregate>,
+    pub(crate) projected_total: f64,
+    pub(crate) acquisition_rate: f64,
+    pub(crate) control_rate: f64,
+    pub(crate) reliability_rate: f64,
+    pub(crate) cells: HashMap<i32, KothCellAggregate>,
+    pub(crate) epochs: Vec<KothEpochAggregate>,
 }
 
 /// Field-wide normalization facts for one hill, identical for every team.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(super) struct KothHillNormalization {
+pub(crate) struct KothHillNormalization {
     /// Best settled event-average local score any roster team reached.
-    pub(super) settled_field_best: f64,
-    pub(super) projected_field_best: f64,
+    pub(crate) settled_field_best: f64,
+    pub(crate) projected_field_best: f64,
     /// Capped factor that maps the settled field best onto 100 points.
-    pub(super) settled_multiplier: f64,
-    pub(super) projected_multiplier: f64,
+    pub(crate) settled_multiplier: f64,
+    pub(crate) projected_multiplier: f64,
     /// Hill weight times finalized evidence weight, as a share of the event total.
-    pub(super) settled_share: f64,
-    pub(super) projected_share: f64,
+    pub(crate) settled_share: f64,
+    pub(crate) projected_share: f64,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct KothScoringSnapshot {
-    pub(super) teams: HashMap<i32, KothTeamAggregate>,
-    pub(super) hills: BTreeMap<i32, KothHillNormalization>,
-    pub(super) fully_settled: bool,
+pub(crate) struct KothScoringSnapshot {
+    pub(crate) teams: HashMap<i32, KothTeamAggregate>,
+    pub(crate) hills: BTreeMap<i32, KothHillNormalization>,
+    pub(crate) fully_settled: bool,
 }
 
 #[derive(Clone, Debug)]
 struct ScoredCellEpoch {
     challenge_id: i32,
-    score: super::scoring_formula::KothEpochHillScore,
+    score: self::formula::KothEpochHillScore,
     evidence_fraction: f64,
     epoch_fraction: f64,
     finalized: bool,
@@ -632,7 +633,7 @@ fn merge_rollup_prefix(
     }
 }
 
-pub(super) async fn load_koth_scoring(
+pub(crate) async fn load_koth_scoring(
     pool: &PgPool,
     game_id: i32,
     cutoff: Option<DateTime<Utc>>,

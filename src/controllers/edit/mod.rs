@@ -34,7 +34,7 @@ use crate::models::data::{
     division_challenge_config, flag_context, game, game_challenge, game_instance, game_manager,
     game_notice, koth_target, local_file, participation, post, team, user,
 };
-use crate::services::container::{ContainerResourceLimits, ContainerSpec};
+use crate::services::container::ContainerSpec;
 use crate::utils::codec::sha256_str;
 use crate::utils::enums::{
     ChallengeBuildStatus, ChallengeCategory, ChallengeReviewStatus, ChallengeType,
@@ -913,30 +913,7 @@ pub fn router() -> Router<SharedState> {
 //  Authorization helper
 // ============================================================================
 
-/// Authorize a game-scoped edit. Succeeds when the caller is a platform admin,
-/// or a co-organizer (a `game_manager` row exists for `(game_id, user.id)`).
-/// Mirrors RSCTF `[RequireGameAdmin]` (`EventManager` membership OR the `Admin`
-/// role), letting a manager edit THEIR game without platform-wide admin.
-async fn manager_or_admin(
-    st: &SharedState,
-    user: &CurrentUser,
-    game_id: i32,
-) -> Result<(), AppError> {
-    if user.is_admin() {
-        return Ok(());
-    }
-    let is_manager = game_manager::Entity::find()
-        .filter(game_manager::Column::GameId.eq(game_id))
-        .filter(game_manager::Column::UserId.eq(user.id))
-        .count(&st.db)
-        .await?
-        > 0;
-    if is_manager {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden)
-    }
-}
+use crate::services::game_authorization::manager_or_admin;
 
 // ============================================================================
 //  Posts
@@ -945,7 +922,6 @@ async fn manager_or_admin(
 mod ad;
 use crate::services::challenge_builds as builds;
 mod challenges;
-pub(crate) use challenges::recover_bulk_delete_jobs;
 mod data_transfer;
 mod deletion_locks;
 mod divisions;

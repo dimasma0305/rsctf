@@ -1,12 +1,7 @@
 //! edit: shared query helpers (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
 
-pub(crate) async fn load_game(st: &SharedState, id: i32) -> AppResult<game::Model> {
-    game::Entity::find_by_id(id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Game not found"))
-}
+pub(crate) use crate::services::game_config::load_game;
 
 /// Lock the parent event in a caller-owned transaction and reject every child
 /// mutation after hard deletion reaches its durable point of no return.
@@ -218,24 +213,7 @@ pub(crate) fn ensure_ad_roster_status_mutable(
     Ok(())
 }
 
-pub(crate) async fn flush_ad_scoreboard(st: &SharedState, game_id: i32) {
-    crate::controllers::game::ad::hard_invalidate_ad_scoreboard(st, game_id).await;
-    crate::controllers::game::koth::invalidate_live_hill_cache(st.cache.as_ref(), game_id).await;
-    st.cache.remove(&format!("_KothScoreBoard_{game_id}")).await;
-    st.cache
-        .remove(&format!("_KothScoreBoardWireV2_{game_id}"))
-        .await;
-    st.cache
-        .remove(&format!("_KothScoreBoardFrozen_{game_id}"))
-        .await;
-    st.cache
-        .remove(&format!("_KothScoreBoardWireV2Frozen_{game_id}"))
-        .await;
-    st.cache.remove(&format!("_KothTimeline_{game_id}")).await;
-    st.cache
-        .remove(&format!("_KothTimelineFrozen_{game_id}"))
-        .await;
-}
+pub(crate) use crate::services::scoreboard_invalidation::flush_ad_scoreboard;
 
 const AD_EVENT_CLOSEOUT_MESSAGE: &str =
     "checker pass did not complete before event-close grace expired";
@@ -348,19 +326,7 @@ pub(crate) async fn reopen_latest_round_for_end_extension(
     Ok(Some(round_id))
 }
 
-pub(crate) async fn flush_game_scoreboards(st: &SharedState, game_id: i32) {
-    st.cache.remove(&format!("_ScoreBoard_{game_id}")).await;
-    st.cache
-        .remove(&format!("_ScoreBoardWireV2_{game_id}"))
-        .await;
-    st.cache
-        .remove(&format!("_ScoreBoardFrozen_{game_id}"))
-        .await;
-    st.cache
-        .remove(&format!("_ScoreBoardWireV2Frozen_{game_id}"))
-        .await;
-    flush_ad_scoreboard(st, game_id).await;
-}
+pub(crate) use crate::services::scoreboard_invalidation::flush_game_scoreboards;
 
 #[cfg(test)]
 mod roster_status_tests {
@@ -684,50 +650,9 @@ pub(crate) async fn load_user_names(
     Ok(map)
 }
 
-/// Delete an attachment row and, for a local attachment, release its blob.
-/// Mirrors RSCTF `BlobRepository.DeleteAttachment`. Idempotent when the row is
-/// already gone.
-pub(crate) async fn delete_attachment(st: &SharedState, attachment_id: i32) -> AppResult<()> {
-    let affected_hash = sqlx::query_scalar::<_, String>(
-        r#"SELECT file.hash
-             FROM "Attachments" attachment
-             JOIN "Files" file ON file.id = attachment.local_file_id
-            WHERE attachment.id = $1"#,
-    )
-    .bind(attachment_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let deleted_hash =
-        crate::services::blob_refs::delete_attachment(st.pg(), attachment_id).await?;
-    if let Some(hash) = affected_hash.as_deref() {
-        crate::controllers::assets::invalidate_asset_gate(st, hash).await;
-    }
-    if let Some(hash) = deleted_hash {
-        if let Err(error) =
-            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
-                .await
-        {
-            tracing::warn!(%error, %hash, "deleted attachment blob purge failed");
-        }
-    }
-    Ok(())
-}
+pub(crate) use crate::services::asset_invalidation::delete_attachment;
 
-pub(super) async fn revoke_and_destroy_backend(
-    st: &SharedState,
-    backend_id: &str,
-) -> AppResult<()> {
-    let game_ids = crate::services::ad_vpn::stage_backend_endpoint_deactivation_retaining_identity(
-        &st.db, backend_id,
-    )
-    .await?;
-    for game_id in game_ids {
-        crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
-    }
-    crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
-    crate::services::traffic::destroy_container_after_capture_fence(st, backend_id).await
-}
+pub(crate) use crate::services::container_teardown::revoke_and_destroy_backend;
 
 /// Fail-closed teardown of every backend container the game owns: per-team
 /// instance containers, service-owned inspectors, and per-challenge
@@ -855,38 +780,7 @@ pub(crate) async fn destroy_game_containers(st: &SharedState, game_id: i32) -> A
     Ok(())
 }
 
-pub(super) async fn destroy_test_container_with<F>(
-    pool: &sqlx::PgPool,
-    challenge_id: i32,
-    container_id: Uuid,
-    backend_id: &str,
-    destroy: F,
-) -> AppResult<()>
-where
-    F: std::future::Future<Output = AppResult<()>>,
-{
-    destroy.await?;
-    sqlx::query(
-        r#"WITH owner AS (
-             SELECT id FROM "GameChallenges"
-              WHERE id = $1 AND test_container_id = $2
-           ), removed AS (
-             DELETE FROM "Containers" container USING owner
-              WHERE container.id = $2 AND container.container_id = $3
-              RETURNING container.id
-           )
-           UPDATE "GameChallenges"
-              SET test_container_id = NULL
-            WHERE id = $1 AND test_container_id IN (SELECT id FROM removed)"#,
-    )
-    .bind(challenge_id)
-    .bind(container_id)
-    .bind(backend_id)
-    .execute(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
-}
+pub(crate) use crate::services::container_teardown::destroy_test_container_with;
 
 /// Final test-container sweep performed while `test-containers-game:{game_id}`
 /// is held. The earlier generic teardown can race a test creation; this fresh

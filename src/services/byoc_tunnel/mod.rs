@@ -39,10 +39,12 @@ mod flag;
 mod framing;
 mod lifecycle;
 mod team;
+mod token;
 use authorization::live_tunnel_authorized;
 pub use control::start_control_listener;
 use endpoint::RelayEndpoint;
 use lifecycle::{activate_tunnel, deactivate_tunnel};
+pub(crate) use token::byoc_token;
 
 const STREAM_SERVICE: u8 = b'S';
 const STREAM_FLAG: u8 = b'F';

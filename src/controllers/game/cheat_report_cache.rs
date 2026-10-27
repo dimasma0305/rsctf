@@ -15,8 +15,6 @@ const LIVE_REPORT_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 /// long any other edit (a team or challenge rename, a rule weight) stays
 /// hidden on a sealed report. Unchanged content still answers 304.
 const SEALED_REPORT_TTL: std::time::Duration = std::time::Duration::from_secs(60);
-/// Outlives any report entry so a fill can always compare epochs.
-const EPOCH_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 const REPORT_BUILD_CONCURRENCY: usize = 2;
 const CACHE_CONTROL: &str = "private, no-cache, max-age=0";
 const REPORT_VERSION_HEADER: &str = "x-anticheat-report-version";
@@ -65,40 +63,10 @@ where
     })
 }
 
-/// A game's cached report and its invalidation epoch. A fill records the
-/// epoch before building and discards its result if the epoch moved, so an
-/// invalidation that lands mid-build cannot be overwritten by stale data.
-struct ReportKeys {
-    report: String,
-    epoch: String,
-}
-
-impl ReportKeys {
-    fn for_game(game_id: i32) -> Self {
-        Self {
-            report: format!("_AntiCheatReportWireV1_{game_id}"),
-            epoch: format!("_AntiCheatReportEpochV1_{game_id}"),
-        }
-    }
-}
-
-async fn invalidate_keys(cache: &dyn crate::services::cache::Cache, keys: &ReportKeys) {
-    cache
-        .set_authoritative(
-            &keys.epoch,
-            uuid::Uuid::new_v4().as_bytes(),
-            Some(EPOCH_TTL),
-        )
-        .await;
-    cache.remove(&keys.report).await;
-}
-
-/// Drop the cached report so late evidence (for example a scan of a writeup
-/// uploaded after a sealed event) or a monitor action is visible on the next
-/// read, including when a report build is already running.
-pub(crate) async fn invalidate_report(st: &SharedState, game_id: i32) {
-    invalidate_keys(st.cache.as_ref(), &ReportKeys::for_game(game_id)).await;
-}
+#[cfg(test)]
+use crate::services::anti_cheat::report_cache::invalidate_keys;
+pub(crate) use crate::services::anti_cheat::report_cache::invalidate_report;
+use crate::services::anti_cheat::report_cache::ReportKeys;
 
 fn semantic_version(raw: &[u8], scope: &str) -> Result<[u8; VERSION_LEN], String> {
     const GENERATED_AT: &[u8] = b"\"generatedAt\":";

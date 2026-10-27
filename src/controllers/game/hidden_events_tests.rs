@@ -25,6 +25,51 @@ async fn request(f: &Fixture, path: &str, viewer: Option<&CurrentUser>) -> Respo
         .unwrap()
 }
 
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn shared_game_cache_preserves_player_deletion_boundary() {
+    let f = fixture().await;
+    assert_eq!(
+        load_game_cached(&f.st, f.open_game).await.unwrap().id,
+        f.open_game
+    );
+    configure(
+        &f,
+        r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = $1"#,
+    )
+    .await;
+    // Editors/recovery can still inspect the tombstone; player reads must not
+    // accidentally use that broader loader after moving the cache to services.
+    assert!(crate::services::game_config::load_game(&f.st, f.open_game)
+        .await
+        .is_ok());
+    for cached in [false, true] {
+        let result = if cached {
+            load_game_cached(&f.st, f.open_game).await
+        } else {
+            load_game(&f.st, f.open_game).await
+        };
+        assert_eq!(result.unwrap_err().status(), StatusCode::NOT_FOUND);
+    }
+    assert_eq!(
+        request(
+            &f,
+            &format!("/api/game/{}/scoreboard", f.open_game),
+            Some(&f.alice)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    configure(
+        &f,
+        r#"UPDATE "Games" SET deletion_pending = FALSE WHERE id = $1"#,
+    )
+    .await;
+    assert!(load_game_cached(&f.st, f.open_game).await.is_ok());
+    f.teardown().await;
+}
+
 async fn details(f: &Fixture, viewer: Option<&CurrentUser>) -> Value {
     let response = request(f, &format!("/api/game/{}", f.open_game), viewer).await;
     assert_eq!(response.status(), StatusCode::OK);

@@ -18,13 +18,6 @@ struct InspectorDefinition {
     workload_spec: Option<JsonValue>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct ExistingInspector {
-    id: Uuid,
-    backend_id: String,
-    image: String,
-}
-
 const LOAD_DEFINITION_SQL: &str = r#"SELECT challenge.id AS challenge_id,
                   challenge."Type" AS challenge_type,
                   challenge.ad_self_hosted,
@@ -134,67 +127,18 @@ fn validate_definition(st: &SharedState, definition: &InspectorDefinition) -> Ap
     )
 }
 
-async fn load_existing(st: &SharedState, service_id: i32) -> AppResult<Option<ExistingInspector>> {
-    sqlx::query_as::<_, ExistingInspector>(
-        r#"SELECT id, container_id AS backend_id, image
-             FROM "Containers"
-            WHERE ad_team_service_id = $1"#,
-    )
-    .bind(service_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))
-}
+pub(crate) use crate::services::ad::inspector_lifecycle::load_existing;
 
-async fn destroy_exact(
-    st: &SharedState,
-    service_id: i32,
-    inspector: &ExistingInspector,
-) -> AppResult<()> {
-    st.containers.destroy(&inspector.backend_id).await?;
-    sqlx::query(
-        r#"DELETE FROM "Containers"
-            WHERE id = $1 AND container_id = $2 AND ad_team_service_id = $3"#,
-    )
-    .bind(inspector.id)
-    .bind(&inspector.backend_id)
-    .bind(service_id)
-    .execute(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
-}
+pub(crate) use crate::services::ad::inspector_lifecycle::destroy_exact;
 
 /// Tear down the current inspector while the caller holds
 /// `ad-inspector:{service_id}`. Challenge/game deletion use this before the
 /// service row can cascade away its database-side exec capability.
-pub(crate) async fn destroy_service_inspector_locked(
-    st: &SharedState,
-    service_id: i32,
-) -> AppResult<()> {
-    if let Some(existing) = load_existing(st, service_id).await? {
-        destroy_exact(st, service_id, &existing).await?;
-    }
-    Ok(())
-}
 
 /// Serialize inspector teardown across replicas. Callers must first persist
 /// the eligibility fence that prevents a replacement (challenge/game/team
 /// deletion or participation suspension) before invoking this helper.
-pub(crate) async fn destroy_service_inspector(st: &SharedState, service_id: i32) -> AppResult<()> {
-    let lock_key = format!("ad-inspector:{service_id}");
-    let _local = crate::utils::single_flight::coalesce(&lock_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &lock_key)
-            .await?;
-    let result = destroy_service_inspector_locked(st, service_id).await;
-    let released = distributed.release().await.map_err(AppError::from);
-    match (result, released) {
-        (Err(error), _) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
-    }
-}
+pub(crate) use crate::services::ad::inspector_lifecycle::destroy_service_inspector;
 
 /// Spawn or reuse the one short-lived inspector owned by this A&D team service.
 /// The public GUID is a `Containers.id`, so the exec hub resolves it through its

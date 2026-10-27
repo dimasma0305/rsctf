@@ -29,7 +29,7 @@ fn rejects_duplicate_and_oversized_intents_before_reservation() {
 
 #[test]
 fn bulk_admission_and_long_reconciliation_do_not_queue_http_handlers() {
-    let source = include_str!("bulk.rs");
+    let source = include_str!("../bulk_challenges.rs");
     let reserve = source
         .split_once("async fn reserve_operation(")
         .unwrap()
@@ -41,7 +41,7 @@ fn bulk_admission_and_long_reconciliation_do_not_queue_http_handlers() {
     assert!(!reserve.contains("SELECT pg_advisory_xact_lock"));
 
     let handler = source
-        .split_once("pub async fn mutate_challenges_bulk(")
+        .split_once("pub(crate) async fn mutate_challenges_bulk(")
         .unwrap()
         .1;
     assert!(handler.contains("try_acquire_owned()"));

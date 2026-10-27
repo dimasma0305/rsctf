@@ -1,6 +1,11 @@
 //! Ordered, best-effort challenge push-back for repository-bound games.
 
-use super::*;
+use crate::app_state::SharedState;
+use crate::utils::enums::{
+    ChallengeCategory, ChallengeType, ChallengeVariantMode, NetworkMode, SolveReceiptMode,
+};
+use crate::utils::error::{AppError, AppResult};
+use sea_orm::EntityTrait;
 
 use crate::models::data::repo_binding;
 use crate::services::git_sync;
@@ -457,7 +462,7 @@ async fn snapshot_after_checkout(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     let database_snapshot: AppResult<DatabaseSnapshotResult> = async {
-        match super::reject_pending_mutation(
+        match crate::services::challenge_mutations::reject_pending_mutation(
             &mut **game_lock.transaction_mut(),
             game_id,
             challenge_id,
@@ -710,7 +715,7 @@ async fn run_test_git(checkout: &std::path::Path, args: &[&str]) -> AppResult<()
 mod queue_contract_tests {
     #[test]
     fn push_queue_is_durable_coalescing_batched_and_recoverable() {
-        let source = include_str!("repo_push.rs");
+        let source = include_str!("repository_push.rs");
         let production = source
             .split_once("#[cfg(test)]\nmod queue_contract_tests")
             .expect("queue contract tests remain after the production worker")

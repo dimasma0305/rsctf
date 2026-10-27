@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-use super::super::INSERTABLE_GAME_SQL;
 use super::{
     clear_destroyed_koth_target, clear_destroyed_shared_container, handle_teardown_result,
     runtime_definition_snapshot, teardown_allowed,
 };
+use crate::services::challenge_mutations::INSERTABLE_GAME_SQL;
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::AppError;
 

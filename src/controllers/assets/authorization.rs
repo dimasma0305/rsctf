@@ -1,4 +1,10 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use crate::services::asset_invalidation::decode_generation;
+pub(crate) use crate::services::asset_invalidation::invalidate_asset_gate;
+use crate::services::asset_invalidation::{
+    asset_gate_cache_key, asset_gate_generation, asset_gate_window, valid_content_hash,
+};
+use std::time::Duration;
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -23,7 +29,6 @@ pub(super) use finalization::{finalize_monitor_grant_for_test, finalize_public_g
 /// range-download herds to one SQL query per blob and replica. Every allowed
 /// class is re-proved after storage, so this cache is never the final gate.
 const ASSET_GATE_TTL: Duration = Duration::from_secs(2);
-const ASSET_GATE_GENERATION_TTL: Duration = Duration::from_secs(300);
 const MAX_ASSET_GATE_FILL_KEYS: usize = 128;
 const MAX_ASSET_GATE_TARGETS: usize = 128;
 
@@ -240,71 +245,6 @@ SELECT m.is_public, m.file_size, t.game_id, t.source_team, t.challenge_id
  ORDER BY t.game_id, t.source_team, t.challenge_id
  LIMIT $2
 "#;
-
-fn valid_content_hash(hash: &str) -> bool {
-    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn asset_gate_window() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn asset_gate_generation_key(hash: &str) -> String {
-    format!("assetgate-generation:{hash}")
-}
-
-fn decode_generation(value: Option<&[u8]>) -> String {
-    value
-        .and_then(|value| std::str::from_utf8(value).ok())
-        .filter(|value| value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .unwrap_or("0")
-        .to_string()
-}
-
-async fn asset_gate_generation(st: &SharedState, hash: &str) -> String {
-    let value = st.cache.get(&asset_gate_generation_key(hash)).await;
-    decode_generation(value.as_deref())
-}
-
-fn asset_gate_cache_key(hash: &str, generation: &str, window: u64) -> String {
-    format!("assetgate:{hash}:{generation}:{window:016x}")
-}
-
-/// Evict the bounded grant windows touched by an owner publication/revocation.
-/// Redis removes the shared entry; the adjacent windows also cap stale L1
-/// copies on other replicas at the one-second generation boundary.
-pub(crate) async fn invalidate_asset_gate(st: &SharedState, hash: &str) {
-    if !valid_content_hash(hash) {
-        return;
-    }
-    let old_generation = asset_gate_generation(st, hash).await;
-    let new_generation = Uuid::new_v4().simple().to_string();
-    // Publish the new generation before evicting old entries. A cache fill on
-    // another replica compares this token both before and after its query/set,
-    // so an invalidate-then-late-set race cannot resurrect the stale grant.
-    st.cache
-        .set(
-            &asset_gate_generation_key(hash),
-            new_generation.as_bytes(),
-            Some(ASSET_GATE_GENERATION_TTL),
-        )
-        .await;
-    let current = asset_gate_window();
-    for generation in [&old_generation, &new_generation] {
-        for window in [
-            current.saturating_sub(1),
-            current,
-            current.saturating_add(1),
-        ] {
-            st.cache
-                .remove(&asset_gate_cache_key(hash, generation, window))
-                .await;
-        }
-    }
-}
 
 fn decode_asset_gate(bytes: &[u8]) -> Option<AssetGate> {
     serde_json::from_slice(bytes).ok()

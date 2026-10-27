@@ -79,7 +79,7 @@ async fn live_tunnel_authorized_on(
     else {
         return false;
     };
-    let expected = crate::controllers::game::ad::byoc_token(
+    let expected = crate::services::byoc_tunnel::byoc_token(
         "adbyocagent:",
         &secrets.game_secret,
         &secrets.team_secret,
@@ -200,7 +200,7 @@ mod tests {
     }
 
     fn token(team_secret: &str) -> String {
-        crate::controllers::game::ad::byoc_token("adbyocagent:", "game-secret", team_secret, 11, 13)
+        crate::services::byoc_tunnel::byoc_token("adbyocagent:", "game-secret", team_secret, 11, 13)
     }
 
     #[tokio::test]

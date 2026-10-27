@@ -44,7 +44,7 @@ async fn load_playable_definition_snapshot_once(
     ))
 }
 
-pub(super) async fn load_playable_definition_snapshot(
+pub(crate) async fn load_playable_definition_snapshot(
     st: &SharedState,
     game_id: i32,
     challenge_id: i32,
@@ -85,7 +85,7 @@ pub(super) async fn load_playable_definition_snapshot(
 /// Recheck the exact launch definition on the caller's publication
 /// transaction. The caller first takes `definition_lock_key` on this same
 /// connection, so a later save/rollout must observe the published owner.
-pub(super) async fn ensure_publication_definition_current(
+pub(crate) async fn ensure_publication_definition_current(
     connection: &mut sqlx::PgConnection,
     game_id: i32,
     challenge_id: i32,
@@ -190,7 +190,7 @@ async fn load_shared_definition_snapshot_once(
     ))
 }
 
-pub(super) async fn load_shared_definition_snapshot(
+pub(crate) async fn load_shared_definition_snapshot(
     st: &SharedState,
     game_id: i32,
     challenge_id: i32,

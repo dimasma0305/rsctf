@@ -30,7 +30,7 @@ pub(super) async fn execute_claimed(
             }))
         }
         "AdReconcile" => {
-            let (launched, failures) = crate::controllers::edit::run_ad_reconcile_job(
+            let (launched, failures) = crate::services::ad::provision::run_ad_reconcile_job(
                 state,
                 job,
                 input_bool(&job.input, "ensureVpn", false),

@@ -1,6 +1,11 @@
 //! KotH hill provisioning + shared participation/team-name helpers — split from
 //! koth/mod.rs to stay under the 1000-line rule.
-use super::*;
+use crate::app_state::SharedState;
+use crate::models::data::{game, game_challenge, koth_target};
+use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
+use crate::utils::error::{AppError, AppResult};
+use chrono::Utc;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HillRuntimeAvailability {
@@ -57,7 +62,7 @@ async fn clear_target_for_replacement(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     if cleared {
-        crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
+        crate::services::scoreboard_invalidation::invalidate_live_hill_snapshot(st, game_id).await;
     }
     Ok(cleared)
 }
@@ -179,7 +184,7 @@ async fn publish_replacement_target(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     if published {
-        crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
+        crate::services::scoreboard_invalidation::invalidate_live_hill_snapshot(st, game_id).await;
     }
     Ok(published)
 }
@@ -298,7 +303,7 @@ pub(crate) async fn ensure_koth_hills_with_operation(
                 .as_ref()
                 .and_then(|target| target.container_id.as_deref())
                 .expect("alive KotH target has a backend id");
-            if super::super::containers::refresh_shared_container_lease_locked(st, backend_id)
+            if crate::services::player_containers::publication::refresh_shared_container_lease_locked(st, backend_id)
                 .await?
             {
                 distributed.release().await?;
@@ -350,7 +355,7 @@ pub(crate) async fn ensure_koth_hills_with_operation(
             }
             HillRuntimeAvailability::Ready => {
                 let operation_id = koth_hill_operation_id(reconcile_operation_id, game_id, c.id);
-                match super::super::containers::get_or_create_shared_container_locked(
+                match crate::services::player_containers::shared::get_or_create_shared_container_locked(
                     st,
                     &c,
                     true,
@@ -391,9 +396,10 @@ pub(crate) async fn ensure_koth_hills_with_operation(
             distributed.release().await?;
             drop(_flight);
             if let Some(container) = launched {
-                let _ =
-                    super::super::containers::destroy_managed_container_row(st, &container, false)
-                        .await;
+                let _ = crate::services::player_containers::reaping::destroy_managed_container_row(
+                    st, &container, false,
+                )
+                .await;
             }
             continue;
         };

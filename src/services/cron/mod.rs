@@ -287,13 +287,13 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: settings branding retention sweep failed: {e}"),
     }
 
-    match crate::controllers::edit::recover_bulk_delete_jobs(state).await {
+    match crate::services::bulk_challenges::recover_delete_jobs(state).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: resumed bounded bulk challenge operation(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: bulk challenge deletion recovery failed: {e}"),
     }
 
-    match crate::controllers::team::recover_pending_invite_rotations(state, 8).await {
+    match crate::services::team_invites::recover_pending_invite_rotations(state, 8).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: reconciled pending invite rotation(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: invite rotation recovery failed: {e}"),
@@ -305,25 +305,25 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: admin mutation retention sweep failed: {e}"),
     }
 
-    match crate::controllers::edit::process_configuration_effects(state).await {
+    match crate::services::configuration_effects::process_configuration_effects(state).await {
         Ok(n) if n > 0 => tracing::debug!(n, "cron: applied game configuration effect(s)"),
         Ok(_) => {}
         Err(error) => tracing::warn!(%error, "cron: game configuration effects failed"),
     }
 
-    match crate::controllers::team::process_profile_invalidations(state).await {
+    match crate::services::team_effects::process_profile_invalidations(state).await {
         Ok(n) if n > 0 => tracing::debug!(n, "cron: applied team profile invalidation(s)"),
         Ok(_) => {}
         Err(error) => tracing::warn!(%error, "cron: team profile invalidations failed"),
     }
 
-    match crate::controllers::game::sweep_container_operations(state, 128).await {
+    match crate::services::player_containers::operations::sweep(state, 128).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: purged terminal player container operation(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: player container operation sweep failed: {e}"),
     }
 
-    match crate::controllers::exercise::sweep_container_operations(state, 128).await {
+    match crate::services::exercise_containers::operations::sweep(state, 128).await {
         Ok(n) if n > 0 => {
             tracing::info!(n, "cron: reconciled/purged exercise container operation(s)")
         }
@@ -359,7 +359,7 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: ended KotH crown-cycle recovery failed: {e}"),
     }
 
-    match crate::controllers::edit::recover_accepted_provisioning(state).await {
+    match crate::services::ad::provision_recovery::recover_accepted_provisioning(state).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: recovered accepted-participation resources"),
         Ok(_) => {}
         Err(error) => tracing::warn!(%error, "cron: accepted-participation recovery failed"),
@@ -761,7 +761,8 @@ async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
             continue;
         }
         completed += 1;
-        crate::controllers::game::ad::hard_invalidate_ad_scoreboard(state, game_id).await;
+        crate::services::scoreboard_invalidation::hard_invalidate_ad_scoreboard(state, game_id)
+            .await;
         state
             .cache
             .remove(&format!("_KothScoreBoard_{game_id}"))

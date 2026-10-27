@@ -3,7 +3,10 @@
 //! Every ingestion path (editor, repository discovery, and archive import)
 //! must apply this exact policy before it writes a `Games` row.
 
+use crate::app_state::SharedState;
+use crate::models::data::game;
 use chrono::{DateTime, Utc};
+use sea_orm::EntityTrait;
 
 use crate::services::ad_engine::koth_cycle::CrownShapeError;
 use crate::utils::error::{AppError, AppResult};
@@ -244,4 +247,11 @@ mod tests {
         invalid.ad_min_grace_period_seconds = Some(19);
         assert!(invalid.validate().is_err());
     }
+}
+
+pub(crate) async fn load_game(st: &SharedState, id: i32) -> AppResult<game::Model> {
+    crate::models::data::game::Entity::find_by_id(id)
+        .one(&st.db)
+        .await?
+        .ok_or_else(|| AppError::not_found("Game not found"))
 }

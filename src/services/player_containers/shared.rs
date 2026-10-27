@@ -154,7 +154,7 @@ pub(crate) async fn get_or_create_shared_container_locked(
         .then(crate::services::ad_vpn::services_network);
     let game_kind = crate::services::container::game_kind_for_challenge(challenge.challenge_type);
     let platform_proxy =
-        crate::controllers::admin::container_port_mapping(st).await == "PlatformProxy";
+        crate::services::container_policy::container_port_mapping(st).await == "PlatformProxy";
     let is_proxy = crate::services::container::should_use_platform_proxy(
         game_kind,
         st.containers.requires_proxy(),

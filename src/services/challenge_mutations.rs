@@ -70,3 +70,6 @@ where
         .map_err(|error| AppError::internal(error.to_string()))?;
     validate_pending_mutation(state)
 }
+
+pub(crate) const INSERTABLE_GAME_SQL: &str =
+    r#"SELECT NOT deletion_pending FROM "Games" WHERE id = $1 FOR SHARE"#;

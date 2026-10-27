@@ -141,7 +141,7 @@ Implemented design to preserve when evaluating changes:
 
 ### P2 — Boundaries, storage, contracts, and availability
 
-- [ ] **ARCH-06: Move business operations out of HTTP controllers.**
+- [x] **ARCH-06: Move business operations out of HTTP controllers.**
   Background services call controller functions for builds, rollouts,
   reconciliation, repository work, and other domain operations. Extract cohesive
   application/domain services called by both HTTP handlers and background workers.
@@ -156,8 +156,21 @@ Implemented design to preserve when evaluating changes:
   - [x] Extract image builds, build jobs, workload rollouts, and shared challenge
     mutation fences into application services; retain controller compatibility.
   - [x] Add CI checks for module size/naming and a dependency ratchet, with a
-    negative regression. The legacy dependency list is explicit remaining work.
-  - [ ] Extract remaining reconciliation, repository, and lifecycle operations.
+    negative regression. The legacy allowlist is now empty: all 29 tracked
+    service-to-controller dependency entries have been removed.
+  - [x] Extract reconciliation, repository scans/pushback, bulk challenge mutation,
+    lifecycle/teardown, exercise recovery, shared cache invalidation, and KotH
+    scoring/evidence/rollups. Controllers retain HTTP parsing and response mapping;
+    bulk mutation retains shared organizer authorization at its application boundary.
+  - [x] Pass 1,800 backend unit tests and 35 focused PostgreSQL regressions covering
+    deletion races, exact operation replay, scoring evidence, repository rescan and
+    pushback, and authorization. New regressions exercise bulk authorization through
+    both HTTP and direct service calls and preserve the player game-cache deletion
+    filter separately from the broader editor/recovery loader. This extraction
+    makes no independent runtime-performance claim; release remains pending.
+  - [x] Pass the all-target Rust check with zero warnings and the real Docker
+    first-start image-repair regression for both per-team and shared containers.
+    The runtime test uses the disposable host's private Docker bridge binding.
 
 - [ ] **ARCH-07: Delegate privileged runtime operations away from public web roles.**
   Public API handlers currently perform container operations directly; the local
@@ -311,7 +324,8 @@ Implemented design to preserve when evaluating changes:
 ### Proposed slow-operation flow and completion evidence
 
 Local checkpoint (2026-10-27): `cargo test --lib` through the bounded wrapper
-passed 1,798 tests (456 environment-dependent tests ignored). The focused real
+passed 1,800 tests (461 environment-dependent tests ignored). The architecture
+extraction additionally passed 35 focused real PostgreSQL regressions. The earlier
 PostgreSQL lane/shutdown tests (2), cleanup test (1), checker GC test (1), and
 session-lock regression against both direct PostgreSQL and PgBouncer (2 runs)
 also passed. New role/restart, durable-metrics, API-authorization, and real-Redis

@@ -729,7 +729,7 @@ pub(super) async fn load_rollup_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controllers::game::koth::scoring::{
+    use crate::services::ad::koth_scoring::{
         KothCellAggregate, KothEpochAggregate, KothTeamAggregate,
     };
 

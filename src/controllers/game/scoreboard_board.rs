@@ -24,15 +24,6 @@ const FIRST_SOLVE_SCOREBOARD_SQL: &str = r#"SELECT submission.participation_id, 
           AND challenge.review_status = $3
         WHERE submission.game_id = $1 AND submission.status = $2"#;
 
-#[derive(Clone, Default)]
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum GameLoadFlight {
-    Found(game::Model),
-    NotFound,
-    #[default]
-    Failed,
-}
-
 /// Port of RSCTF `GameChallenge.CalculateChallengeScore`: the current worth of a
 /// challenge at `accepted_count` distinct eligible solves, decayed from
 /// `original` down toward the `min_rate` floor along the chosen curve, then
@@ -277,41 +268,9 @@ static SCOREBOARD_SF: std::sync::LazyLock<
     crate::utils::single_flight::SingleFlight<Option<bytes::Bytes>>,
 > = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 
-static GAME_ROW_CACHE_GENERATIONS: std::sync::LazyLock<std::sync::RwLock<HashMap<i32, u64>>> =
-    std::sync::LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
-
-pub(super) fn game_row_cache_generation(id: i32) -> u64 {
-    GAME_ROW_CACHE_GENERATIONS
-        .read()
-        .ok()
-        .and_then(|generations| generations.get(&id).copied())
-        .unwrap_or(0)
-}
-
-pub(super) fn cache_game_row_if_current(id: i32, game: game::Model, generation: u64) {
-    if game_row_cache_generation(id) != generation {
-        return;
-    }
-    if let Ok(mut cache) = GAME_ROW_CACHE.write() {
-        // Recheck after taking the cache write lock so invalidation cannot slip
-        // between the generation check and insertion.
-        if game_row_cache_generation(id) == generation {
-            cache.insert(id, (game, std::time::Instant::now()));
-        }
-    }
-}
-
-pub(crate) fn invalidate_game_row_cache(id: i32) {
-    // Cache lock first is the global order also used by insertion. Incrementing
-    // makes a pre-invalidation single-flight leader unable to repopulate the row.
-    if let Ok(mut cache) = GAME_ROW_CACHE.write() {
-        cache.remove(&id);
-        if let Ok(mut generations) = GAME_ROW_CACHE_GENERATIONS.write() {
-            let generation = generations.entry(id).or_insert(0);
-            *generation = generation.wrapping_add(1);
-        }
-    }
-}
+#[cfg(test)]
+use crate::services::game_cache::game_row_cache_generation;
+pub(crate) use crate::services::game_cache::invalidate_game_row_cache;
 
 async fn cached_scoreboard_bundle(st: &SharedState, key: &str) -> Option<bytes::Bytes> {
     let bytes = st.cache.get(key).await?;

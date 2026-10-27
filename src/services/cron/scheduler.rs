@@ -214,9 +214,13 @@ async fn advance_game(
     // after successful publication, so the five-second discovery scan does not
     // enqueue an idle reconcile job forever.
     if koth_start_needed(state.pg(), schedule.id).await? {
-        let job =
-            crate::controllers::edit::request_ad_reconcile_job(state, schedule.id, false, true)
-                .await?;
+        let job = crate::services::ad::provision::request_ad_reconcile_job(
+            state,
+            schedule.id,
+            false,
+            true,
+        )
+        .await?;
         let job = crate::services::control_jobs::wait_for_terminal(
             state.pg(),
             job.id,
@@ -291,9 +295,13 @@ async fn advance_game(
     // every service identity while holding the game lock.
     let game = load_game_model(state, schedule.id).await?;
     let repair_failures = match async {
-        let job =
-            crate::controllers::edit::request_ad_reconcile_job(state, schedule.id, false, true)
-                .await?;
+        let job = crate::services::ad::provision::request_ad_reconcile_job(
+            state,
+            schedule.id,
+            false,
+            true,
+        )
+        .await?;
         let job = crate::services::control_jobs::wait_for_terminal(
             state.pg(),
             job.id,

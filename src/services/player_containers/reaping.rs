@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ManagedContainerOwner {
+pub(crate) struct ManagedContainerOwner {
     pub lock_key: String,
     pub shared_challenge_id: Option<i32>,
     pub test_challenge_id: Option<i32>,
@@ -14,11 +14,11 @@ const REAP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(10)
 const REAP_EXTERNAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[derive(Clone, Copy)]
-pub(super) struct ReapClaim {
-    pub(super) lease_owner: uuid::Uuid,
+pub(crate) struct ReapClaim {
+    pub(crate) lease_owner: uuid::Uuid,
 }
 
-pub(super) async fn claim_reap_on(
+pub(crate) async fn claim_reap_on(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     candidate: &container::Model,
     scope_key: &str,
@@ -128,7 +128,7 @@ async fn retain_failed_reap_claim(
     }
 }
 
-pub(super) async fn managed_reap_active(
+pub(crate) async fn managed_reap_active(
     pool: &sqlx::PgPool,
     container_id: uuid::Uuid,
     backend_id: &str,
@@ -150,7 +150,7 @@ pub(super) async fn managed_reap_active(
 /// The forward ids on a stale Containers row are hints used to prioritize a
 /// match; they never authorize detaching an instance that already points at a
 /// replacement.
-pub(super) async fn resolve_managed_container_owner(
+pub(crate) async fn resolve_managed_container_owner(
     pool: &sqlx::PgPool,
     container_id: uuid::Uuid,
     backend_id: &str,
@@ -239,7 +239,7 @@ pub(super) async fn resolve_managed_container_owner(
 /// transaction. Zero-row CAS updates are valid: they mean a replacement won and
 /// must remain attached.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn clear_destroyed_managed_container(
+pub(crate) async fn clear_destroyed_managed_container(
     pool: &sqlx::PgPool,
     container_id: uuid::Uuid,
     backend_id: &str,
@@ -454,7 +454,8 @@ pub(crate) async fn destroy_managed_container_row(
             )
             .await?;
         for game_id in game_ids {
-            crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
+            crate::services::scoreboard_invalidation::invalidate_live_hill_snapshot(st, game_id)
+                .await;
         }
         crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
         crate::services::traffic::destroy_container_after_capture_fence(st, &current.container_id)
