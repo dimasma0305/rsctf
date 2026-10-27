@@ -1,0 +1,2339 @@
+{
+  "date": "2026-10-27T12:53:14.045Z",
+  "binarySha256": {
+    "before": "e75eb5e36e6ccff9846f3f801d81638e8df85bb2cbebd910ea5e3be66f8be516",
+    "after": "cce9e55a74cbc391725b3df21dd1eacb2373767f95105eeae02ef9c24f10fa14"
+  },
+  "baselineRevision": "bff5d1a31ae6f964d877fd1fc11cf8328e8e99de",
+  "candidateRevision": "44fdef0f95f58f3607ea3b054949fa700657d32e",
+  "harnessHashes": {
+    "architecture-platform.mjs": "60879b7843d1a2bee1832aa0453b2398f991e351ac8df0d25b8d3b3e39e7afc9",
+    "architecture-runtime/Dockerfile": "36993e14515be816060b70151717dc9d0af725678735ba585a64b39f051ce954",
+    "scoreboard-page-fixture.mjs": "8f63eaab04dc97cee6281f7d17cd1f093d57eaf4515dcb0aa018f0776d4fa040",
+    "scoreboard-page.mjs": "050e0ca57d1118a9e17aa3102c4f03aac68791d6031902dbc410468c49e71554",
+    "k6/scoreboard-page.js": "0c60a9ab99cc188156cdc402f1cd46ef7f16363a18d32864d73946e326dea34c",
+    "lib.mjs": "7e22df560877d1e85bbb0282cd790a7ed0b5bd7637d032b96c5318e57edb4dcc",
+    "metrics-scrape.mjs": "a1a24cc80637231a05e3eae781477a486fad924fd943cff2e7b7178e878f59be",
+    "k6/metrics-scrape.js": "01fac1dbf9ba0057e2d6527496c165d80f1f3a29434c1bc9fe1ab673464ea45c",
+    "redis-outage.mjs": "9d5691fce63846aeae2ebc077b68301231b27c4725ce6ed9d07ebd2f22b75d34",
+    "k6/redis-outage.js": "eb0639d5023611d5af895851cbbe21c3f17f4b5b382e361caabc73c300db1a03"
+  },
+  "runtimeImage": "sha256:b9344522caf7d6d0e3d5e4c8ab9758f769336fbda2c3ed92ce602b53b261948f",
+  "postgresImage": "sha256:bd1890816ae0b8ad4644f05728570d4be774e1f1490d7232f5084b52ea335183",
+  "redisImage": "sha256:4df5c34dc41256fc4ed293482cb34281e17d133077e9aa3c6a87fda60a356c65",
+  "servingRole": "development",
+  "validatedScope": "HTTP reads, authenticated metrics, and malformed-request Redis fallback",
+  "appLimits": {
+    "cpu": 2,
+    "affinity": "0,1",
+    "memoryMiB": null,
+    "tokioThreads": 2,
+    "databaseConnections": 50,
+    "ipFamily": "IPv4"
+  },
+  "teams": 500,
+  "challenges": 20,
+  "solves": 10000,
+  "results": [
+    {
+      "mode": "before",
+      "repetition": 0,
+      "metrics": {
+        "metrics": {
+          "http_req_sending": {
+            "avg": 0.03623105631456196,
+            "med": 0.027943,
+            "p(90)": 0.048233,
+            "p(95)": 0.070426,
+            "p(99)": 0.172717,
+            "max": 2.522775
+          },
+          "scoreboard_encoded_bytes": {
+            "p(90)": 5803,
+            "p(95)": 5803,
+            "p(99)": 5803,
+            "max": 5803,
+            "avg": 5803,
+            "med": 5803
+          },
+          "scoreboard_200_ms": {
+            "avg": 2.832720750416528,
+            "med": 1.585783,
+            "p(90)": 3.454599,
+            "p(95)": 4.858737,
+            "p(99)": 41.11996,
+            "max": 124.326391
+          },
+          "scoreboard_parse_ms": {
+            "max": 27,
+            "avg": 5.743418860379873,
+            "med": 5,
+            "p(90)": 8,
+            "p(95)": 10,
+            "p(99)": 14
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "http_req_failed": {
+            "fails": 3001,
+            "passes": 0,
+            "value": 0
+          },
+          "iterations": {
+            "count": 3001,
+            "rate": 100.01012137753476
+          },
+          "http_req_blocked": {
+            "p(90)": 0.008713,
+            "p(95)": 0.018538,
+            "p(99)": 0.183227,
+            "max": 13.248919,
+            "avg": 0.01732555114961673,
+            "med": 0.006289
+          },
+          "http_req_connecting": {
+            "max": 13.178222,
+            "avg": 0.008265035988003998,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.110547
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 3001,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "data_sent": {
+            "count": 1248416,
+            "rate": 41604.21049305446
+          },
+          "http_req_duration{expected_response:true}": {
+            "p(99)": 41.11996,
+            "max": 124.326391,
+            "avg": 2.8327207504165286,
+            "med": 1.585783,
+            "p(90)": 3.454599,
+            "p(95)": 4.858737
+          },
+          "data_received": {
+            "count": 19998664,
+            "rate": 666467.4488598916
+          },
+          "vus_max": {
+            "value": 64,
+            "min": 64,
+            "max": 64
+          },
+          "iteration_duration": {
+            "avg": 9.032693436187921,
+            "med": 7.267851,
+            "p(90)": 11.831953,
+            "p(95)": 14.210136,
+            "p(99)": 56.8442,
+            "max": 133.471149
+          },
+          "vus": {
+            "value": 1,
+            "min": 1,
+            "max": 1
+          },
+          "http_req_waiting": {
+            "med": 1.304267,
+            "p(90)": 3.047929,
+            "p(95)": 4.461209,
+            "p(99)": 40.60367,
+            "max": 123.78286,
+            "avg": 2.502321380206599
+          },
+          "server_5xx": {
+            "passes": 0,
+            "fails": 3001,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 3001,
+            "value": 0
+          },
+          "http_req_duration": {
+            "med": 1.585783,
+            "p(90)": 3.454599,
+            "p(95)": 4.858737,
+            "p(99)": 41.11996,
+            "max": 124.326391,
+            "avg": 2.8327207504165286,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "scoreboard_decoded_bytes": {
+            "p(90)": 93124,
+            "p(95)": 93124,
+            "p(99)": 93124,
+            "max": 93124,
+            "avg": 93124,
+            "med": 93124
+          },
+          "http_reqs": {
+            "count": 3001,
+            "rate": 100.01012137753476
+          },
+          "http_req_tls_handshaking": {
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0,
+            "avg": 0
+          },
+          "http_req_receiving": {
+            "max": 14.287116,
+            "avg": 0.29416831389536835,
+            "med": 0.230359,
+            "p(90)": 0.360445,
+            "p(95)": 0.459494,
+            "p(99)": 1.291913
+          }
+        },
+        "root_group": {
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {},
+          "checks": {}
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3097.720804,
+            "appCpuPercent": 3.9536172613949137,
+            "appRssBytes": 113360896,
+            "postgresCpuPercent": 15.61,
+            "postgresMemory": "386.8MiB / 17.59GiB",
+            "healthMilliseconds": 4.618735000000015
+          },
+          {
+            "at": 5634.416153,
+            "appCpuPercent": 6.701632502579245,
+            "appRssBytes": 104841216,
+            "postgresCpuPercent": 8.87,
+            "postgresMemory": "392MiB / 17.59GiB",
+            "healthMilliseconds": 2.176842000000761
+          },
+          {
+            "at": 8167.595174,
+            "appCpuPercent": 7.105695985471372,
+            "appRssBytes": 118341632,
+            "postgresCpuPercent": 6.41,
+            "postgresMemory": "394.7MiB / 17.59GiB",
+            "healthMilliseconds": 3.68982799999867
+          },
+          {
+            "at": 10700.10861,
+            "appCpuPercent": 6.317834200821197,
+            "appRssBytes": 113262592,
+            "postgresCpuPercent": 13.52,
+            "postgresMemory": "398.2MiB / 17.59GiB",
+            "healthMilliseconds": 7.993091000000277
+          },
+          {
+            "at": 13240.113289,
+            "appCpuPercent": 7.4803011809727415,
+            "appRssBytes": 118259712,
+            "postgresCpuPercent": 13.14,
+            "postgresMemory": "399.8MiB / 17.59GiB",
+            "healthMilliseconds": 3.3845300000011775
+          },
+          {
+            "at": 15776.097893,
+            "appCpuPercent": 6.703510728411348,
+            "appRssBytes": 118460416,
+            "postgresCpuPercent": 24.14,
+            "postgresMemory": "401.5MiB / 17.59GiB",
+            "healthMilliseconds": 2.3518260000018927
+          },
+          {
+            "at": 18307.438095,
+            "appCpuPercent": 9.086095966803592,
+            "appRssBytes": 112967680,
+            "postgresCpuPercent": 20.96,
+            "postgresMemory": "403.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.393011000000115
+          },
+          {
+            "at": 20841.305104,
+            "appCpuPercent": 7.893074075696298,
+            "appRssBytes": 106532864,
+            "postgresCpuPercent": 23.96,
+            "postgresMemory": "404.3MiB / 17.59GiB",
+            "healthMilliseconds": 3.2932699999983015
+          },
+          {
+            "at": 23372.656734,
+            "appCpuPercent": 9.876146681368004,
+            "appRssBytes": 115523584,
+            "postgresCpuPercent": 19.69,
+            "postgresMemory": "405.7MiB / 17.59GiB",
+            "healthMilliseconds": 5.874087999996846
+          },
+          {
+            "at": 25907.344831,
+            "appCpuPercent": 7.10146547076321,
+            "appRssBytes": 109535232,
+            "postgresCpuPercent": 29.37,
+            "postgresMemory": "406.4MiB / 17.59GiB",
+            "healthMilliseconds": 2.632641000000149
+          },
+          {
+            "at": 28447.539456,
+            "appCpuPercent": 11.022777437772117,
+            "appRssBytes": 116547584,
+            "postgresCpuPercent": 7.07,
+            "postgresMemory": "407.2MiB / 17.59GiB",
+            "healthMilliseconds": 1.9452610000007553
+          },
+          {
+            "at": 30979.970807,
+            "appCpuPercent": 6.712916420532808,
+            "appRssBytes": 109977600,
+            "postgresCpuPercent": 16.72,
+            "postgresMemory": "410.8MiB / 17.59GiB",
+            "healthMilliseconds": 3.653182999998535
+          }
+        ],
+        "errors": []
+      }
+    },
+    {
+      "mode": "after",
+      "repetition": 0,
+      "metrics": {
+        "metrics": {
+          "http_req_blocked": {
+            "max": 16.833547,
+            "avg": 0.02199691036321225,
+            "med": 0.00668,
+            "p(90)": 0.009334,
+            "p(95)": 0.018928,
+            "p(99)": 0.224454
+          },
+          "http_req_duration": {
+            "p(95)": 8.183293,
+            "p(99)": 86.644006,
+            "max": 135.703914,
+            "avg": 4.31352636454516,
+            "med": 1.832421,
+            "p(90)": 5.19595,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "vus": {
+            "min": 1,
+            "max": 2,
+            "value": 1
+          },
+          "http_req_waiting": {
+            "avg": 3.9133396757747483,
+            "med": 1.500819,
+            "p(90)": 4.724873,
+            "p(95)": 7.65893,
+            "p(99)": 84.060316,
+            "max": 133.207079
+          },
+          "http_req_connecting": {
+            "avg": 0.011808820726424522,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.136786,
+            "max": 16.726465
+          },
+          "http_req_receiving": {
+            "avg": 0.35325390569810056,
+            "med": 0.248295,
+            "p(90)": 0.438193,
+            "p(95)": 0.577043,
+            "p(99)": 2.837299,
+            "max": 18.155029
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 3001,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_reqs": {
+            "count": 3001,
+            "rate": 100.00656605922698
+          },
+          "data_received": {
+            "count": 20001665,
+            "rate": 666543.7627847479
+          },
+          "scoreboard_encoded_bytes": {
+            "p(95)": 5804,
+            "p(99)": 5804,
+            "max": 5804,
+            "avg": 5804,
+            "med": 5804,
+            "p(90)": 5804
+          },
+          "scoreboard_decoded_bytes": {
+            "avg": 93124,
+            "med": 93124,
+            "p(90)": 93124,
+            "p(95)": 93124,
+            "p(99)": 93124,
+            "max": 93124
+          },
+          "iteration_duration": {
+            "max": 153.937802,
+            "avg": 11.408472335221594,
+            "med": 8.363354,
+            "p(90)": 14.556522,
+            "p(95)": 19.138717,
+            "p(99)": 97.11266
+          },
+          "http_req_sending": {
+            "avg": 0.04693278307230924,
+            "med": 0.029064,
+            "p(90)": 0.051969,
+            "p(95)": 0.082455,
+            "p(99)": 0.181796,
+            "max": 15.776411
+          },
+          "http_req_tls_handshaking": {
+            "avg": 0,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0
+          },
+          "http_req_failed": {
+            "passes": 0,
+            "fails": 3001,
+            "value": 0
+          },
+          "scoreboard_200_ms": {
+            "max": 135.703914,
+            "avg": 4.31352636454516,
+            "med": 1.832421,
+            "p(90)": 5.19595,
+            "p(95)": 8.183293,
+            "p(99)": 86.644006
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "data_sent": {
+            "count": 1248416,
+            "rate": 41602.731480638424
+          },
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 3001,
+            "value": 0
+          },
+          "scoreboard_parse_ms": {
+            "p(90)": 10,
+            "p(95)": 12,
+            "p(99)": 20,
+            "max": 66,
+            "avg": 6.58047317560813,
+            "med": 6
+          },
+          "server_5xx": {
+            "passes": 0,
+            "fails": 3001,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "vus_max": {
+            "max": 64,
+            "value": 64,
+            "min": 64
+          },
+          "iterations": {
+            "count": 3001,
+            "rate": 100.00656605922698
+          },
+          "http_req_duration{expected_response:true}": {
+            "med": 1.832421,
+            "p(90)": 5.19595,
+            "p(95)": 8.183293,
+            "p(99)": 86.644006,
+            "max": 135.703914,
+            "avg": 4.31352636454516
+          }
+        },
+        "root_group": {
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {},
+          "checks": {}
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3173.641304,
+            "appCpuPercent": 4.743271936160511,
+            "appRssBytes": 134602752,
+            "postgresCpuPercent": 15.48,
+            "postgresMemory": "409MiB / 17.59GiB",
+            "healthMilliseconds": 4.629920000000311
+          },
+          {
+            "at": 5708.057383,
+            "appCpuPercent": 6.707659464781987,
+            "appRssBytes": 125829120,
+            "postgresCpuPercent": 42.76,
+            "postgresMemory": "417.4MiB / 17.59GiB",
+            "healthMilliseconds": 8.423712000000705
+          },
+          {
+            "at": 8280.399908,
+            "appCpuPercent": 12.051272215390526,
+            "appRssBytes": 147673088,
+            "postgresCpuPercent": 17.82,
+            "postgresMemory": "421.8MiB / 17.59GiB",
+            "healthMilliseconds": 2.9898900000007416
+          },
+          {
+            "at": 10817.093526,
+            "appCpuPercent": 7.095851021295861,
+            "appRssBytes": 129241088,
+            "postgresCpuPercent": 30.34,
+            "postgresMemory": "424.5MiB / 17.59GiB",
+            "healthMilliseconds": 4.578322000001208
+          },
+          {
+            "at": 13358.736748,
+            "appCpuPercent": 8.655817547314282,
+            "appRssBytes": 143048704,
+            "postgresCpuPercent": 36.02,
+            "postgresMemory": "427.3MiB / 17.59GiB",
+            "healthMilliseconds": 6.724276999999347
+          },
+          {
+            "at": 15888.740254,
+            "appCpuPercent": 7.5098710159653015,
+            "appRssBytes": 134152192,
+            "postgresCpuPercent": 30.63,
+            "postgresMemory": "429.9MiB / 17.59GiB",
+            "healthMilliseconds": 5.552880999999616
+          },
+          {
+            "at": 18427.520444,
+            "appCpuPercent": 11.028918576838269,
+            "appRssBytes": 134627328,
+            "postgresCpuPercent": 33.95,
+            "postgresMemory": "432.1MiB / 17.59GiB",
+            "healthMilliseconds": 5.311219999999594
+          },
+          {
+            "at": 20974.382531,
+            "appCpuPercent": 7.460160523407255,
+            "appRssBytes": 133218304,
+            "postgresCpuPercent": 45.45,
+            "postgresMemory": "434.7MiB / 17.59GiB",
+            "healthMilliseconds": 4.682919999999285
+          },
+          {
+            "at": 23507.767665,
+            "appCpuPercent": 10.262948041756372,
+            "appRssBytes": 135442432,
+            "postgresCpuPercent": 7.26,
+            "postgresMemory": "435.7MiB / 17.59GiB",
+            "healthMilliseconds": 4.985758000002534
+          },
+          {
+            "at": 26047.859163,
+            "appCpuPercent": 7.480045508187433,
+            "appRssBytes": 135962624,
+            "postgresCpuPercent": 41.7,
+            "postgresMemory": "437.4MiB / 17.59GiB",
+            "healthMilliseconds": 3.2447549999997136
+          },
+          {
+            "at": 28582.562345,
+            "appCpuPercent": 11.046658322299779,
+            "appRssBytes": 141221888,
+            "postgresCpuPercent": 31.75,
+            "postgresMemory": "438.7MiB / 17.59GiB",
+            "healthMilliseconds": 6.330108999998629
+          },
+          {
+            "at": 31114.772267,
+            "appCpuPercent": 7.503327364341632,
+            "appRssBytes": 141611008,
+            "postgresCpuPercent": 41.49,
+            "postgresMemory": "441.9MiB / 17.59GiB",
+            "healthMilliseconds": 2.188237999998819
+          }
+        ],
+        "errors": []
+      }
+    },
+    {
+      "mode": "after",
+      "repetition": 1,
+      "metrics": {
+        "root_group": {
+          "groups": {},
+          "checks": {},
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e"
+        },
+        "metrics": {
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 3001,
+            "value": 0
+          },
+          "scoreboard_parse_ms": {
+            "p(90)": 8,
+            "p(95)": 10,
+            "p(99)": 15,
+            "max": 33,
+            "avg": 5.65078307230923,
+            "med": 5
+          },
+          "http_req_blocked": {
+            "avg": 0.017892275574808443,
+            "med": 0.005919,
+            "p(90)": 0.008353,
+            "p(95)": 0.010656,
+            "p(99)": 0.217363,
+            "max": 11.240463
+          },
+          "http_req_receiving": {
+            "avg": 0.3056666831056315,
+            "med": 0.223978,
+            "p(90)": 0.352173,
+            "p(95)": 0.432174,
+            "p(99)": 1.97843,
+            "max": 20.328269
+          },
+          "scoreboard_decoded_bytes": {
+            "avg": 93124,
+            "med": 93124,
+            "p(90)": 93124,
+            "p(95)": 93124,
+            "p(99)": 93124,
+            "max": 93124
+          },
+          "scoreboard_200_ms": {
+            "avg": 3.316251918360553,
+            "med": 1.50821,
+            "p(90)": 4.170625,
+            "p(95)": 5.879433,
+            "p(99)": 62.546956,
+            "max": 137.049168
+          },
+          "vus_max": {
+            "value": 64,
+            "min": 64,
+            "max": 64
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "http_req_duration{expected_response:true}": {
+            "max": 137.049168,
+            "avg": 3.316251918360553,
+            "med": 1.50821,
+            "p(90)": 4.170625,
+            "p(95)": 5.879433,
+            "p(99)": 62.546956
+          },
+          "http_req_connecting": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.128775,
+            "max": 11.119851,
+            "avg": 0.008965783405531487,
+            "med": 0
+          },
+          "http_req_failed": {
+            "passes": 0,
+            "fails": 3001,
+            "value": 0
+          },
+          "data_sent": {
+            "count": 1248416,
+            "rate": 41602.230216405376
+          },
+          "http_req_waiting": {
+            "p(99)": 62.169626,
+            "max": 136.88534,
+            "avg": 2.9710715284904987,
+            "med": 1.227836,
+            "p(90)": 3.743134,
+            "p(95)": 5.462813
+          },
+          "http_reqs": {
+            "count": 3001,
+            "rate": 100.0053610971283
+          },
+          "http_req_sending": {
+            "avg": 0.03951370676441183,
+            "med": 0.02595,
+            "p(90)": 0.041373,
+            "p(95)": 0.06641,
+            "p(99)": 0.130733,
+            "max": 22.203293
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 3001,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "scoreboard_encoded_bytes": {
+            "avg": 5804,
+            "med": 5804,
+            "p(90)": 5804,
+            "p(95)": 5804,
+            "p(99)": 5804,
+            "max": 5804
+          },
+          "data_received": {
+            "count": 20001665,
+            "rate": 666535.7317123602
+          },
+          "iteration_duration": {
+            "med": 7.085456,
+            "p(90)": 11.917778,
+            "p(95)": 14.653963,
+            "p(99)": 78.960796,
+            "max": 142.187235,
+            "avg": 9.41234293002331
+          },
+          "iterations": {
+            "count": 3001,
+            "rate": 100.0053610971283
+          },
+          "http_req_duration": {
+            "p(95)": 5.879433,
+            "p(99)": 62.546956,
+            "max": 137.049168,
+            "avg": 3.316251918360553,
+            "med": 1.50821,
+            "p(90)": 4.170625,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "server_5xx": {
+            "passes": 0,
+            "fails": 3001,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_req_tls_handshaking": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0,
+            "avg": 0,
+            "med": 0
+          },
+          "vus": {
+            "value": 1,
+            "min": 0,
+            "max": 1
+          }
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3200.560147,
+            "appCpuPercent": 4.745216884847349,
+            "appRssBytes": 125718528,
+            "postgresCpuPercent": 28.26,
+            "postgresMemory": "404.9MiB / 17.59GiB",
+            "healthMilliseconds": 6.084870000000592
+          },
+          {
+            "at": 5736.979337,
+            "appCpuPercent": 7.096618757248876,
+            "appRssBytes": 107016192,
+            "postgresCpuPercent": 43.16,
+            "postgresMemory": "413.9MiB / 17.59GiB",
+            "healthMilliseconds": 6.91546500000004
+          },
+          {
+            "at": 8269.082147,
+            "appCpuPercent": 8.293502110998409,
+            "appRssBytes": 125878272,
+            "postgresCpuPercent": 19.5,
+            "postgresMemory": "418.3MiB / 17.59GiB",
+            "healthMilliseconds": 7.65821700000015
+          },
+          {
+            "at": 10809.856972,
+            "appCpuPercent": 7.0844530663987495,
+            "appRssBytes": 116932608,
+            "postgresCpuPercent": 24.93,
+            "postgresMemory": "421.5MiB / 17.59GiB",
+            "healthMilliseconds": 7.580990000000384
+          },
+          {
+            "at": 13350.693223,
+            "appCpuPercent": 7.871424217963111,
+            "appRssBytes": 112189440,
+            "postgresCpuPercent": 33.25,
+            "postgresMemory": "424.5MiB / 17.59GiB",
+            "healthMilliseconds": 1.6800599999987753
+          },
+          {
+            "at": 15885.280404,
+            "appCpuPercent": 6.707206651811756,
+            "appRssBytes": 107118592,
+            "postgresCpuPercent": 37.96,
+            "postgresMemory": "427.9MiB / 17.59GiB",
+            "healthMilliseconds": 2.8544049999982235
+          },
+          {
+            "at": 18420.050211,
+            "appCpuPercent": 8.67928911700185,
+            "appRssBytes": 108564480,
+            "postgresCpuPercent": 6.41,
+            "postgresMemory": "429.6MiB / 17.59GiB",
+            "healthMilliseconds": 2.1256829999983893
+          },
+          {
+            "at": 20954.075959,
+            "appCpuPercent": 5.52480574084522,
+            "appRssBytes": 108924928,
+            "postgresCpuPercent": 27.52,
+            "postgresMemory": "430.8MiB / 17.59GiB",
+            "healthMilliseconds": 7.638418999998976
+          },
+          {
+            "at": 23487.318587,
+            "appCpuPercent": 7.5002685451415045,
+            "appRssBytes": 108457984,
+            "postgresCpuPercent": 32.08,
+            "postgresMemory": "432.3MiB / 17.59GiB",
+            "healthMilliseconds": 2.6161150000007183
+          },
+          {
+            "at": 26015.95221,
+            "appCpuPercent": 6.327527979722674,
+            "appRssBytes": 99315712,
+            "postgresCpuPercent": 32.39,
+            "postgresMemory": "434.6MiB / 17.59GiB",
+            "healthMilliseconds": 2.712910999998712
+          },
+          {
+            "at": 28546.292524,
+            "appCpuPercent": 9.089686423894992,
+            "appRssBytes": 105394176,
+            "postgresCpuPercent": 5.6,
+            "postgresMemory": "436.4MiB / 17.59GiB",
+            "healthMilliseconds": 5.268329999998969
+          },
+          {
+            "at": 31088.519421,
+            "appCpuPercent": 6.293694720514948,
+            "appRssBytes": 101568512,
+            "postgresCpuPercent": 60.64,
+            "postgresMemory": "440.3MiB / 17.59GiB",
+            "healthMilliseconds": 2.6507970000020578
+          }
+        ],
+        "errors": []
+      }
+    },
+    {
+      "mode": "before",
+      "repetition": 1,
+      "metrics": {
+        "metrics": {
+          "iteration_duration": {
+            "p(95)": 12.954453,
+            "p(99)": 38.814577,
+            "max": 99.095887,
+            "avg": 8.14788405498169,
+            "med": 6.635124,
+            "p(90)": 10.576979
+          },
+          "http_req_connecting": {
+            "p(95)": 0,
+            "p(99)": 0.122065,
+            "max": 9.073742,
+            "avg": 0.006152600133288903,
+            "med": 0,
+            "p(90)": 0
+          },
+          "http_req_duration": {
+            "p(90)": 2.889764,
+            "p(95)": 4.347841,
+            "p(99)": 29.805634,
+            "max": 83.130752,
+            "avg": 2.3735984658447236,
+            "med": 1.410057,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 3001,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_req_blocked": {
+            "med": 0.005588,
+            "p(90)": 0.007832,
+            "p(95)": 0.010847,
+            "p(99)": 0.20189,
+            "max": 9.194726,
+            "avg": 0.014552017327557544
+          },
+          "scoreboard_decoded_bytes": {
+            "avg": 93124,
+            "med": 93124,
+            "p(90)": 93124,
+            "p(95)": 93124,
+            "p(99)": 93124,
+            "max": 93124
+          },
+          "http_reqs": {
+            "count": 3001,
+            "rate": 100.00927307908047
+          },
+          "http_req_waiting": {
+            "p(99)": 28.992984,
+            "max": 82.632578,
+            "avg": 2.0903381419526803,
+            "med": 1.149763,
+            "p(90)": 2.581678,
+            "p(95)": 4.024602
+          },
+          "http_req_receiving": {
+            "max": 9.30006,
+            "avg": 0.25162790003332286,
+            "med": 0.215296,
+            "p(90)": 0.321005,
+            "p(95)": 0.386444,
+            "p(99)": 0.731541
+          },
+          "http_req_failed": {
+            "passes": 0,
+            "fails": 3001,
+            "value": 0
+          },
+          "vus": {
+            "min": 0,
+            "max": 1,
+            "value": 0
+          },
+          "http_req_sending": {
+            "avg": 0.031632423858713746,
+            "med": 0.024657,
+            "p(90)": 0.03963,
+            "p(95)": 0.063376,
+            "p(99)": 0.148525,
+            "max": 1.278443
+          },
+          "vus_max": {
+            "value": 64,
+            "min": 64,
+            "max": 64
+          },
+          "http_req_tls_handshaking": {
+            "avg": 0,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0
+          },
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 3001,
+            "value": 0
+          },
+          "scoreboard_encoded_bytes": {
+            "p(95)": 5802,
+            "p(99)": 5802,
+            "max": 5802,
+            "avg": 5802,
+            "med": 5802,
+            "p(90)": 5802
+          },
+          "data_sent": {
+            "rate": 41603.85760089748,
+            "count": 1248416
+          },
+          "scoreboard_parse_ms": {
+            "p(95)": 9,
+            "p(99)": 13,
+            "max": 82,
+            "avg": 5.373875374875042,
+            "med": 5,
+            "p(90)": 8
+          },
+          "server_5xx": {
+            "passes": 0,
+            "fails": 3001,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "data_received": {
+            "count": 19995663,
+            "rate": 666361.7865259132
+          },
+          "http_req_duration{expected_response:true}": {
+            "p(90)": 2.889764,
+            "p(95)": 4.347841,
+            "p(99)": 29.805634,
+            "max": 83.130752,
+            "avg": 2.3735984658447236,
+            "med": 1.410057
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "scoreboard_200_ms": {
+            "p(99)": 29.805634,
+            "max": 83.130752,
+            "avg": 2.3735984658447236,
+            "med": 1.410057,
+            "p(90)": 2.889764,
+            "p(95)": 4.347841
+          },
+          "iterations": {
+            "count": 3001,
+            "rate": 100.00927307908047
+          }
+        },
+        "root_group": {
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {},
+          "checks": {}
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3099.953761,
+            "appCpuPercent": 4.347709293393511,
+            "appRssBytes": 121188352,
+            "postgresCpuPercent": 12.54,
+            "postgresMemory": "374.6MiB / 17.59GiB",
+            "healthMilliseconds": 5.207162000000608
+          },
+          {
+            "at": 5631.370714,
+            "appCpuPercent": 5.925535096943787,
+            "appRssBytes": 107143168,
+            "postgresCpuPercent": 8.39,
+            "postgresMemory": "379.8MiB / 17.59GiB",
+            "healthMilliseconds": 7.40098399999988
+          },
+          {
+            "at": 8164.065618,
+            "appCpuPercent": 7.107054217849841,
+            "appRssBytes": 113971200,
+            "postgresCpuPercent": 8.74,
+            "postgresMemory": "382.8MiB / 17.59GiB",
+            "healthMilliseconds": 2.9206950000007055
+          },
+          {
+            "at": 10691.279671,
+            "appCpuPercent": 6.331082236982162,
+            "appRssBytes": 107966464,
+            "postgresCpuPercent": 18.15,
+            "postgresMemory": "385.8MiB / 17.59GiB",
+            "healthMilliseconds": 2.122317999999723
+          },
+          {
+            "at": 13218.593661,
+            "appCpuPercent": 7.122185874498323,
+            "appRssBytes": 119431168,
+            "postgresCpuPercent": 18.48,
+            "postgresMemory": "387.5MiB / 17.59GiB",
+            "healthMilliseconds": 6.866285999998581
+          },
+          {
+            "at": 15761.644085,
+            "appCpuPercent": 6.291656606176679,
+            "appRssBytes": 113410048,
+            "postgresCpuPercent": 20.81,
+            "postgresMemory": "389.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.3032429999984743
+          },
+          {
+            "at": 18292.615232,
+            "appCpuPercent": 7.111894586919998,
+            "appRssBytes": 121434112,
+            "postgresCpuPercent": 18.89,
+            "postgresMemory": "390.4MiB / 17.59GiB",
+            "healthMilliseconds": 4.417007000000012
+          },
+          {
+            "at": 20823.535277,
+            "appCpuPercent": 5.92669848643915,
+            "appRssBytes": 121860096,
+            "postgresCpuPercent": 21.83,
+            "postgresMemory": "391.7MiB / 17.59GiB",
+            "healthMilliseconds": 2.9395629999999073
+          },
+          {
+            "at": 23350.169724,
+            "appCpuPercent": 7.51988481062611,
+            "appRssBytes": 128823296,
+            "postgresCpuPercent": 18.39,
+            "postgresMemory": "392.8MiB / 17.59GiB",
+            "healthMilliseconds": 7.075056000001496
+          },
+          {
+            "at": 25882.717092,
+            "appCpuPercent": 5.922890205147785,
+            "appRssBytes": 127795200,
+            "postgresCpuPercent": 20.97,
+            "postgresMemory": "393.2MiB / 17.59GiB",
+            "healthMilliseconds": 2.09088999999949
+          },
+          {
+            "at": 28409.045112,
+            "appCpuPercent": 7.520796923275226,
+            "appRssBytes": 137506816,
+            "postgresCpuPercent": 18.93,
+            "postgresMemory": "393.7MiB / 17.59GiB",
+            "healthMilliseconds": 3.5720750000000407
+          },
+          {
+            "at": 30940.653173,
+            "appCpuPercent": 7.110105342645298,
+            "appRssBytes": 135532544,
+            "postgresCpuPercent": 26,
+            "postgresMemory": "397.5MiB / 17.59GiB",
+            "healthMilliseconds": 2.545287000000826
+          }
+        ],
+        "errors": []
+      }
+    },
+    {
+      "mode": "before",
+      "repetition": 2,
+      "metrics": {
+        "root_group": {
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": {},
+          "checks": {}
+        },
+        "metrics": {
+          "scoreboard_page_violation": {
+            "passes": 0,
+            "fails": 3000,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "server_5xx": {
+            "passes": 0,
+            "fails": 3000,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_req_failed": {
+            "fails": 3000,
+            "passes": 0,
+            "value": 0
+          },
+          "scoreboard_decoded_bytes": {
+            "avg": 93124,
+            "med": 93124,
+            "p(90)": 93124,
+            "p(95)": 93124,
+            "p(99)": 93124,
+            "max": 93124
+          },
+          "data_received": {
+            "count": 19989000,
+            "rate": 666283.3712549714
+          },
+          "http_req_sending": {
+            "p(99)": 0.13662339999999984,
+            "max": 1.761984,
+            "avg": 0.03198968533333337,
+            "med": 0.025473500000000003,
+            "p(90)": 0.0432611,
+            "p(95)": 0.06811774999999987
+          },
+          "http_req_receiving": {
+            "avg": 0.26469894233333346,
+            "med": 0.21674749999999998,
+            "p(90)": 0.33019289999999996,
+            "p(95)": 0.40497629999999896,
+            "p(99)": 0.9433941899999954,
+            "max": 15.275878
+          },
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 3000,
+            "value": 0
+          },
+          "http_req_duration": {
+            "p(90)": 3.0619469999999995,
+            "p(95)": 4.214747949999998,
+            "p(99)": 30.75382880999998,
+            "max": 104.488578,
+            "avg": 2.4053488490000077,
+            "med": 1.4354325000000001,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "iteration_duration": {
+            "avg": 8.238887879999977,
+            "med": 6.788247,
+            "p(90)": 10.8237488,
+            "p(95)": 12.944653899999999,
+            "p(99)": 36.591471279999126,
+            "max": 114.138752
+          },
+          "vus": {
+            "value": 1,
+            "min": 0,
+            "max": 1
+          },
+          "http_req_blocked": {
+            "avg": 0.01970522400000004,
+            "med": 0.005849,
+            "p(90)": 0.0081021,
+            "p(95)": 0.010316049999999993,
+            "p(99)": 0.2259318399999994,
+            "max": 16.697742
+          },
+          "http_req_connecting": {
+            "avg": 0.011006692666666668,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.14090539999999993,
+            "max": 16.592774
+          },
+          "iterations": {
+            "count": 3000,
+            "rate": 99.9975043156193
+          },
+          "vus_max": {
+            "value": 64,
+            "min": 64,
+            "max": 64
+          },
+          "http_reqs": {
+            "count": 3000,
+            "rate": 99.9975043156193
+          },
+          "http_req_tls_handshaking": {
+            "avg": 0,
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0
+          },
+          "scoreboard_encoded_bytes": {
+            "avg": 5802,
+            "med": 5802,
+            "p(90)": 5802,
+            "p(95)": 5802,
+            "p(99)": 5802,
+            "max": 5802
+          },
+          "dropped_iterations": {
+            "rate": 0,
+            "count": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "data_sent": {
+            "count": 1248000,
+            "rate": 41598.961795297626
+          },
+          "http_req_duration{expected_response:true}": {
+            "avg": 2.4053488490000077,
+            "med": 1.4354325000000001,
+            "p(90)": 3.0619469999999995,
+            "p(95)": 4.214747949999998,
+            "p(99)": 30.75382880999998,
+            "max": 104.488578
+          },
+          "scoreboard_parse_ms": {
+            "med": 5,
+            "p(90)": 8,
+            "p(95)": 9,
+            "p(99)": 13,
+            "max": 23,
+            "avg": 5.412
+          },
+          "http_req_waiting": {
+            "p(99)": 30.394746449999953,
+            "max": 96.728107,
+            "avg": 2.108660221333336,
+            "med": 1.1745475,
+            "p(90)": 2.7314244999999997,
+            "p(95)": 3.875750549999994
+          },
+          "scoreboard_200_ms": {
+            "med": 1.4354325000000001,
+            "p(90)": 3.0619469999999995,
+            "p(95)": 4.214747949999998,
+            "p(99)": 30.75382880999998,
+            "max": 104.488578,
+            "avg": 2.4053488490000077
+          }
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3156.398202,
+            "appCpuPercent": 4.3463944275806385,
+            "appRssBytes": 120291328,
+            "postgresCpuPercent": 10.92,
+            "postgresMemory": "380.5MiB / 17.59GiB",
+            "healthMilliseconds": 3.420701000000008
+          },
+          {
+            "at": 5686.305322,
+            "appCpuPercent": 6.324342847811741,
+            "appRssBytes": 116113408,
+            "postgresCpuPercent": 9.36,
+            "postgresMemory": "385.7MiB / 17.59GiB",
+            "healthMilliseconds": 3.097563000000264
+          },
+          {
+            "at": 8217.52285,
+            "appCpuPercent": 6.716135540287713,
+            "appRssBytes": 117370880,
+            "postgresCpuPercent": 12.25,
+            "postgresMemory": "387.6MiB / 17.59GiB",
+            "healthMilliseconds": 6.492564999998649
+          },
+          {
+            "at": 10759.588742,
+            "appCpuPercent": 6.294093339733145,
+            "appRssBytes": 110657536,
+            "postgresCpuPercent": 24.94,
+            "postgresMemory": "390.6MiB / 17.59GiB",
+            "healthMilliseconds": 3.7813459999997576
+          },
+          {
+            "at": 13295.645436,
+            "appCpuPercent": 8.280571979989022,
+            "appRssBytes": 130060288,
+            "postgresCpuPercent": 21.12,
+            "postgresMemory": "392.2MiB / 17.59GiB",
+            "healthMilliseconds": 4.238948000000164
+          },
+          {
+            "at": 15828.132008,
+            "appCpuPercent": 6.712770045044883,
+            "appRssBytes": 121475072,
+            "postgresCpuPercent": 23.3,
+            "postgresMemory": "393.4MiB / 17.59GiB",
+            "healthMilliseconds": 3.947007000002486
+          },
+          {
+            "at": 18363.04836,
+            "appCpuPercent": 8.678787362211153,
+            "appRssBytes": 114073600,
+            "postgresCpuPercent": 18.7,
+            "postgresMemory": "394.6MiB / 17.59GiB",
+            "healthMilliseconds": 3.4599710000002233
+          },
+          {
+            "at": 20890.361176,
+            "appCpuPercent": 6.330834829272678,
+            "appRssBytes": 109309952,
+            "postgresCpuPercent": 26.92,
+            "postgresMemory": "396.7MiB / 17.59GiB",
+            "healthMilliseconds": 2.7944339999994554
+          },
+          {
+            "at": 23419.996521,
+            "appCpuPercent": 10.673475152601481,
+            "appRssBytes": 110809088,
+            "postgresCpuPercent": 19.08,
+            "postgresMemory": "397.4MiB / 17.59GiB",
+            "healthMilliseconds": 2.998913999999786
+          },
+          {
+            "at": 25951.83566,
+            "appCpuPercent": 5.529577209051907,
+            "appRssBytes": 105635840,
+            "postgresCpuPercent": 15.02,
+            "postgresMemory": "399.3MiB / 17.59GiB",
+            "healthMilliseconds": 2.4345809999977064
+          },
+          {
+            "at": 28475.848519,
+            "appCpuPercent": 7.5276954046611735,
+            "appRssBytes": 113233920,
+            "postgresCpuPercent": 11.44,
+            "postgresMemory": "399.4MiB / 17.59GiB",
+            "healthMilliseconds": 3.327450000000681
+          },
+          {
+            "at": 31008.768705,
+            "appCpuPercent": 5.92201842083626,
+            "appRssBytes": 99467264,
+            "postgresCpuPercent": 12.92,
+            "postgresMemory": "403.7MiB / 17.59GiB",
+            "healthMilliseconds": 3.017141000000265
+          }
+        ],
+        "errors": []
+      }
+    },
+    {
+      "mode": "after",
+      "repetition": 2,
+      "metrics": {
+        "root_group": {
+          "groups": {},
+          "checks": {},
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e"
+        },
+        "metrics": {
+          "http_reqs": {
+            "count": 3001,
+            "rate": 100.0078788179764
+          },
+          "http_req_connecting": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0.119711,
+            "max": 10.654517,
+            "avg": 0.009159058980339885,
+            "med": 0
+          },
+          "server_5xx": {
+            "fails": 3001,
+            "passes": 0,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "scoreboard_304_ratio": {
+            "passes": 0,
+            "fails": 3001,
+            "value": 0
+          },
+          "data_sent": {
+            "count": 1248416,
+            "rate": 41603.277588278186
+          },
+          "dropped_iterations": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+              "count==0": false
+            }
+          },
+          "iteration_duration": {
+            "p(95)": 15.324126,
+            "p(99)": 71.509809,
+            "max": 139.095009,
+            "avg": 9.55854973642119,
+            "med": 7.179389,
+            "p(90)": 12.420186
+          },
+          "scoreboard_200_ms": {
+            "avg": 3.2849844181939365,
+            "med": 1.533163,
+            "p(90)": 4.201768,
+            "p(95)": 6.194229,
+            "p(99)": 60.506099,
+            "max": 131.267025
+          },
+          "iterations": {
+            "count": 3001,
+            "rate": 100.0078788179764
+          },
+          "scoreboard_page_violation": {
+            "fails": 3001,
+            "passes": 0,
+            "thresholds": {
+              "rate==0": false
+            },
+            "value": 0
+          },
+          "http_req_receiving": {
+            "p(99)": 1.609052,
+            "max": 28.338616,
+            "avg": 0.3074895948017328,
+            "med": 0.225952,
+            "p(90)": 0.354786,
+            "p(95)": 0.44323
+          },
+          "http_req_failed": {
+            "passes": 0,
+            "fails": 3001,
+            "value": 0
+          },
+          "vus": {
+            "value": 1,
+            "min": 1,
+            "max": 2
+          },
+          "vus_max": {
+            "max": 64,
+            "value": 64,
+            "min": 64
+          },
+          "http_req_duration{expected_response:true}": {
+            "med": 1.533163,
+            "p(90)": 4.201768,
+            "p(95)": 6.194229,
+            "p(99)": 60.506099,
+            "max": 131.267025,
+            "avg": 3.2849844181939365
+          },
+          "http_req_sending": {
+            "med": 0.02654,
+            "p(90)": 0.045228,
+            "p(95)": 0.068504,
+            "p(99)": 0.158129,
+            "max": 6.602367,
+            "avg": 0.036887530156614425
+          },
+          "scoreboard_encoded_bytes": {
+            "p(90)": 5802,
+            "p(95)": 5802,
+            "p(99)": 5802,
+            "max": 5802,
+            "avg": 5802,
+            "med": 5802
+          },
+          "data_received": {
+            "rate": 666352.4965641767,
+            "count": 19995663
+          },
+          "http_req_blocked": {
+            "p(90)": 0.008483,
+            "p(95)": 0.012058,
+            "p(99)": 0.216608,
+            "max": 10.772394,
+            "avg": 0.018321262245917992,
+            "med": 0.006109
+          },
+          "http_req_tls_handshaking": {
+            "med": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0,
+            "avg": 0
+          },
+          "scoreboard_decoded_bytes": {
+            "avg": 93124,
+            "med": 93124,
+            "p(90)": 93124,
+            "p(95)": 93124,
+            "p(99)": 93124,
+            "max": 93124
+          },
+          "http_req_duration": {
+            "avg": 3.2849844181939365,
+            "med": 1.533163,
+            "p(90)": 4.201768,
+            "p(95)": 6.194229,
+            "p(99)": 60.506099,
+            "max": 131.267025,
+            "thresholds": {
+              "p(95)<800": false
+            }
+          },
+          "http_req_waiting": {
+            "p(99)": 57.978799,
+            "max": 131.113994,
+            "avg": 2.9406072932355847,
+            "med": 1.255748,
+            "p(90)": 3.731491,
+            "p(95)": 5.681133
+          },
+          "scoreboard_parse_ms": {
+            "p(99)": 17,
+            "max": 29,
+            "avg": 5.8263912029323555,
+            "med": 5,
+            "p(90)": 9,
+            "p(95)": 10
+          }
+        }
+      },
+      "resources": {
+        "before": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "after": {
+          "teams": 500,
+          "version": "026e1b463b710eb645f7d66545658cb0ebff61fc08e8054368d8eba548a95ae3",
+          "firstSolveCount": 10000
+        },
+        "samples": [
+          {
+            "at": 3187.656943,
+            "appCpuPercent": 4.725775784091119,
+            "appRssBytes": 133894144,
+            "postgresCpuPercent": 12.97,
+            "postgresMemory": "404.5MiB / 17.59GiB",
+            "healthMilliseconds": 4.769600999999966
+          },
+          {
+            "at": 5722.730179,
+            "appCpuPercent": 6.705920664770885,
+            "appRssBytes": 114814976,
+            "postgresCpuPercent": 41.21,
+            "postgresMemory": "415.2MiB / 17.59GiB",
+            "healthMilliseconds": 3.0069860000003246
+          },
+          {
+            "at": 8257.257284,
+            "appCpuPercent": 9.863772989715178,
+            "appRssBytes": 126873600,
+            "postgresCpuPercent": 31.12,
+            "postgresMemory": "420.3MiB / 17.59GiB",
+            "healthMilliseconds": 2.9940370000003895
+          },
+          {
+            "at": 10787.731497,
+            "appCpuPercent": 6.322925528267373,
+            "appRssBytes": 122032128,
+            "postgresCpuPercent": 15.1,
+            "postgresMemory": "423.7MiB / 17.59GiB",
+            "healthMilliseconds": 3.1688300000005256
+          },
+          {
+            "at": 13321.737316,
+            "appCpuPercent": 7.498009616843741,
+            "appRssBytes": 112635904,
+            "postgresCpuPercent": 27.89,
+            "postgresMemory": "425.7MiB / 17.59GiB",
+            "healthMilliseconds": 3.6802090000001044
+          },
+          {
+            "at": 15850.71367,
+            "appCpuPercent": 7.512921174588418,
+            "appRssBytes": 108474368,
+            "postgresCpuPercent": 39.43,
+            "postgresMemory": "429MiB / 17.59GiB",
+            "healthMilliseconds": 10.420012000002316
+          },
+          {
+            "at": 18391.418992,
+            "appCpuPercent": 7.871829852450713,
+            "appRssBytes": 124948480,
+            "postgresCpuPercent": 21.48,
+            "postgresMemory": "431.1MiB / 17.59GiB",
+            "healthMilliseconds": 7.115527000001748
+          },
+          {
+            "at": 20927.725426,
+            "appCpuPercent": 6.702660125018626,
+            "appRssBytes": 123916288,
+            "postgresCpuPercent": 17.8,
+            "postgresMemory": "433.1MiB / 17.59GiB",
+            "healthMilliseconds": 8.443124000001262
+          },
+          {
+            "at": 23468.399765,
+            "appCpuPercent": 8.26552214018328,
+            "appRssBytes": 114720768,
+            "postgresCpuPercent": 34.31,
+            "postgresMemory": "434.8MiB / 17.59GiB",
+            "healthMilliseconds": 3.319368000000395
+          },
+          {
+            "at": 25997.124374,
+            "appCpuPercent": 7.118212847668773,
+            "appRssBytes": 107696128,
+            "postgresCpuPercent": 38.29,
+            "postgresMemory": "436.4MiB / 17.59GiB",
+            "healthMilliseconds": 3.473111000002973
+          },
+          {
+            "at": 28529.746898,
+            "appCpuPercent": 7.89695258984437,
+            "appRssBytes": 112365568,
+            "postgresCpuPercent": 6.25,
+            "postgresMemory": "438.1MiB / 17.59GiB",
+            "healthMilliseconds": 4.097453999998834
+          },
+          {
+            "at": 31060.759406,
+            "appCpuPercent": 7.111778366604579,
+            "appRssBytes": 103530496,
+            "postgresCpuPercent": 51.08,
+            "postgresMemory": "441.9MiB / 17.59GiB",
+            "healthMilliseconds": 2.466062999999849
+          }
+        ],
+        "errors": []
+      }
+    }
+  ],
+  "exporter": {
+    "metrics": {
+      "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {}
+      },
+      "metrics": {
+        "vus": {
+          "value": 1,
+          "min": 0,
+          "max": 1
+        },
+        "http_req_duration": {
+          "avg": 0.3966771618181813,
+          "med": 0.3055795,
+          "p(90)": 0.5327971,
+          "p(95)": 0.7676511499999975,
+          "p(99)": 2.144991169999996,
+          "max": 14.213216
+        },
+        "metrics_violation": {
+          "passes": 0,
+          "fails": 3300,
+          "thresholds": {
+            "rate==0": false
+          },
+          "value": 0
+        },
+        "http_reqs": {
+          "count": 3300,
+          "rate": 109.99838790395962
+        },
+        "http_req_duration{expected_response:true}": {
+          "p(99)": 2.144991169999996,
+          "max": 14.213216,
+          "avg": 0.3966771618181813,
+          "med": 0.3055795,
+          "p(90)": 0.5327971,
+          "p(95)": 0.7676511499999975
+        },
+        "http_req_duration{endpoint:health}": {
+          "p(90)": 1.1164079000000007,
+          "p(95)": 1.4617649000000004,
+          "p(99)": 3.048927579999999,
+          "max": 4.253971,
+          "avg": 0.4929628633333336,
+          "med": 0.299773,
+          "thresholds": {
+            "p(95)<1000": false
+          }
+        },
+        "dropped_iterations": {
+          "count": 0,
+          "rate": 0,
+          "thresholds": {
+            "count==0": false
+          }
+        },
+        "http_req_sending": {
+          "p(90)": 0.036907,
+          "p(95)": 0.051628999999999994,
+          "p(99)": 0.12423825999999905,
+          "max": 1.365685,
+          "avg": 0.027641676363636375,
+          "med": 0.022183500000000002
+        },
+        "http_req_receiving": {
+          "med": 0.067657,
+          "p(90)": 0.12068899999999999,
+          "p(95)": 0.1633210499999997,
+          "p(99)": 0.42041705999999834,
+          "max": 13.340567,
+          "avg": 0.0911733339393939
+        },
+        "data_received": {
+          "count": 35100949,
+          "rate": 1170014.4860300315
+        },
+        "http_req_duration{endpoint:metrics}": {
+          "avg": 0.3870485916666662,
+          "med": 0.305902,
+          "p(90)": 0.5058436000000001,
+          "p(95)": 0.68806,
+          "p(99)": 2.0350838899999997,
+          "max": 14.213216,
+          "thresholds": {
+            "p(95)<250": false
+          }
+        },
+        "http_req_blocked": {
+          "avg": 0.007463838787878791,
+          "med": 0.005388,
+          "p(90)": 0.007241999999999999,
+          "p(95)": 0.008433499999999997,
+          "p(99)": 0.04460360999999984,
+          "max": 0.669527
+        },
+        "vus_max": {
+          "value": 10,
+          "min": 10,
+          "max": 10
+        },
+        "http_req_failed": {
+          "passes": 0,
+          "fails": 3300,
+          "thresholds": {
+            "rate==0": false
+          },
+          "value": 0
+        },
+        "data_sent": {
+          "count": 521400,
+          "rate": 17379.74528882562
+        },
+        "server_5xx": {
+          "passes": 0,
+          "fails": 3300,
+          "thresholds": {
+            "rate==0": false
+          },
+          "value": 0
+        },
+        "http_req_tls_handshaking": {
+          "avg": 0,
+          "med": 0,
+          "p(90)": 0,
+          "p(95)": 0,
+          "p(99)": 0,
+          "max": 0
+        },
+        "iterations": {
+          "count": 3300,
+          "rate": 109.99838790395962
+        },
+        "iteration_duration": {
+          "avg": 1.2095218233333351,
+          "med": 1.0718555,
+          "p(90)": 1.6740263999999998,
+          "p(95)": 2.188547249999999,
+          "p(99)": 3.9175976399999963,
+          "max": 15.024824
+        },
+        "http_req_connecting": {
+          "p(95)": 0,
+          "p(99)": 0,
+          "max": 0.500161,
+          "avg": 0.0005655315151515153,
+          "med": 0,
+          "p(90)": 0
+        },
+        "http_req_waiting": {
+          "avg": 0.2778621515151509,
+          "med": 0.204204,
+          "p(90)": 0.3678452,
+          "p(95)": 0.5696616499999967,
+          "p(99)": 1.7423087599999991,
+          "max": 5.224688
+        }
+      }
+    },
+    "resources": {
+      "samples": [
+        {
+          "appCpuPercent": 4.470234636184504,
+          "appRssBytes": 59826176,
+          "postgres": {
+            "BlockIO": "258MB / 1.76GB",
+            "CPUPerc": "32.09%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.19%",
+            "MemUsage": "395MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "90.3MB / 143MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 3.006166796455246,
+          "appRssBytes": 59785216,
+          "postgres": {
+            "BlockIO": "258MB / 1.76GB",
+            "CPUPerc": "24.60%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.23%",
+            "MemUsage": "401.8MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "90.5MB / 144MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 3.986363138041065,
+          "appRssBytes": 59772928,
+          "postgres": {
+            "BlockIO": "258MB / 1.76GB",
+            "CPUPerc": "30.94%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.26%",
+            "MemUsage": "407.2MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "90.7MB / 144MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 2.9929014184582914,
+          "appRssBytes": 59789312,
+          "postgres": {
+            "BlockIO": "258MB / 1.76GB",
+            "CPUPerc": "29.93%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.27%",
+            "MemUsage": "409.2MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "90.8MB / 144MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 3.9924945613764993,
+          "appRssBytes": 59727872,
+          "postgres": {
+            "BlockIO": "258MB / 1.76GB",
+            "CPUPerc": "22.73%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.29%",
+            "MemUsage": "411.9MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "91MB / 144MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 2.940688224086149,
+          "appRssBytes": 59752448,
+          "postgres": {
+            "BlockIO": "258MB / 1.76GB",
+            "CPUPerc": "29.61%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.30%",
+            "MemUsage": "413.5MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "91.1MB / 144MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 4.059945076880304,
+          "appRssBytes": 59756544,
+          "postgres": {
+            "BlockIO": "258MB / 1.76GB",
+            "CPUPerc": "9.16%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.30%",
+            "MemUsage": "415.1MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "91.3MB / 144MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 2.9909524451227902,
+          "appRssBytes": 59764736,
+          "postgres": {
+            "BlockIO": "258MB / 1.77GB",
+            "CPUPerc": "30.46%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.31%",
+            "MemUsage": "416.1MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "91.4MB / 145MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 3.4912563944935706,
+          "appRssBytes": 59777024,
+          "postgres": {
+            "BlockIO": "258MB / 1.77GB",
+            "CPUPerc": "7.15%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.32%",
+            "MemUsage": "417.9MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "91.6MB / 145MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 4.484785682990233,
+          "appRssBytes": 59781120,
+          "postgres": {
+            "BlockIO": "258MB / 1.77GB",
+            "CPUPerc": "29.70%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.33%",
+            "MemUsage": "418.8MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "91.8MB / 145MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 2.9978045668189064,
+          "appRssBytes": 59785216,
+          "postgres": {
+            "BlockIO": "258MB / 1.77GB",
+            "CPUPerc": "18.99%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.33%",
+            "MemUsage": "419.5MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "91.9MB / 145MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 3.4924264096524755,
+          "appRssBytes": 59789312,
+          "postgres": {
+            "BlockIO": "258MB / 1.77GB",
+            "CPUPerc": "34.30%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.34%",
+            "MemUsage": "421.1MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "92.1MB / 145MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 3.491250416733107,
+          "appRssBytes": 58744832,
+          "postgres": {
+            "BlockIO": "258MB / 1.77GB",
+            "CPUPerc": "28.87%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.34%",
+            "MemUsage": "421.6MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "92.2MB / 145MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 3.4972951604472495,
+          "appRssBytes": 58753024,
+          "postgres": {
+            "BlockIO": "258MB / 1.78GB",
+            "CPUPerc": "21.37%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.35%",
+            "MemUsage": "423.4MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "92.4MB / 146MB",
+            "PIDs": "30"
+          }
+        },
+        {
+          "appCpuPercent": 3.488332125544847,
+          "appRssBytes": 58757120,
+          "postgres": {
+            "BlockIO": "258MB / 1.78GB",
+            "CPUPerc": "40.89%",
+            "Container": "rsctf-architecture-pg",
+            "ID": "49e3ea053898",
+            "MemPerc": "2.37%",
+            "MemUsage": "426.3MiB / 17.59GiB",
+            "Name": "rsctf-architecture-pg",
+            "NetIO": "92.6MB / 146MB",
+            "PIDs": "30"
+          }
+        }
+      ],
+      "errors": [],
+      "responseBytes": 10960,
+      "series": 186
+    }
+  },
+  "outage": {
+    "root_group": {
+      "id": "d41d8cd98f00b204e9800998ecf8427e",
+      "groups": {},
+      "checks": {
+        "malformed request rejected": {
+          "name": "malformed request rejected",
+          "path": "::malformed request rejected",
+          "id": "4c227cdff53aa53b95380327a8093114",
+          "passes": 15,
+          "fails": 0
+        }
+      },
+      "name": "",
+      "path": ""
+    },
+    "metrics": {
+      "unexpected_status": {
+        "passes": 0,
+        "fails": 15,
+        "thresholds": {
+          "rate==0": false
+        },
+        "value": 0
+      },
+      "data_sent": {
+        "count": 2160,
+        "rate": 143.99532366546677
+      },
+      "vus_max": {
+        "value": 32,
+        "min": 32,
+        "max": 32
+      },
+      "http_req_duration{expected_response:true}": {
+        "p(99)": 2.0263947999999994,
+        "max": 2.177361,
+        "avg": 0.6529808,
+        "med": 0.454858,
+        "p(90)": 1.0608978,
+        "p(95)": 1.4225299999999987
+      },
+      "http_req_failed": {
+        "passes": 0,
+        "fails": 15,
+        "thresholds": {
+          "rate==0": false
+        },
+        "value": 0
+      },
+      "http_req_receiving": {
+        "p(90)": 0.12009619999999999,
+        "p(95)": 0.14901299999999992,
+        "p(99)": 0.18243379999999995,
+        "max": 0.190789,
+        "avg": 0.08588726666666667,
+        "med": 0.077247
+      },
+      "iterations": {
+        "count": 15,
+        "rate": 0.9999675254546303
+      },
+      "http_req_connecting": {
+        "max": 0.491002,
+        "avg": 0.20236946666666664,
+        "med": 0.156742,
+        "p(90)": 0.33502879999999996,
+        "p(95)": 0.4147481999999999,
+        "p(99)": 0.4757512399999999
+      },
+      "http_req_sending": {
+        "med": 0.093341,
+        "p(90)": 0.14911539999999998,
+        "p(95)": 0.28509129999999955,
+        "p(99)": 0.5152070599999998,
+        "max": 0.572736,
+        "avg": 0.12723766666666667
+      },
+      "iteration_duration": {
+        "p(99)": 4.113465519999999,
+        "max": 4.325689,
+        "avg": 1.4992593333333333,
+        "med": 1.18362,
+        "p(90)": 2.4073186,
+        "p(95)": 3.2645715999999982
+      },
+      "vus": {
+        "value": 0,
+        "min": 0,
+        "max": 0
+      },
+      "http_reqs": {
+        "count": 15,
+        "rate": 0.9999675254546303
+      },
+      "http_req_waiting": {
+        "p(99)": 1.4402377999999996,
+        "max": 1.527378,
+        "avg": 0.43985586666666665,
+        "med": 0.297499,
+        "p(90)": 0.8613824,
+        "p(95)": 1.0916769999999993
+      },
+      "data_received": {
+        "count": 10380,
+        "rate": 691.9775276146042
+      },
+      "dropped_iterations": {
+        "count": 0,
+        "rate": 0,
+        "thresholds": {
+          "count==0": false
+        }
+      },
+      "checks": {
+        "passes": 15,
+        "fails": 0,
+        "thresholds": {
+          "rate==1": false
+        },
+        "value": 1
+      },
+      "http_req_tls_handshaking": {
+        "avg": 0,
+        "med": 0,
+        "p(90)": 0,
+        "p(95)": 0,
+        "p(99)": 0,
+        "max": 0
+      },
+      "http_req_blocked": {
+        "avg": 0.31619879999999995,
+        "med": 0.269727,
+        "p(90)": 0.5023516,
+        "p(95)": 0.5561842999999999,
+        "p(99)": 0.6197896599999999,
+        "max": 0.635691
+      },
+      "http_req_duration": {
+        "p(90)": 1.0608978,
+        "p(95)": 1.4225299999999987,
+        "p(99)": 2.0263947999999994,
+        "max": 2.177361,
+        "avg": 0.6529808,
+        "med": 0.454858,
+        "thresholds": {
+          "p(95)<1000": false
+        }
+      }
+    }
+  },
+  "diagnostics": "/workspace/rsctf-architecture-platform-6df9953702ef4de7a7d00f5f01de4390"
+}

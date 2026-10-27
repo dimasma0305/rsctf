@@ -1,8 +1,54 @@
 # RSCTF load-test report
 
-## Architecture API and exporter — 27 October 2026
+## Architecture API after idle-poll correction — 27 October 2026
 
-The [complete run](results/architecture-platform.json) compares separately built
+The [second complete comparison](results/architecture-platform.json) uses baseline
+`bff5d1a31ae6f964d877fd1fc11cf8328e8e99de` and candidate
+`5ebecd70eb844b4ee23e4a81eab987f2788e5344`, with the same 100/s workload,
+cloned fixture, CPU affinity, process role and alternating three-repetition design
+described below. Empty control-job polls now check availability before opening
+the serialized admission transaction; real claims retain all capacity and lease
+checks. PostgreSQL regressions verify zero admission transactions for unavailable
+work and correct arrival, reclaim and stale-owner behavior.
+
+| Median across three repetitions | Baseline | Corrected candidate |
+| --- | ---: | ---: |
+| HTTP p95 | 5.27 ms | 4.95 ms |
+| HTTP p99 | 44.90 ms | 37.79 ms |
+| Mean app CPU (% of one core) | 7.88 | 7.34 |
+| Peak app RSS | 125.48 MiB | 119.04 MiB |
+| Mean PostgreSQL CPU (% of one core) | 17.56 | 19.05 |
+
+All **18,004 requests** completed with zero drops, 5xx, contract violations or
+integrity errors. Median p95 fell **6.2%** and app CPU **6.9%** in this comparison;
+PostgreSQL CPU remained **8.5% higher**, so this is not a database CPU saving.
+Candidate p95 values were 4.85/4.95/4.96 ms versus baseline 5.03/5.27/7.04 ms.
+These short samples show the earlier API regression is absent in this workload;
+host variability and the small absolute difference limit broader speedup claims.
+Do not compare absolute timings across the two separately timed experiments or
+attribute the entire change to the cache implementation.
+
+New per-database counters, sampled outside the load window, retain commits,
+rollbacks, cache/block accesses and row activity. Median commits were 11,495 versus
+11,832; PostgreSQL counts standalone reads as transactions too. Neither side
+reported rollbacks, deadlocks, physical block reads or temporary bytes. Additional
+registered workers still perform durable polling. Exporter p95 was 0.861 ms at
+100 scrapes/s plus 10 health reads/s; 186 series and 10,960 bytes remained bounded.
+The Redis stop/start and all 15 expected malformed-request responses passed again.
+This remains a development-role API measurement, excluding VPN and runtime workloads.
+
+The [required architecture CI job](https://github.com/dimasma0305/rsctf/actions/runs/40510648051/job/122219523709)
+passed real Landlock/seccomp, Docker snapshot recovery and role process lifecycle
+checks on the same source revision. Its [retained report](results/architecture-runtime-ci.json)
+records 4.79 seconds from terminated ownership session to process exit and 5.00
+seconds to replacement readiness; SIGTERM drain was approximately 5.01 seconds.
+The fixture disables VPN and uses no runtime backend, so this does not establish
+live route fencing or worker-workload recovery. The complete CI gate still needs
+two stale database test fixtures corrected; this job's success is not release approval.
+
+## Initial architecture API and exporter — 27 October 2026
+
+The [initial complete run](results/architecture-platform-initial.json) compares separately built
 release executables from `bff5d1a31ae6f964d877fd1fc11cf8328e8e99de` and
 `44fdef0f95f58f3607ea3b054949fa700657d32e`. Three alternating repetitions per
 revision offer 100 authenticated scoreboard-page requests/second for 30 seconds,

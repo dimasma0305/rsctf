@@ -1536,7 +1536,7 @@ application processes. It acquires the shared build/benchmark lock, migrates eac
 revision, clones one fixture for identical inputs, alternates three samples per
 revision, and checks authenticated metrics and a real Redis stop/start. Use Linux,
 Docker, k6 2.0.0 and separately saved optimized binaries from the exact revisions
-in [the report](REPORT.md#architecture-api-and-exporter--27-october-2026).
+in [the report](REPORT.md#architecture-api-after-idle-poll-correction--27-october-2026).
 Build each through `scripts/bounded-cargo.sh build --release --locked --bin rsctf`;
 copy its executable before building the other worktree. Clear the local protocol
 package's release artifacts through the wrapper when switching worktrees so
@@ -1549,7 +1549,7 @@ docker build --secret id=system_ca,src=/etc/ssl/certs/ca-certificates.crt \
   -t rsctf-architecture-runtime:local tests/load/architecture-runtime
 ARCHITECTURE_BASELINE_BINARY=/absolute/baseline-rsctf \
 ARCHITECTURE_CANDIDATE_BINARY=/absolute/candidate-rsctf \
-ARCHITECTURE_CANDIDATE_REVISION=44fdef0f95f58f3607ea3b054949fa700657d32e \
+ARCHITECTURE_CANDIDATE_REVISION=5ebecd70eb844b4ee23e4a81eab987f2788e5344 \
 PG_CONTAINER=rsctf-architecture-pg \
 ARCHITECTURE_DOCKER_NETWORK=rsctf-architecture-test \
 ARCHITECTURE_DATABASE_PASSWORD="$ARCHITECTURE_TEST_PASSWORD" \
@@ -1565,11 +1565,12 @@ Development is an explicit API-only measurement scope; the default `all` profile
 requires working checker confinement and uses an isolated privileged network
 namespace. Neither profile is a VPN or external-worker acceptance test.
 
-At 100 requests/s, the candidate's median HTTP p95 was 6.19 ms versus 4.35 ms and
-mean app CPU 7.30% versus 6.94%. The complete six-run JSON, integrity evidence,
-exporter sample and outage sample are in `results/architecture-platform.json`.
-This records a regression, not a platform performance win. Exporter p95 was
-0.688 ms at 100 scrapes/s with 186 bounded series. The separate `metrics-scrape`
+After correcting empty control-job polling, median HTTP p95 was 4.95 ms versus
+5.27 ms and mean app CPU 7.34% versus 7.88% at 100 requests/s. PostgreSQL CPU
+remained 8.5% higher; this is not a database CPU saving. The complete six-run JSON,
+integrity evidence, exporter and outage samples are in `results/architecture-platform.json`.
+The earlier regression remains in `results/architecture-platform-initial.json`.
+Exporter p95 was 0.861 ms at 100 scrapes/s with 186 bounded series. The separate `metrics-scrape`
 npm command accepts a loopback `TARGET`, selected `METRICS_APP_PID`, disposable
 `PG_CONTAINER`, strong `RSCTF_METRICS_TOKEN` and `SUMMARY_JSON`.
 

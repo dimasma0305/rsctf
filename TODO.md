@@ -107,15 +107,18 @@ Implemented design to preserve when evaluating changes:
   - [x] Add deployment-wide gameplay/build/maintenance lanes and PostgreSQL
     regressions proving two running builds leave reset capacity across replicas.
   - [ ] Complete fixed-rate runtime benchmarks and sustained cross-game fairness tests.
-  - [ ] Investigate the measured API/database overhead from idle worker polling:
+  - [x] Investigate the measured API/database overhead from idle worker polling:
     the initial 100/s API comparison increased median p95 from 4.35 to 6.19 ms
     and PostgreSQL CPU from 17.16% to 29.31% of one core; retain durability and
-    bounded recovery while reducing empty-queue transaction work.
+    bounded recovery while reducing empty-queue transaction work. After the
+    correction, the repeated comparison measured p95 5.27→4.95 ms and app CPU
+    7.88→7.34%; PostgreSQL CPU remained 8.5% higher. The residual polling cost
+    is recorded explicitly; no database CPU saving is claimed.
   - [x] Skip admission transactions when no requested job is queued or expired.
     Four PostgreSQL lane regressions pass, including exact transaction-count
     checks for empty, unrelated, live-lease and terminal rows, newly arriving
-    work, expired-lease reclaim and stale-owner rejection. A new API comparison
-    is still required before attributing a performance benefit to this change.
+    work, expired-lease reclaim and stale-owner rejection. The new six-sample
+    API comparison passed 18,004 requests, integrity checks and Redis recovery.
 
 - [ ] **ARCH-04: Supervise control-job execution and graceful shutdown.**
   `control_jobs::kick()` launches detached tasks without the shutdown signal used
@@ -354,7 +357,7 @@ Implemented design to preserve when evaluating changes:
 
 ### P3 — Benchmark before replacing
 
-- [ ] **ARCH-14: Separate cache responsibilities and evaluate the response-cache implementation.**
+- [x] **ARCH-14: Separate cache responsibilities and evaluate the response-cache implementation.**
   The shared cache trait handles response acceleration, local secrets, one-time
   credentials, and authoritative coordination/version operations. Give those
   contracts explicit boundaries before replacing an implementation. The current
@@ -374,15 +377,17 @@ Implemented design to preserve when evaluating changes:
     component harness; select sharding for lower churn latency/CPU while retaining
     the existing hard aggregate limits. Separate response and local-secret APIs
     and key namespaces; authoritative credential/CAS paths retain their implementation.
-  - [ ] Finish Redis interruption, invalidation, and whole-platform latency checks;
+  - [x] Finish Redis interruption, invalidation, and whole-platform latency checks;
     record the final measured source hashes and limits/tradeoffs in the report.
   - [x] Record the final source/executable hashes and all 18 fixed-rate samples in
     `tests/load/results/architecture-cache.json`, with tradeoffs in the load report.
   - [x] Pass real Redis interruption/reconnect, bounded cross-replica staleness,
     authoritative mutation failure, secret isolation and exactly-once consumption.
-    Six release API samples and exporter/outage checks are recorded in
-    `tests/load/results/architecture-platform.json`. The API latency regression
-    is explicitly recorded; it remains a follow-up under ARCH-03.
+    Twelve release API samples and exporter/outage checks are retained in
+    `tests/load/results/architecture-platform-initial.json` and
+    `architecture-platform.json`. After the idle-poll correction, median API
+    p95 is 4.95 versus 5.27 ms; residual database CPU cost is recorded under
+    ARCH-03. Cache component gains are not attributed to the whole platform.
 
 ### Proposed slow-operation flow and completion evidence
 
