@@ -12,7 +12,7 @@ individual replicas and makes process counters appear to reset between requests.
 
 The existing `/api/admin/realtime/metrics` JSON contract is preserved. Both
 representations use the same fixed-cardinality atomics. Exposition has fewer than
-160 series and includes no user IDs, flags, paths, credentials, or cache keys.
+200 series and includes no user IDs, flags, paths, credentials, or cache keys.
 The exporter does not query PostgreSQL or allocate a second metrics registry.
 
 - Cache L1/L2 hits and misses are cumulative counters; use `rate()` when combining
@@ -29,6 +29,20 @@ The exporter does not query PostgreSQL or allocate a second metrics registry.
   for the shared cancellation-safe transaction helpers. It does not represent
   every standalone query's checkout time. Pool size and idle connections are
   gauges; compare them per replica with its configured pool budget.
+- Durable queued/running/expired-lease counts and oldest queued age are sampled
+  every 30 seconds, with a three-second query budget. The eight job-kind labels
+  come from a fixed allowlist. These are installation-wide snapshots: aggregate
+  with `max`, not `sum`, across replicas. Expired leases are recoverable attempts,
+  not proof that a retry succeeded. Alert on queued age above the gameplay budget
+  or expired leases that remain across successive samples.
+- Active worker certificate gauges count expired certificates and certificates
+  expiring within seven/thirty days. The windows overlap. Disabled workers are
+  excluded. Alert at thirty days, escalate at seven, and use the authenticated
+  worker administration view to identify the affected worker; identities are
+  deliberately excluded from metric labels.
+- Alert if `time() - rsctf_durable_metrics_sample_timestamp_seconds > 90` or the
+  timestamp is zero. A failed sample retains its prior values and timestamp and
+  increments `durable_metrics_sample_errors_total`; it does not report fake zeros.
 
 Start with alerts for readiness failure, sustained pool exhaustion, an increasing
 checker timeout/no-runway rate, or control-job failures. Choose latency thresholds

@@ -86,6 +86,7 @@ fn trace_route<B>(request: &Request<B>) -> &str {
 /// here (this is what the router integration test exercises).
 fn common_api_router(game_router: Router<SharedState>) -> Router<SharedState> {
     Router::new()
+        .route("/openapi/v1.json", get(controllers::api_contract::serve))
         .route("/metrics", get(controllers::metrics::prometheus))
         .route("/livez", get(crate::services::health::liveness))
         .route("/healthz", get(crate::services::health::readiness))

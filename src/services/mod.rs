@@ -49,6 +49,7 @@ pub mod mutation_retention;
 pub mod notice_delivery;
 pub(crate) mod oauth_config;
 pub(crate) mod observability;
+pub mod observability_state;
 pub(crate) mod participation_evidence;
 pub mod proxy_admission;
 pub mod repo_binding_scheduler;

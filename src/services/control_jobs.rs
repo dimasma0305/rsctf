@@ -83,7 +83,7 @@ impl ControlJobKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub enum ControlJobStatus {
     Queued,
     Running,
@@ -128,7 +128,7 @@ struct JobRow {
     finished_at_utc: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlJobModel {
     pub id: Uuid,
@@ -145,11 +145,17 @@ pub struct ControlJobModel {
     pub result: Option<Value>,
     pub error: Option<String>,
     pub cancellation_requested: bool,
+    /// Unix milliseconds.
     #[serde(with = "crate::utils::datetime::millis")]
+    #[schema(value_type = i64)]
     pub created_at_utc: DateTime<Utc>,
+    /// Unix milliseconds.
     #[serde(with = "crate::utils::datetime::millis")]
+    #[schema(value_type = i64)]
     pub updated_at_utc: DateTime<Utc>,
+    /// Unix milliseconds, or null before completion.
     #[serde(with = "crate::utils::datetime::millis_opt")]
+    #[schema(value_type = Option<i64>)]
     pub finished_at_utc: Option<DateTime<Utc>>,
 }
 

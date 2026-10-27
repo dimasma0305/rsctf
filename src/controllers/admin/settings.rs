@@ -10,15 +10,7 @@ pub use mutation::{get_settings_operation, stage_branding, update_config};
 pub use crate::services::container_policy::ContainerPolicy;
 pub use crate::services::donations::{DonationConfig, DonationProvider};
 
-pub(crate) const DEFAULT_CONTAINER_PORT_MAPPING: &str = "PlatformProxy";
-
-pub(crate) fn normalized_container_port_mapping(value: Option<&str>) -> &'static str {
-    match value {
-        Some("Default") => "Default",
-        Some("PlatformProxy") => "PlatformProxy",
-        _ => DEFAULT_CONTAINER_PORT_MAPPING,
-    }
-}
+pub(crate) use crate::services::container_policy::normalized_container_port_mapping;
 
 /// RSCTF `GlobalConfig`.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -601,15 +593,7 @@ pub async fn get_config(
 /// the key is absent or invalid. Container creation calls this to decide whether a fresh
 /// instance is marked `is_proxy` (so `Container::entry()` hands the client a
 /// proxy guid instead of a host:port); `GET /api/info` advertises the same mode.
-pub(crate) async fn container_port_mapping(st: &SharedState) -> String {
-    let value = config::Entity::find_by_id("ContainerProvider:PortMappingType".to_string())
-        .one(&st.db)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|c| c.value);
-    normalized_container_port_mapping(value.as_deref()).to_string()
-}
+pub(crate) use crate::services::container_policy::container_port_mapping;
 
 /// Maximum logo upload size (mirrors RSCTF's 3 MiB cap).
 const MAX_LOGO_BYTES: usize = crate::utils::upload::IMAGE_FILE_BYTES;

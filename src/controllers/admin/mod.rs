@@ -40,7 +40,7 @@ use chrono::{DateTime, Duration, Utc};
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::AdminUser;
 use crate::models::data::{
-    build_record, config, division, game, game_challenge, game_manager, local_file, repo_binding,
+    build_record, division, game, game_challenge, game_manager, local_file, repo_binding,
     repo_binding_scan, team, user,
 };
 use crate::utils::crypto_utils::hash_password_async;

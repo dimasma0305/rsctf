@@ -141,8 +141,8 @@ impl AppError {
     }
 }
 
-#[derive(Serialize)]
-struct ErrorBody {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ErrorBody {
     title: String,
     status: u16,
 }

@@ -82,6 +82,10 @@ pub fn start(
 }
 
 #[cfg(test)]
+#[path = "runtime_worker_tests.rs"]
+mod pg_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

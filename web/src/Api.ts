@@ -10,6 +10,9 @@
  * ---------------------------------------------------------------
  */
 
+import type { ControlJobModel } from './contracts/BackendContract';
+export type { ControlJobModel, ControlJobStatus } from './contracts/BackendContract';
+
 export enum CaptchaProvider {
   None = "None",
   HashPow = "HashPow",
@@ -3179,31 +3182,6 @@ export interface AdChallengeDesiredState {
 export interface AdChallengeCommandResult {
   isEnabled: boolean;
   revision: number;
-}
-
-export type ControlJobStatus = "Queued" | "Running" | "Succeeded" | "Failed" | "Cancelled";
-
-export interface ControlJobModel {
-  id: string;
-  kind: string;
-  scopeKey: string;
-  gameId: number;
-  challengeId?: number | null;
-  operationId: string;
-  fingerprint: string;
-  status: ControlJobStatus;
-  progressCurrent: number;
-  progressTotal: number;
-  requestedGeneration: number;
-  result?: Record<string, unknown> | null;
-  error?: string | null;
-  cancellationRequested: boolean;
-  /** @format uint64 */
-  createdAtUtc: number;
-  /** @format uint64 */
-  updatedAtUtc: number;
-  /** @format uint64 */
-  finishedAtUtc?: number | null;
 }
 
 /** Per-step outcome of an image preflight */

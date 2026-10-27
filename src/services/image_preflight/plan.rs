@@ -357,10 +357,11 @@ pub(super) fn capacity_report(
 
 /// Plan the preflight for one game. This performs no runtime work.
 pub async fn plan(st: &SharedState, game_id: i32) -> AppResult<PreflightPlan> {
-    let challenges = crate::controllers::edit::load_game_challenges(st.pg(), game_id).await?;
+    let challenges =
+        crate::services::challenge_mutations::load_game_challenges(st.pg(), game_id).await?;
     let accepted = accepted_teams(st.pg(), game_id).await?;
     let platform_proxy =
-        crate::controllers::admin::container_port_mapping(st).await == "PlatformProxy";
+        crate::services::container_policy::container_port_mapping(st).await == "PlatformProxy";
     let proxy_only = crate::services::container::should_use_platform_proxy(
         GameKind::Jeopardy,
         st.containers.requires_proxy(),

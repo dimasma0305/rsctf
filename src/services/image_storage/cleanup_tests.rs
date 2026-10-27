@@ -253,7 +253,7 @@ async fn cleanup_finalization_waits_for_a_live_durable_build_lease() {
     .unwrap();
     let scope = "0123456789abcdef0123456789abcdef";
     let canonical = "docker.io/rsctf/game/building:latest";
-    let lock_key = crate::controllers::edit::image_build_lock_key(Some(canonical));
+    let lock_key = crate::services::challenge_builds::image_build_lock_key(Some(canonical));
     let claim = Uuid::new_v4();
     sqlx::query(
         r#"INSERT INTO "BuildImageOwnerships"

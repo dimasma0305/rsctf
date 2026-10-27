@@ -136,7 +136,7 @@ async fn load_challenge_rows_locked(
 mod tests {
     #[test]
     fn projection_covers_every_non_string_seaorm_enum() {
-        let source = include_str!("challenge_rows.rs");
+        let source = include_str!("rows.rs");
         for field in [
             "challenge.\"Type\"",
             "challenge.category",

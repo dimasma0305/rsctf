@@ -162,21 +162,7 @@ mod koth_crown_config_tests {
 /// Read the immutable official epoch boundary while the caller holds the shared
 /// per-game A&D/KotH control lock. Every mutation that can change the scored
 /// challenge set uses this helper before writing.
-pub(crate) async fn ad_epoch_scoring_started_locked(
-    connection: &mut sqlx::PgConnection,
-    game_id: i32,
-) -> AppResult<bool> {
-    sqlx::query_scalar::<_, bool>(
-        r#"SELECT ad_scoring_start_round IS NOT NULL
-                  OR koth_scoring_start_round IS NOT NULL
-             FROM "Games" WHERE id = $1"#,
-    )
-    .bind(game_id)
-    .fetch_optional(connection)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Game not found"))
-}
+pub(crate) use crate::services::challenge_mutations::ad_epoch_scoring_started_locked;
 
 /// Return whether any competition score has crossed its immutable policy
 /// boundary while the caller owns the per-game control lock.
@@ -620,9 +606,7 @@ mod reopen_round_tests {
 
 pub(crate) use crate::services::challenge_mutations::load_challenge;
 
-#[path = "helpers/challenge_rows.rs"]
-mod challenge_rows;
-pub(crate) use challenge_rows::{load_challenge_locked, load_game_challenges};
+pub(crate) use crate::services::challenge_mutations::load_challenge_locked;
 
 /// Ensure every division of `game_id` has a per-challenge config row for
 /// `challenge_id`. Insert-if-missing seeded with the division's default

@@ -65,7 +65,9 @@ Implemented design to preserve when evaluating changes:
   [startup tests](src/startup_tests.rs), [import queue](src/controllers/edit/test_container/import_jobs.rs).
   - [x] Centralize worker registration and cover every supported role topology;
     include the previously omitted advanced-role mail consumer.
-  - [ ] Complete real queue-consumption and restart tests for each topology.
+  - [x] Run PostgreSQL queued/expired build-batch consumption, shutdown, and restart
+    through registered consumers for all/control/engine/development roles (12 jobs).
+  - [ ] Complete import/repository side-effect lifecycle coverage in running topologies.
 
 - [x] **ARCH-02: Make database-pooling compatibility explicit.**
   Network ownership, capture ownership, and other operations depend on PostgreSQL
@@ -202,7 +204,7 @@ Implemented design to preserve when evaluating changes:
   Sources: [blob storage](src/storage/mod.rs), [blob references](src/services/blob_refs.rs),
   [shared storage requirements](docs/deploy/scaling.md).
 
-- [ ] **ARCH-10: Restore a reproducible backend/frontend API contract pipeline.**
+- [x] **ARCH-10: Restore a reproducible backend/frontend API contract pipeline.**
   `web/package.json` generates a client from `/openapi/v1.json`, but the reviewed
   Rust router does not expose that specification endpoint. Add Rust-derived OpenAPI
   using `utoipa` or an equivalently verified approach, generate the TypeScript
@@ -213,6 +215,15 @@ Implemented design to preserve when evaluating changes:
   authentication. Generated types do not replace authorization tests.
   Sources: [client generation](web/package.json), [client contract](web/src/Api.ts),
   [router](src/server.rs).
+  - [x] Derive the initial durable-job routes and DTOs with Utoipa; serve and
+    export `/openapi/v1.json` without requiring a running application.
+  - [x] Generate a separate TypeScript contract and detect Rust/schema/TypeScript
+    drift in CI while retaining the legacy client's manual extensions.
+  - [x] Pass four contract tests, including real PostgreSQL route authorization
+    for anonymous users, managers of another event, owning managers, and admins;
+    verify raw bodies, string enums, milliseconds, nulls, and numeric errors.
+    Generation, regeneration comparison, and strict frontend type checking pass.
+    Coverage is incremental, not a claim that all existing routes are documented.
 
 - [ ] **ARCH-11: Define and test network-owner recovery targets.**
   Live VPN, SSH, BYOC, proxy, and trusted-worker sessions belong to one active
@@ -236,6 +247,9 @@ Implemented design to preserve when evaluating changes:
   require an unplanned manual re-enrollment to restore ordinary service.
   Sources: [certificate issuance](src/services/worker_pki.rs),
   [worker authority](src/services/worker/authority.rs), [agent client](agents/worker-agent/src/client/mod.rs).
+  - [x] Export fixed-label expired/7-day/30-day active-worker certificate gauges,
+    document alert thresholds, and test disabled-worker exclusion in PostgreSQL.
+  - [ ] Implement and validate recoverable authenticated certificate renewal.
 
 - [ ] **ARCH-13: Expose actionable metrics across runtime roles.**
   Export existing operational counters through a Prometheus-compatible interface;
@@ -252,6 +266,9 @@ Implemented design to preserve when evaluating changes:
     job attempts/latency, transaction acquisition, and pool gauges; preserve JSON.
   - [ ] Add durable backlog/retry and network-recovery visibility; complete access
     and sustained exporter-load verification.
+  - [x] Add periodically sampled durable queue counts/age/expired leases and
+    active-worker certificate expiry gauges, with fixed labels and sample-freshness
+    visibility; queries are bounded by timeout and run outside the scrape path.
 
 ### P3 — Benchmark before replacing
 
@@ -271,15 +288,27 @@ Implemented design to preserve when evaluating changes:
   Sources: [cache contracts and implementation](src/services/cache.rs),
   [capability cache fences](src/services/ad/koth_capability_cache.rs),
   [existing Moka usage](src/controllers/game/scoreboard_page.rs).
+  - [x] Compare the current map, sharding, and Moka in an optimized fixed-arrival
+    component harness; select sharding for lower churn latency/CPU while retaining
+    the existing hard aggregate limits. Separate response and local-secret APIs
+    and key namespaces; authoritative credential/CAS paths retain their implementation.
+  - [ ] Finish Redis interruption, invalidation, and whole-platform latency checks;
+    record the final measured source hashes and limits/tradeoffs in the report.
+  - [x] Record the final source/executable hashes and all 18 fixed-rate samples in
+    `tests/load/results/architecture-cache.json`, with tradeoffs in the load report.
 
 ### Proposed slow-operation flow and completion evidence
 
 Local checkpoint (2026-10-27): `cargo test --lib` through the bounded wrapper
-passed 1,794 tests (453 environment-dependent tests ignored). The focused real
+passed 1,798 tests (456 environment-dependent tests ignored). The focused real
 PostgreSQL lane/shutdown tests (2), cleanup test (1), checker GC test (1), and
 session-lock regression against both direct PostgreSQL and PgBouncer (2 runs)
-also passed. The architecture checker and its negative regression passed. These
-results are correctness checks, not runtime performance or deployment evidence.
+also passed. New role/restart, durable-metrics, API-authorization, and real-Redis
+regressions passed separately. Frontend generation/drift checks, strict typing,
+lint, 812 tests, and the production build passed. The architecture checker and its
+negative regression passed. These are correctness checks; the separately recorded
+18-run cache component benchmark does not establish whole-platform performance
+or deployment completion.
 
 The intended flow for slow operations is: HTTP authorization → application service
 → durable PostgreSQL job and operation ID → supervised executor eligible for that
@@ -303,8 +332,8 @@ Evaluate ARCH-14 after baseline instrumentation is available.
 - [ ] Update the architecture image, Mermaid source, role matrix, deployment
   guidance, and completion statuses to match each shipped design change.
 - [ ] For artifact-affecting implementations, follow immutable release/deployment
-  verification and record the live version/digest. This TODO and diagram-only
-  update requires no application release or production deployment.
+  verification and record the live version/digest. The original TODO/diagram-only
+  update needed no application release; this implementation does require one.
 
 ## Docker runtime scalability
 

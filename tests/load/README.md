@@ -9,6 +9,7 @@ scenarios. Run via npm:
 
 ```sh
 cd tests/load
+      npm run cache-audit    # fixed-rate release component comparison; build instructions below
       npm run admin-lifecycle # destructive, disposable-stack admin acceptance
       npm run admin-dashboard # disposable 100k-submission fixed-rate dashboard read gate
       npm run edit-lifecycle  # destructive, disposable-stack organizer acceptance
@@ -42,6 +43,27 @@ N=120 npm run worst-case    # mass BYOC reconnect storm (restarts rsctf)
 FLEET=10 npm run worker      # trusted worker create/proxy/destroy + lease gate
 FLEET=5  npm run worker-local # isolated current-tree rsctf + native Linux agent
 ```
+
+### Response-cache component comparison
+
+Build through the bounded wrapper, then run the current map, production response
+shards, and Moka in rotated order, three times each. Each six-second run schedules
+40,000 operations/s, 80% reads/20% writes, against 16,384 keys with 1 KiB values.
+The churn TTL is 60 seconds; the expiry-burst TTL is 100 milliseconds. The runner
+holds the shared build lock while measuring. It checks every hit's payload and
+that the complete fixed schedule executed.
+
+```sh
+scripts/bounded-cargo.sh build --release --manifest-path tests/load/cache-audit/Cargo.toml
+SUMMARY_JSON=/tmp/rsctf-cache-audit.json node tests/load/cache-audit.mjs
+```
+
+Run these commands from the repository root. `CACHE_AUDIT_RATE` and
+`CACHE_AUDIT_SECONDS` change the workload for additional scenarios; keep them equal
+across compared runs. Results retain source/binary hashes, CPU, process peak RSS,
+hit rate, and full service/scheduled latency distributions. RSS includes the
+benchmark's sample buffers. This harness does not exercise HTTP, Redis or Docker;
+use the existing HTTP/outage scenarios for those integration gates.
 
 The managed TargetReporter gate is documented in
 [managed-koth.md](./managed-koth.md). It is the isolated acceptance path for a

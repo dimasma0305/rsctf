@@ -584,6 +584,10 @@ fn start_background_services(
     use rsctf::services::cron::{self, RoundSchedulerScope};
 
     let mut required = Vec::new();
+    required.push(RequiredTask::Unit(
+        "durable monitoring sampler",
+        rsctf::services::observability_state::start(state.clone(), shutdown.clone()),
+    ));
     if role.capabilities().api {
         required.push(RequiredTask::Unit(
             "scoreboard read-ahead",

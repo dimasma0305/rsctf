@@ -72,6 +72,50 @@ pub(crate) fn render(pool_size: u32, pool_idle: usize) -> String {
         "# TYPE rsctf_database_pool_idle gauge\nrsctf_database_pool_idle {pool_idle}"
     )
     .unwrap();
+    use crate::services::observability_state as durable;
+    for (name, values) in [
+        ("control_jobs_queued", &durable::QUEUED),
+        ("control_jobs_running", &durable::RUNNING),
+        ("control_jobs_expired_leases", &durable::EXPIRED),
+        ("control_jobs_oldest_queued_seconds", &durable::OLDEST),
+    ] {
+        writeln!(out, "# TYPE rsctf_{name} gauge").unwrap();
+        for (kind, value) in durable::JOB_KINDS.iter().zip(values) {
+            writeln!(
+                out,
+                "rsctf_{name}{{kind=\"{kind}\"}} {}",
+                value.load(Relaxed)
+            )
+            .unwrap();
+        }
+    }
+    for (name, value) in [
+        ("worker_certificates_expired", &durable::WORKER_CERT_EXPIRED),
+        (
+            "worker_certificates_expiring_7_days",
+            &durable::WORKER_CERT_7_DAYS,
+        ),
+        (
+            "worker_certificates_expiring_30_days",
+            &durable::WORKER_CERT_30_DAYS,
+        ),
+        (
+            "durable_metrics_sample_timestamp_seconds",
+            &durable::SAMPLED_AT,
+        ),
+    ] {
+        writeln!(
+            out,
+            "# TYPE rsctf_{name} gauge\nrsctf_{name} {}",
+            value.load(Relaxed)
+        )
+        .unwrap();
+    }
+    counter(
+        &mut out,
+        "durable_metrics_sample_errors_total",
+        durable::SAMPLE_ERRORS.load(Relaxed),
+    );
     out
 }
 
@@ -98,7 +142,7 @@ mod tests {
     fn exporter_has_a_fixed_small_series_budget() {
         let out = render(50, 12);
         assert!(out.len() < 20_000);
-        assert!(out.lines().filter(|line| !line.starts_with('#')).count() < 160);
+        assert!(out.lines().filter(|line| !line.starts_with('#')).count() < 200);
         assert!(out.contains("rsctf_database_pool_connections 50\n"));
     }
 }

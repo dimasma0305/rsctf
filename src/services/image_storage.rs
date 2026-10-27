@@ -108,7 +108,7 @@ pub(crate) fn lazy_build_eligible(
         && challenge
             .container_image
             .as_deref()
-            .and_then(crate::controllers::edit::canonical_managed_image_tag)
+            .and_then(crate::services::challenge_builds::canonical_managed_image_tag)
             .is_some()
 }
 
@@ -225,11 +225,11 @@ pub(crate) async fn reserve_runtime_image(
     let Some(canonical_ref) = challenge
         .container_image
         .as_deref()
-        .and_then(crate::controllers::edit::canonical_managed_image_tag)
+        .and_then(crate::services::challenge_builds::canonical_managed_image_tag)
     else {
         return Ok(RuntimeImageReservation::Unmanaged);
     };
-    let lock_key = crate::controllers::edit::image_build_lock_key(Some(&canonical_ref));
+    let lock_key = crate::services::challenge_builds::image_build_lock_key(Some(&canonical_ref));
     let mut lock = crate::utils::single_flight::PgAdvisoryLock::acquire_build(st.pg(), &lock_key)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;

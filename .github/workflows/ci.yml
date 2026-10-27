@@ -593,6 +593,9 @@ jobs:
       - name: Lint frontend
         run: pnpm --dir web lint:check
 
+      - name: Check generated API contract
+        run: pnpm --dir web genapi:check
+
       - name: Run frontend tests
         env:
           # The standard public-repository Linux runner has four cores.

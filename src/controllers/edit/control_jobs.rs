@@ -32,6 +32,17 @@ async fn authorize_job(
     Ok(job)
 }
 
+#[utoipa::path(
+    get, path = "/api/edit/jobs/{jobId}", tag = "ControlJobs",
+    params(("jobId" = Uuid, Path, description = "Durable job ID")),
+    responses(
+        (status = 200, description = "Raw control job model", body = ControlJobModel),
+        (status = 401, description = "Authentication required", body = crate::utils::error::ErrorBody),
+        (status = 403, description = "Event manager or administrator required", body = crate::utils::error::ErrorBody),
+        (status = 404, description = "Job not found", body = crate::utils::error::ErrorBody)
+    ),
+    security(("session" = []), ("bearer" = []))
+)]
 pub async fn get_control_job(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -46,6 +57,17 @@ pub async fn get_control_job(
     Ok(RequestResponse::ok(job))
 }
 
+#[utoipa::path(
+    get, path = "/api/edit/jobs/operations/{operationId}", tag = "ControlJobs",
+    params(("operationId" = Uuid, Path, description = "Original idempotency operation ID")),
+    responses(
+        (status = 200, description = "Raw control job model", body = ControlJobModel),
+        (status = 401, description = "Authentication required", body = crate::utils::error::ErrorBody),
+        (status = 403, description = "Event manager or administrator required", body = crate::utils::error::ErrorBody),
+        (status = 404, description = "Operation not found", body = crate::utils::error::ErrorBody)
+    ),
+    security(("session" = []), ("bearer" = []))
+)]
 pub async fn get_control_job_by_operation(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -60,6 +82,18 @@ pub async fn get_control_job_by_operation(
     Ok(RequestResponse::ok(job))
 }
 
+#[utoipa::path(
+    post, path = "/api/edit/jobs/{jobId}", tag = "ControlJobs",
+    params(("jobId" = Uuid, Path, description = "Durable job ID")),
+    responses(
+        (status = 200, description = "Raw job with cancellation intent", body = ControlJobModel),
+        (status = 409, description = "Cancellation not supported for this running operation", body = crate::utils::error::ErrorBody),
+        (status = 401, description = "Authentication required", body = crate::utils::error::ErrorBody),
+        (status = 403, description = "Event manager or administrator required", body = crate::utils::error::ErrorBody),
+        (status = 404, description = "Job not found", body = crate::utils::error::ErrorBody)
+    ),
+    security(("session" = []), ("bearer" = []))
+)]
 pub async fn cancel_control_job(
     State(st): State<SharedState>,
     user: CurrentUser,

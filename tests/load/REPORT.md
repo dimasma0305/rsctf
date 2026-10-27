@@ -1,5 +1,45 @@
 # RSCTF load-test report
 
+## Architecture response cache — 27 October 2026
+
+This is an optimized component comparison of the existing memory cache, the
+production sharded L1, and Moka 0.12.16. The
+[raw samples and source/executable hashes](results/architecture-cache.json)
+identify the measured candidate, whose base commit is `3bae6972`. Each mode ran
+three times in rotated order on the same host, at 40,000 scheduled operations/s
+for six seconds: 80% reads, 20% writes, 16,384 keys, 1 KiB values, four Tokio
+workers, and a 4,096-entry response budget. The build uses opt-level 3, fat LTO,
+and one codegen unit. Each run completed 240,000 operations and validated every hit.
+
+| Scenario / implementation | Service p95 (µs) | Service p99 (µs) | CPU (% one core) | Hit rate | Process peak RSS (MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Churn / existing map | 38.04 | 96.00 | 22.05 | 24.98% | 12.21 |
+| Churn / sharded L1 | 3.40 | 5.13 | 10.13 | 24.99% | 12.46 |
+| Churn / Moka | 4.59 | 36.05 | 16.70 | 24.98% | 18.28 |
+| 100 ms expiry / existing map | 2.21 | 12.66 | 10.05 | 4.95% | 18.84 |
+| 100 ms expiry / sharded L1 | 2.02 | 5.25 | 10.26 | 4.94% | 16.81 |
+| 100 ms expiry / Moka | 3.17 | 28.93 | 14.03 | 4.93% | 13.53 |
+
+Values are medians of three runs, not statistical confidence intervals. Sharding
+reduced churn service p99 by 94.7% and CPU by 54.1%. Expiry p99 improved by 58.5%;
+expiry CPU was approximately unchanged/slightly higher. Moka did not win the
+latency comparison, and asynchronous eviction does not preserve the current hard
+entry/byte limits or one-time credential semantics by itself.
+
+The selected implementation uses separate response/local-secret APIs and
+namespaces over one bounded sharded budget. Authoritative reads, CAS and one-time
+consumption still use the existing L2 implementation. Per-shard limits can reject
+L1 retention of values larger than 2 MiB or evict skewed keys sooner. See
+[the cache contract](../../docs/deploy/cache-boundaries.md).
+
+These are **not HTTP, Redis, or platform-wide speedup measurements**. Scheduled
+latency includes Tokio timer/scheduling delay (roughly 2 ms at p99 here); the
+service latency improvement does not imply that much improvement in a request.
+RSS includes benchmark sample buffers and allocator effects. Allocation counts
+and lock-wait time were not instrumented. The shared build lock excludes this
+repository's compilation, but cannot eliminate all noise on the shared host.
+Whole-platform load, outage, and release verification remain separate gates.
+
 > Storage status (16 July 2026): the user-authorized PostgreSQL 18 reset removed
 > the previously retained event rows. Historical sections below describe the
 > database state at the time of each run; those games are no longer visible in

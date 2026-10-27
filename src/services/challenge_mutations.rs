@@ -4,6 +4,25 @@ use crate::models::data::game_challenge;
 use crate::utils::error::{AppError, AppResult};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use sqlx::{Executor, Postgres};
+mod rows;
+pub(crate) use rows::{load_challenge_locked, load_game_challenges};
+
+/// Read the official epoch boundary inside the caller's per-game mutation lock.
+pub(crate) async fn ad_epoch_scoring_started_locked(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+) -> AppResult<bool> {
+    sqlx::query_scalar::<_, bool>(
+        r#"SELECT ad_scoring_start_round IS NOT NULL
+                  OR koth_scoring_start_round IS NOT NULL
+             FROM "Games" WHERE id = $1"#,
+    )
+    .bind(game_id)
+    .fetch_optional(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))
+}
 
 pub(crate) async fn load_challenge(
     st: &SharedState,

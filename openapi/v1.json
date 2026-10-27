@@ -1,0 +1,369 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "RSCTF API",
+    "description": "Incremental contract: durable control-job reads and cancellation. Other established routes remain supported by the legacy client.",
+    "contact": {
+      "name": "rsctf contributors"
+    },
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "1"
+  },
+  "paths": {
+    "/api/edit/jobs/operations/{operationId}": {
+      "get": {
+        "tags": [
+          "ControlJobs"
+        ],
+        "operationId": "get_control_job_by_operation",
+        "parameters": [
+          {
+            "name": "operationId",
+            "in": "path",
+            "description": "Original idempotency operation ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw control job model",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlJobModel"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Event manager or administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/edit/jobs/{jobId}": {
+      "get": {
+        "tags": [
+          "ControlJobs"
+        ],
+        "operationId": "get_control_job",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "description": "Durable job ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw control job model",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlJobModel"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Event manager or administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "ControlJobs"
+        ],
+        "operationId": "cancel_control_job",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "description": "Durable job ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw job with cancellation intent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlJobModel"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Event manager or administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Cancellation not supported for this running operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ControlJobModel": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "scopeKey",
+          "gameId",
+          "operationId",
+          "fingerprint",
+          "status",
+          "progressCurrent",
+          "progressTotal",
+          "requestedGeneration",
+          "cancellationRequested",
+          "createdAtUtc",
+          "updatedAtUtc"
+        ],
+        "properties": {
+          "cancellationRequested": {
+            "type": "boolean"
+          },
+          "challengeId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "createdAtUtc": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix milliseconds."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "finishedAtUtc": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix milliseconds, or null before completion."
+          },
+          "gameId": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "progressCurrent": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "progressTotal": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "requestedGeneration": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "result": {},
+          "scopeKey": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ControlJobStatus"
+          },
+          "updatedAtUtc": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix milliseconds."
+          }
+        }
+      },
+      "ControlJobStatus": {
+        "type": "string",
+        "enum": [
+          "Queued",
+          "Running",
+          "Succeeded",
+          "Failed",
+          "Cancelled"
+        ]
+      },
+      "ErrorBody": {
+        "type": "object",
+        "required": [
+          "title",
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      },
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "RSCTF_Token",
+        "description": "Session cookie; unsafe requests also require the platform CSRF policy"
+      }
+    }
+  }
+}

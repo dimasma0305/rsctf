@@ -1,5 +1,6 @@
 pub mod account;
 pub mod admin;
+pub mod api_contract;
 pub mod api_token;
 pub mod assets;
 pub mod donations;
