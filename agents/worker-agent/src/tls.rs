@@ -21,6 +21,9 @@ pub struct MtlsConnector {
 }
 
 impl MtlsConnector {
+    pub(crate) fn identity(&self) -> &AgentConfig {
+        &self.config
+    }
     pub fn new(config: AgentConfig) -> Self {
         Self { config }
     }

@@ -187,11 +187,11 @@ fn chrono_to_time(value: DateTime<Utc>) -> anyhow::Result<time::OffsetDateTime> 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use rcgen::{BasicConstraints, CertifiedIssuer};
 
-    fn issuer() -> (Arc<WorkerIssuer>, String) {
+    pub(crate) fn issuer() -> (Arc<WorkerIssuer>, String) {
         let key = KeyPair::generate().expect("CA key");
         let mut params = CertificateParams::new(Vec::<String>::new()).expect("CA params");
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);

@@ -152,8 +152,13 @@ async fn async_main() -> anyhow::Result<()> {
 
     let worker_store =
         rsctf::services::worker_store::WorkerStore::new(db.get_postgres_connection_pool().clone());
+    let worker_issuer = if capabilities.network {
+        rsctf::services::worker_pki::WorkerIssuer::from_env()?
+    } else {
+        None
+    };
     let worker_plane = if capabilities.network {
-        rsctf::services::worker::bind_from_env(worker_store.clone()).await?
+        rsctf::services::worker::bind_from_env(worker_store.clone(), worker_issuer.clone()).await?
     } else {
         None
     };
@@ -347,11 +352,6 @@ async fn async_main() -> anyhow::Result<()> {
         )?
     } else {
         EventBus::local()
-    };
-    let worker_issuer = if capabilities.network {
-        rsctf::services::worker_pki::WorkerIssuer::from_env()?
-    } else {
-        None
     };
     if capabilities.network && worker_plane.is_some() != worker_issuer.is_some() {
         return Err(anyhow::anyhow!(

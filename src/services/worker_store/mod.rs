@@ -8,6 +8,7 @@
 mod capacity;
 mod maintenance;
 mod nodes;
+mod renewal;
 mod status;
 mod types;
 mod workloads;

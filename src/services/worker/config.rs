@@ -40,7 +40,10 @@ impl BoundWorkerPlane {
 /// Load dedicated worker-plane TLS material and bind its raw TCP listener.
 /// With no `RSCTF_WORKER_LISTEN`, the optional plane stays disabled. Partial
 /// listener configuration is a startup error rather than a silent downgrade.
-pub async fn bind_from_env(store: WorkerStore) -> anyhow::Result<Option<BoundWorkerPlane>> {
+pub async fn bind_from_env(
+    store: WorkerStore,
+    issuer: Option<Arc<crate::services::worker_pki::WorkerIssuer>>,
+) -> anyhow::Result<Option<BoundWorkerPlane>> {
     let listen = nonempty_env(LISTEN_ENV);
     let server_cert = nonempty_env(SERVER_CERT_ENV);
     let server_key = nonempty_env(SERVER_KEY_ENV);
@@ -66,10 +69,11 @@ pub async fn bind_from_env(store: WorkerStore) -> anyhow::Result<Option<BoundWor
         worker_roots,
     )?);
     let config = WorkerServerConfig::default();
-    let authority = Arc::new(PostgresWorkerAuthority::new(
-        store,
-        config.registry.heartbeat_lease,
-    ));
+    let issuer =
+        issuer.ok_or_else(|| anyhow::anyhow!("worker listener requires its certificate issuer"))?;
+    let authority = Arc::new(
+        PostgresWorkerAuthority::new(store, config.registry.heartbeat_lease).with_issuer(issuer),
+    );
     let service = Arc::new(WorkerService::new(config, authority)?);
     let listener = TcpListener::bind(&listen)
         .await

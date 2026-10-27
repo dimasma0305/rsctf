@@ -42,6 +42,20 @@ impl PeerCertificates {
 /// The transport always validates the session epoch itself first.
 #[async_trait]
 pub trait WorkerAuthority: Send + Sync + 'static {
+    fn supports_certificate_renewal(&self) -> bool {
+        false
+    }
+
+    async fn renew_certificate(
+        &self,
+        _session: &SessionContext,
+        _request: rsctf_worker_protocol::RenewCertificate,
+    ) -> WorkerResult<rsctf_worker_protocol::CertificateRenewed> {
+        Err(super::WorkerError::Protocol(
+            "certificate renewal is unavailable",
+        ))
+    }
+
     /// Resolve a rustls-verified client certificate to its immutable worker ID.
     async fn authenticate_peer(&self, peer: &PeerCertificates) -> WorkerResult<AuthenticatedPeer>;
 

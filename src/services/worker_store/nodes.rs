@@ -470,7 +470,13 @@ impl WorkerStore {
         let row = sqlx::query_as::<_, (Uuid, String, DateTime<Utc>)>(
             r#"SELECT id, administrative_state, certificate_expires_at
                  FROM "WorkerNodes"
-                WHERE certificate_fingerprint_sha256 = $1
+                WHERE (certificate_fingerprint_sha256 = $1 OR EXISTS (
+                    SELECT 1 FROM "WorkerCertificateRotations" rotation
+                     WHERE rotation.worker_id = "WorkerNodes".id
+                       AND rotation.old_fingerprint = $1
+                       AND rotation.new_fingerprint = "WorkerNodes".certificate_fingerprint_sha256
+                       AND rotation.overlap_until > clock_timestamp()
+                       AND rotation.old_expires_at > clock_timestamp()))
                   AND certificate_expires_at > clock_timestamp()
                   AND administrative_state <> 'Disabled'"#,
         )
@@ -629,7 +635,13 @@ impl WorkerStore {
                       updated_at = clock_timestamp()
                 WHERE id = $1
                   AND administrative_state <> 'Disabled'
-                  AND certificate_fingerprint_sha256 = $14
+                  AND (certificate_fingerprint_sha256 = $14 OR EXISTS (
+                    SELECT 1 FROM "WorkerCertificateRotations" rotation
+                     WHERE rotation.worker_id = "WorkerNodes".id
+                       AND rotation.old_fingerprint = $14
+                       AND rotation.new_fingerprint = "WorkerNodes".certificate_fingerprint_sha256
+                       AND rotation.overlap_until > clock_timestamp()
+                       AND rotation.old_expires_at > clock_timestamp()))
                   AND certificate_expires_at > clock_timestamp()
             RETURNING session_epoch, lease_expires_at"#,
         )

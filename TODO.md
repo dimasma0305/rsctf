@@ -238,7 +238,7 @@ Implemented design to preserve when evaluating changes:
   Sources: [network lease](src/services/ad/vpn/lease.rs),
   [BYOC registry](src/services/byoc_tunnel/mod.rs), [worker sessions](src/services/worker/registry.rs).
 
-- [ ] **ARCH-12: Add worker-certificate expiry visibility and safe renewal.**
+- [x] **ARCH-12: Add worker-certificate expiry visibility and safe renewal.**
   Worker certificates last 90 days and automatic renewal is absent. Add expiry
   alerts and authenticated, recoverable certificate rotation with a bounded
   transition policy. Preserve exact worker identity, revocation, and session fencing.
@@ -249,7 +249,18 @@ Implemented design to preserve when evaluating changes:
   [worker authority](src/services/worker/authority.rs), [agent client](agents/worker-agent/src/client/mod.rs).
   - [x] Export fixed-label expired/7-day/30-day active-worker certificate gauges,
     document alert thresholds, and test disabled-worker exclusion in PostgreSQL.
-  - [ ] Implement and validate recoverable authenticated certificate renewal.
+  - [x] Implement negotiated renewal with one durable recovery response per
+    worker, exact CSR/operation replay, session fencing, and old-certificate
+    overlap capped at seven days and the original expiry. Migration `m0361`
+    registers the bounded recovery table.
+  - [x] Atomically persist the agent's pending request and replacement certificate;
+    preserve its private key, handle interrupted writes, reject wrong identities
+    and keys, and retain the old file when the clock cannot validate the new one.
+  - [x] Pass three PostgreSQL renewal regressions, including a real mTLS
+    reconnect/replay/revocation scenario; pass all 69 agent and 23 protocol tests.
+    Ordinary online renewal is automatic; offline-beyond-expiry and compromised-key
+    recovery still require enrollment. Release and production verification remain
+    part of the overall rollout gate below.
 
 - [ ] **ARCH-13: Expose actionable metrics across runtime roles.**
   Export existing operational counters through a Prometheus-compatible interface;

@@ -208,6 +208,26 @@ impl WorkerRegistry {
         Ok(message_id)
     }
 
+    /// Deliver a renewal only to the session that requested it. A reconnect
+    /// must recover the durable response through its own fenced request.
+    pub(crate) async fn send_certificate_response(
+        &self,
+        context: &SessionContext,
+        response: rsctf_worker_protocol::CertificateRenewed,
+    ) -> WorkerResult<()> {
+        let session = self.current(context.worker_id, &context.fence).await?;
+        session
+            .control
+            .try_send(ControlEnvelope::new(
+                context.fence.session_epoch,
+                ControlMessage::CertificateRenewed(response),
+            ))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => WorkerError::Busy,
+                mpsc::error::TrySendError::Closed(_) => WorkerError::Offline,
+            })
+    }
+
     /// Consume acknowledgements/results for lifecycle commands. A failed
     /// result becomes a fenced Failed observation so create callers fail fast
     /// with the runtime's real error rather than waiting for a generic timeout.
@@ -449,6 +469,38 @@ mod tests {
             session_id: Uuid::new_v4(),
             session_epoch: epoch,
         }
+    }
+
+    #[tokio::test]
+    async fn certificate_reply_cannot_cross_into_replacement_session() {
+        let worker = Uuid::new_v4();
+        let registry = WorkerRegistry::new(RegistryConfig::default());
+        let first = registry
+            .register_control(worker, Uuid::new_v4(), fence(1))
+            .await
+            .unwrap();
+        let mut second = registry
+            .register_control(worker, Uuid::new_v4(), fence(2))
+            .await
+            .unwrap();
+        let response = rsctf_worker_protocol::CertificateRenewed {
+            operation_id: Uuid::new_v4(),
+            certificate_pem: "test certificate".into(),
+        };
+        assert!(matches!(
+            registry
+                .send_certificate_response(&first.context, response.clone())
+                .await,
+            Err(WorkerError::StaleSession)
+        ));
+        assert!(second.outbound.try_recv().is_err());
+        registry
+            .send_certificate_response(&second.context, response.clone())
+            .await
+            .unwrap();
+        let received = second.outbound.recv().await.unwrap();
+        assert_eq!(received.session_epoch, second.context.fence.session_epoch);
+        assert_eq!(received.body, ControlMessage::CertificateRenewed(response));
     }
 
     #[tokio::test]
