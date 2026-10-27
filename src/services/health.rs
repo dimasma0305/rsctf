@@ -242,27 +242,46 @@ fn accepts_new_request(lifecycle: RuntimeReadiness, role: RuntimeRole, path: &st
 /// failure uses 503 with a terse dependency label suitable for operators.
 pub async fn readiness(State(st): State<SharedState>) -> Response {
     let lifecycle = st.readiness.lifecycle();
-    let mut response = if lifecycle == RuntimeReadiness::Ready {
-        let status = st
-            .readiness
-            .check(st.pg(), st.cache.as_ref(), st.storage.as_ref())
-            .await;
-        let dependencies = dependency_response(status);
-        if dependencies.status() == StatusCode::OK {
-            let capture = capture_response(&st.readiness);
-            if capture.status() == StatusCode::OK {
-                topology_response(&st.topology)
+    let ownership = network_ownership_response(
+        st.config.runtime_role,
+        crate::services::ad_vpn::owns_instance_lease(),
+    );
+    let mut response =
+        if lifecycle == RuntimeReadiness::Ready && ownership.status() != StatusCode::OK {
+            ownership
+        } else if lifecycle == RuntimeReadiness::Ready {
+            let status = st
+                .readiness
+                .check(st.pg(), st.cache.as_ref(), st.storage.as_ref())
+                .await;
+            let dependencies = dependency_response(status);
+            if dependencies.status() == StatusCode::OK {
+                let capture = capture_response(&st.readiness);
+                if capture.status() == StatusCode::OK {
+                    topology_response(&st.topology)
+                } else {
+                    capture
+                }
             } else {
-                capture
+                dependencies
             }
         } else {
-            dependencies
-        }
-    } else {
-        lifecycle_response(lifecycle)
-    };
+            lifecycle_response(lifecycle)
+        };
     add_role_headers(&mut response, st.config.runtime_role);
     response
+}
+
+fn network_ownership_response(role: RuntimeRole, owns_lease: bool) -> Response {
+    if role.capabilities().network && !owns_lease {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "network ownership unavailable",
+        )
+            .into_response()
+    } else {
+        (StatusCode::OK, "ok").into_response()
+    }
 }
 
 fn capture_response(readiness: &ReadinessProbe) -> Response {
@@ -322,6 +341,31 @@ fn add_role_headers(response: &mut Response, role: RuntimeRole) {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+
+    #[test]
+    fn network_owner_readiness_requires_fresh_ownership_proof() {
+        for role in [RuntimeRole::All, RuntimeRole::Control, RuntimeRole::Network] {
+            assert_eq!(
+                network_ownership_response(role, false).status(),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert_eq!(
+                network_ownership_response(role, true).status(),
+                StatusCode::OK
+            );
+        }
+        for role in [
+            RuntimeRole::Development,
+            RuntimeRole::Web,
+            RuntimeRole::Engine,
+            RuntimeRole::Migrate,
+        ] {
+            assert_eq!(
+                network_ownership_response(role, false).status(),
+                StatusCode::OK
+            );
+        }
+    }
 
     #[tokio::test]
     async fn readiness_response_preserves_ok_contract() {

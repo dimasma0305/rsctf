@@ -304,6 +304,10 @@ Implemented design to preserve when evaluating changes:
   Distinguish managed-game processing from games owned by the BYOC network role.
   Sources: [network lease](src/services/ad/vpn/lease.rs),
   [BYOC registry](src/services/byoc_tunnel/mod.rs), [worker sessions](src/services/worker/registry.rs).
+  - [ ] Verify supervised exact-session ownership probes, monotonic proof expiry,
+    readiness withdrawal and fixed-label recovery gauges. Exercise explicit
+    unlock, disconnect, graceful drain and a process pause beyond proof expiry.
+    Kernel route fencing and external-session reconnection remain separate gates.
 
 - [x] **ARCH-12: Add worker-certificate expiry visibility and safe renewal.**
   Worker certificates last 90 days and automatic renewal is absent. Add expiry

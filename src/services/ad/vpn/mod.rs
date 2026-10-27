@@ -19,6 +19,7 @@ use allocation::assign_available_ip;
 #[cfg(test)]
 use allocation::assign_deterministic_ip;
 use firewall::VpnTarget;
+pub(crate) use lease::lease_metrics;
 pub use lease::{
     acquire_instance_lease, owns_instance_lease, release_instance_lease,
     start_instance_lease_monitor,

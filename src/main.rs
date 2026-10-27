@@ -333,15 +333,19 @@ async fn async_main() -> anyhow::Result<()> {
     };
     rsctf::services::ad_vpn::initialize_backend(containers.backend_kind())
         .map_err(|error| anyhow::anyhow!("A&D VPN backend configuration failed: {error}"))?;
-    if capabilities.network {
+    let mut network_lease_monitor = if capabilities.network {
         // Network ownership is intentionally single-active for now, including
         // BYOC when the optional WireGuard VPN is disabled. A second owner
         // fails startup instead of serving a divergent in-memory tunnel registry.
         rsctf::services::ad_vpn::acquire_instance_lease(&db)
             .await
             .map_err(|error| anyhow::anyhow!("network singleton lease failed: {error}"))?;
-        rsctf::services::ad_vpn::start_instance_lease_monitor();
-    }
+        Some(AbortOnDrop(
+            rsctf::services::ad_vpn::start_instance_lease_monitor(),
+        ))
+    } else {
+        None
+    };
 
     let events = if replica_mode {
         EventBus::distributed(
@@ -474,6 +478,17 @@ async fn async_main() -> anyhow::Result<()> {
     });
 
     let stop_reason = tokio::select! {
+        result = async {
+            match network_lease_monitor.as_mut() {
+                Some(monitor) => monitor.join().await,
+                None => std::future::pending().await,
+            }
+        } => {
+            // Ownership must remain monitored even while other workers drain.
+            // A failed monitor cannot safely enter the ordinary 250-second drain.
+            tracing::error!(?result, "network ownership monitor exited unexpectedly; terminating fail-closed");
+            std::process::exit(1);
+        }
         result = &mut server => StopReason::Server(result),
         _ = wait_for_shutdown_signal() => {
             StopReason::Signal
@@ -532,6 +547,14 @@ async fn async_main() -> anyhow::Result<()> {
     if capabilities.network {
         if let Err(error) = rsctf::services::ad_vpn::release_instance_lease().await {
             tracing::warn!(%error, "network singleton lease release was not clean");
+        }
+    }
+    if let Some(mut monitor) = network_lease_monitor.take() {
+        if !tokio::time::timeout(Duration::from_secs(3), monitor.join())
+            .await
+            .is_ok_and(|result| result.is_ok())
+        {
+            tracing::warn!("network ownership monitor did not finish cleanly after release");
         }
     }
     serve_result.map_err(|error| anyhow::anyhow!("HTTP server task failed: {error}"))??;

@@ -50,6 +50,18 @@ The exporter does not query PostgreSQL or allocate a second metrics registry.
 - Alert if `time() - rsctf_durable_metrics_sample_timestamp_seconds > 90` or the
   timestamp is zero. A failed sample retains its prior values and timestamp and
   increments `durable_metrics_sample_errors_total`; it does not report fake zeros.
+- On each `all`, `control`, or `network` replica, `network_owner_lease_valid` must
+  be one while ready. Its five fixed-label gauges include monotonic confirmation
+  age, the last confirmation's Unix timestamp, the ten-second proof lifetime,
+  and the last successful probe duration. The dedicated PostgreSQL session is
+  checked every three seconds with a two-second budget, including the exact
+  advisory-lock identity. Proof is dated from query start; an expired proof
+  cannot be renewed by a late response. Wall-clock adjustments do not extend it.
+  Alert on age above six seconds, invalid proof, readiness failure or a missing
+  scrape target. Non-owner roles report zero validity and timestamp. Gauges reset
+  at process restart; do not sum them across replicas or interpret them as VPN
+  route/worker-session readiness. Route withdrawal and external reconnect timing
+  require their separate lifecycle checks.
 
 Start with alerts for readiness failure, sustained pool exhaustion, an increasing
 checker timeout/no-runway rate, or control-job failures. Choose latency thresholds

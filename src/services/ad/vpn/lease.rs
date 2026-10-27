@@ -1,15 +1,36 @@
 use sea_orm::DatabaseConnection;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use crate::utils::error::{AppError, AppResult};
+#[path = "lease_proof.rs"]
+mod proof;
+use proof::{LeaseProof, QUERY_TIMEOUT_MS};
 
 const VPN_INSTANCE_LOCK: i64 = 0x5253_4354_4656_504e;
-static OWNS_INSTANCE_LEASE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+const RECHECK_INTERVAL: Duration = Duration::from_secs(3);
+static PROOF: LazyLock<LeaseProof> = LazyLock::new(LeaseProof::default);
+static CLOCK: LazyLock<Instant> = LazyLock::new(Instant::now);
+static LEASE_RELEASED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 static INSTANCE_LEASE_RELEASING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 static INSTANCE_LEASE: std::sync::LazyLock<
     tokio::sync::Mutex<Option<sqlx::pool::PoolConnection<sqlx::Postgres>>>,
 > = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(None));
+
+fn monotonic_millis() -> u64 {
+    u64::try_from(CLOCK.elapsed().as_millis())
+        .unwrap_or(u64::MAX - 1)
+        .saturating_add(1)
+}
+
+fn wall_seconds() -> u64 {
+    chrono::Utc::now().timestamp().max(0) as u64
+}
+
+pub(crate) fn lease_metrics() -> [(&'static str, f64); 5] {
+    PROOF.metrics(monotonic_millis())
+}
 
 /// The in-process WireGuard interface, iptables policy, and BYOC registry are
 /// singleton state. Hold a database session lock for the process lifetime so a
@@ -32,6 +53,7 @@ pub async fn acquire_instance_lease(db: &DatabaseConnection) -> AppResult<()> {
     // in an otherwise healthy pooled session. This dedicated lifetime lease is
     // cheap to close on every exit (including a clean explicit unlock).
     connection.close_on_drop();
+    let started = monotonic_millis();
     let acquired: bool = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
@@ -46,8 +68,13 @@ pub async fn acquire_instance_lease(db: &DatabaseConnection) -> AppResult<()> {
             "another rsctf replica already owns the singleton network/BYOC lease",
         ));
     }
+    if monotonic_millis().saturating_sub(started) >= proof::FRESHNESS_MS {
+        return Err(AppError::unavailable(
+            "network ownership proof expired during acquisition",
+        ));
+    }
     *slot = Some(connection);
-    OWNS_INSTANCE_LEASE.store(true, std::sync::atomic::Ordering::Release);
+    PROOF.grant(started, wall_seconds());
     Ok(())
 }
 
@@ -59,8 +86,9 @@ pub async fn release_instance_lease() -> AppResult<()> {
     // probing a connection which shutdown has made unhealthy, it must return
     // normally instead of racing intentional release with process::exit(1).
     INSTANCE_LEASE_RELEASING.store(true, std::sync::atomic::Ordering::Release);
+    PROOF.revoke();
+    LEASE_RELEASED.notify_waiters();
     let mut connection = INSTANCE_LEASE.lock().await.take();
-    OWNS_INSTANCE_LEASE.store(false, std::sync::atomic::Ordering::Release);
     let Some(mut connection) = connection.take() else {
         return Ok(());
     };
@@ -100,26 +128,61 @@ pub async fn release_instance_lease() -> AppResult<()> {
 /// HTTP and engine-only replicas may share the same deployment configuration
 /// without being allowed to touch another process's WireGuard namespace.
 pub fn owns_instance_lease() -> bool {
-    OWNS_INSTANCE_LEASE.load(std::sync::atomic::Ordering::Acquire)
+    PROOF.valid_at(monotonic_millis())
 }
 
-pub fn start_instance_lease_monitor() {
+async fn refresh_proof() -> bool {
+    let started = monotonic_millis();
+    if !PROOF.valid_at(started) {
+        PROOF.revoke();
+        return false;
+    }
+    let healthy = tokio::time::timeout(Duration::from_millis(QUERY_TIMEOUT_MS), async {
+        let mut slot = INSTANCE_LEASE.lock().await;
+        let Some(connection) = slot.as_mut() else {
+            return false;
+        };
+        // A successful SELECT 1 alone is not proof that this exact session still
+        // owns the lock (for example after an accidental explicit unlock).
+        sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted
+              AND classid::bigint = $1 AND objid::bigint = $2 AND objsubid = 1
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database()))"#,
+        )
+        .bind(VPN_INSTANCE_LOCK >> 32)
+        .bind(VPN_INSTANCE_LOCK & 0xffff_ffff)
+        .fetch_one(&mut **connection)
+        .await
+        .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
+    if !healthy {
+        PROOF.revoke();
+        return false;
+    }
+    PROOF.refresh(started, monotonic_millis(), wall_seconds())
+}
+
+pub fn start_instance_lease_monitor() -> tokio::task::JoinHandle<()> {
     tokio::spawn(async {
+        struct RevokeOnExit;
+        impl Drop for RevokeOnExit {
+            fn drop(&mut self) {
+                PROOF.revoke();
+            }
+        }
+        let _revoke = RevokeOnExit;
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            let mut slot = INSTANCE_LEASE.lock().await;
-            let healthy = if let Some(connection) = slot.as_mut() {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&mut **connection),
-                )
-                .await
-                .is_ok_and(|result| result.is_ok())
-            } else {
-                false
-            };
-            if !healthy {
-                OWNS_INSTANCE_LEASE.store(false, std::sync::atomic::Ordering::Release);
+            if INSTANCE_LEASE_RELEASING.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            tokio::select! {
+                _ = LEASE_RELEASED.notified() => return,
+                _ = tokio::time::sleep(RECHECK_INTERVAL) => {},
+            }
+            if !refresh_proof().await {
                 if INSTANCE_LEASE_RELEASING.load(std::sync::atomic::Ordering::Acquire) {
                     tracing::info!("network singleton lease monitor stopped after release");
                     return;
@@ -128,5 +191,9 @@ pub fn start_instance_lease_monitor() {
                 std::process::exit(1);
             }
         }
-    });
+    })
 }
+
+#[cfg(test)]
+#[path = "lease_tests.rs"]
+mod tests;

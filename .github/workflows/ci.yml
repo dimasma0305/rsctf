@@ -947,6 +947,7 @@ jobs:
             real_redis_l1_fill_shares_payload_and_preserves_authoritative_operations
             real_redis_interruption_bounds_staleness_and_fails_closed_for_credentials_and_fences
             services::control_jobs::supervisor::pg_tests
+            exact_session_proof_detects_unlock_disconnect_and_preserves_graceful_drain
           )
           for filter in "${filters[@]}"; do
             # A renamed/missing regression must fail instead of passing zero tests.

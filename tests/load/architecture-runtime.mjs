@@ -84,6 +84,9 @@ async function ready(item) {
       assert.equal(metrics.status, 200)
       assert.equal(metrics.headers.get('cache-control'), 'no-store')
       assert.ok(metrics.body.includes('rsctf_control_job_reclaimed_total'))
+      if (['all', 'control', 'network'].includes(item.role)) {
+        assert.match(metrics.body, /^rsctf_network_owner_lease_valid 1$/m)
+      }
       assert.ok(!metrics.body.includes(metricsToken))
       observations.push({ role: item.role, event: 'ready', milliseconds: performance.now() - item.started })
       return
@@ -165,7 +168,34 @@ try {
     await ready(replacement)
     await ready(web)
     observations.push({ role: 'network', event: 'replacement-ready', milliseconds: performance.now() - lostAt })
-    for (const item of [web, engine, replacement]) await terminate(item)
+    // Keep its database session intact while userspace stops running. On resume,
+    // a response from that still-live session must not revive expired proof.
+    assert.equal(replacement.child.kill('SIGSTOP'), true)
+    try {
+      let stopped = false
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const status = await readFile(`/proc/${replacement.child.pid}/status`, 'utf8')
+        if (/^State:\s+T/m.test(status)) { stopped = true; break }
+        await pause(50)
+      }
+      assert.ok(stopped, 'network owner must actually enter stopped state')
+      await pause(12_000)
+      const held = await sql(`SELECT count(*) FROM pg_locks
+        WHERE locktype = 'advisory' AND granted AND objsubid = 1
+        AND classid::bigint = 1381188436 AND objid::bigint = 1180061774
+        AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`)
+      assert.equal(held, '1', 'pause must retain the ownership session')
+    } finally { replacement.child.kill('SIGCONT') }
+    const resumedAt = performance.now()
+    const resumedHealth = await request(replacement, '/healthz')
+    assert.notEqual(resumedHealth.status, 200, 'stale process must not re-enter readiness')
+    await exitWithin(replacement, 5000, 1)
+    assert.match(replacement.output(), /network singleton lease was lost/)
+    observations.push({ role: 'network', event: 'expired-proof-exit', milliseconds: performance.now() - resumedAt })
+    const afterPause = await start('network')
+    await ready(afterPause)
+    observations.push({ role: 'network', event: 'replacement-after-pause-ready', milliseconds: performance.now() - resumedAt })
+    for (const item of [web, engine, afterPause]) await terminate(item)
   }
 } catch (error) { failure = error }
 finally {

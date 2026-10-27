@@ -722,6 +722,16 @@ work is aborted and recovered from its durable PostgreSQL lease by another owner
 `/livez` remains a process-only probe. Readiness responses include `x-rsctf-role` and
 `x-rsctf-capabilities` headers for routing diagnostics.
 
+Network-capable roles additionally require fresh proof that their dedicated
+PostgreSQL session owns the exact network advisory lock. The monitor checks
+every three seconds with a two-second query budget; proof expires after ten
+seconds measured from query start. A late response cannot revive expired proof.
+The monitor remains supervised and active throughout ordinary worker drain,
+then stops when the ownership session is explicitly released. Unexpected
+monitor exit or loss of proof terminates the process; readiness also rejects an
+expired owner without waiting for the monitor task to run. These process bounds
+do not establish kernel route withdrawal or external-agent reconnection bounds.
+
 Each long-running split process registers a unique PostgreSQL heartbeat every
 five seconds with its exact build/protocol fingerprint. Presence expires after
 roughly 15 seconds, and an incompatible build never counts as a peer. `web` requires both

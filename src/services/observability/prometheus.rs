@@ -125,6 +125,9 @@ pub(crate) fn render(pool_size: u32, pool_idle: usize) -> String {
         "durable_metrics_sample_errors_total",
         durable::SAMPLE_ERRORS.load(Relaxed),
     );
+    for (name, value) in crate::services::ad_vpn::lease_metrics() {
+        writeln!(out, "# TYPE rsctf_{name} gauge\nrsctf_{name} {value}").unwrap();
+    }
     out
 }
 
