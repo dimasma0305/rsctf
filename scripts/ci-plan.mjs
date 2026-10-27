@@ -34,6 +34,7 @@ export const jobComponents = {
   rust: 'server',
   coverage: 'server',
   'cheat-acceptance': 'server',
+  'architecture-runtime': 'server',
   'kubernetes-callback': 'server',
   'byoc-agent': 'byoc',
   'worker-plane-linux': 'worker',

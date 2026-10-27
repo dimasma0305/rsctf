@@ -3,6 +3,36 @@
 Behaviour-mimicking load against a running rsctf stack — to find architecture/
 implementation flaws and capacity limits under real concurrency (not just peak req/s).
 
+## Architecture runtime gate
+
+The required `architecture-runtime` CI job uses the server and test executables
+from the same run's Rust job, verifies the source revision, and executes the real
+checker launcher as root on Ubuntu 24.04. Missing Landlock/seccomp support fails
+the gate; it does not turn the probe into a skip. Native binaries are built on
+the same Ubuntu version to preserve libc compatibility.
+
+It runs the PostgreSQL import/repository recovery, checker publication/GC,
+Docker snapshot teardown, Redis authoritative-operation, and control-job lane
+regressions. `architecture-runtime.mjs` then starts real `all`, `control`, and
+cooperating `engine`/`network`/`web` processes. It checks authenticated metrics,
+exact `healthz=ok`, readiness withdrawal during SIGTERM, clean exit, duplicate
+network-owner rejection, and recovery after terminating the exact PostgreSQL
+advisory-lock session. Logs and a JSON report retain timing and binary/source
+identity for seven days. These are correctness and recovery measurements on
+debug binaries, not performance comparisons.
+
+For a local run, set `ARCHITECTURE_RUNTIME_BINARY` to an absolute executable,
+`RSCTF_TEST_DATABASE_URL` to a fresh loopback database named
+`rsctf_architecture_test`, and `RSCTF_TEST_REDIS_URL` to disposable loopback Redis,
+then run `sudo --preserve-env node tests/load/architecture-runtime.mjs`.
+It migrates that database and uses a temporary storage directory; the caller owns
+database disposal. `ARCHITECTURE_RUNTIME_RESULTS` selects the evidence directory.
+Local kernels without Landlock may explicitly select
+`ARCHITECTURE_RUNTIME_PROFILE=development` for the API startup/drain check only;
+CI rejects that profile. The runtime fixture uses `CONTAINER_BACKEND=none` with
+VPN disabled. Its successful process recovery must not be reported as live VPN
+route fencing, worker-workload recovery, or a production recovery-time guarantee.
+
 **Everything is JavaScript.** k6 scripts (`k6/`) generate the HTTP load; Node
 orchestrators (`*.mjs`) discover state, spin up/tear down BYOC tunnels, and run the k6
 scenarios. Run via npm:

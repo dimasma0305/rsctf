@@ -86,7 +86,8 @@ jobs:
     name: Rust
     needs: plan
     if: needs.plan.outputs.server == 'true'
-    runs-on: ubuntu-latest
+    # Match the runtime integration runner's libc for shared executables.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
       postgres:
@@ -162,13 +163,15 @@ jobs:
 
       - name: Stage same-run integration binaries
         run: |
-          cargo test --lib --all-features --locked --no-run --message-format=json > "$RUNNER_TEMP/rsctf-test-artifacts.jsonl"
+          cargo test --all-targets --all-features --locked --no-run --message-format=json > "$RUNNER_TEMP/rsctf-test-artifacts.jsonl"
           test_binary="$(jq -rs '[.[] | select(.reason == "compiler-artifact" and .target.name == "rsctf" and .profile.test == true and .executable != null)] | if length == 1 then .[0].executable else error("expected one rsctf library test binary") end' "$RUNNER_TEMP/rsctf-test-artifacts.jsonl")"
           install -D -m 0755 "$test_binary" ci-artifacts/rsctf-tests
+          sandbox_binary="$(jq -rs '[.[] | select(.reason == "compiler-artifact" and .target.name == "checker_sandbox" and .profile.test == true and .executable != null)] | if length == 1 then .[0].executable else error("expected one checker sandbox test binary") end' "$RUNNER_TEMP/rsctf-test-artifacts.jsonl")"
+          install -m 0755 "$sandbox_binary" ci-artifacts/checker-sandbox-tests
           install -m 0755 target/debug/rsctf ci-artifacts/rsctf
           # Keep symbols for backtraces, but do not transfer gigabytes of DWARF
           # debug sections to jobs that only execute these already-tested files.
-          strip --strip-debug ci-artifacts/rsctf-tests ci-artifacts/rsctf
+          strip --strip-debug ci-artifacts/rsctf-tests ci-artifacts/checker-sandbox-tests ci-artifacts/rsctf
           printf '%s\n' "$GITHUB_SHA" > ci-artifacts/source-sha
 
       - name: Share tested binaries with isolated integration jobs
@@ -834,6 +837,98 @@ jobs:
             exit "$acceptance_status"
           fi
 
+  architecture-runtime:
+    name: Architecture runtime recovery
+    needs: [plan, rust]
+    if: needs.plan.outputs.server == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rsctf_architecture_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rsctf_architecture_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_architecture_test
+      RSCTF_TEST_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install runtime test dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev iptables python3-venv postgresql-client
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+
+      - name: Download same-run tested binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-server-${{ github.sha }}
+          path: ci-artifacts
+
+      - name: Verify binary source and install traversable launcher
+        run: |
+          test "$(cat ci-artifacts/source-sha)" = "$GITHUB_SHA"
+          chmod 0755 ci-artifacts/rsctf-tests ci-artifacts/checker-sandbox-tests
+          sudo install --owner=root --group=root --mode=0755 ci-artifacts/rsctf /usr/local/bin/rsctf-architecture
+
+      - name: Require real Landlock and seccomp confinement
+        run: |
+          sudo env RSCTF_SANDBOX_TEST_BINARY=/usr/local/bin/rsctf-architecture \
+            ./ci-artifacts/checker-sandbox-tests --test-threads=1 --nocapture
+
+      - name: Recover imports, checker publication and Docker snapshots
+        run: |
+          docker build --tag rsctf-architecture-smoke:ci \
+            examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
+          export RSCTF_REAL_DOCKER_RETRY_IMAGE="$(docker image inspect rsctf-architecture-smoke:ci --format '{{.Id}}')"
+          export RSCTF_DOCKER_PROXY_BIND="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+          export RSCTF_DOCKER_SCOPE=ci-architecture
+          filters=(
+            registered_import_roles_recover_committed_side_effects_and_replay_http_receipts
+            repository_update_preserves_challenge_solves_and_refreshes_content
+            real_cleanup_preserves_snapshot_and_runtime_across_export_capture_and_destroy_failures
+            real_redis_l1_fill_shares_payload_and_preserves_authoritative_operations
+            services::control_jobs::supervisor::pg_tests
+          )
+          for filter in "${filters[@]}"; do
+            # A renamed/missing regression must fail instead of passing zero tests.
+            ./ci-artifacts/rsctf-tests "$filter" --ignored --list | grep -Eq '^[1-9][0-9]* tests?, 0 benchmarks$'
+            ./ci-artifacts/rsctf-tests "$filter" --ignored --test-threads=1
+          done
+
+      - name: Exercise role startup, SIGTERM, exclusion and lease-loss recovery
+        env:
+          ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture
+          ARCHITECTURE_RUNTIME_RESULTS: ${{ runner.temp }}/architecture-runtime
+        run: sudo --preserve-env "$(command -v node)" tests/load/architecture-runtime.mjs
+
+      - name: Retain runtime evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: architecture-runtime-${{ github.sha }}
+          path: ${{ runner.temp }}/architecture-runtime/
+          if-no-files-found: error
+          retention-days: 7
+
   docs:
     name: Documentation
     needs: plan
@@ -843,7 +938,7 @@ jobs:
   required:
     name: Required CI checks
     if: always()
-    needs: [plan, rust-lint, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, dependency-security, load-harness-contracts, cheat-acceptance, docs, repository-conventions]
+    needs: [plan, rust-lint, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, dependency-security, load-harness-contracts, cheat-acceptance, architecture-runtime, docs, repository-conventions]
     runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:

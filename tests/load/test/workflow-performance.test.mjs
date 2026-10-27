@@ -143,7 +143,7 @@ test('integration jobs use the exact same-run test outputs instead of compiling 
   assert.doesNotMatch(rust, /cargo check/)
   assert.match(rust, /name: ci-server-\$\{\{ github\.sha }}/)
   assert.match(rust, /retention-days: 1/)
-  for (const name of ['kubernetes-callback', 'cheat-acceptance']) {
+  for (const name of ['kubernetes-callback', 'cheat-acceptance', 'architecture-runtime']) {
     const source = job(ciWorkflow, name)
     assert.match(source, /needs: \[plan, rust\]/)
     assert.match(source, /name: ci-server-\$\{\{ github\.sha }}/)
