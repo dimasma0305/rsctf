@@ -444,6 +444,25 @@
           "label": "Khẩu hiệu nền tảng."
         },
         "title": "Cài đặt nền tảng."
+      },
+      "nav": {
+        "platform": "Nền tảng",
+        "account": "Tài khoản",
+        "container": "Container",
+        "email": "Email",
+        "captcha": "Captcha",
+        "oauth": "OAuth",
+        "registry_pull": "Truy cập registry",
+        "build_registry": "Registry bản dựng",
+        "donations": "Quyên góp",
+        "ai_links": "Liên kết AI",
+        "agent_signatures": "Chữ ký tác nhân",
+        "diagnostics": "Chẩn đoán"
+      },
+      "status": {
+        "configured": "đã cấu hình",
+        "inactive": "tắt",
+        "attention": "cần kiểm tra"
       }
     },
     "show_all": "Hiển thị tất cả.",

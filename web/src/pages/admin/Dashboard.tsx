@@ -32,11 +32,11 @@ import { FC, useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import useSWR from 'swr'
+import { RequestError } from '@Components/RequestError'
 import { ScrollingText } from '@Components/ScrollingText'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
 import { startAdminDashboardRefresh } from '@Utils/AdminDashboardRefresh'
-import { showErrorMsg } from '@Utils/Shared'
 import { useUrlTab } from '@Hooks/useUrlTab'
 import api, {
   AdminDashboardModel,
@@ -61,12 +61,7 @@ const StatLink: FC<{
   to: string
   loading?: boolean
 }> = ({ title, value, icon, to, loading }) => (
-  <Link
-    to={to}
-    className={classes.statLink}
-    aria-label={loading ? title : `${title}: ${value ?? 0}`}
-    aria-busy={loading || undefined}
-  >
+  <Link to={to} className={classes.statLink} aria-busy={loading || undefined}>
     <Group gap="xs">
       <Icon path={icon} size={0.85} aria-hidden="true" />
       <Text component="span" size="sm" c="dimmed">
@@ -77,7 +72,7 @@ const StatLink: FC<{
       <Skeleton height={28} width={50} mt={5} radius="sm" />
     ) : (
       <Text component="span" fw={700} className={classes.statValue}>
-        {value ?? 0}
+        {value ?? '—'}
       </Text>
     )}
   </Link>
@@ -104,6 +99,7 @@ const Dashboard: FC = () => {
 
   const {
     data: trends,
+    error: trendError,
     isLoading: isTrendLoading,
     isValidating: isTrendValidating,
     mutate: refreshTrend,
@@ -113,13 +109,14 @@ const Dashboard: FC = () => {
     DASHBOARD_SWR_CONFIG
   )
 
-  if (error) showErrorMsg(error, t)
-
   // Trend Chart Option
   const trendOption: EChartsOption = {
     aria: {
       enabled: true,
-      description: t('admin.dashboard.submission_trend_description', 'Submission volume over the selected time range.'),
+      description: t(
+        'interface.dashboard.submission_trend_description',
+        'Submission volume over the selected time range.'
+      ),
     },
     tooltip: { trigger: 'axis' },
     grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
@@ -134,7 +131,7 @@ const Dashboard: FC = () => {
     yAxis: { type: 'value' },
     series: [
       {
-        name: t('admin.dashboard.submissions', 'Submissions'),
+        name: t('interface.dashboard.submissions', 'Submissions'),
         type: 'line',
         stack: 'Total',
         areaStyle: {},
@@ -152,7 +149,13 @@ const Dashboard: FC = () => {
   const [cheatPage, setCheatPage] = useState(1)
 
   // Fetch Reviews
-  const { data: reviewsData, mutate: refreshReviews } = useSWR<ChallengeReviewDetailModel[]>(
+  const {
+    data: reviewsData,
+    error: reviewsError,
+    isLoading: reviewsLoading,
+    isValidating: reviewsValidating,
+    mutate: refreshReviews,
+  } = useSWR<ChallengeReviewDetailModel[]>(
     activityTab === 'reviews' ? ['/api/admin/reviews', reviewPage] : null,
     () =>
       api.admin
@@ -162,7 +165,13 @@ const Dashboard: FC = () => {
   )
 
   // Fetch Writeups
-  const { data: writeupsData, mutate: refreshWriteups } = useSWR<WriteupInfo[]>(
+  const {
+    data: writeupsData,
+    error: writeupsError,
+    isLoading: writeupsLoading,
+    isValidating: writeupsValidating,
+    mutate: refreshWriteups,
+  } = useSWR<WriteupInfo[]>(
     activityTab === 'writeups' ? ['/api/admin/writeups', writeupPage] : null,
     () =>
       api.admin
@@ -172,7 +181,13 @@ const Dashboard: FC = () => {
   )
 
   // Fetch Cheat Reports
-  const { data: cheatsData, mutate: refreshCheats } = useSWR<CheatInfoModel[]>(
+  const {
+    data: cheatsData,
+    error: cheatsError,
+    isLoading: cheatsLoading,
+    isValidating: cheatsValidating,
+    mutate: refreshCheats,
+  } = useSWR<CheatInfoModel[]>(
     activityTab === 'cheats' ? ['/api/admin/cheat-reports', cheatPage] : null,
     () =>
       api.admin
@@ -191,7 +206,6 @@ const Dashboard: FC = () => {
     () =>
       startAdminDashboardRefresh({
         refresh: refreshVisibleDashboard,
-        onError: (error) => showErrorMsg(error, t),
         isActive: () => document.visibilityState === 'visible' && document.hasFocus() && window.navigator.onLine,
         subscribe: (listener) => {
           document.addEventListener('visibilitychange', listener)
@@ -253,17 +267,25 @@ const Dashboard: FC = () => {
           variant="subtle"
           size="lg"
           loading={isDashboardValidating || isTrendValidating}
-          aria-label={t('admin.dashboard.refresh', 'Refresh dashboard')}
-          onClick={() => void refreshVisibleDashboard().catch((error) => showErrorMsg(error, t))}
+          aria-label={t('interface.dashboard.refresh', 'Refresh dashboard')}
+          onClick={() => void refreshVisibleDashboard().catch(() => undefined)}
         >
           <Icon path={mdiRefresh} size={1} aria-hidden />
         </ActionIcon>
       }
     >
       <Stack gap="lg" data-admin-overview>
+        {error && (
+          <RequestError
+            name={t('common.workspace.dashboard', 'Dashboard')}
+            stale={Boolean(dashboard)}
+            retrying={isDashboardValidating}
+            onRetry={refreshDashboard}
+          />
+        )}
         <div className={classes.stats} data-dashboard-stats>
           <StatLink
-            title={t('admin.dashboard.users', 'Users')}
+            title={t('interface.dashboard.users', 'Users')}
             value={dashboard?.systemStats.userCount}
             icon={mdiAccountMultiple}
             to="/admin/users"
@@ -271,7 +293,7 @@ const Dashboard: FC = () => {
           />
 
           <StatLink
-            title={t('admin.dashboard.teams', 'Teams')}
+            title={t('interface.dashboard.teams', 'Teams')}
             value={dashboard?.systemStats.teamCount}
             icon={mdiAccountGroup}
             to="/admin/teams"
@@ -279,7 +301,7 @@ const Dashboard: FC = () => {
           />
 
           <StatLink
-            title={t('admin.dashboard.containers', 'Containers')}
+            title={t('interface.dashboard.containers', 'Containers')}
             value={dashboard?.systemStats.activeContainerCount}
             icon={mdiDocker}
             to="/admin/instances"
@@ -293,42 +315,50 @@ const Dashboard: FC = () => {
             <section className={classes.section}>
               <Group justify="space-between" mb="md">
                 <Title order={2} size="h4">
-                  {t('admin.dashboard.submission_trend', 'Submission Trend')}
+                  {t('interface.dashboard.submission_trend', 'Submission Trend')}
                 </Title>
                 <SegmentedControl
                   size="xs"
-                  aria-label={t('admin.dashboard.submission_trend_range', 'Submission trend range')}
+                  aria-label={t('interface.dashboard.submission_trend_range', 'Submission trend range')}
                   value={trendRange}
                   onChange={setTrendRange}
                   data={[
-                    { label: t('common.range.day', 'Day'), value: 'Day' },
-                    { label: t('common.range.week', 'Week'), value: 'Week' },
-                    { label: t('common.range.month', 'Month'), value: 'Month' },
-                    { label: t('common.range.year', 'Year'), value: 'Year' },
+                    { label: t('interface.dashboard.day', 'Day'), value: 'Day' },
+                    { label: t('interface.dashboard.week', 'Week'), value: 'Week' },
+                    { label: t('interface.dashboard.month', 'Month'), value: 'Month' },
+                    { label: t('interface.dashboard.year', 'Year'), value: 'Year' },
                   ]}
                 />
               </Group>
+              {trendError && (
+                <RequestError
+                  name={t('interface.dashboard.submission_trend', 'Submission trend')}
+                  stale={Boolean(trends)}
+                  retrying={isTrendValidating}
+                  onRetry={refreshTrend}
+                />
+              )}
               {isTrendLoading ? (
                 <Skeleton h={300} radius="md" />
               ) : trends?.some((point) => point.count > 0) ? (
                 <EchartsContainer
                   option={trendOption}
-                  aria-label={t('admin.dashboard.submission_trend', 'Submission Trend')}
+                  aria-label={t('interface.dashboard.submission_trend', 'Submission Trend')}
                   style={{ height: 300, width: '100%' }}
                 />
-              ) : (
+              ) : !trendError ? (
                 <Stack gap="xs" className={classes.emptyTrend}>
                   <Text size="sm" fw={600}>
-                    {t('admin.dashboard.no_submission_activity', 'No submission activity')}
+                    {t('interface.dashboard.no_submission_activity', 'No submission activity')}
                   </Text>
                   <Text size="sm" c="dimmed">
                     {t(
-                      'admin.dashboard.no_submission_activity_description',
+                      'interface.dashboard.no_submission_activity_description',
                       'Submissions will appear here when competitors begin solving challenges in this time range.'
                     )}
                   </Text>
                 </Stack>
-              )}
+              ) : null}
             </section>
           </Grid.Col>
 
@@ -336,7 +366,7 @@ const Dashboard: FC = () => {
           <Grid.Col span={{ base: 12, lg: 5 }}>
             <section className={classes.section}>
               <Title order={2} size="h4" mb="md">
-                {t('admin.dashboard.popular_games', 'Popular Games')}
+                {t('interface.dashboard.popular_games', 'Popular Games')}
               </Title>
               <Stack gap="xs" hiddenFrom="sm">
                 {dashboard?.topGames?.map((game) => (
@@ -360,7 +390,7 @@ const Dashboard: FC = () => {
                             <Group
                               gap={4}
                               role="group"
-                              aria-label={`${t('admin.dashboard.users', 'Users')}: ${game.userCount ?? 0}`}
+                              aria-label={`${t('interface.dashboard.users', 'Users')}: ${game.userCount ?? 0}`}
                             >
                               <Icon path={mdiAccountMultiple} size={0.7} aria-hidden />
                               <Text size="xs">{game.userCount ?? 0}</Text>
@@ -368,7 +398,7 @@ const Dashboard: FC = () => {
                             <Group
                               gap={4}
                               role="group"
-                              aria-label={`${t('admin.dashboard.teams', 'Teams')}: ${game.teamCount ?? 0}`}
+                              aria-label={`${t('interface.dashboard.teams', 'Teams')}: ${game.teamCount ?? 0}`}
                             >
                               <Icon path={mdiAccountGroup} size={0.7} aria-hidden />
                               <Text size="xs">{game.teamCount ?? 0}</Text>
@@ -395,13 +425,13 @@ const Dashboard: FC = () => {
                             : '-'}
                         </Text>
                         <Text size="xs" c="dimmed">
-                          {game.reviewCount ?? 0} {t('admin.dashboard.reviews', 'Reviews').toLocaleLowerCase()}
+                          {game.reviewCount ?? 0} {t('interface.dashboard.reviews', 'Reviews').toLocaleLowerCase()}
                         </Text>
                       </Stack>
                     </Group>
                   </Card>
                 ))}
-                {(dashboard?.topGames?.length ?? 0) === 0 && (
+                {dashboard && dashboard.topGames?.length === 0 && (
                   <Text ta="center" c="dimmed" py="md">
                     {t('common.content.no_data', 'No Data')}
                   </Text>
@@ -414,18 +444,18 @@ const Dashboard: FC = () => {
                 className={classes.popularGamesScroll}
                 viewportProps={{
                   tabIndex: 0,
-                  'aria-label': t('admin.dashboard.popular_games_scroll', 'Scrollable popular games table'),
+                  'aria-label': t('interface.dashboard.popular_games_scroll', 'Scrollable popular games table'),
                 }}
               >
                 <Table miw={360} horizontalSpacing="xs">
                   <Table.Caption className="app-sr-only">
-                    {t('admin.dashboard.popular_games', 'Popular Games')}
+                    {t('interface.dashboard.popular_games', 'Popular Games')}
                   </Table.Caption>
                   <Table.Thead>
                     <Table.Tr>
                       <Table.Th scope="col">{t('common.label.game')}</Table.Th>
-                      <Table.Th scope="col">{t('admin.dashboard.participants', 'Participants')}</Table.Th>
-                      <Table.Th scope="col">{t('admin.dashboard.reviews', 'Reviews')}</Table.Th>
+                      <Table.Th scope="col">{t('interface.dashboard.participants', 'Participants')}</Table.Th>
+                      <Table.Th scope="col">{t('interface.dashboard.reviews', 'Reviews')}</Table.Th>
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
@@ -475,7 +505,7 @@ const Dashboard: FC = () => {
                         </Table.Td>
                       </Table.Tr>
                     ))}
-                    {(dashboard?.topGames?.length ?? 0) === 0 && (
+                    {dashboard && dashboard.topGames?.length === 0 && (
                       <Table.Tr>
                         <Table.Td colSpan={3} align="center" c="dimmed">
                           {t('common.content.no_data', 'No Data')}
@@ -493,21 +523,30 @@ const Dashboard: FC = () => {
         <section className={classes.activity}>
           <Tabs value={activityTab} onChange={setActivityTab}>
             <Tabs.List>
-              <Tabs.Tab value="reviews">{t('admin.dashboard.recent_reviews', 'Recent Reviews')}</Tabs.Tab>
-              <Tabs.Tab value="writeups">{t('admin.dashboard.recent_writeups', 'Recent Writeups')}</Tabs.Tab>
-              <Tabs.Tab value="cheats">{t('admin.dashboard.recent_cheats', 'Recent Cheat Reports')}</Tabs.Tab>
+              <Tabs.Tab value="reviews">{t('interface.dashboard.recent_reviews', 'Recent Reviews')}</Tabs.Tab>
+              <Tabs.Tab value="writeups">{t('interface.dashboard.recent_writeups', 'Recent Writeups')}</Tabs.Tab>
+              <Tabs.Tab value="cheats">{t('interface.dashboard.recent_cheats', 'Recent Cheat Reports')}</Tabs.Tab>
             </Tabs.List>
 
             <Tabs.Panel value="reviews" pt="xs">
+              {reviewsError && (
+                <RequestError
+                  name={t('interface.dashboard.recent_reviews', 'Recent reviews')}
+                  stale={Boolean(reviewsData)}
+                  retrying={reviewsValidating}
+                  onRetry={refreshReviews}
+                />
+              )}
+              {reviewsLoading && !reviewsData && <Skeleton h={80} />}
               <ScrollArea
                 viewportProps={{
                   tabIndex: 0,
-                  'aria-label': t('admin.dashboard.recent_reviews_scroll', 'Scrollable recent challenge reviews'),
+                  'aria-label': t('interface.dashboard.recent_reviews_scroll', 'Scrollable recent challenge reviews'),
                 }}
               >
                 <Table striped highlightOnHover style={{ minWidth: 700 }}>
                   <Table.Caption className="app-sr-only">
-                    {t('admin.dashboard.recent_reviews', 'Recent Reviews')}
+                    {t('interface.dashboard.recent_reviews', 'Recent Reviews')}
                   </Table.Caption>
                   <Table.Thead>
                     <Table.Tr>
@@ -535,13 +574,13 @@ const Dashboard: FC = () => {
                           {r.rating === 2 && (
                             <Group gap={4} c="teal">
                               <Icon path={mdiThumbUp} size={0.8} />
-                              <Text size="xs">{t('admin.dashboard.positive_review', 'Positive')}</Text>
+                              <Text size="xs">{t('interface.dashboard.positive_review', 'Positive')}</Text>
                             </Group>
                           )}
                           {r.rating === 1 && (
                             <Group gap={4} c="red">
                               <Icon path={mdiThumbDown} size={0.8} />
-                              <Text size="xs">{t('admin.dashboard.negative_review', 'Negative')}</Text>
+                              <Text size="xs">{t('interface.dashboard.negative_review', 'Negative')}</Text>
                             </Group>
                           )}
                         </Table.Td>
@@ -553,7 +592,7 @@ const Dashboard: FC = () => {
                         <Table.Td>{new Date(r.submitTimeUtc!).toLocaleString()}</Table.Td>
                       </Table.Tr>
                     ))}
-                    {(reviewsData?.length ?? 0) === 0 && (
+                    {reviewsData?.length === 0 && !reviewsError && (
                       <Table.Tr>
                         <Table.Td colSpan={6} align="center" c="dimmed">
                           {t('common.content.no_data', 'No Data')}
@@ -567,15 +606,24 @@ const Dashboard: FC = () => {
             </Tabs.Panel>
 
             <Tabs.Panel value="writeups" pt="xs">
+              {writeupsError && (
+                <RequestError
+                  name={t('interface.dashboard.recent_writeups', 'Recent writeups')}
+                  stale={Boolean(writeupsData)}
+                  retrying={writeupsValidating}
+                  onRetry={refreshWriteups}
+                />
+              )}
+              {writeupsLoading && !writeupsData && <Skeleton h={80} />}
               <ScrollArea
                 viewportProps={{
                   tabIndex: 0,
-                  'aria-label': t('admin.dashboard.recent_writeups_scroll', 'Scrollable recent writeups'),
+                  'aria-label': t('interface.dashboard.recent_writeups_scroll', 'Scrollable recent writeups'),
                 }}
               >
                 <Table striped highlightOnHover style={{ minWidth: 700 }}>
                   <Table.Caption className="app-sr-only">
-                    {t('admin.dashboard.recent_writeups', 'Recent Writeups')}
+                    {t('interface.dashboard.recent_writeups', 'Recent Writeups')}
                   </Table.Caption>
                   <Table.Thead>
                     <Table.Tr>
@@ -602,7 +650,7 @@ const Dashboard: FC = () => {
                         </Table.Td>
                       </Table.Tr>
                     ))}
-                    {(writeupsData?.length ?? 0) === 0 && (
+                    {writeupsData?.length === 0 && !writeupsError && (
                       <Table.Tr>
                         <Table.Td colSpan={3} align="center" c="dimmed">
                           {t('common.content.no_data', 'No Data')}
@@ -620,15 +668,24 @@ const Dashboard: FC = () => {
             </Tabs.Panel>
 
             <Tabs.Panel value="cheats" pt="xs">
+              {cheatsError && (
+                <RequestError
+                  name={t('interface.dashboard.recent_cheats', 'Recent cheat reports')}
+                  stale={Boolean(cheatsData)}
+                  retrying={cheatsValidating}
+                  onRetry={refreshCheats}
+                />
+              )}
+              {cheatsLoading && !cheatsData && <Skeleton h={80} />}
               <ScrollArea
                 viewportProps={{
                   tabIndex: 0,
-                  'aria-label': t('admin.dashboard.recent_cheats_scroll', 'Scrollable recent cheat reports'),
+                  'aria-label': t('interface.dashboard.recent_cheats_scroll', 'Scrollable recent cheat reports'),
                 }}
               >
                 <Table striped highlightOnHover style={{ minWidth: 700 }}>
                   <Table.Caption className="app-sr-only">
-                    {t('admin.dashboard.recent_cheats', 'Recent Cheat Reports')}
+                    {t('interface.dashboard.recent_cheats', 'Recent Cheat Reports')}
                   </Table.Caption>
                   <Table.Thead>
                     <Table.Tr>
@@ -651,7 +708,7 @@ const Dashboard: FC = () => {
                         </Table.Td>
                       </Table.Tr>
                     ))}
-                    {(cheatsData?.length ?? 0) === 0 && (
+                    {cheatsData?.length === 0 && !cheatsError && (
                       <Table.Tr>
                         <Table.Td colSpan={3} align="center" c="dimmed">
                           {t('common.content.no_data', 'No Data')}

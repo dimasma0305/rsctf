@@ -77,10 +77,10 @@ try {
     await inspect(name + '-home')
     assert.equal(await evaluate(`document.querySelectorAll('[data-home-overview] [data-post-card][data-layout="feed"] h3').length`), 2)
     assert.equal(await evaluate(`document.querySelectorAll('[data-workspace-links] a').length`), 3)
-    if (language === 'en-US') assert.ok(await evaluate(`document.querySelector('[data-home-recent] a[href="/games/903"]').textContent.includes('Ended ')`), 'Completed events must use past-tense dates')
+    if (language === 'en-US' && width > 900) assert.ok(await evaluate(`document.querySelector('[data-home-recent] a[href="/games/903"]').textContent.includes('Ended ')`), 'Completed events must use past-tense dates')
     if (width >= 1440) assert.ok(await evaluate(`document.querySelector('#news-feed-title').getBoundingClientRect().top < 220`), 'Home must lead with real content')
     if (width <= 900) {
-      assert.equal(await evaluate(`Array.from(document.querySelectorAll('[data-home-recent] a')).filter(a => a.getClientRects().length && /\\/games\\/\\d+/.test(a.getAttribute('href'))).length`), 2, 'Mobile home shows two compact, static events')
+      assert.equal(await evaluate(`Array.from(document.querySelectorAll('[data-home-recent] a')).filter(a => a.getClientRects().length && /\\/games\\/\\d+/.test(a.getAttribute('href'))).length`), 1, 'Mobile home shows one active event summary')
       assert.ok(await evaluate(`document.querySelector('#news-feed-title').getBoundingClientRect().top < 670`), 'Mobile announcements must follow the compact event list without a large carousel')
       assert.equal(await evaluate(`document.querySelectorAll('[data-home-overview] [aria-roledescription="carousel"]').length`), 0)
     }
@@ -116,6 +116,7 @@ try {
     if (width >= 1440) assert.ok(await evaluate(`document.querySelector('[data-dashboard-stats]').getBoundingClientRect().top < 300`), 'Dashboard totals must precede decorative panels')
     if (width === 320) assert.ok(await evaluate(`document.querySelector('[data-dashboard-stats]').getBoundingClientRect().bottom < innerHeight - 80`), 'Dashboard totals must be visible above the mobile dock')
   }
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false })
   await seedDocument(`localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark');`)
   await visit('/', `document.querySelector('[data-workspace-links] a[href="/games"]')`)
   await evaluate(`document.querySelector('[data-workspace-links] a[href="/games"]').focus()`)
@@ -169,7 +170,7 @@ try {
   assert.ok(requests.filter(path => path === '/api/admin/dashboard').length > beforeRefresh)
   await evaluate(`document.querySelector('[role="tab"]').focus()`)
   await press('ArrowRight')
-  await wait(`document.querySelector('[role="tab"][aria-selected="true"]').textContent.includes('Writeups')`)
+  await wait(`document.querySelector('[role="tab"][aria-selected="true"]').textContent.toLowerCase().includes('writeups')`)
   await inspect('dashboard-writeups')
 
   for (const state of ['empty', 'loading', 'error']) {

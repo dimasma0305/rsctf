@@ -1,0 +1,98 @@
+{
+  "actions": {
+    "edit": "Bearbeiten",
+    "more": "Mehr",
+    "retry": "Erneut versuchen"
+  },
+  "request": {
+    "failed": "{{name}} konnte nicht geladen werden",
+    "hint": "Prüfe deine Verbindung und versuche es erneut.",
+    "stale": "Die zuletzt geladenen Daten werden angezeigt. Sie sind möglicherweise nicht aktuell."
+  },
+  "navigation": {
+    "admin_section": "Verwaltungsbereich",
+    "events": "Wettbewerbe",
+    "guide": "Anleitung"
+  },
+  "users": {
+    "search": "Benutzer suchen",
+    "import": "Importieren",
+    "import_csv": "CSV importieren",
+    "import_history": "Importverlauf",
+    "email_verified": "E-Mail-Bestätigung",
+    "verified": "Bestätigt",
+    "unverified": "Nicht bestätigt",
+    "toggle_verification": "E-Mail-Bestätigung für {{name}} ändern",
+    "verification_hint": "Aktualisiert den E-Mail-Bestätigungsstatus dieses Kontos.",
+    "actions_for": "Aktionen für {{name}}",
+    "password_link": "Link zur Passworteinrichtung senden",
+    "reset_password": "Passwort zurücksetzen",
+    "delete": "Benutzer löschen",
+    "email_confirm": "E-Mail zur Passworteinrichtung an {{name}} senden?",
+    "email_queued": "Die E-Mail zur Passworteinrichtung für {{email}} wurde eingereiht"
+  },
+  "settings": {
+    "section": "Einstellungsbereich",
+    "conflict_title": "Die Einstellungen auf dem Server wurden geändert",
+    "conflict_message": "Ihr Entwurf wurde nicht gespeichert. Behalten Sie ihn bei oder verwerfen Sie ihn und laden Sie die neuesten Einstellungen.",
+    "discard_reload": "Entwurf verwerfen und neu laden",
+    "discard_confirm": "Alle ungespeicherten Änderungen verwerfen und die neuesten Einstellungen laden? Der aktuelle Entwurf kann nicht wiederhergestellt werden.",
+    "keep_draft": "Entwurf behalten"
+  },
+  "home": {
+    "recent_events": "Aktuelle Wettbewerbe",
+    "view_all": "Alle anzeigen",
+    "player_guide": "Spieleranleitung",
+    "pinned": "Angeheftete Ankündigung",
+    "live_count": "{{count}} laufen",
+    "upcoming_count": "{{count}} demnächst",
+    "announcements": "Neuigkeiten und Ankündigungen"
+  },
+  "event": {
+    "live": "Läuft",
+    "upcoming": "Demnächst",
+    "completed": "Beendet",
+    "days": "{{count}} T.",
+    "minutes": "{{count}} Min.",
+    "hours": "{{count}} Std.",
+    "participants": "Teams: {{teams}} · Teilnehmer: {{users}}",
+    "team_limit": "Bis zu {{count}} pro Team",
+    "unlimited": "Unbegrenzte Teamgröße",
+    "solo": "Einzelteilnahme"
+  },
+  "challenges": {
+    "cards": "Karten",
+    "list": "Liste",
+    "globe": "Globus",
+    "view": "Aufgabenansicht",
+    "filter_options": "Filter und Ansicht"
+  },
+  "dashboard": {
+    "users": "Benutzer",
+    "teams": "Teams",
+    "containers": "Container",
+    "refresh": "Übersicht aktualisieren",
+    "submission_trend": "Einreichungsverlauf",
+    "submission_trend_description": "Anzahl der Einreichungen im ausgewählten Zeitraum.",
+    "submissions": "Einreichungen",
+    "submission_trend_range": "Zeitraum der Einreichungen",
+    "no_submission_activity": "Keine Einreichungen",
+    "no_submission_activity_description": "Einreichungen erscheinen hier, sobald Teilnehmer in diesem Zeitraum Aufgaben lösen.",
+    "popular_games": "Beliebte Wettbewerbe",
+    "participants": "Teilnehmer",
+    "reviews": "Bewertungen",
+    "popular_games_scroll": "Scrollbare Tabelle beliebter Wettbewerbe",
+    "recent_reviews": "Aktuelle Bewertungen",
+    "recent_writeups": "Aktuelle Lösungsberichte",
+    "recent_cheats": "Aktuelle Betrugsmeldungen",
+    "recent_reviews_scroll": "Scrollbare aktuelle Aufgabenbewertungen",
+    "recent_writeups_scroll": "Scrollbare aktuelle Lösungsberichte",
+    "recent_cheats_scroll": "Scrollbare aktuelle Betrugsmeldungen",
+    "positive_review": "Positiv",
+    "negative_review": "Negativ",
+    "day": "Tag",
+    "week": "Woche",
+    "month": "Monat",
+    "year": "Jahr"
+  }
+}

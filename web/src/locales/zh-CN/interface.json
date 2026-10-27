@@ -1,0 +1,98 @@
+{
+  "actions": {
+    "edit": "编辑",
+    "more": "更多",
+    "retry": "重试"
+  },
+  "request": {
+    "failed": "无法加载{{name}}",
+    "hint": "请检查网络连接后重试。",
+    "stale": "正在显示上次加载的数据，内容可能已过时。"
+  },
+  "navigation": {
+    "admin_section": "管理区域",
+    "events": "赛事",
+    "guide": "指南"
+  },
+  "users": {
+    "search": "搜索用户",
+    "import": "导入",
+    "import_csv": "导入 CSV",
+    "import_history": "导入历史",
+    "email_verified": "邮箱验证",
+    "verified": "已验证",
+    "unverified": "未验证",
+    "toggle_verification": "更改{{name}}的邮箱验证状态",
+    "verification_hint": "更新此账户的邮箱验证状态。",
+    "actions_for": "{{name}}的操作",
+    "password_link": "发送密码设置链接",
+    "reset_password": "重置密码",
+    "delete": "删除用户",
+    "email_confirm": "向{{name}}发送密码设置邮件？",
+    "email_queued": "发往{{email}}的密码设置邮件已加入队列"
+  },
+  "settings": {
+    "section": "设置区域",
+    "conflict_title": "服务器上的设置已更改",
+    "conflict_message": "草稿尚未保存。您可以保留草稿，或放弃草稿并加载最新设置。",
+    "discard_reload": "放弃草稿并重新加载",
+    "discard_confirm": "放弃所有未保存的更改并加载最新设置？当前草稿将无法恢复。",
+    "keep_draft": "保留草稿"
+  },
+  "home": {
+    "recent_events": "近期赛事",
+    "view_all": "查看全部",
+    "player_guide": "选手指南",
+    "pinned": "置顶公告",
+    "live_count": "{{count}} 场进行中",
+    "upcoming_count": "{{count}} 场即将开始",
+    "announcements": "新闻与公告"
+  },
+  "event": {
+    "live": "进行中",
+    "upcoming": "即将开始",
+    "completed": "已结束",
+    "days": "{{count}} 天",
+    "minutes": "{{count}} 分钟",
+    "hours": "{{count}} 小时",
+    "participants": "队伍：{{teams}} · 选手：{{users}}",
+    "team_limit": "每队最多 {{count}} 人",
+    "unlimited": "队伍人数不限",
+    "solo": "个人赛"
+  },
+  "challenges": {
+    "cards": "卡片",
+    "list": "列表",
+    "globe": "地球",
+    "view": "题目视图",
+    "filter_options": "筛选与视图"
+  },
+  "dashboard": {
+    "users": "用户",
+    "teams": "队伍",
+    "containers": "容器",
+    "refresh": "刷新仪表盘",
+    "submission_trend": "提交趋势",
+    "submission_trend_description": "所选时间范围内的提交量。",
+    "submissions": "提交",
+    "submission_trend_range": "提交趋势时间范围",
+    "no_submission_activity": "暂无提交活动",
+    "no_submission_activity_description": "选手在此时间范围内开始解题后，提交记录将显示在这里。",
+    "popular_games": "热门赛事",
+    "participants": "参赛者",
+    "reviews": "评价",
+    "popular_games_scroll": "可滚动的热门赛事表格",
+    "recent_reviews": "近期评价",
+    "recent_writeups": "近期题解",
+    "recent_cheats": "近期作弊举报",
+    "recent_reviews_scroll": "可滚动的近期题目评价",
+    "recent_writeups_scroll": "可滚动的近期题解",
+    "recent_cheats_scroll": "可滚动的近期作弊举报",
+    "positive_review": "好评",
+    "negative_review": "差评",
+    "day": "日",
+    "week": "周",
+    "month": "月",
+    "year": "年"
+  }
+}

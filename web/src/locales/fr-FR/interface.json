@@ -1,0 +1,98 @@
+{
+  "actions": {
+    "edit": "Modifier",
+    "more": "Plus",
+    "retry": "Réessayer"
+  },
+  "request": {
+    "failed": "Impossible de charger {{name}}",
+    "hint": "Vérifiez votre connexion et réessayez.",
+    "stale": "Les dernières données chargées sont affichées. Elles peuvent ne plus être à jour."
+  },
+  "navigation": {
+    "admin_section": "Section d’administration",
+    "events": "Événements",
+    "guide": "Guide"
+  },
+  "users": {
+    "search": "Rechercher des utilisateurs",
+    "import": "Importer",
+    "import_csv": "Importer un CSV",
+    "import_history": "Historique des imports",
+    "email_verified": "Vérification de l’adresse e-mail",
+    "verified": "Vérifiée",
+    "unverified": "Non vérifiée",
+    "toggle_verification": "Modifier la vérification de l’adresse e-mail de {{name}}",
+    "verification_hint": "Met à jour la vérification de l’adresse e-mail de ce compte.",
+    "actions_for": "Actions pour {{name}}",
+    "password_link": "Envoyer un lien de création du mot de passe",
+    "reset_password": "Réinitialiser le mot de passe",
+    "delete": "Supprimer l’utilisateur",
+    "email_confirm": "Envoyer un e-mail de création du mot de passe à {{name}} ?",
+    "email_queued": "L’e-mail de création du mot de passe pour {{email}} a été mis en attente"
+  },
+  "settings": {
+    "section": "Section des paramètres",
+    "conflict_title": "Les paramètres du serveur ont changé",
+    "conflict_message": "Votre brouillon n’a pas été enregistré. Conservez-le ou abandonnez-le pour charger les derniers paramètres.",
+    "discard_reload": "Abandonner et recharger",
+    "discard_confirm": "Abandonner toutes les modifications non enregistrées et charger les derniers paramètres ? Le brouillon actuel ne pourra pas être restauré.",
+    "keep_draft": "Conserver le brouillon"
+  },
+  "home": {
+    "recent_events": "Événements récents",
+    "view_all": "Tout afficher",
+    "player_guide": "Guide du joueur",
+    "pinned": "Annonce épinglée",
+    "live_count": "{{count}} en cours",
+    "upcoming_count": "{{count}} à venir",
+    "announcements": "Actualités et annonces"
+  },
+  "event": {
+    "live": "En cours",
+    "upcoming": "À venir",
+    "completed": "Terminé",
+    "days": "{{count}} j",
+    "minutes": "{{count}} min",
+    "hours": "{{count}} h",
+    "participants": "Équipes : {{teams}} · Joueurs : {{users}}",
+    "team_limit": "Jusqu’à {{count}} par équipe",
+    "unlimited": "Taille d’équipe illimitée",
+    "solo": "Individuel"
+  },
+  "challenges": {
+    "cards": "Cartes",
+    "list": "Liste",
+    "globe": "Globe",
+    "view": "Affichage des défis",
+    "filter_options": "Filtres et affichage"
+  },
+  "dashboard": {
+    "users": "Utilisateurs",
+    "teams": "Équipes",
+    "containers": "Conteneurs",
+    "refresh": "Actualiser le tableau de bord",
+    "submission_trend": "Évolution des soumissions",
+    "submission_trend_description": "Volume des soumissions sur la période sélectionnée.",
+    "submissions": "Soumissions",
+    "submission_trend_range": "Période des soumissions",
+    "no_submission_activity": "Aucune soumission",
+    "no_submission_activity_description": "Les soumissions apparaîtront ici lorsque les participants commenceront à résoudre des défis sur cette période.",
+    "popular_games": "Événements populaires",
+    "participants": "Participants",
+    "reviews": "Avis",
+    "popular_games_scroll": "Tableau défilant des événements populaires",
+    "recent_reviews": "Avis récents",
+    "recent_writeups": "Solutions récentes",
+    "recent_cheats": "Signalements de triche récents",
+    "recent_reviews_scroll": "Avis récents sur les défis, avec défilement",
+    "recent_writeups_scroll": "Solutions récentes, avec défilement",
+    "recent_cheats_scroll": "Signalements de triche récents, avec défilement",
+    "positive_review": "Positif",
+    "negative_review": "Négatif",
+    "day": "Jour",
+    "week": "Semaine",
+    "month": "Mois",
+    "year": "Année"
+  }
+}

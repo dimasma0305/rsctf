@@ -147,5 +147,14 @@
   "title": {
     "404": "La Nada",
     "about": "Acerca de"
+  },
+  "pagination": {
+    "label": "Paginación",
+    "previous": "Página anterior",
+    "next": "Página siguiente",
+    "first": "Primera página",
+    "last": "Última página",
+    "page": "Página {{page}}",
+    "page_of": "Página {{page}} de {{total}}"
   }
 }

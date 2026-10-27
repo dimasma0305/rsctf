@@ -265,5 +265,14 @@
   "title": {
     "404": "Tempat yang Tidak Ada",
     "about": "Tentang"
+  },
+  "pagination": {
+    "label": "Navigasi halaman",
+    "previous": "Halaman sebelumnya",
+    "next": "Halaman berikutnya",
+    "first": "Halaman pertama",
+    "last": "Halaman terakhir",
+    "page": "Halaman {{page}}",
+    "page_of": "Halaman {{page}} dari {{total}}"
   }
 }

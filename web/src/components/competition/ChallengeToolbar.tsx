@@ -2,6 +2,7 @@ import {
   ActionIcon,
   Button,
   Group,
+  NativeSelect,
   Popover,
   SegmentedControl,
   Select,
@@ -22,7 +23,7 @@ import {
   mdiViewGridOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useChallengeCategoryLabelMap } from '@Utils/Shared'
 import type { ChallengeCategory } from '@Api'
@@ -54,11 +55,18 @@ export function ChallengeToolbar(props: {
 }) {
   const { t } = useTranslation()
   const searchRef = useRef<HTMLInputElement>(null)
+  const filterRef = useRef<HTMLButtonElement>(null)
+  const [filtersOpened, setFiltersOpened] = useState(false)
   const categoryLabels = useChallengeCategoryLabelMap()
   const activeFilters = Number(props.hideSolved) + Number(props.category !== 'All') + Number(props.kind !== 'all')
   const categoryOptions = [
     { value: 'All', label: t('game.button.kind.all', 'All'), count: props.total },
     ...props.categories.map((item) => ({ ...item, label: categoryLabels.get(item.value)?.name ?? item.value })),
+  ]
+  const viewChoices = [
+    ['cards', mdiViewGridOutline, t('interface.challenges.cards')],
+    ['list', mdiFormatListBulleted, t('interface.challenges.list')],
+    ['globe', mdiEarth, t('interface.challenges.globe')],
   ]
   const sortControl = (
     <Select
@@ -104,26 +112,27 @@ export function ChallengeToolbar(props: {
           onChange={(event) => props.onSearch(event.currentTarget.value)}
         />
         <div className={classes.desktopSort}>{sortControl}</div>
-        <SegmentedControl
-          aria-label={t('game.arena.view', 'Challenge view')}
-          value={props.view}
-          onChange={(value) => props.onView(value as ChallengeView)}
-          className={classes.viewControl}
-          data={[
-            ['cards', mdiViewGridOutline, t('game.arena.cards', 'Cards')],
-            ['list', mdiFormatListBulleted, t('game.arena.list', 'List')],
-            ['globe', mdiEarth, t('game.arena.globe_short', 'Globe')],
-          ].map(([value, icon, label]) => ({
-            value,
-            label: (
-              <Group gap={4} wrap="nowrap">
-                <Icon path={icon} size={0.75} aria-hidden="true" />
-                {label}
-              </Group>
-            ),
-          }))}
-        />
+        <div className={classes.desktopView}>
+          <SegmentedControl
+            aria-label={t('game.arena.view', 'Challenge view')}
+            value={props.view}
+            onChange={(value) => props.onView(value as ChallengeView)}
+            className={classes.viewControl}
+            data={viewChoices.map(([value, icon, label]) => ({
+              value,
+              label: (
+                <Group gap={4} wrap="nowrap">
+                  <Icon path={icon} size={0.75} aria-hidden="true" />
+                  {label}
+                </Group>
+              ),
+            }))}
+          />
+        </div>
         <Popover
+          middlewares={{ size: { padding: { top: 8, bottom: 88, left: 8, right: 8 } } }}
+          opened={filtersOpened}
+          onChange={setFiltersOpened}
           position="bottom-end"
           width="min(20rem, calc(100vw - 2rem))"
           trapFocus
@@ -134,6 +143,8 @@ export function ChallengeToolbar(props: {
           <Popover.Target>
             <Button
               data-challenge-filters
+              ref={filterRef}
+              onClick={() => setFiltersOpened((opened) => !opened)}
               className={classes.filterButton}
               variant={activeFilters ? 'light' : 'default'}
               leftSection={<Icon path={mdiFilterVariant} size={0.8} aria-hidden="true" />}
@@ -142,7 +153,11 @@ export function ChallengeToolbar(props: {
               {activeFilters ? ` · ${activeFilters}` : ''}
             </Button>
           </Popover.Target>
-          <Popover.Dropdown>
+          <Popover.Dropdown
+            role="dialog"
+            aria-label={t('interface.challenges.filter_options')}
+            style={{ overflowY: 'auto' }}
+          >
             <Stack gap="md">
               <Select
                 id="challenge-category-filter"
@@ -173,6 +188,30 @@ export function ChallengeToolbar(props: {
                 />
               )}
               <div className={classes.mobileSort}>{sortControl}</div>
+              <Stack className={classes.mobileOptions} gap="md">
+                <NativeSelect
+                  id="challenge-view-picker"
+                  label={t('interface.challenges.view')}
+                  value={props.view}
+                  data={viewChoices.map(([value, , label]) => ({ value, label }))}
+                  onChange={(event) => props.onView(event.currentTarget.value as ChallengeView)}
+                />
+                {props.onWriteup && (
+                  <Button
+                    variant="light"
+                    leftSection={<Icon path={mdiFileUploadOutline} size={0.8} aria-hidden="true" />}
+                    onClick={() => {
+                      setFiltersOpened(false)
+                      window.requestAnimationFrame(() => {
+                        filterRef.current?.focus()
+                        props.onWriteup?.()
+                      })
+                    }}
+                  >
+                    {t('game.button.submit_writeup')}
+                  </Button>
+                )}
+              </Stack>
               <Button variant="subtle" onClick={props.onReset}>
                 {t('common.workspace.reset_filters', 'Reset filters')}
               </Button>

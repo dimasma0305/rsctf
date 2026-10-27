@@ -1,0 +1,98 @@
+{
+  "actions": {
+    "edit": "Chỉnh sửa",
+    "more": "Thêm",
+    "retry": "Thử lại"
+  },
+  "request": {
+    "failed": "Không thể tải {{name}}",
+    "hint": "Kiểm tra kết nối rồi thử lại.",
+    "stale": "Đang hiển thị dữ liệu được tải gần nhất. Dữ liệu có thể đã cũ."
+  },
+  "navigation": {
+    "admin_section": "Mục quản trị",
+    "events": "Sự kiện",
+    "guide": "Hướng dẫn"
+  },
+  "users": {
+    "search": "Tìm người dùng",
+    "import": "Nhập",
+    "import_csv": "Nhập CSV",
+    "import_history": "Lịch sử nhập",
+    "email_verified": "Xác minh email",
+    "verified": "Đã xác minh",
+    "unverified": "Chưa xác minh",
+    "toggle_verification": "Đổi trạng thái xác minh email của {{name}}",
+    "verification_hint": "Cập nhật trạng thái xác minh email cho tài khoản này.",
+    "actions_for": "Thao tác cho {{name}}",
+    "password_link": "Gửi liên kết thiết lập mật khẩu",
+    "reset_password": "Đặt lại mật khẩu",
+    "delete": "Xóa người dùng",
+    "email_confirm": "Gửi email thiết lập mật khẩu cho {{name}}?",
+    "email_queued": "Email thiết lập mật khẩu cho {{email}} đã được xếp hàng"
+  },
+  "settings": {
+    "section": "Mục cài đặt",
+    "conflict_title": "Cài đặt trên máy chủ đã thay đổi",
+    "conflict_message": "Bản nháp chưa được lưu. Giữ bản nháp hoặc bỏ bản nháp để tải cài đặt mới nhất.",
+    "discard_reload": "Bỏ bản nháp và tải lại",
+    "discard_confirm": "Bỏ mọi thay đổi chưa lưu và tải cài đặt mới nhất? Không thể khôi phục bản nháp hiện tại.",
+    "keep_draft": "Giữ bản nháp"
+  },
+  "home": {
+    "recent_events": "Sự kiện gần đây",
+    "view_all": "Xem tất cả",
+    "player_guide": "Hướng dẫn người chơi",
+    "pinned": "Thông báo đã ghim",
+    "live_count": "{{count}} đang diễn ra",
+    "upcoming_count": "{{count}} sắp diễn ra",
+    "announcements": "Tin tức và thông báo"
+  },
+  "event": {
+    "live": "Đang diễn ra",
+    "upcoming": "Sắp diễn ra",
+    "completed": "Đã kết thúc",
+    "days": "{{count}} ngày",
+    "minutes": "{{count}} phút",
+    "hours": "{{count}} giờ",
+    "participants": "Đội: {{teams}} · Người chơi: {{users}}",
+    "team_limit": "Tối đa {{count}} người mỗi đội",
+    "unlimited": "Không giới hạn số người mỗi đội",
+    "solo": "Cá nhân"
+  },
+  "challenges": {
+    "cards": "Thẻ",
+    "list": "Danh sách",
+    "globe": "Quả địa cầu",
+    "view": "Cách xem thử thách",
+    "filter_options": "Bộ lọc và cách xem"
+  },
+  "dashboard": {
+    "users": "Người dùng",
+    "teams": "Đội",
+    "containers": "Container",
+    "refresh": "Làm mới bảng điều khiển",
+    "submission_trend": "Xu hướng bài nộp",
+    "submission_trend_description": "Số lượng bài nộp trong khoảng thời gian đã chọn.",
+    "submissions": "Bài nộp",
+    "submission_trend_range": "Khoảng thời gian bài nộp",
+    "no_submission_activity": "Chưa có bài nộp",
+    "no_submission_activity_description": "Bài nộp sẽ xuất hiện khi người chơi bắt đầu giải thử thách trong khoảng thời gian này.",
+    "popular_games": "Sự kiện phổ biến",
+    "participants": "Người tham gia",
+    "reviews": "Đánh giá",
+    "popular_games_scroll": "Bảng sự kiện phổ biến có thể cuộn",
+    "recent_reviews": "Đánh giá gần đây",
+    "recent_writeups": "Bài giải gần đây",
+    "recent_cheats": "Báo cáo gian lận gần đây",
+    "recent_reviews_scroll": "Đánh giá thử thách gần đây có thể cuộn",
+    "recent_writeups_scroll": "Bài giải gần đây có thể cuộn",
+    "recent_cheats_scroll": "Báo cáo gian lận gần đây có thể cuộn",
+    "positive_review": "Tích cực",
+    "negative_review": "Tiêu cực",
+    "day": "Ngày",
+    "week": "Tuần",
+    "month": "Tháng",
+    "year": "Năm"
+  }
+}

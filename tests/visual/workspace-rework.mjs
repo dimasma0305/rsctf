@@ -35,6 +35,9 @@ const responses = {
   '/api/config': config,
   '/api/captcha': { type: 'None' },
   '/api/admin/config': settings,
+  '/api/admin/ai-chat-providers': { providers: [], maxCustomProviders: 32 },
+  '/api/admin/agent-signatures': { signatures: [], maxCustomSignatures: 32 },
+  '/api/account/stats': { games: 1, challenges: 1 },
   '/api/admin/users': teams.flatMap((team) => team.members).slice(0, 3).map((member, index) => ({ ...member, id: index === 0 ? profile.userId : `22222222-2222-4222-8222-22222222222${index}`, userName: ['Morgan', 'Alex', 'Riley'][index], email: `player${index}@example.invalid`, role: index === 0 ? 'Admin' : 'User', emailConfirmed: true, registrationTimeUtc: now - 86400000 })),
   '/api/admin/teams': teams,
   '/api/admin/dashboard': { systemStats: { userCount: 24, teamCount: 8, activeContainerCount: 6 }, topGames: [game] },
@@ -49,6 +52,7 @@ const responses = {
   '/api/game/901/details': { challenges: categories, challengeCount: challenges.length, rank: ranks[0], teamToken: 'visual-fixture-not-a-credential', writeupRequired: true, writeupDeadline: now + 86400000 },
   '/api/game/901/details/participant': { rank: ranks[0] },
   '/api/game/901/scoreboard': { updateTimeUtc: now, bloodBonus: 0, timelines: [], items: ranks, divisions: [{ id: 1, name: 'Open' }], challenges: categories, challengeCount: challenges.length },
+  '/api/game/901/scoreboard/page': { snapshotVersion: 'fixture', updateTimeUtc: now, bloodBonus: 0, items: ranks, total: ranks.length, skip: 0, count: 50, located: false, divisions: [{ id: 1, name: 'Open' }], challenges: categories, challengeCount: challenges.length },
   '/api/game/901/writeup': { submitted: false, note: 'Combine your solutions into one PDF.' },
   '/api/team': teams,
   '/api/team/selector': teams,
@@ -106,7 +110,7 @@ const visit = async (path, name) => {
   await new Promise((r) => setTimeout(r, 600))
   if (path === '/admin/settings') {
     assert.equal(await evaluate(`(() => {
-      const panel = document.querySelector('[role="tabpanel"]');
+      const panel = document.querySelector('#settings-panel');
       const inputs = [...panel.querySelectorAll('input:not([type="file"]), textarea')].filter(input => input.getBoundingClientRect().width > 0);
       return inputs.length > 0 && inputs.every(input => input.getBoundingClientRect().width >= Math.min(220, panel.clientWidth - 40));
     })()`), true, 'settings fields must respond to available panel width, not the browser width')
@@ -148,11 +152,12 @@ try {
   cdp.on('Fetch.requestPaused', async ({ requestId, request }) => {
     const path = new URL(request.url).pathname.toLowerCase()
     let value = responses[path]
-    if (!['GET', 'HEAD'].includes(request.method)) {
+    if (path.startsWith('/hub')) { value = { error: 'Read-only fixture live updates' } }
+    else if (!['GET', 'HEAD'].includes(request.method)) {
       mutations.push({ path, method: request.method })
       value = { title: 'Visual fixture: mutations disabled', status: 405 }
     } else if (value === undefined) { unknownPaths.add(path); value = [] }
-    await cdp.send('Fetch.fulfillRequest', { requestId, responseCode: !['GET', 'HEAD'].includes(request.method) ? 405 : 200, responseHeaders: [{ name: 'Content-Type', value: 'application/json' }], body: Buffer.from(JSON.stringify(value)).toString('base64') })
+    await cdp.send('Fetch.fulfillRequest', { requestId, responseCode: !path.startsWith('/hub') && !['GET', 'HEAD'].includes(request.method) ? 405 : 200, responseHeaders: [{ name: 'Content-Type', value: 'application/json' }], body: Buffer.from(JSON.stringify(value)).toString('base64') })
   })
   const pages = cardsOnly ? ['/games/901/challenges'] : ['/admin/dashboard', '/admin/games', '/admin/users', '/admin/settings', '/teams', '/account/profile', '/games/901/challenges', '/games/901/scoreboard']
   for (const [viewport, width, height] of [['desktop', 1440, 1100], ['compact', 320, 568]]) {
@@ -163,25 +168,31 @@ try {
   }
   if (!cardsOnly) {
     await cdp.send('Page.navigate', { url: `${target}/admin/settings` })
-    await waitFor(`document.querySelector('#settings-tab-account')`)
-    await evaluate(`document.querySelector('#settings-tab-account').click()`)
+    await waitFor(`document.querySelector('#settings-section-picker')`)
+    await evaluate(`document.querySelector('#settings-section-picker').click()`)
+    await waitFor(`document.querySelector('[role=option]')`)
+    await evaluate(`Array.from(document.querySelectorAll('[role=option]')).find(e=>e.textContent==='Accounts').click()`)
+    await waitFor(`document.querySelector('#settings-section-picker').value==='Accounts'`)
     await inspect('compact-settings-account')
     await evaluate(`document.querySelector('[data-workspace-bar] button').focus(); document.querySelector('[data-workspace-bar] button').click()`)
     await waitFor(`document.querySelector('[role="dialog"] input')`)
     await inspect('compact-quick-navigation')
     assert.equal(await evaluate(`document.activeElement === document.querySelector('[role="dialog"] input')`), true)
     await cdp.send('Input.insertText', { text: 'settings' })
-    await waitFor(`document.querySelectorAll('[role="dialog"] a').length === 1`)
+    await waitFor(`document.querySelector('[role="dialog"] a[href="/admin/settings"]')`)
     await press('ArrowDown')
     assert.equal(await evaluate(`document.activeElement.getAttribute('href')`), '/admin/settings')
     await press('Escape')
     await waitFor(`!document.querySelector('[role="dialog"]')`)
     await waitFor(`document.activeElement === document.querySelector('[data-workspace-bar] button')`)
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false })
+    await waitFor(`document.querySelector('#settings-tab-account')`)
     await evaluate(`document.querySelector('#settings-tab-account').focus()`)
     await press('ArrowDown')
     await waitFor(`document.activeElement.id === 'settings-tab-container'`)
     await press('Home')
     await waitFor(`document.activeElement.id === 'settings-tab-platform'`)
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 568, deviceScaleFactor: 1, mobile: false })
 
     await visit('/games/901/challenges', 'compact-challenge-interactions')
     await evaluate(`document.querySelector('#challenge-search').focus()`)
@@ -192,7 +203,9 @@ try {
     await inspect('compact-empty-challenge-search')
     await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.innerText === 'Reset filters').click()`)
     await waitFor(`document.querySelectorAll('[data-guide="challenge-card"]').length === 6`)
-    await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.innerText === 'Submit Writeup').focus(); Array.from(document.querySelectorAll('button')).find(b => b.innerText === 'Submit Writeup').click()`)
+    await evaluate(`document.querySelector('[data-challenge-filters]').click()`)
+    await waitFor(`document.querySelector('#challenge-view-picker')`)
+    await evaluate(`Array.from(document.querySelectorAll('[role=dialog] button')).find(b => b.innerText === 'Submit Writeup').focus(); Array.from(document.querySelectorAll('button')).find(b => b.innerText === 'Submit Writeup').click()`)
     await waitFor(`document.querySelector('[role="dialog"]')`)
     await inspect('compact-writeup-dialog')
     await press('Escape')

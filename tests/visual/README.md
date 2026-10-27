@@ -357,6 +357,25 @@ all layouts. `RSCTF_ADMIN_NAV_TARGET=https://intechfest.1pc.tf` with `--screens-
 checks deployed rendering. Set `RSCTF_ADMIN_NAV_OUTPUT` for a separate output
 directory. These checks do not certify backend authorization or admin operations.
 
+## Responsive design and recovery
+
+`design-ux.mjs` owns a temporary loopback server for the production client and
+intercepts every API request with invented data. It checks Dashboard, Settings,
+Users, Home, Events, and Challenges at four viewport sizes, plus all eleven
+locales at 320px. Coverage includes initial/stale failures and Retry, draft and
+revision preservation, action confirmation/focus/idempotency, saved view
+preferences, bounded posters, manager navigation, overflow, and Axe checks.
+
+```sh
+scripts/bounded-frontend.sh exec node ../tests/visual/design-ux.mjs
+```
+
+Use `RSCTF_DESIGN_OUTPUT` for another diagnostics directory, or
+`RSCTF_DESIGN_CASE` to run cases whose names contain a given substring.
+`RSCTF_DESIGN_BUILD_ROOT=/path/to/older/web/build` with `--baseline` replays the
+initial failure and layout regressions against an older production build.
+Fixtures never contact the real service or certify backend authorization.
+
 ## AI chat links
 
 `ai-chat-links.mjs` renders the solved-challenge AI chat section, the admin

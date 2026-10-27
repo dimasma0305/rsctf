@@ -147,5 +147,14 @@
   "title": {
     "404": "아무것도 없습니다",
     "about": "정보"
+  },
+  "pagination": {
+    "label": "페이지 이동",
+    "previous": "이전 페이지",
+    "next": "다음 페이지",
+    "first": "첫 페이지",
+    "last": "마지막 페이지",
+    "page": "{{page}}페이지",
+    "page_of": "{{total}}페이지 중 {{page}}페이지"
   }
 }

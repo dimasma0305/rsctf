@@ -567,8 +567,8 @@
     "settings": {
       "status": {
         "configured": "已配置",
-        "inactive": "未启用",
-        "attention": "需关注"
+        "inactive": "关闭",
+        "attention": "需检查"
       },
       "save_bar": {
         "unsaved": "有未保存的更改",
@@ -576,15 +576,17 @@
       },
       "nav": {
         "platform": "平台",
-        "account": "用户",
+        "account": "账户",
         "container": "容器",
         "email": "邮件",
-        "captcha": "验证码",
-        "registry_pull": "拉取凭证",
-        "build_registry": "推送配置",
-        "diagnostics": "诊断",
+        "captcha": "Captcha",
+        "oauth": "OAuth",
+        "registry_pull": "拉取凭据",
+        "build_registry": "构建仓库",
+        "donations": "捐赠",
         "ai_links": "AI 链接",
-        "agent_signatures": "智能体特征"
+        "agent_signatures": "代理签名",
+        "diagnostics": "诊断"
       },
       "account": {
         "allow_register": {

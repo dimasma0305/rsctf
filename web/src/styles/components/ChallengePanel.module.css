@@ -49,6 +49,13 @@
 .mobileSort {
   display: none;
 }
+.mobileOptions {
+  display: none;
+}
+.desktopView {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+}
 .viewControl {
   margin-inline-start: auto;
   flex-shrink: 0;
@@ -140,22 +147,12 @@
     max-width: none;
     min-width: 0;
   }
-  .viewControl {
-    grid-column: 1 / -1;
-    order: 2;
-    width: 100%;
-    margin: 0;
-  }
-  .viewControl :global(.mantine-SegmentedControl-label) {
-    min-height: 40px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-  }
+  .desktopView,
   .writeupButton {
-    grid-column: 1 / -1;
-    order: 3;
-    width: 100%;
+    display: none;
+  }
+  .mobileOptions {
+    display: flex;
   }
   .desktopSort,
   .tabRoot {
