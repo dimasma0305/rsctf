@@ -53,7 +53,7 @@ Implemented design to preserve when evaluating changes:
 
 ### P1 — Correctness, recovery, and gameplay responsiveness
 
-- [ ] **ARCH-01: Complete and centralize runtime worker ownership.**
+- [x] **ARCH-01: Complete and centralize runtime worker ownership.**
   Advanced `web + engine + network` deployments omit startup calls for challenge
   imports, revision effects, repository pushes/scans, and mutation retention.
   Queued imports can remain pending. Define a central worker/capability matrix
@@ -67,7 +67,11 @@ Implemented design to preserve when evaluating changes:
     include the previously omitted advanced-role mail consumer.
   - [x] Run PostgreSQL queued/expired build-batch consumption, shutdown, and restart
     through registered consumers for all/control/engine/development roles (12 jobs).
-  - [ ] Complete import/repository side-effect lifecycle coverage in running topologies.
+  - [x] Run registered import and repository consumers under all/control/engine/
+    development roles. Interrupt imports after artifact publication but before
+    terminal receipts, reclaim expired leases, and replay the authenticated HTTP
+    operation without duplicate challenges, flags, or file references. Real local
+    Git remotes verify push retries after a lost receipt produce no extra commit.
 
 - [x] **ARCH-02: Make database-pooling compatibility explicit.**
   Network ownership, capture ownership, and other operations depend on PostgreSQL
@@ -120,7 +124,7 @@ Implemented design to preserve when evaluating changes:
     release of unstarted claims and preserve cancellation intent in PostgreSQL tests.
   - [ ] Complete process-signal/runtime lifecycle regressions and recovery measurements.
 
-- [ ] **ARCH-05: Bound and isolate end-of-event workload cleanup.**
+- [x] **ARCH-05: Bound and isolate end-of-event workload cleanup.**
   The ended-backend reaper fetches every eligible A&D service and KotH target and
   processes them sequentially. It runs before provisioning recovery in the same
   maintenance chain. Move it to an independently supervised, bounded worker with
@@ -142,8 +146,16 @@ Implemented design to preserve when evaluating changes:
     finishes. PostgreSQL races cover both ordering outcomes, stale executors, and
     restart after runtime removal. The HTTP regression covers anonymous/non-admin
     denial, a 409 during cleanup, and exactly-once replay after recovery.
-  - [ ] Exercise real snapshot/capture/destruction failures and snapshot freshness
-    after event extension or backend replacement.
+  - [x] Validate snapshot freshness against the current runtime and event end,
+    including the final download authorization after storage reads. Preserve the
+    old owner until a replacement commits; PostgreSQL tests cover failed and
+    cancelled uploads, concurrent publication, and changes during slow storage.
+    Cancelled blocking compression retains its memory admission until it exits.
+  - [x] Run cleanup against Docker, PostgreSQL, local blob storage, and the capture
+    reconciler: injected export/destroy failures and a real missing-owner timeout
+    preserve the exact backend and snapshot, then a fresh claim completes teardown
+    with the final archive still readable. This is lifecycle correctness evidence,
+    not a throughput or latency improvement claim.
 
 ### P2 — Boundaries, storage, contracts, and availability
 

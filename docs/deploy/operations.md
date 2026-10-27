@@ -55,6 +55,13 @@ operation after cleanup recovery finishes; successful retries are idempotent.
 Do not manually clear cleanup tokens or runtime identifiers to bypass this
 conflict, because doing so can allow an old teardown to remove a resumed workload.
 
+Retained A&D snapshots are available only when they represent the current event
+end and, while a runtime is present, that exact container. An extension or runtime
+replacement can therefore hide the previous final snapshot. Cleanup preserves
+its stored reference until a valid replacement commits; a failed or cancelled
+upload does not discard it. The new snapshot remains downloadable after the
+runtime is destroyed, subject to the configured retention and access policy.
+
 ## Update Docker Compose
 
 Back up first and export the reviewed immutable image digest. Record the same

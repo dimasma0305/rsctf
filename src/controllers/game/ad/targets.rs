@@ -256,10 +256,6 @@ fn exclude_caller(model: &mut AdTargetsModel, caller_id: i32) {
 
 pub(crate) use crate::services::scoreboard_invalidation::live_hill_snapshot_cache_key;
 
-/// Evict the shared endpoint projection after a hill ownership or lifecycle
-/// transition. The one-second TTL remains a bounded cross-replica backstop for
-/// a missed invalidation or a cache fill racing a transition.
-
 #[cfg(test)]
 use crate::services::scoreboard_invalidation::invalidate_live_hill_snapshot_cache;
 

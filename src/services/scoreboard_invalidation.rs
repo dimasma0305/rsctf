@@ -42,22 +42,6 @@ pub(crate) fn publish_scoreboard_changed(st: &SharedState, game_id: i32, format:
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::scoreboard_refresh_is_publicly_safe;
-    use chrono::{TimeDelta, Utc};
-
-    #[test]
-    fn public_freeze_hides_refresh_timing_until_the_event_ends() {
-        let now = Utc::now();
-        let freeze = now - TimeDelta::minutes(1);
-        let end = now + TimeDelta::minutes(1);
-
-        assert!(!scoreboard_refresh_is_publicly_safe(Some(freeze), end, now));
-        assert!(scoreboard_refresh_is_publicly_safe(Some(freeze), end, end));
-    }
-}
-
 pub(crate) fn combined_cache_key(game_id: i32, is_monitor: bool) -> String {
     if is_monitor {
         format!("_CombinedScoreBoardByChallenge_{game_id}")
@@ -124,6 +108,9 @@ pub(crate) async fn invalidate_live_hill_snapshot(st: &SharedState, game_id: i32
     invalidate_live_lifecycle_cache(st.cache.as_ref(), game_id).await;
 }
 
+/// Evict the shared endpoint projection after a hill ownership or lifecycle
+/// transition. The one-second TTL remains a bounded cross-replica backstop for
+/// a missed invalidation or a cache fill racing a transition.
 pub(crate) async fn invalidate_live_hill_snapshot_cache(
     cache: &dyn crate::services::cache::Cache,
     game_id: i32,
@@ -197,5 +184,21 @@ pub(crate) async fn flush_scoreboards_for_games(st: &SharedState, game_ids: &[i3
             st.cache.remove(&key).await;
         }
         hard_invalidate_ad_scoreboard(st, game_id).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scoreboard_refresh_is_publicly_safe;
+    use chrono::{TimeDelta, Utc};
+
+    #[test]
+    fn public_freeze_hides_refresh_timing_until_the_event_ends() {
+        let now = Utc::now();
+        let freeze = now - TimeDelta::minutes(1);
+        let end = now + TimeDelta::minutes(1);
+
+        assert!(!scoreboard_refresh_is_publicly_safe(Some(freeze), end, now));
+        assert!(scoreboard_refresh_is_publicly_safe(Some(freeze), end, end));
     }
 }

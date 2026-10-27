@@ -162,6 +162,13 @@ impl GameConfiguration {
     }
 }
 
+pub(crate) async fn load_game(st: &SharedState, id: i32) -> AppResult<game::Model> {
+    crate::models::data::game::Entity::find_by_id(id)
+        .one(&st.db)
+        .await?
+        .ok_or_else(|| AppError::not_found("Game not found"))
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, Utc};
@@ -247,11 +254,4 @@ mod tests {
         invalid.ad_min_grace_period_seconds = Some(19);
         assert!(invalid.validate().is_err());
     }
-}
-
-pub(crate) async fn load_game(st: &SharedState, id: i32) -> AppResult<game::Model> {
-    crate::models::data::game::Entity::find_by_id(id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Game not found"))
 }

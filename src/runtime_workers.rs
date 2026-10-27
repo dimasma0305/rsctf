@@ -86,6 +86,10 @@ pub fn start(
 mod pg_tests;
 
 #[cfg(test)]
+#[path = "runtime_import_tests.rs"]
+mod import_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

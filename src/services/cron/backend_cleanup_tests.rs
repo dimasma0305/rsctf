@@ -140,8 +140,18 @@ async fn cleanup_is_bounded_fair_and_fenced_across_restarts_and_extensions() {
             .unwrap();
     }
     let (first, second) = tokio::join!(claim(&db.pool, Kind::Ad), claim(&db.pool, Kind::Ad));
-    let (first_id, first_token) = first.unwrap().unwrap();
-    let (second_id, second_token) = second.unwrap().unwrap();
+    // Claims briefly share the parent event lock with schedule edits. A
+    // concurrent claimant may skip that locked event and retry next pass.
+    let first = match first.unwrap() {
+        Some(claimed) => claimed,
+        None => claim(&db.pool, Kind::Ad).await.unwrap().unwrap(),
+    };
+    let second = match second.unwrap() {
+        Some(claimed) => claimed,
+        None => claim(&db.pool, Kind::Ad).await.unwrap().unwrap(),
+    };
+    let (first_id, first_token) = first;
+    let (second_id, second_token) = second;
     assert_ne!(first_id, second_id);
     assert!(claim(&db.pool, Kind::Koth).await.unwrap().is_none());
     assert!(finish(&db.pool, Kind::Ad, first_id, first_token, false)

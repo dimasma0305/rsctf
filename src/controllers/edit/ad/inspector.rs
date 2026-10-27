@@ -131,13 +131,6 @@ pub(crate) use crate::services::ad::inspector_lifecycle::load_existing;
 
 pub(crate) use crate::services::ad::inspector_lifecycle::destroy_exact;
 
-/// Tear down the current inspector while the caller holds
-/// `ad-inspector:{service_id}`. Challenge/game deletion use this before the
-/// service row can cascade away its database-side exec capability.
-
-/// Serialize inspector teardown across replicas. Callers must first persist
-/// the eligibility fence that prevents a replacement (challenge/game/team
-/// deletion or participation suspension) before invoking this helper.
 pub(crate) use crate::services::ad::inspector_lifecycle::destroy_service_inspector;
 
 /// Spawn or reuse the one short-lived inspector owned by this A&D team service.

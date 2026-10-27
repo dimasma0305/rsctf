@@ -44,6 +44,9 @@ pub(crate) async fn destroy_exact(
     Ok(())
 }
 
+/// Tear down the current inspector while the caller holds
+/// `ad-inspector:{service_id}`. Challenge/game deletion use this before the
+/// service row can cascade away its database-side exec capability.
 pub(crate) async fn destroy_service_inspector_locked(
     st: &SharedState,
     service_id: i32,
@@ -54,6 +57,9 @@ pub(crate) async fn destroy_service_inspector_locked(
     Ok(())
 }
 
+/// Serialize inspector teardown across replicas. Callers must first persist
+/// the eligibility fence that prevents a replacement (challenge/game/team
+/// deletion or participation suspension) before invoking this helper.
 pub(crate) async fn destroy_service_inspector(st: &SharedState, service_id: i32) -> AppResult<()> {
     let lock_key = format!("ad-inspector:{service_id}");
     let _local = crate::utils::single_flight::coalesce(&lock_key).await;

@@ -174,3 +174,7 @@ pub(super) async fn supervise(state: SharedState, mut shutdown: watch::Receiver<
 #[cfg(test)]
 #[path = "backend_cleanup_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "backend_cleanup_runtime_tests.rs"]
+mod runtime_tests;

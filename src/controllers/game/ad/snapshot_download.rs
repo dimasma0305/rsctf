@@ -238,6 +238,8 @@ async fn authorize_snapshot_response(
               AND challenge.deletion_pending = FALSE
               AND game.ad_allow_snapshot_download = TRUE
               AND game.end_time_utc <= clock_timestamp()
+              AND snapshot.captured_at_utc >= game.end_time_utc
+              AND (service.container_id IS NULL OR service.container_id = snapshot.source_container_id)
             FOR SHARE OF service, challenge, game, snapshot, file"#,
     )
     .bind(grant.team_service_id)
@@ -356,7 +358,8 @@ mod tests {
             );
             CREATE TABLE "AdTeamServices" (
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-              participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL
+              participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
+              container_id TEXT
             );
             CREATE TABLE "Files" (
               id BIGINT PRIMARY KEY, hash TEXT NOT NULL, name TEXT NOT NULL,
@@ -364,7 +367,8 @@ mod tests {
             );
             CREATE TABLE "AdServiceSnapshots" (
               id BIGINT PRIMARY KEY, team_service_id INTEGER NOT NULL,
-              local_file_id BIGINT NOT NULL, expires_at_utc TIMESTAMPTZ
+              local_file_id BIGINT NOT NULL, expires_at_utc TIMESTAMPTZ,
+              captured_at_utc TIMESTAMPTZ NOT NULL, source_container_id TEXT NOT NULL
             );
             "#,
         )
@@ -407,9 +411,10 @@ mod tests {
             .unwrap();
         sqlx::raw_sql(
             r#"INSERT INTO "GameChallenges" VALUES (4, 1, FALSE, FALSE);
-               INSERT INTO "AdTeamServices" VALUES (5, 1, 3, 4);
+               INSERT INTO "AdTeamServices" VALUES (5, 1, 3, 4, NULL);
                INSERT INTO "Files" VALUES (6, 'snapshot-hash', 'snapshot.tar.zst', 3, 1);
-               INSERT INTO "AdServiceSnapshots" VALUES (7, 5, 6, NULL);"#,
+               INSERT INTO "AdServiceSnapshots" VALUES
+                  (7, 5, 6, NULL, clock_timestamp() - interval '30 minutes', 'runtime-5');"#,
         )
         .execute(&pool)
         .await
@@ -437,6 +442,32 @@ mod tests {
         .await
         .expect("a one-connection pool deadlocked")
         .unwrap();
+
+        // The event can be extended to a later end that has already passed.
+        // Merely checking that it is ended would serve the previous final state.
+        sqlx::query(r#"UPDATE "Games" SET end_time_utc = clock_timestamp() - interval '1 minute' WHERE id = 1"#)
+            .execute(&pool).await.unwrap();
+        assert!(matches!(
+            authorize_snapshot_response(&pool, caller, &grant()).await,
+            Err(AppError::NotFound(_))
+        ));
+        sqlx::query(r#"UPDATE "Games" SET end_time_utc = clock_timestamp() - interval '1 hour' WHERE id = 1"#)
+            .execute(&pool).await.unwrap();
+        sqlx::query(r#"UPDATE "AdTeamServices" SET container_id = 'replacement' WHERE id = 5"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            authorize_snapshot_response(&pool, caller, &grant()).await,
+            Err(AppError::NotFound(_))
+        ));
+        sqlx::query(r#"UPDATE "AdTeamServices" SET container_id = NULL WHERE id = 5"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        authorize_snapshot_response(&pool, caller, &grant())
+            .await
+            .unwrap();
 
         // An operator can revoke the live download policy while storage is
         // returning the prepared archive. The final transaction must discard
