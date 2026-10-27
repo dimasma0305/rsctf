@@ -386,6 +386,10 @@ mod tests {
         assert_eq!(status, 202);
         assert_eq!(first["id"], replay["id"]);
         let job_id = Uuid::parse_str(first["id"].as_str().unwrap()).unwrap();
+        // HTTP kicks are notifications to an owned supervisor. This component
+        // fixture must start that consumer just as the composition root does.
+        let (stop, shutdown) = tokio::sync::watch::channel(false);
+        let worker = crate::services::control_jobs::start(state.clone(), shutdown);
         let terminal = crate::services::control_jobs::wait_for_terminal(
             &pool,
             job_id,
@@ -405,6 +409,11 @@ mod tests {
         assert_eq!(read["results"], serde_json::json!([]));
         assert_eq!(read["summary"]["challenges"], 0);
         assert!(read["summary"]["capacity"]["available"].is_null());
+        stop.send(true).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
 
         // While a preflight is active, a start for a different challenge set
         // (another fingerprint) is a 409; the same set coalesces onto it.

@@ -306,6 +306,12 @@ mod tests {
         sqlx::raw_sql(UP_SQL).execute(&pool).await.unwrap();
         sqlx::raw_sql(DIMENSIONS_SQL).execute(&pool).await.unwrap();
         sqlx::raw_sql(DIMENSIONS_SQL).execute(&pool).await.unwrap();
+        // The current WorkerStore authenticates both current and overlapping
+        // rotation certificates. Include its newer table in this isolated fixture.
+        sqlx::raw_sql(crate::migrations::m0361_worker_certificate_rotation::UP_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let store = WorkerStore::new(pool.clone());
         let worker_id = Uuid::new_v4();
