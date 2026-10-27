@@ -152,6 +152,21 @@ test('integration jobs use the exact same-run test outputs instead of compiling 
   }
 })
 
+test('privileged acceptance preserves exact application configuration without inheriting unrelated credentials', () => {
+  const source = job(ciWorkflow, 'cheat-acceptance')
+  const setup = source.match(/server_env=\(\)[\s\S]*?(?=\s+sudo env "\$\{server_env\[@\]\}")/)?.[0]
+  assert.ok(setup, 'explicit application environment required')
+  const config = { RSCTF_JWT_SECRET: 'fixture value with spaces and $literal',
+    RSCTF_DATABASE_URL: 'postgres://fixture:pass@127.0.0.1/test',
+    RSCTF_STORAGE_ROOT: '/tmp/fixture with spaces', RSCTF_COOKIE_SECURE: 'false' }
+  const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c',
+    `${setup}\nexec env -i "\${server_env[@]}" "${process.execPath}" -e 'process.stdout.write(JSON.stringify(process.env))'`], {
+    env: { PATH: process.env.PATH, UNRELATED_CREDENTIAL: 'must not reach the server', ...config }, encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(JSON.parse(result.stdout), config)
+})
+
 test('Rust lint runs beside compilation but remains a mandatory publication gate', () => {
   const lint = job(ciWorkflow, 'rust-lint')
   const rust = job(ciWorkflow, 'rust')

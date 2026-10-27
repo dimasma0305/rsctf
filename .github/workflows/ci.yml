@@ -768,7 +768,13 @@ jobs:
           # The supported all-in-one role owns the reconciler and round engine.
           # Its checker sandbox preflight requires root privilege and iptables;
           # the application itself drops checker children into its UID pool.
-          sudo --preserve-env env RSCTF_ROLE=all RSCTF_MIGRATE=0 \
+          # sudo-rs on newer runners ignores preservation of the entire env.
+          # Pass only the application configuration explicitly, with exact values.
+          server_env=()
+          for name in "${!RSCTF_@}"; do
+            server_env+=("$name=${!name}")
+          done
+          sudo env "${server_env[@]}" RSCTF_ROLE=all RSCTF_MIGRATE=0 \
             RSCTF_STORAGE_ROOT="$storage_root" \
             /usr/local/bin/rsctf-cheat-acceptance >"$server_log" 2>&1 &
           server_pid=$!
