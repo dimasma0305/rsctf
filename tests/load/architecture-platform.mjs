@@ -74,6 +74,16 @@ const sql = async (database, statement) => {
     '-X', '-v', 'ON_ERROR_STOP=1', '-qAtc', statement], { maxBuffer: 1024 * 1024 })
   return stdout.trim()
 }
+async function databaseCounters(database) {
+  return JSON.parse(await sql(database, `SELECT json_build_object(
+    'commits', xact_commit, 'rollbacks', xact_rollback,
+    'blocksRead', blks_read, 'blocksHit', blks_hit,
+    'rowsReturned', tup_returned, 'rowsFetched', tup_fetched,
+    'rowsInserted', tup_inserted, 'rowsUpdated', tup_updated, 'rowsDeleted', tup_deleted,
+    'temporaryBytes', temp_bytes, 'deadlocks', deadlocks,
+    'statisticsReset', stats_reset)
+    FROM pg_stat_database WHERE datname = current_database()`))
+}
 async function run(program, args, env, logfile) {
   let output = ''
   const child = spawn(program, args, { cwd: root, env: { ...process.env, RSCTF_LOAD_DATABASE_URL: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -208,6 +218,7 @@ try {
       await execute('docker', ['exec', redis, 'redis-cli', '-n', mode === 'before' ? '0' : '1', 'FLUSHDB'])
       await start(mode)
       const summary = path.join(directory, `scoreboard-${mode}-${repetition}.json`)
+      const databaseBefore = await databaseCounters(databases[mode])
       await run(process.execPath, ['tests/load/scoreboard-page.mjs'], {
         PG_CONTAINER: pg, PG_DATABASE: databases[mode], RSCTF_CONTAINER: active.kind === 'host' ? pg : active.name,
         RSCTF_JWT_SECRET: jwt, TARGET: active.target, GAME: '1', TEAMS: '500',
@@ -216,7 +227,16 @@ try {
       }, path.join(directory, `scoreboard-${mode}-${repetition}.log`))
       const metrics = JSON.parse(await readFile(summary, 'utf8'))
       const resources = JSON.parse(await readFile(`${summary}.resources.json`, 'utf8'))
-      results.push({ mode, repetition, metrics, resources })
+      const databaseAfter = await databaseCounters(databases[mode])
+      assert.equal(databaseAfter.statisticsReset, databaseBefore.statisticsReset)
+      const databaseDelta = Object.fromEntries(Object.entries(databaseAfter)
+        .filter(([key]) => key !== 'statisticsReset')
+        .map(([key, value]) => {
+          const delta = value - databaseBefore[key]
+          assert.ok(Number.isSafeInteger(delta) && delta >= 0, `invalid database counter: ${key}`)
+          return [key, delta]
+        }))
+      results.push({ mode, repetition, metrics, resources, databaseDelta })
       console.error(`${mode} run ${repetition + 1}: p95 ${metrics.metrics.http_req_duration['p(95)'].toFixed(2)} ms`)
       await stopApp()
     }

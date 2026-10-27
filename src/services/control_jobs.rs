@@ -728,6 +728,24 @@ async fn claim_matching(
     requested_kinds: &[ControlJobKind],
     lease: Duration,
 ) -> AppResult<Option<ClaimedControlJob>> {
+    let requested: Vec<&str> = requested_kinds.iter().map(|kind| kind.as_str()).collect();
+    // Empty queues are the normal case. Avoid transaction/lock round trips until
+    // there may be work; this is only a hint, never admission or ownership proof.
+    // The locked claim below rechecks expiry and capacity. Work arriving after
+    // this read is picked up by the existing notification or one-second poll.
+    let available: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(SELECT 1 FROM "ControlPlaneJobs"
+            WHERE kind = ANY($1)
+              AND (status = 0 OR (status = 1
+                   AND lease_expires_at_utc <= clock_timestamp())))"#,
+    )
+    .bind(&requested)
+    .fetch_one(pool)
+    .await
+    .map_err(database_error)?;
+    if !available {
+        return Ok(None);
+    }
     // Serialize admission by lane across every owner replica. A web scale-out
     // cannot increase the global build budget or consume reserved reset slots.
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
@@ -783,7 +801,6 @@ async fn claim_matching(
         job: JobRow,
         reclaimed: bool,
     }
-    let requested: Vec<&str> = requested_kinds.iter().map(|kind| kind.as_str()).collect();
     let row = sqlx::query_as::<_, ClaimRow>(&sql)
         .bind(&requested)
         .bind(lease_token)

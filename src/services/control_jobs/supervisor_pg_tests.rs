@@ -41,6 +41,118 @@ async fn queue(pool: &sqlx::PgPool, kind: ControlJobKind, game: i32) -> Uuid {
 }
 
 #[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL; run database regressions serially"]
+async fn empty_polls_skip_transactions_without_hiding_new_or_expired_work() {
+    fn transactions() -> u64 {
+        crate::services::observability::render(0, 0)
+            .lines()
+            .find_map(|line| line.strip_prefix("rsctf_transaction_acquire_seconds_count "))
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+    let db = fixture().await;
+    let before = transactions();
+    assert!(claim_next(
+        &db.pool,
+        ControlJobKind::BuildBatch,
+        Duration::from_secs(30)
+    )
+    .await
+    .unwrap()
+    .is_none());
+    assert_eq!(
+        transactions(),
+        before,
+        "empty polls must not open a transaction"
+    );
+    // Another kind's queued work must not trigger this worker's admission path.
+    queue(&db.pool, ControlJobKind::AdReset, 2).await;
+    assert!(claim_next(
+        &db.pool,
+        ControlJobKind::BuildBatch,
+        Duration::from_secs(30)
+    )
+    .await
+    .unwrap()
+    .is_none());
+    assert_eq!(transactions(), before);
+    let id = queue(&db.pool, ControlJobKind::BuildBatch, 1).await;
+    let first = claim_next(
+        &db.pool,
+        ControlJobKind::BuildBatch,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        first.model.id, id,
+        "an empty poll must not cache queue absence"
+    );
+    let claimed = transactions();
+    assert_eq!(claimed, before + 1);
+    assert!(claim_next(
+        &db.pool,
+        ControlJobKind::BuildBatch,
+        Duration::from_secs(30)
+    )
+    .await
+    .unwrap()
+    .is_none());
+    assert_eq!(
+        transactions(),
+        claimed,
+        "live leases are not available work"
+    );
+    sqlx::query(r#"UPDATE "ControlPlaneJobs" SET lease_expires_at_utc = clock_timestamp() - interval '1 second' WHERE id = $1"#)
+        .bind(id).execute(&db.pool).await.unwrap();
+    let second = claim_next(
+        &db.pool,
+        ControlJobKind::BuildBatch,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(second.model.id, id);
+    assert_ne!(second.lease_token, first.lease_token);
+    assert!(!complete(
+        &db.pool,
+        id,
+        first.lease_token,
+        first.input_revision,
+        serde_json::json!({})
+    )
+    .await
+    .unwrap());
+    assert!(complete(
+        &db.pool,
+        id,
+        second.lease_token,
+        second.input_revision,
+        serde_json::json!({})
+    )
+    .await
+    .unwrap());
+    let completed = transactions();
+    assert!(claim_next(
+        &db.pool,
+        ControlJobKind::BuildBatch,
+        Duration::from_secs(30)
+    )
+    .await
+    .unwrap()
+    .is_none());
+    assert_eq!(
+        transactions(),
+        completed,
+        "terminal jobs must not open admission transactions"
+    );
+    db.close().await;
+}
+
+#[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn replicas_share_lane_limits_while_gameplay_progresses() {
     let db = fixture().await;

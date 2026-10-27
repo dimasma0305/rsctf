@@ -111,6 +111,11 @@ Implemented design to preserve when evaluating changes:
     the initial 100/s API comparison increased median p95 from 4.35 to 6.19 ms
     and PostgreSQL CPU from 17.16% to 29.31% of one core; retain durability and
     bounded recovery while reducing empty-queue transaction work.
+  - [x] Skip admission transactions when no requested job is queued or expired.
+    Four PostgreSQL lane regressions pass, including exact transaction-count
+    checks for empty, unrelated, live-lease and terminal rows, newly arriving
+    work, expired-lease reclaim and stale-owner rejection. A new API comparison
+    is still required before attributing a performance benefit to this change.
 
 - [ ] **ARCH-04: Supervise control-job execution and graceful shutdown.**
   `control_jobs::kick()` launches detached tasks without the shutdown signal used
@@ -382,7 +387,7 @@ Implemented design to preserve when evaluating changes:
 ### Proposed slow-operation flow and completion evidence
 
 Local checkpoint (2026-10-27): `cargo test --lib` through the bounded wrapper
-passed 1,805 tests (469 environment-dependent tests ignored); strict all-target,
+passed 1,805 tests (471 environment-dependent tests ignored); strict all-target,
 all-feature Clippy passed with warnings denied. Snapshot-focused validation passed
 59 tests, including real Docker/capture recovery. Registered role import/push
 recovery, checker publication/GC races, and expired-lease metrics passed against
