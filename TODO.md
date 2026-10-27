@@ -137,7 +137,13 @@ Implemented design to preserve when evaluating changes:
     forward migration `m0360_backend_cleanup_claims`.
   - [x] Test a 2,000-row cleanup backlog, concurrent claims, delayed retries,
     restart fencing, future-event exclusion, and preservation of backend IDs.
-  - [ ] Exercise real snapshot/capture/destruction failures and event-extension races.
+  - [x] Serialize event extension against cleanup admission using the event row lock;
+    retain cleanup ownership through failures and expired leases until recovery
+    finishes. PostgreSQL races cover both ordering outcomes, stale executors, and
+    restart after runtime removal. The HTTP regression covers anonymous/non-admin
+    denial, a 409 during cleanup, and exactly-once replay after recovery.
+  - [ ] Exercise real snapshot/capture/destruction failures and snapshot freshness
+    after event extension or backend replacement.
 
 ### P2 — Boundaries, storage, contracts, and availability
 

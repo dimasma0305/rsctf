@@ -35,6 +35,7 @@ use crate::utils::error::AppResult;
 use chrono::Utc;
 
 mod backend_cleanup;
+pub(crate) use backend_cleanup::ensure_extension_safe;
 mod backend_reaper;
 mod delivery_health;
 mod image_cleanup;

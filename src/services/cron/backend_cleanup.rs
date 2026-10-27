@@ -34,11 +34,11 @@ async fn claim(pool: &sqlx::PgPool, kind: Kind) -> Result<Option<(i32, Uuid)>, s
         r#"WITH candidate AS (
         SELECT item.id FROM "{table}" item JOIN "Games" game ON game.id = item.game_id
          WHERE game.end_time_utc <= clock_timestamp() - make_interval(secs => $1)
-           AND (item.container_id IS NOT NULL OR item.host <> '')
+           AND (item.container_id IS NOT NULL OR item.host <> '' OR item.cleanup_lease_token IS NOT NULL)
            AND item.cleanup_next_at <= clock_timestamp()
            AND (item.cleanup_lease_until IS NULL OR item.cleanup_lease_until <= clock_timestamp())
          ORDER BY item.cleanup_next_at, item.id
-         FOR UPDATE OF item SKIP LOCKED LIMIT 1
+         FOR UPDATE OF game, item SKIP LOCKED LIMIT 1
     ) UPDATE "{table}" item
          SET cleanup_lease_token = $2,
              cleanup_lease_until = clock_timestamp() + make_interval(secs => $3),
@@ -64,10 +64,15 @@ async fn finish(
     let table = kind.table();
     let sql = format!(
         r#"UPDATE "{table}"
-        SET cleanup_lease_token = NULL, cleanup_lease_until = NULL,
+        SET cleanup_lease_token = CASE WHEN $3 OR (container_id IS NULL AND host = '')
+                                      THEN NULL ELSE cleanup_lease_token END,
+            cleanup_lease_until = CASE WHEN $3 OR (container_id IS NULL AND host = '')
+                                      THEN NULL ELSE clock_timestamp() + make_interval(secs =>
+                                          LEAST(900, 30 * (1 << LEAST(cleanup_attempts, 5)))) END,
             cleanup_next_at = clock_timestamp() + make_interval(secs =>
                 CASE WHEN $3 THEN 30 ELSE LEAST(900, 30 * (1 << LEAST(cleanup_attempts, 5))) END),
-            cleanup_attempts = CASE WHEN $3 THEN 0 ELSE cleanup_attempts END
+            cleanup_attempts = CASE WHEN $3 OR (container_id IS NULL AND host = '')
+                                    THEN 0 ELSE cleanup_attempts END
       WHERE id = $1 AND cleanup_lease_token = $2"#
     );
     Ok(sqlx::query(&sql)
@@ -78,6 +83,33 @@ async fn finish(
         .await?
         .rows_affected()
         == 1)
+}
+
+/// The caller holds the Games row FOR UPDATE until its schedule change commits.
+/// Claim takes that same row lock, so an extension either wins before teardown
+/// admission or observes its durable fence. Expiry permits executor recovery,
+/// not resuming an event whose external destruction might still be in flight.
+pub(crate) async fn ensure_extension_safe(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+) -> crate::utils::error::AppResult<()> {
+    let pending: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+        SELECT 1 FROM "AdTeamServices" WHERE game_id = $1 AND cleanup_lease_token IS NOT NULL
+        UNION ALL
+        SELECT 1 FROM "KothTargets" WHERE game_id = $1 AND cleanup_lease_token IS NOT NULL
+    )"#,
+    )
+    .bind(game_id)
+    .fetch_one(connection)
+    .await
+    .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
+    if pending {
+        return Err(crate::utils::error::AppError::conflict(
+            "Event cleanup is running or recovering. Retry extending the event after cleanup finishes.",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) async fn supervise(state: SharedState, mut shutdown: watch::Receiver<bool>) {

@@ -40,6 +40,21 @@ A backup you have never restored is only a hope. On an isolated installation:
 4. Start the matching rsctf version.
 5. Verify accounts, one game, attachments, writeups, and a score.
 
+## Extending an ended event
+
+An event extension and admission of ended-workload cleanup take the same database
+row lock. If the extension commits first, cleanup skips the newly active event.
+Once cleanup has claimed a service or target, extending the event returns HTTP
+409 until cleanup completes. Its durable claim remains through a failed attempt,
+executor restart, or expired lease: an expired lease alone does not prove that
+snapshot capture or container destruction has stopped.
+
+Keep an eligible maintenance consumer running (`all`, `control`, or `engine`) and
+resolve the snapshot/runtime error reported in its logs. Retry the same editor
+operation after cleanup recovery finishes; successful retries are idempotent.
+Do not manually clear cleanup tokens or runtime identifiers to bypass this
+conflict, because doing so can allow an old teardown to remove a resumed workload.
+
 ## Update Docker Compose
 
 Back up first and export the reviewed immutable image digest. Record the same

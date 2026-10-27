@@ -4,6 +4,9 @@ mod creation;
 pub use creation::add_game;
 #[cfg(test)]
 pub(crate) use creation::apply_ad_creation_settings;
+#[cfg(test)]
+#[path = "games/cleanup_tests.rs"]
+mod cleanup_tests;
 mod update_support;
 
 /// RSCTF `Models/Request/Edit/GameInfoModel` — used for both create/update
@@ -511,6 +514,9 @@ pub async fn update_game(
     }
 
     let requested = update_support::requested_game(&current, &model, discord_webhook.clone());
+    if model.end_time_utc > current.end_time_utc {
+        crate::services::cron::ensure_extension_safe(&mut *tx, id).await?;
+    }
     let current_freeze_time = current.freeze_time_utc;
     let current_vpn_policy = (
         current.vpn_access_required,
