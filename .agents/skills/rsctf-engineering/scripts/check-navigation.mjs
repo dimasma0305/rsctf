@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Validate the skill's inline local Markdown links without building the app.
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const skillRoot = fileURLToPath(new URL('../', import.meta.url))
@@ -39,7 +39,7 @@ for (const file of documents) {
         const path = decodeURIComponent(destination.split(/[?#]/, 1)[0])
         const target = resolve(dirname(file), path)
         const fromRoot = relative(repositoryRoot, target)
-        if (!path || isAbsolute(path) || fromRoot === '..' || fromRoot.startsWith('../') || isAbsolute(fromRoot)) {
+        if (!path || isAbsolute(path) || fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
           problems.push(`${location}: link must stay inside the checkout: ${destination}`)
         } else if (!existsSync(target)) {
           problems.push(`${location}: missing target: ${destination}`)
