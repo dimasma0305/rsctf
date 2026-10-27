@@ -216,6 +216,20 @@ Implemented design to preserve when evaluating changes:
   request and transfer costs before choosing the design.
   Sources: [blob storage](src/storage/mod.rs), [blob references](src/services/blob_refs.rs),
   [shared storage requirements](docs/deploy/scaling.md).
+  - [x] Add bounded file publication through existing Local/object_store backends:
+    two uploads per process, 512 MiB limit, verified new publication, atomic local
+    rename/fsync, sequential S3 multipart parts, and duplicate-hash reuse.
+  - [x] Test changed files, upload/complete failures, cancellation, bounded
+    lock-aware local staging cleanup, and concurrent real S3 publication/readback.
+    Document S3 incomplete-multipart lifecycle cleanup after process death.
+  - [x] Benchmark both production APIs at a fixed rate: 288 uploads with exact
+    readback. Cold local RSS falls 132.23→5.75 MiB; duplicate S3 payload transfer
+    falls to zero. Cold S3 p95 rises 13.3% and request count rises 1→11, so retain
+    the buffered API for its existing callers. See the measured tradeoffs in
+    [the storage report](tests/load/REPORT.md#bounded-file-uploads--27-october-2026).
+  - [ ] Integrate completed-capture publication with durable references, bounded
+    cache eviction, downloads, inventory reconciliation, retention, and recovery.
+  - [ ] Complete multi-host artifact publication/execution and backup/restore tests.
 
 - [x] **ARCH-10: Restore a reproducible backend/frontend API contract pipeline.**
   `web/package.json` generates a client from `/openapi/v1.json`, but the reviewed

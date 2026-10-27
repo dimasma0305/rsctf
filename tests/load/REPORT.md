@@ -1,5 +1,65 @@
 # RSCTF load-test report
 
+## Bounded file uploads — 27 October 2026
+
+The [raw storage samples](results/architecture-storage.json) compare the existing
+buffered `store` API with the production `store_file` implementation using the
+same optimized executable. Each Local/S3, cold/warm, buffered/file combination
+runs three times in alternating order: 12 unique 64 MiB files, two scheduled
+uploads/second, two Tokio workers, and six seconds per sample. All **288 uploads**
+completed and passed full streamed SHA-256 readback; no S3 5xx responses occurred.
+Cold file uploads issue one expected HEAD 404 per missing object. The runner
+holds the shared build lock and recreates its own disposable S3 service between
+samples to prevent deferred object-store garbage from filling the test disk.
+
+| Backend / scenario / API | Service p95 (ms) | Service p99 (ms) | CPU (% one core) | Process peak RSS (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Local / cold / buffered | 141.62 | 150.57 | 26.16 | 132.23 |
+| Local / cold / file | 141.45 | 144.44 | 29.87 | 5.75 |
+| Local / warm / buffered | 79.60 | 85.24 | 14.42 | 69.54 |
+| Local / warm / file | 48.60 | 48.64 | 8.70 | 5.77 |
+| S3 / cold / buffered | 480.15 | 492.94 | 35.03 | 134.91 |
+| S3 / cold / file | 544.14 | 563.10 | 32.37 | 84.48 |
+| S3 / warm / buffered | 443.60 | 447.57 | 34.03 | 147.04 |
+| S3 / warm / file | 50.21 | 78.62 | 9.26 | 78.17 |
+
+Values are medians of three runs, with only 12 observations per run; they are
+not confidence intervals or platform tail-latency estimates. Cold local peak
+RSS fell 95.7%, while p95 was approximately unchanged and CPU increased 14.2%. The file API
+also fsyncs the completed file and both directories, which the buffered API does
+not. Warm local p95 and CPU fell 38.9% and 39.7% respectively. Local publication
+writes one logical copy per hash through an atomic rename; a duplicate upload
+does not rewrite it.
+
+Cold S3 p95 increased **13.3%**. For each 64 MiB object, the file API performs
+HEAD, multipart initiation, eight sequential part PUTs, and completion: **11
+requests versus one PUT**. Both transfer the same 64 MiB payload; multipart also
+sends about 739 bytes of completion XML per object. Its median cold RSS fell
+37.4%, while CPU fell 7.6%. Warm S3 uses one HEAD and sends
+**zero payload bytes**, saving 768 MiB per 12-upload sample. Warm p95 fell 88.7%
+and CPU 72.8%. RSS includes warm-up and allocator high-water effects; concurrent
+requests and allocator retention affect the peak, so this is not a worst-case
+capacity estimate.
+
+The source fixture contains a unique 16-byte header and otherwise sparse zeros;
+S3 transfers are uncompressed. This isolates buffering and publication costs,
+not physical capture-disk throughput. Cold local file uploads read 1,536 MiB
+logically per sample versus 768 MiB for the buffered API because new publication
+requires two hash passes. Both warm paths read 768 MiB. Linux reported zero
+physical `read_bytes`/`write_bytes` on this workspace, so those counters cannot
+support a physical I/O or disk-throughput claim. Client CPU/RSS exclude the Node
+counting proxy and S3 service. S3 ran with a one-core/1 GiB cap using immutable
+image `sha256:cf1d7ba6108cd433dc8468d23b4361e644dc5424524481f5956bfd2dbc0f9b84`.
+
+The selected file API bounds admission to two uploads, caps files at 512 MiB,
+uses 128 KiB local buffers or sequential 8 MiB S3 parts, and verifies newly
+uploaded bytes before publication. Existing small buffered callers remain on
+their current API. Mutation, failed-part/completion, cancellation, local crash
+cleanup, concurrent S3 publication, and range-read regressions pass. Full backend
+unit verification passed 1,803 tests. **Capture offloading, durable reference
+integration, multi-host execution, and platform HTTP measurements remain separate
+ARCH-09 gates; this primitive alone does not reduce retained capture disk usage.**
+
 ## Architecture response cache — 27 October 2026
 
 This is an optimized component comparison of the existing memory cache, the

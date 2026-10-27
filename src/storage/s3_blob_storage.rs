@@ -23,6 +23,22 @@ use crate::storage::blob_storage::{BlobByteStream, BlobStorage, StoredBlob};
 use crate::utils::codec::sha256_hex;
 use crate::utils::error::{AppError, AppResult};
 
+mod upload;
+
+fn blob_attributes(name: &str) -> Attributes {
+    Attributes::from_iter([
+        (
+            Attribute::ContentDisposition,
+            crate::utils::content_disposition::attachment(name),
+        ),
+        (
+            Attribute::ContentType,
+            "application/octet-stream".to_string(),
+        ),
+        (Attribute::CacheControl, "private, no-store".to_string()),
+    ])
+}
+
 /// Default key prefix under which blobs are stored. Overridable with
 /// `RSCTF_S3_PREFIX`; the actual object key is `{prefix}/{aa}/{bb}/{hash}`.
 const DEFAULT_PREFIX: &str = "assets";
@@ -164,17 +180,7 @@ impl BlobStorage for S3BlobStorage {
             .expect("sha256_hex always yields 64 hex digits");
 
         let payload = PutPayload::from(bytes.to_vec());
-        let attributes = Attributes::from_iter([
-            (
-                Attribute::ContentDisposition,
-                crate::utils::content_disposition::attachment(name),
-            ),
-            (
-                Attribute::ContentType,
-                "application/octet-stream".to_string(),
-            ),
-            (Attribute::CacheControl, "private, no-store".to_string()),
-        ]);
+        let attributes = blob_attributes(name);
         self.client
             .put_opts(
                 &key,
@@ -192,6 +198,15 @@ impl BlobStorage for S3BlobStorage {
             size: bytes.len() as i64,
             name: name.to_string(),
         })
+    }
+
+    async fn store_file(
+        &self,
+        name: &str,
+        file: tokio::fs::File,
+        max_bytes: u64,
+    ) -> AppResult<StoredBlob> {
+        upload::store_file(self, name, file, max_bytes).await
     }
 
     async fn load(&self, hash: &str) -> AppResult<Vec<u8>> {

@@ -279,6 +279,12 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: deferred blob purge failed: {e}"),
     }
 
+    match state.storage.purge_abandoned_uploads().await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: removed abandoned file uploads"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "cron: file upload cleanup failed"),
+    }
+
     match crate::services::settings_branding::purge_expired(state.pg(), state.storage.as_ref(), 128)
         .await
     {

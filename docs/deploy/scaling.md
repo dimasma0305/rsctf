@@ -186,6 +186,24 @@ and `/healthz` verify access to the selected backend using a small
 `.rsctf-health` object; that proves credentials and reachability, not that a
 manual historical copy was complete.
 
+File-based blob publication is limited to two concurrent uploads per process and
+512 MiB per file. It hashes and verifies the source twice before new publication;
+local copies use 128 KiB buffers, and S3 uploads send one 8 MiB multipart chunk
+at a time through `object_store`. A complete existing hash reuses that stored
+snapshot after the first hash pass, avoiding another read and write.
+Callers must keep their durable reference fence until
+publication commits; uploading a file alone does not create a database reference.
+
+Local file uploads stage under `<blob-root>/.uploads` on the **same filesystem**
+as the sharded blobs. Maintenance scans at most 256 entries per pass and removes
+only upload UUIDs older than one hour whose cross-process file lock is free.
+S3 operators must configure an `AbortIncompleteMultipartUpload` bucket lifecycle
+rule (for example, after one day) for the configured blob prefix. Normal errors
+and cancellation attempt an abort, but a terminated process or a lost initiate
+reply cannot guarantee it. Do not apply object-expiration rules to referenced
+blobs: reference-aware RSCTF retention owns their deletion. These upload primitives
+do not yet offload captures or remove the shared-filesystem requirement.
+
 Large static challenge downloads can bypass application bandwidth only when
 the operator explicitly sets `RSCTF_ASSET_SIGNED_URL_TTL_SECS=30..3600` with
 the S3 backend. Authorization and audit remain in RSCTF; the returned S3 URL is

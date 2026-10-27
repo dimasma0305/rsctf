@@ -1499,6 +1499,48 @@ and the live ownership assertion are in
 
 ### Optimization ledger
 
+#### Bounded file upload comparison — 27 October 2026
+
+`storage-audit.mjs` compiles and exercises the production Local/S3 implementations
+through their buffered and file-based APIs. Build and run from the repository root:
+
+```sh
+scripts/bounded-cargo.sh build --release --locked \
+  --manifest-path tests/load/storage-audit/Cargo.toml
+SUMMARY_JSON=tests/load/results/architecture-storage.json \
+  node tests/load/storage-audit.mjs
+```
+
+The runner requires a locally cached `rustfs/rustfs:latest` image (override with
+`STORAGE_AUDIT_S3_IMAGE`), records its immutable image ID, and creates a fresh
+loopback-only disposable S3 container per sample. It removes that container and
+its anonymous data volume afterward; it does not use production credentials or
+buckets. Allow at least 3 GiB free disk for the default 64 MiB fixture. A failed
+client can leave its uniquely named `rsctf-storage-audit-*` temporary directory;
+the runner still removes its own S3 service. No other containers are removed.
+
+Each scenario runs three times in alternating order at two scheduled uploads/s
+for six seconds. Files have unique 16-byte headers and otherwise sparse zeros;
+transfers are uncompressed. Cold means an absent destination hash, and warm
+means an already-published hash. The fixture measures bounded buffering, hashing,
+publication, and deduplication costs, rather than real capture-disk throughput.
+Every result is fully streamed, hashed, and deleted after the measurement window.
+The runner records complete latency distributions, client CPU/RSS and Linux I/O
+counters, S3 request counts and transferred bytes, and source/executable hashes.
+It holds the shared build lock during measurements. Source size, arrival rate,
+and operation count can be changed with `STORAGE_AUDIT_MIB`, `STORAGE_AUDIT_RATE`,
+and `STORAGE_AUDIT_OPERATIONS`; compare both APIs under identical settings.
+
+The local file API also fsyncs its file and directories, unlike the buffered
+baseline. S3/proxy resource usage and durable database references are outside
+this component comparison; platform HTTP and capture-offload tests remain separate.
+The [measured comparison](REPORT.md#bounded-file-uploads--27-october-2026)
+passed 288 uploads with exact readback. Cold local RSS fell from 132.23 to
+5.75 MiB; duplicate S3 uploads sent no payload and their median p95 fell from
+443.60 to 50.21 ms. Cold S3 p95 increased from 480.15 to 544.14 ms and requires
+11 requests per object instead of one. This is a memory/deduplication tradeoff,
+not a general upload-throughput improvement.
+
 #### Client cache memory and expired-record catch-up — 26 October 2026
 
 `client-retention-audit.mjs` compares the v0.1.145 cache with the production
