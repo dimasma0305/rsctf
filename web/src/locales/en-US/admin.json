@@ -43,8 +43,19 @@
     "open_check": "Review {{check}} settings",
     "runtime_title": "Still to verify",
     "runtime_note": "Not tested by this page. No services are started, scores changed, or settings saved by these checks.",
-    "states": { "checked": "Checked", "attention": "Needs attention", "unverified": "Unverified", "info": "Information" },
-    "checks": { "schedule": "Event schedule", "freeze": "Scoreboard freeze", "writeup": "Writeup deadline", "challenges": "Enabled challenges", "builds": "Latest build results" },
+    "states": {
+      "checked": "Checked",
+      "attention": "Needs attention",
+      "unverified": "Unverified",
+      "info": "Information"
+    },
+    "checks": {
+      "schedule": "Event schedule",
+      "freeze": "Scoreboard freeze",
+      "writeup": "Writeup deadline",
+      "challenges": "Enabled challenges",
+      "builds": "Latest build results"
+    },
     "reasons": {
       "schedule_ok": "The saved start time is before the end time. Confirm the intended date and timezone in Information.",
       "schedule_invalid": "Set a valid start time and an end time after it.",
@@ -68,7 +79,14 @@
       "services": "A&D / KoTH: verify the scoring roster, checker status, instance readiness, and any reset in progress in the operator console.",
       "vpn": "VPN access is required: verify configuration download and challenge connectivity from a real player VPN connection."
     },
-    "actions": { "info": "Open information", "challenges": "Open challenges", "teams": "Review teams", "attachments": "Review challenges", "services": "Open operator console", "vpn": "Review VPN settings" },
+    "actions": {
+      "info": "Open information",
+      "challenges": "Open challenges",
+      "teams": "Review teams",
+      "attachments": "Review challenges",
+      "services": "Open operator console",
+      "vpn": "Review VPN settings"
+    },
     "errors": {
       "session": "Your session may have expired. Sign in again, then return to this event.",
       "permission": "You do not have access to this event’s administration. Ask an administrator to check your event-manager assignment.",
@@ -196,7 +214,11 @@
     "flags_files": "Flags & files",
     "challenge_id": "Challenge #{{id}}",
     "switch_challenge": "Jump to challenge",
-    "groups": { "setup": "Event setup", "competition": "Competition", "people": "Teams & communication" }
+    "groups": {
+      "setup": "Event setup",
+      "competition": "Competition",
+      "people": "Teams & communication"
+    }
   },
   "ad_console": {
     "title": "Live operations",
@@ -880,13 +902,13 @@
       },
       "nav": {
         "platform": "Platform",
-        "account": "Users",
+        "account": "Accounts",
         "container": "Containers",
         "email": "Email",
         "captcha": "Captcha",
         "oauth": "OAuth",
-        "registry_pull": "Pull creds",
-        "build_registry": "Build push",
+        "registry_pull": "Pull credentials",
+        "build_registry": "Build registry",
         "donations": "Donations",
         "ai_links": "AI links",
         "agent_signatures": "Agent signatures",

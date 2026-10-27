@@ -230,7 +230,9 @@ export const GanttTimeLine: FC<GanttTimeLineProps> = ({ items }) => {
                               } as CSSProperties
                             }
                           >
-                            <span className={classes.eventBarTitle}>{item.textTitle}</span>
+                            <span className={classes.eventBarTitle} title={item.textTitle}>
+                              {item.textTitle}
+                            </span>
                             <span className={classes.eventBarStatus}>{item.statusLabel}</span>
                           </Link>
                         ) : (

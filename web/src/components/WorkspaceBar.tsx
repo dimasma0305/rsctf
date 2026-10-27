@@ -1,9 +1,9 @@
-import { ActionIcon, Anchor, Button, Group, Kbd, Stack, Text, TextInput } from '@mantine/core'
+import { ActionIcon, Anchor, Button, Group, Kbd, Select, Stack, Text, TextInput } from '@mantine/core'
 import { mdiArrowRight, mdiChevronRight, mdiClose, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useLocation } from 'react-router'
+import { Link, useLocation, useNavigate } from 'react-router'
 import { AccessibleModal } from '@Components/AccessibleModal'
 import {
   getAdminEventContext,
@@ -13,6 +13,7 @@ import {
 } from '@Components/admin/navigation'
 import { getAdminNavigation, PRIMARY_NAVIGATION, canAccessNavigationItem } from '@Components/navigation'
 import { searchNavigation } from '@Utils/NavigationSearch'
+import { useIsMobile } from '@Utils/ThemeOverride'
 import { useConfig } from '@Hooks/useConfig'
 import { useUser } from '@Hooks/useUser'
 import { Role } from '@Api'
@@ -21,6 +22,8 @@ import classes from '@Styles/WorkspaceBar.module.css'
 export const WorkspaceBar: FC = () => {
   const { t } = useTranslation()
   const location = useLocation()
+  const navigate = useNavigate()
+  const isMobile = useIsMobile()
   const { user } = useUser()
   const { config } = useConfig()
   const [opened, setOpened] = useState(false)
@@ -76,13 +79,18 @@ export const WorkspaceBar: FC = () => {
     setQuery('')
     searchRef.current?.focus()
   }
+  const openSearch = () => {
+    setQuery('')
+    setOpened(true)
+  }
   const active = items
     .filter(
       (item) => location.pathname === item.link || (item.link !== '/' && location.pathname.startsWith(`${item.link}/`))
     )
     .sort((a, b) => b.link.length - a.link.length)[0]
 
-  const adminPage = getAdminNavigation(user).find(
+  const adminPages = getAdminNavigation(user)
+  const adminPage = adminPages.find(
     (item) => location.pathname === `/admin/${item.path}` || location.pathname.startsWith(`/admin/${item.path}/`)
   )
   const adminCrumbs = [
@@ -150,64 +158,89 @@ export const WorkspaceBar: FC = () => {
   return (
     <>
       <div className={classes.bar} data-workspace-bar>
-        <nav
-          aria-label={t('common.workspace.breadcrumbs', 'Breadcrumbs')}
-          className={classes.breadcrumbs}
-          data-admin={isAdmin || undefined}
-        >
-          {isAdmin ? (
-            adminCrumbs.map((crumb, index) => (
-              <Fragment key={`${index}-${crumb.link}`}>
-                {index > 0 && <Icon path={mdiChevronRight} size={0.65} aria-hidden="true" />}
-                {index === adminCrumbs.length - 1 ? (
-                  <Text size="xs" aria-current="page">
-                    {crumb.title}
-                  </Text>
-                ) : (
-                  <Anchor component={Link} to={crumb.link}>
-                    {crumb.title}
-                  </Anchor>
+        {isMobile && isAdmin && !context ? (
+          <Select
+            className={classes.mobileSection}
+            aria-label={t('interface.navigation.admin_section')}
+            withScrollArea={false}
+            attributes={{ options: { tabIndex: 0 } }}
+            styles={{ options: { maxHeight: 220, overflowY: 'auto' } }}
+            allowDeselect={false}
+            searchable={adminPages.length > 6}
+            value={adminPage?.path ?? null}
+            data={adminPages.map((page) => ({ value: page.path, label: t(page.label, page.fallback) }))}
+            onChange={(path) => path && navigate(`/admin/${path}`)}
+          />
+        ) : (
+          <nav
+            aria-label={t('common.workspace.breadcrumbs', 'Breadcrumbs')}
+            className={classes.breadcrumbs}
+            data-admin={isAdmin || undefined}
+          >
+            {isAdmin ? (
+              adminCrumbs.map((crumb, index) => (
+                <Fragment key={`${index}-${crumb.link}`}>
+                  {index > 0 && <Icon path={mdiChevronRight} size={0.65} aria-hidden="true" />}
+                  {index === adminCrumbs.length - 1 ? (
+                    <Text size="xs" aria-current="page">
+                      {crumb.title}
+                    </Text>
+                  ) : (
+                    <Anchor component={Link} to={crumb.link}>
+                      {crumb.title}
+                    </Anchor>
+                  )}
+                </Fragment>
+              ))
+            ) : (
+              <>
+                <Anchor component={Link} to="/">
+                  {t('common.workspace.player', 'Player workspace')}
+                </Anchor>
+                {active && (
+                  <>
+                    <Icon path={mdiChevronRight} size={0.65} aria-hidden="true" />
+                    <Text size="xs" aria-current={eventId ? undefined : 'page'}>
+                      {active.title}
+                    </Text>
+                  </>
                 )}
-              </Fragment>
-            ))
-          ) : (
-            <>
-              <Anchor component={Link} to="/">
-                {t('common.workspace.player', 'Player workspace')}
-              </Anchor>
-              {active && (
-                <>
-                  <Icon path={mdiChevronRight} size={0.65} aria-hidden="true" />
-                  <Text size="xs" aria-current={eventId ? undefined : 'page'}>
-                    {active.title}
-                  </Text>
-                </>
-              )}
-              {eventId && (
-                <>
-                  <Icon path={mdiChevronRight} size={0.65} aria-hidden="true" />
-                  <Anchor component={Link} to={`/games/${eventId}`}>
-                    {t('common.workspace.event_id', 'Event #{{id}}', { id: eventId })}
-                  </Anchor>
-                </>
-              )}
-            </>
-          )}
-        </nav>
-        <Button
-          variant="default"
-          size="xs"
-          className={classes.trigger}
-          leftSection={<Icon path={mdiMagnify} size={0.8} aria-hidden="true" />}
-          onClick={() => {
-            setQuery('')
-            setOpened(true)
-          }}
-          aria-haspopup="dialog"
-          aria-keyshortcuts="Control+k Meta+k"
-        >
-          {t('common.workspace.search_label', 'Search pages')} <Kbd className={classes.shortcut}>Ctrl / ⌘ K</Kbd>
-        </Button>
+                {eventId && (
+                  <>
+                    <Icon path={mdiChevronRight} size={0.65} aria-hidden="true" />
+                    <Anchor component={Link} to={`/games/${eventId}`}>
+                      {t('common.workspace.event_id', 'Event #{{id}}', { id: eventId })}
+                    </Anchor>
+                  </>
+                )}
+              </>
+            )}
+          </nav>
+        )}
+        {isMobile ? (
+          <ActionIcon
+            variant="default"
+            size={44}
+            aria-label={t('common.workspace.search_label', 'Search pages')}
+            aria-haspopup="dialog"
+            aria-keyshortcuts="Control+k Meta+k"
+            onClick={openSearch}
+          >
+            <Icon path={mdiMagnify} size={0.9} aria-hidden="true" />
+          </ActionIcon>
+        ) : (
+          <Button
+            variant="default"
+            size="xs"
+            className={classes.trigger}
+            leftSection={<Icon path={mdiMagnify} size={0.8} aria-hidden="true" />}
+            onClick={openSearch}
+            aria-haspopup="dialog"
+            aria-keyshortcuts="Control+k Meta+k"
+          >
+            {t('common.workspace.search_label', 'Search pages')} <Kbd className={classes.shortcut}>Ctrl / ⌘ K</Kbd>
+          </Button>
+        )}
       </div>
       <AccessibleModal
         opened={opened}

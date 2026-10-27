@@ -43,8 +43,19 @@
     "open_check": "Periksa pengaturan {{check}}",
     "runtime_title": "Masih perlu diverifikasi",
     "runtime_note": "Belum diuji oleh halaman ini. Pemeriksaan ini tidak memulai layanan, mengubah skor, atau menyimpan pengaturan.",
-    "states": { "checked": "Sudah diperiksa", "attention": "Perlu perhatian", "unverified": "Belum terverifikasi", "info": "Informasi" },
-    "checks": { "schedule": "Jadwal event", "freeze": "Pembekuan scoreboard", "writeup": "Batas waktu writeup", "challenges": "Challenge yang diaktifkan", "builds": "Hasil build terakhir" },
+    "states": {
+      "checked": "Sudah diperiksa",
+      "attention": "Perlu perhatian",
+      "unverified": "Belum terverifikasi",
+      "info": "Informasi"
+    },
+    "checks": {
+      "schedule": "Jadwal event",
+      "freeze": "Pembekuan scoreboard",
+      "writeup": "Batas waktu writeup",
+      "challenges": "Challenge yang diaktifkan",
+      "builds": "Hasil build terakhir"
+    },
     "reasons": {
       "schedule_ok": "Waktu mulai tersimpan mendahului waktu selesai. Pastikan tanggal dan zona waktu yang diinginkan di Informasi.",
       "schedule_invalid": "Atur waktu mulai yang valid dan waktu selesai setelahnya.",
@@ -68,7 +79,14 @@
       "services": "A&D / KoTH: periksa roster penilaian, status checker, kesiapan instance, dan reset yang sedang berjalan di konsol operator.",
       "vpn": "Akses VPN diwajibkan: verifikasi unduhan konfigurasi dan koneksi challenge melalui koneksi VPN peserta yang sebenarnya."
     },
-    "actions": { "info": "Buka informasi", "challenges": "Buka challenge", "teams": "Periksa tim", "attachments": "Periksa challenge", "services": "Buka konsol operator", "vpn": "Periksa pengaturan VPN" },
+    "actions": {
+      "info": "Buka informasi",
+      "challenges": "Buka challenge",
+      "teams": "Periksa tim",
+      "attachments": "Periksa challenge",
+      "services": "Buka konsol operator",
+      "vpn": "Periksa pengaturan VPN"
+    },
     "errors": {
       "session": "Sesi Anda mungkin telah berakhir. Masuk kembali, lalu buka event ini.",
       "permission": "Anda tidak memiliki akses administrasi event ini. Minta administrator memeriksa penugasan Anda sebagai pengelola event.",
@@ -196,7 +214,11 @@
     "flags_files": "Flag & berkas",
     "challenge_id": "Tantangan #{{id}}",
     "switch_challenge": "Pindah ke tantangan",
-    "groups": { "setup": "Pengaturan event", "competition": "Kompetisi", "people": "Tim & komunikasi" }
+    "groups": {
+      "setup": "Pengaturan event",
+      "competition": "Kompetisi",
+      "people": "Tim & komunikasi"
+    }
   },
   "ad_console": {
     "title": "Operasi langsung",
@@ -644,14 +666,16 @@
       },
       "nav": {
         "platform": "Platform",
-        "account": "Pengguna",
+        "account": "Akun",
         "container": "Container",
         "email": "Email",
         "captcha": "Captcha",
         "oauth": "OAuth",
         "registry_pull": "Kredensial pull",
-        "build_registry": "Push build",
+        "build_registry": "Registry build",
         "donations": "Donasi",
+        "ai_links": "Tautan AI",
+        "agent_signatures": "Tanda tangan agen",
         "diagnostics": "Diagnostik"
       },
       "donations": {

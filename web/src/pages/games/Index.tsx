@@ -75,7 +75,7 @@ const Games: FC = () => {
     searchInput.current?.focus()
   }
 
-  usePageTitle(t('game.title.index'))
+  usePageTitle(t('interface.navigation.events'))
 
   const recents =
     recentGames?.map((game) => {
@@ -132,7 +132,7 @@ const Games: FC = () => {
   return (
     <WithNavBar withFooter withHeader stickyHeader>
       <PageHeader
-        title={t('game.title.index')}
+        title={t('interface.navigation.events')}
         actions={
           games && (
             <Text size="sm" c="dimmed">
@@ -329,11 +329,11 @@ const Games: FC = () => {
                       </Text>
                     </Group>
 
-                    <SimpleGrid cols={{ base: 1, md: 2, xl: 3, w24: 4 }} spacing="lg" verticalSpacing="lg">
+                    <Stack gap="sm" data-event-rows>
                       {section.events.map((game) => (
-                        <GameCard key={game.id} game={game} showMembership={Boolean(user)} />
+                        <GameCard key={game.id} game={game} showMembership={Boolean(user)} layout="row" />
                       ))}
-                    </SimpleGrid>
+                    </Stack>
                   </section>
                 ))}
             </Stack>

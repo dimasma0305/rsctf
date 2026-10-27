@@ -439,6 +439,25 @@
           "label": "Slogan de la plateforme"
         },
         "title": "Paramètres de la plateforme"
+      },
+      "nav": {
+        "platform": "Plateforme",
+        "account": "Comptes",
+        "container": "Conteneurs",
+        "email": "E-mail",
+        "captcha": "Captcha",
+        "oauth": "OAuth",
+        "registry_pull": "Accès au registre",
+        "build_registry": "Registre des builds",
+        "donations": "Dons",
+        "ai_links": "Liens IA",
+        "agent_signatures": "Signatures des agents",
+        "diagnostics": "Diagnostics"
+      },
+      "status": {
+        "configured": "configuré",
+        "inactive": "désactivé",
+        "attention": "à vérifier"
       }
     },
     "show_all": "Afficher tout",

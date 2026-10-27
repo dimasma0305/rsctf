@@ -1,0 +1,93 @@
+{
+  "actions": {
+    "edit": "編輯",
+    "more": "更多",
+    "retry": "重試"
+  },
+  "request": {
+    "failed": "無法載入{{name}}",
+    "hint": "請檢查網路連線後重試。",
+    "stale": "正在顯示上次載入的資料，內容可能已過時。"
+  },
+  "navigation": {
+    "admin_section": "管理區域",
+    "events": "賽事",
+    "guide": "指南"
+  },
+  "users": {
+    "search": "搜尋使用者",
+    "import": "匯入",
+    "import_csv": "匯入 CSV",
+    "import_history": "匯入紀錄",
+    "email_verified": "電子郵件驗證",
+    "verified": "已驗證",
+    "unverified": "未驗證",
+    "toggle_verification": "變更{{name}}的電子郵件驗證狀態",
+    "verification_hint": "更新此帳號的電子郵件驗證狀態。",
+    "actions_for": "{{name}}的操作",
+    "password_link": "傳送密碼設定連結",
+    "reset_password": "重設密碼",
+    "delete": "刪除使用者",
+    "email_confirm": "傳送密碼設定郵件給{{name}}？",
+    "email_queued": "寄往{{email}}的密碼設定郵件已加入佇列"
+  },
+  "settings": {
+    "section": "設定區域"
+  },
+  "home": {
+    "recent_events": "近期賽事",
+    "view_all": "檢視全部",
+    "player_guide": "選手指南",
+    "pinned": "置頂公告",
+    "live_count": "{{count}} 場進行中",
+    "upcoming_count": "{{count}} 場即將開始",
+    "announcements": "新聞與公告"
+  },
+  "event": {
+    "live": "進行中",
+    "upcoming": "即將開始",
+    "completed": "已結束",
+    "days": "{{count}} 天",
+    "minutes": "{{count}} 分鐘",
+    "hours": "{{count}} 小時",
+    "participants": "隊伍：{{teams}} · 選手：{{users}}",
+    "team_limit": "每隊最多 {{count}} 人",
+    "unlimited": "隊伍人數不限",
+    "solo": "個人賽"
+  },
+  "challenges": {
+    "cards": "卡片",
+    "list": "清單",
+    "globe": "地球",
+    "view": "題目檢視",
+    "filter_options": "篩選與檢視"
+  },
+  "dashboard": {
+    "users": "使用者",
+    "teams": "隊伍",
+    "containers": "容器",
+    "refresh": "重新整理儀表板",
+    "submission_trend": "提交趨勢",
+    "submission_trend_description": "所選時間範圍內的提交量。",
+    "submissions": "提交",
+    "submission_trend_range": "提交趨勢時間範圍",
+    "no_submission_activity": "尚無提交活動",
+    "no_submission_activity_description": "選手在此時間範圍內開始解題後，提交紀錄將顯示在此處。",
+    "popular_games": "熱門賽事",
+    "participants": "參賽者",
+    "reviews": "評價",
+    "popular_games_scroll": "可捲動的熱門賽事表格",
+    "recent_reviews": "近期評價",
+    "recent_writeups": "近期題解",
+    "recent_cheats": "近期作弊檢舉",
+    "recent_reviews_scroll": "可捲動的近期題目評價",
+    "recent_writeups_scroll": "可捲動的近期題解",
+    "recent_cheats_scroll": "可捲動的近期作弊檢舉",
+    "positive_review": "好評",
+    "negative_review": "差評",
+    "day": "日",
+    "week": "週",
+    "month": "月",
+    "year": "年"
+  }
+}

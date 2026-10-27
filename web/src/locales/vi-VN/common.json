@@ -147,5 +147,14 @@
   "title": {
     "404": "Hư vô",
     "about": "Giới thiệu"
+  },
+  "pagination": {
+    "label": "Chuyển trang",
+    "previous": "Trang trước",
+    "next": "Trang sau",
+    "first": "Trang đầu",
+    "last": "Trang cuối",
+    "page": "Trang {{page}}",
+    "page_of": "Trang {{page}} / {{total}}"
   }
 }

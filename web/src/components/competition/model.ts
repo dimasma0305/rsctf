@@ -3,8 +3,8 @@ import { ChallengeType, SubmissionType, type ChallengeInfo, type ChallengeItem }
 export type ChallengeView = 'globe' | 'list' | 'cards'
 export type ChallengeSort = 'name' | 'score' | 'solves'
 
-export const resolveChallengeView = (value: unknown): ChallengeView =>
-  value === 'globe' || value === 'list' || value === 'cards' ? value : 'cards'
+export const resolveChallengeView = (value: unknown, fallback: ChallengeView = 'cards'): ChallengeView =>
+  value === 'globe' || value === 'list' || value === 'cards' ? value : fallback
 
 export const matchesChallengeSearch = (
   challenge: Pick<ChallengeInfo, 'id' | 'title' | 'category'>,

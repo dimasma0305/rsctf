@@ -1,0 +1,93 @@
+{
+  "actions": {
+    "edit": "Изменить",
+    "more": "Ещё",
+    "retry": "Повторить"
+  },
+  "request": {
+    "failed": "Не удалось загрузить: {{name}}",
+    "hint": "Проверьте подключение и повторите попытку.",
+    "stale": "Показаны последние загруженные данные. Они могут быть устаревшими."
+  },
+  "navigation": {
+    "admin_section": "Раздел управления",
+    "events": "Соревнования",
+    "guide": "Руководство"
+  },
+  "users": {
+    "search": "Поиск пользователей",
+    "import": "Импорт",
+    "import_csv": "Импорт CSV",
+    "import_history": "История импорта",
+    "email_verified": "Подтверждение почты",
+    "verified": "Подтверждена",
+    "unverified": "Не подтверждена",
+    "toggle_verification": "Изменить подтверждение почты для {{name}}",
+    "verification_hint": "Изменяет статус подтверждения почты этой учётной записи.",
+    "actions_for": "Действия для {{name}}",
+    "password_link": "Отправить ссылку для настройки пароля",
+    "reset_password": "Сбросить пароль",
+    "delete": "Удалить пользователя",
+    "email_confirm": "Отправить письмо для настройки пароля пользователю {{name}}?",
+    "email_queued": "Письмо для настройки пароля для {{email}} добавлено в очередь"
+  },
+  "settings": {
+    "section": "Раздел настроек"
+  },
+  "home": {
+    "recent_events": "Последние соревнования",
+    "view_all": "Показать все",
+    "player_guide": "Руководство участника",
+    "pinned": "Закреплённое объявление",
+    "live_count": "Сейчас идут: {{count}}",
+    "upcoming_count": "Предстоящие: {{count}}",
+    "announcements": "Новости и объявления"
+  },
+  "event": {
+    "live": "Сейчас идёт",
+    "upcoming": "Предстоящее",
+    "completed": "Завершено",
+    "days": "{{count}} дн.",
+    "minutes": "{{count}} мин.",
+    "hours": "{{count}} ч",
+    "participants": "Команды: {{teams}} · Участники: {{users}}",
+    "team_limit": "До {{count}} участников в команде",
+    "unlimited": "Без ограничения размера команды",
+    "solo": "Индивидуальное"
+  },
+  "challenges": {
+    "cards": "Карточки",
+    "list": "Список",
+    "globe": "Глобус",
+    "view": "Вид заданий",
+    "filter_options": "Фильтры и вид"
+  },
+  "dashboard": {
+    "users": "Пользователи",
+    "teams": "Команды",
+    "containers": "Контейнеры",
+    "refresh": "Обновить обзор",
+    "submission_trend": "Динамика отправок",
+    "submission_trend_description": "Количество отправок за выбранный период.",
+    "submissions": "Отправки",
+    "submission_trend_range": "Период отправок",
+    "no_submission_activity": "Отправок пока нет",
+    "no_submission_activity_description": "Отправки появятся здесь, когда участники начнут решать задания в выбранном периоде.",
+    "popular_games": "Популярные соревнования",
+    "participants": "Участники",
+    "reviews": "Отзывы",
+    "popular_games_scroll": "Прокручиваемая таблица популярных соревнований",
+    "recent_reviews": "Последние отзывы",
+    "recent_writeups": "Последние решения",
+    "recent_cheats": "Последние сообщения о нарушениях",
+    "recent_reviews_scroll": "Прокручиваемые последние отзывы о заданиях",
+    "recent_writeups_scroll": "Прокручиваемые последние решения",
+    "recent_cheats_scroll": "Прокручиваемые последние сообщения о нарушениях",
+    "positive_review": "Положительный",
+    "negative_review": "Отрицательный",
+    "day": "День",
+    "week": "Неделя",
+    "month": "Месяц",
+    "year": "Год"
+  }
+}

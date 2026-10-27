@@ -1,0 +1,93 @@
+{
+  "actions": {
+    "edit": "Edit",
+    "more": "More",
+    "retry": "Retry"
+  },
+  "request": {
+    "failed": "Could not load {{name}}",
+    "hint": "Check your connection and try again.",
+    "stale": "Showing the last loaded data. It may be out of date."
+  },
+  "navigation": {
+    "admin_section": "Administration section",
+    "events": "Events",
+    "guide": "Guide"
+  },
+  "users": {
+    "search": "Search users",
+    "import": "Import",
+    "import_csv": "Import CSV",
+    "import_history": "Import history",
+    "email_verified": "Email verified",
+    "verified": "Verified",
+    "unverified": "Unverified",
+    "toggle_verification": "Change email verification for {{name}}",
+    "verification_hint": "Updates email verification for this account.",
+    "actions_for": "Actions for {{name}}",
+    "password_link": "Send password setup link",
+    "reset_password": "Reset password",
+    "delete": "Delete user",
+    "email_confirm": "Send a password setup email to {{name}}?",
+    "email_queued": "Password setup email queued for {{email}}"
+  },
+  "settings": {
+    "section": "Settings section"
+  },
+  "home": {
+    "recent_events": "Recent events",
+    "view_all": "View all",
+    "player_guide": "Player guide",
+    "pinned": "Pinned announcement",
+    "live_count": "{{count}} live",
+    "upcoming_count": "{{count}} upcoming",
+    "announcements": "News & announcements"
+  },
+  "event": {
+    "live": "Live now",
+    "upcoming": "Upcoming",
+    "completed": "Completed",
+    "days": "{{count}} d",
+    "minutes": "{{count}} min",
+    "hours": "{{count}} h",
+    "participants": "Teams: {{teams}} · Players: {{users}}",
+    "team_limit": "Up to {{count}} per team",
+    "unlimited": "Unlimited team size",
+    "solo": "Solo"
+  },
+  "challenges": {
+    "cards": "Cards",
+    "list": "List",
+    "globe": "Globe",
+    "view": "Challenge view",
+    "filter_options": "Filters and view"
+  },
+  "dashboard": {
+    "users": "Users",
+    "teams": "Teams",
+    "containers": "Containers",
+    "refresh": "Refresh dashboard",
+    "submission_trend": "Submission trend",
+    "submission_trend_description": "Submission volume over the selected time range.",
+    "submissions": "Submissions",
+    "submission_trend_range": "Submission trend range",
+    "no_submission_activity": "No submission activity",
+    "no_submission_activity_description": "Submissions will appear here when competitors begin solving challenges in this time range.",
+    "popular_games": "Popular events",
+    "participants": "Participants",
+    "reviews": "Reviews",
+    "popular_games_scroll": "Scrollable popular events table",
+    "recent_reviews": "Recent reviews",
+    "recent_writeups": "Recent writeups",
+    "recent_cheats": "Recent cheat reports",
+    "recent_reviews_scroll": "Scrollable recent challenge reviews",
+    "recent_writeups_scroll": "Scrollable recent writeups",
+    "recent_cheats_scroll": "Scrollable recent cheat reports",
+    "positive_review": "Positive",
+    "negative_review": "Negative",
+    "day": "Day",
+    "week": "Week",
+    "month": "Month",
+    "year": "Year"
+  }
+}

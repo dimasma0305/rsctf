@@ -1,5 +1,11 @@
-import { Alert, Anchor, Button, Group, Skeleton, Stack, Text, Title } from '@mantine/core'
-import { mdiFlagCheckered, mdiAccountGroupOutline, mdiBookOpenPageVariantOutline, mdiAlertCircleOutline } from '@mdi/js'
+import { Alert, Anchor, Box, Button, Group, Skeleton, Stack, Text, Title } from '@mantine/core'
+import {
+  mdiFlagCheckered,
+  mdiAccountGroupOutline,
+  mdiBookOpenPageVariantOutline,
+  mdiAlertCircleOutline,
+  mdiPinOutline,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -26,7 +32,14 @@ const Home: FC = () => {
   const { data: posts, error: postsError, isValidating, mutate } = api.info.useInfoGetLatestPosts(postFeedSWRConfig)
   const { recentGames, error: gamesError, mutate: retryGames } = useRecentGames()
   const now = useServerNow()
-  const showGames = recentGames?.slice(0, 5)
+  const eventPriority = (game: NonNullable<typeof recentGames>[number]) => {
+    const status = getGameStatus(game, now).status
+    return (status === GameStatus.OnGoing ? 0 : status === GameStatus.Coming ? 2 : 4) + (game.joined ? 0 : 1)
+  }
+  const showGames = recentGames
+    ? [...recentGames].sort((a, b) => eventPriority(a) - eventPriority(b)).slice(0, 5)
+    : undefined
+  const pinnedPost = Array.isArray(posts) ? posts.find((post) => post.isPinned) : undefined
   const liveCount = recentGames?.filter((game) => getGameStatus(game, now).status === GameStatus.OnGoing).length ?? 0
   const upcomingCount = recentGames?.filter((game) => getGameStatus(game, now).status === GameStatus.Coming).length ?? 0
 
@@ -49,10 +62,10 @@ const Home: FC = () => {
   const gamesHeading = (
     <Group justify="space-between" align="center" className={classes.sectionHeader}>
       <Title id="recent-games-title" order={2} size="h4">
-        {t('common.content.home.recent_games')}
+        {t('interface.home.recent_events')}
       </Title>
       <Anchor component={Link} to="/games" size="sm" fw={600} className={classes.viewAllLink}>
-        {t('common.button.view_all', 'View all')}
+        {t('interface.home.view_all')}
       </Anchor>
     </Group>
   )
@@ -63,16 +76,32 @@ const Home: FC = () => {
         <PageHeader
           title={t('common.content.home.title', 'Overview')}
           actions={
-            <WorkspaceLinks
-              label={t('common.workspace.start_here', 'Start here')}
-              items={[
-                { to: '/games', icon: mdiFlagCheckered, title: t('game.title.index') },
-                { to: '/teams', icon: mdiAccountGroupOutline, title: t('common.tab.team') },
-                { to: '/guide', icon: mdiBookOpenPageVariantOutline, title: t('common.title.guide', 'Player guide') },
-              ]}
-            />
+            <Box className={classes.shortcuts}>
+              <WorkspaceLinks
+                label={t('common.workspace.start_here', 'Start here')}
+                items={[
+                  { to: '/games', icon: mdiFlagCheckered, title: t('interface.navigation.events') },
+                  { to: '/teams', icon: mdiAccountGroupOutline, title: t('common.tab.team') },
+                  { to: '/guide', icon: mdiBookOpenPageVariantOutline, title: t('interface.home.player_guide') },
+                ]}
+              />
+            </Box>
           }
         />
+
+        {pinnedPost && (
+          <aside className={classes.pinnedNotice} data-home-pinned aria-label={t('interface.home.pinned')}>
+            <Icon path={mdiPinOutline} size={0.9} aria-hidden="true" />
+            <div>
+              <Text size="xs" fw={650} c="dimmed">
+                {t('interface.home.pinned')}
+              </Text>
+              <Anchor component={Link} to={`/posts/${pinnedPost.id}`} fw={650}>
+                {pinnedPost.title}
+              </Anchor>
+            </div>
+          </aside>
+        )}
 
         <div className={classes.dashboard}>
           <aside
@@ -86,12 +115,12 @@ const Home: FC = () => {
               <Group gap="md" py="sm">
                 {liveCount > 0 && (
                   <Text size="sm" c="dimmed">
-                    {t('game.content.live_count', '{{count}} live', { count: liveCount })}
+                    {t('interface.home.live_count', { count: liveCount })}
                   </Text>
                 )}
                 {upcomingCount > 0 && (
                   <Text size="sm" c="dimmed">
-                    {t('game.content.upcoming_count', '{{count}} upcoming', { count: upcomingCount })}
+                    {t('interface.home.upcoming_count', { count: upcomingCount })}
                   </Text>
                 )}
               </Group>
@@ -128,10 +157,10 @@ const Home: FC = () => {
           >
             <Group justify="space-between" align="center" className={classes.sectionHeader}>
               <Title id="news-feed-title" order={2} size="h4">
-                {t('common.content.home.news', 'News & announcements')}
+                {t('interface.home.announcements')}
               </Title>
               <Anchor component={Link} to="/posts" size="sm" fw={600} className={classes.viewAllLink}>
-                {t('common.button.view_all', 'View all')}
+                {t('interface.home.view_all')}
               </Anchor>
             </Group>
             {postsError && (

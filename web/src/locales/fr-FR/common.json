@@ -147,5 +147,14 @@
   "title": {
     "404": "The Nowhere",
     "about": "À propos"
+  },
+  "pagination": {
+    "label": "Pagination",
+    "previous": "Page précédente",
+    "next": "Page suivante",
+    "first": "Première page",
+    "last": "Dernière page",
+    "page": "Page {{page}}",
+    "page_of": "Page {{page}} sur {{total}}"
   }
 }

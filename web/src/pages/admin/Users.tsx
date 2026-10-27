@@ -8,6 +8,7 @@ import {
   Code,
   Divider,
   Group,
+  Menu,
   Paper,
   ScrollArea,
   SimpleGrid,
@@ -20,25 +21,14 @@ import {
 import { useClipboard, useInputState } from '@mantine/hooks'
 import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
-import {
-  mdiAccountMultiplePlus,
-  mdiAccountOutline,
-  mdiArrowLeftBold,
-  mdiArrowRightBold,
-  mdiCheck,
-  mdiDeleteOutline,
-  mdiEmailArrowRightOutline,
-  mdiHistory,
-  mdiLockReset,
-  mdiMagnify,
-  mdiPencilOutline,
-} from '@mdi/js'
+import { mdiAccountMultiplePlus, mdiArrowLeftBold, mdiArrowRightBold, mdiCheck, mdiHistory, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
-import { ActionIconWithConfirm } from '@Components/ActionIconWithConfirm'
+import { RequestError } from '@Components/RequestError'
 import { ScrollingText } from '@Components/ScrollingText'
 import { AdminPage } from '@Components/admin/AdminPage'
+import { UserActions } from '@Components/admin/UserActions'
 import { UserEditModal, RoleColorMap } from '@Components/admin/UserEditModal'
 import { UserImportHistoryModal } from '@Components/admin/UserImportHistoryModal'
 import { UserImportModal } from '@Components/admin/UserImportModal'
@@ -51,6 +41,7 @@ import { showErrorMsg } from '@Utils/Shared'
 import { useArrayResponse } from '@Hooks/useArrayResponse'
 import { useUser } from '@Hooks/useUser'
 import api, { Role, UserInfoModel } from '@Api'
+import classes from '@Styles/AdminUsers.module.css'
 import tableClasses from '@Styles/Table.module.css'
 import mobileClasses from './AdminMobileList.module.css'
 
@@ -66,6 +57,9 @@ const Users: FC = () => {
   const { data: users, total, setData: setUsers, updateData: updateUsers } = useArrayResponse<UserInfoModel>()
   const [hint, setHint] = useInputState('')
   const [searching, setSearching] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [readError, setReadError] = useState<unknown>(null)
+  const searchOwner = useRef(false)
   const [disabled, setDisabled] = useState(false)
   const [current, setCurrent] = useState(0)
 
@@ -84,6 +78,7 @@ const Users: FC = () => {
 
   useEffect(() => {
     const fetchData = async () => {
+      setLoading(true)
       try {
         const res = await api.admin.adminUsers({
           count: ITEM_COUNT_PER_PAGE,
@@ -91,8 +86,11 @@ const Users: FC = () => {
         })
         setUsers(res.data)
         setCurrent((page - 1) * ITEM_COUNT_PER_PAGE + res.data.length)
+        setReadError(null)
       } catch (err) {
-        showErrorMsg(err, t)
+        setReadError(err)
+      } finally {
+        setLoading(false)
       }
     }
 
@@ -100,6 +98,9 @@ const Users: FC = () => {
   }, [page, update])
 
   const onSearch = async () => {
+    if (searchOwner.current) return
+    searchOwner.current = true
+    setSearching(true)
     try {
       if (!hint) {
         const res = await api.admin.adminUsers({
@@ -113,14 +114,16 @@ const Users: FC = () => {
         setUsers(res.data)
         setCurrent(res.data.length)
       }
+      setReadError(null)
     } catch (e) {
-      showErrorMsg(e, t)
+      setReadError(e)
     } finally {
+      searchOwner.current = false
       setSearching(false)
     }
   }
 
-  const onToggleActive = async (user: UserInfoModel) => {
+  const onToggleEmailVerified = async (user: UserInfoModel) => {
     setDisabled(true)
 
     try {
@@ -241,7 +244,7 @@ const Users: FC = () => {
       )
       setupEmailOperations.current.delete(user.id)
       showNotification({
-        message: t('admin.notification.users.credentials_sent', 'Password setup email queued for {{email}}', {
+        message: t('interface.users.email_queued', {
           email: user.email,
         }),
         color: 'teal',
@@ -280,78 +283,84 @@ const Users: FC = () => {
     }
   }
 
+  const actionsFor = (user: UserInfoModel) => (
+    <UserActions
+      user={user}
+      disabled={disabled}
+      canDelete={user.id !== currentUser?.userId}
+      onEdit={() => {
+        setActiveUser(user)
+        setEditModalOpened(true)
+      }}
+      onEmail={() => onSendPasswordSetupEmail(user)}
+      onReset={() => onResetPassword(user)}
+      onDelete={() => onDelete(user)}
+    />
+  )
+
   return (
     <AdminPage
-      isLoading={searching || !users}
+      isLoading={searching || (loading && !users)}
       head={
-        <>
-          <TextInput
-            w={{ base: '100%', sm: '36%' }}
-            aria-label={t('admin.placeholder.users.search')}
-            leftSection={<Icon path={mdiMagnify} size={1} />}
-            placeholder={t('admin.placeholder.users.search')}
-            value={hint}
-            onChange={setHint}
-            onKeyDown={(e) => {
-              if (!searching && e.key === 'Enter') onSearch()
+        <div className={classes.tools}>
+          <form
+            className={classes.search}
+            onSubmit={(event) => {
+              event.preventDefault()
+              void onSearch()
             }}
-            rightSection={<Icon path={mdiAccountOutline} size={1} />}
-          />
-          <Group w={{ base: '100%', sm: 'auto' }} justify="space-between" wrap="wrap" gap="xs">
-            <Group gap="xs" wrap="wrap">
+          >
+            <TextInput
+              id="admin-user-search"
+              aria-label={t('interface.users.search')}
+              placeholder={t('interface.users.search')}
+              value={hint}
+              onChange={setHint}
+              rightSectionWidth={44}
+              rightSection={
+                <ActionIcon
+                  type="submit"
+                  size={44}
+                  variant="subtle"
+                  loading={searching}
+                  aria-label={t('interface.users.search')}
+                >
+                  <Icon path={mdiMagnify} size={0.9} aria-hidden="true" />
+                </ActionIcon>
+              }
+            />
+          </form>
+          <Menu position="bottom-end" withinPortal withInitialFocusPlaceholder={false}>
+            <Menu.Target>
               <Button
-                leftSection={<Icon path={mdiAccountMultiplePlus} size={0.9} />}
-                variant="outline"
-                h={44}
-                onClick={() => setImportModalOpened(true)}
+                variant="default"
+                mih={44}
+                leftSection={<Icon path={mdiAccountMultiplePlus} size={0.85} aria-hidden="true" />}
               >
-                Import CSV
+                {t('interface.users.import')}
               </Button>
-              <Button
-                leftSection={<Icon path={mdiHistory} size={0.9} />}
-                variant="light"
-                h={44}
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item onClick={() => setImportModalOpened(true)}>{t('interface.users.import_csv')}</Menu.Item>
+              <Menu.Item
+                leftSection={<Icon path={mdiHistory} size={0.8} aria-hidden="true" />}
                 onClick={() => setImportHistoryOpened(true)}
               >
-                Import history
-              </Button>
-            </Group>
-            <Text fw="bold" size="sm">
-              <Trans
-                i18nKey="admin.content.users.stats"
-                values={{
-                  current,
-                  total,
-                }}
-              >
-                _<Code>_</Code>_
-              </Trans>
-            </Text>
-            <Group role="group" gap="xs" wrap="nowrap" aria-label={t('common.pagination.label', 'Pagination')}>
-              <ActionIcon
-                size={44}
-                disabled={page <= 1}
-                aria-label={t('common.pagination.previous', 'Previous page')}
-                onClick={() => setPage(page - 1)}
-              >
-                <Icon path={mdiArrowLeftBold} size={1} />
-              </ActionIcon>
-              <Text fw="bold" size="sm" aria-live="polite">
-                {page}
-              </Text>
-              <ActionIcon
-                size={44}
-                disabled={page * ITEM_COUNT_PER_PAGE >= total}
-                aria-label={t('common.pagination.next', 'Next page')}
-                onClick={() => setPage(page + 1)}
-              >
-                <Icon path={mdiArrowRightBold} size={1} />
-              </ActionIcon>
-            </Group>
-          </Group>
-        </>
+                {t('interface.users.import_history')}
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
+        </div>
       }
     >
+      {readError != null && (
+        <RequestError
+          name={t('common.label.user')}
+          stale={Boolean(users)}
+          retrying={searching || loading}
+          onRetry={onSearch}
+        />
+      )}
       <Paper shadow="md" p="xs" w="100%">
         <Box visibleFrom="lg">
           <ScrollArea viewportRef={viewport} offsetScrollbars scrollbarSize={4} h="calc(100vh - 190px)">
@@ -362,7 +371,7 @@ const Users: FC = () => {
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th scope="col" miw="1.8rem">
-                    {t('admin.label.users.active')}
+                    {t('interface.users.email_verified')}
                   </Table.Th>
                   <Table.Th scope="col">{t('common.label.user')}</Table.Th>
                   <Table.Th scope="col">{t('account.label.email')}</Table.Th>
@@ -381,11 +390,12 @@ const Users: FC = () => {
                       <Table.Td>
                         <Switch
                           disabled={disabled}
+                          title={t('interface.users.verification_hint')}
                           checked={user.emailConfirmed ?? false}
-                          aria-label={t('admin.label.users.toggle_active', 'Toggle active status for {{name}}', {
+                          aria-label={t('interface.users.toggle_verification', {
                             name: user.userName,
                           })}
-                          onChange={() => onToggleActive(user)}
+                          onChange={() => onToggleEmailVerified(user)}
                         />
                       </Table.Td>
                       <Table.Td>
@@ -424,48 +434,7 @@ const Users: FC = () => {
                           maw="8rem"
                         />
                       </Table.Td>
-                      <Table.Td align="right">
-                        <Group wrap="nowrap" gap="sm" justify="right">
-                          <ActionIcon
-                            color="blue"
-                            aria-label={t('admin.button.users.edit')}
-                            onClick={() => {
-                              setActiveUser(user)
-                              setEditModalOpened(true)
-                            }}
-                          >
-                            <Icon path={mdiPencilOutline} size={1} />
-                          </ActionIcon>
-                          <ActionIconWithConfirm
-                            iconPath={mdiEmailArrowRightOutline}
-                            color="teal"
-                            message={t('admin.content.users.send_credentials', {
-                              name: user.userName,
-                              defaultValue: 'Send a "set your password" email to {{name}}?',
-                            })}
-                            disabled={disabled || !user.email}
-                            onClick={() => onSendPasswordSetupEmail(user)}
-                          />
-                          <ActionIconWithConfirm
-                            iconPath={mdiLockReset}
-                            color="orange"
-                            message={t('admin.content.users.reset.message', {
-                              name: user.userName,
-                            })}
-                            disabled={disabled}
-                            onClick={() => onResetPassword(user)}
-                          />
-                          <ActionIconWithConfirm
-                            iconPath={mdiDeleteOutline}
-                            color="alert"
-                            message={t('admin.content.users.delete', {
-                              name: user.userName,
-                            })}
-                            disabled={disabled || user.id === currentUser?.userId}
-                            onClick={() => onDelete(user)}
-                          />
-                        </Group>
-                      </Table.Td>
+                      <Table.Td align="right">{actionsFor(user)}</Table.Td>
                     </Table.Tr>
                   ))}
               </Table.Tbody>
@@ -512,11 +481,12 @@ const Users: FC = () => {
 
                   <Group className={mobileClasses.stateRow} justify="space-between" wrap="nowrap">
                     <Stack gap={1}>
-                      <Text className={mobileClasses.detailLabel}>{t('admin.label.users.active')}</Text>
+                      <Text className={mobileClasses.detailLabel}>{t('interface.users.email_verified')}</Text>
+                      <Text size="xs" c="dimmed">
+                        {t('interface.users.verification_hint')}
+                      </Text>
                       <Text size="sm" fw={650}>
-                        {user.emailConfirmed
-                          ? t('admin.label.users.active_state', 'Active')
-                          : t('admin.label.users.inactive_state', 'Inactive')}
+                        {user.emailConfirmed ? t('interface.users.verified') : t('interface.users.unverified')}
                       </Text>
                     </Stack>
                     <Switch
@@ -524,10 +494,10 @@ const Users: FC = () => {
                       size="md"
                       disabled={disabled}
                       checked={user.emailConfirmed ?? false}
-                      aria-label={t('admin.label.users.toggle_active', 'Toggle active status for {{name}}', {
+                      aria-label={t('interface.users.toggle_verification', {
                         name: displayName,
                       })}
-                      onChange={() => onToggleActive(user)}
+                      onChange={() => onToggleEmailVerified(user)}
                     />
                   </Group>
 
@@ -567,71 +537,44 @@ const Users: FC = () => {
                   </Box>
 
                   <Divider />
-                  <Box
-                    component="section"
-                    aria-label={t('admin.button.users.actions_for', 'Actions for {{name}}', { name: displayName })}
-                    className={mobileClasses.actionGrid}
-                  >
-                    <Box className={mobileClasses.actionCell}>
-                      <ActionIcon
-                        size={44}
-                        variant="light"
-                        color="blue"
-                        aria-label={t('admin.button.users.edit_named', 'Edit {{name}}', { name: displayName })}
-                        onClick={() => {
-                          setActiveUser(user)
-                          setEditModalOpened(true)
-                        }}
-                      >
-                        <Icon path={mdiPencilOutline} size={1} />
-                      </ActionIcon>
-                      <span className={mobileClasses.actionLabel}>{t('admin.button.users.edit')}</span>
-                    </Box>
-                    <Box className={mobileClasses.actionCell}>
-                      <ActionIconWithConfirm
-                        iconPath={mdiEmailArrowRightOutline}
-                        color="teal"
-                        message={t('admin.content.users.send_credentials', {
-                          name: displayName,
-                          defaultValue: 'Send a "set your password" email to {{name}}?',
-                        })}
-                        disabled={disabled || !user.email}
-                        onClick={() => onSendPasswordSetupEmail(user)}
-                      />
-                      <span className={mobileClasses.actionLabel}>
-                        {t('admin.button.users.password_link', 'Password link')}
-                      </span>
-                    </Box>
-                    <Box className={mobileClasses.actionCell}>
-                      <ActionIconWithConfirm
-                        iconPath={mdiLockReset}
-                        color="orange"
-                        message={t('admin.content.users.reset.message', {
-                          name: displayName,
-                        })}
-                        disabled={disabled}
-                        onClick={() => onResetPassword(user)}
-                      />
-                      <span className={mobileClasses.actionLabel}>{t('account.button.reset')}</span>
-                    </Box>
-                    <Box className={mobileClasses.actionCell}>
-                      <ActionIconWithConfirm
-                        iconPath={mdiDeleteOutline}
-                        color="alert"
-                        message={t('admin.content.users.delete', {
-                          name: displayName,
-                        })}
-                        disabled={disabled || user.id === currentUser?.userId}
-                        onClick={() => onDelete(user)}
-                      />
-                      <span className={mobileClasses.actionLabel}>{t('common.modal.delete')}</span>
-                    </Box>
-                  </Box>
+                  {actionsFor(user)}
                 </Stack>
               </Card>
             )
           })}
         </SimpleGrid>
+        {users && (
+          <Group justify="space-between" className={classes.footer}>
+            <Text size="sm">
+              <Trans i18nKey="admin.content.users.stats" values={{ current, total }}>
+                _<Code>_</Code>_
+              </Trans>
+            </Text>
+            {total > ITEM_COUNT_PER_PAGE && (
+              <Group role="group" gap="xs" wrap="nowrap" aria-label={t('common.pagination.label', 'Pagination')}>
+                <ActionIcon
+                  size={44}
+                  disabled={page <= 1 || loading || searching}
+                  aria-label={t('common.pagination.previous', 'Previous page')}
+                  onClick={() => setPage(page - 1)}
+                >
+                  <Icon path={mdiArrowLeftBold} size={1} />
+                </ActionIcon>
+                <Text size="sm" aria-live="polite">
+                  {page}
+                </Text>
+                <ActionIcon
+                  size={44}
+                  disabled={page * ITEM_COUNT_PER_PAGE >= total || loading || searching}
+                  aria-label={t('common.pagination.next', 'Next page')}
+                  onClick={() => setPage(page + 1)}
+                >
+                  <Icon path={mdiArrowRightBold} size={1} />
+                </ActionIcon>
+              </Group>
+            )}
+          </Group>
+        )}
         <UserImportModal
           title=""
           opened={importModalOpened}

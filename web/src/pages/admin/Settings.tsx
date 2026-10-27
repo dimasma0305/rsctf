@@ -27,6 +27,7 @@ import {
   Tooltip,
   useMantineTheme,
 } from '@mantine/core'
+import { useMediaQuery } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import {
   mdiAlert,
@@ -46,6 +47,7 @@ import { useTranslation } from 'react-i18next'
 import { ColorPreview } from '@Components/ColorPreview'
 import { IconTabs } from '@Components/IconTabs'
 import { LogoBox } from '@Components/LogoBox'
+import { RequestError } from '@Components/RequestError'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { AgentSignaturesSettings, useAgentSignatures } from '@Components/admin/AgentSignaturesSettings'
 import { AiChatProvidersSettings, useAiChatProviders } from '@Components/admin/AiChatProvidersSettings'
@@ -92,7 +94,14 @@ import classes from '@Styles/Settings.module.css'
 import { getAccountUniquenessState, setBrowserFingerprintCollection } from './settingsAccountPolicy'
 
 const Configs: FC = () => {
-  const { data: configs, mutate } = api.admin.useAdminGetConfigs(OnceSWRConfig)
+  const {
+    data: configs,
+    error: configError,
+    isLoading: configLoading,
+    isValidating: configValidating,
+    mutate,
+  } = api.admin.useAdminGetConfigs(OnceSWRConfig)
+  const compactSections = useMediaQuery('(max-width: 62em)', undefined, { getInitialValueInEffect: false })
   const { mutate: mutateCaptchaConfig } = useCaptchaConfig()
 
   const { mutate: mutateConfig } = useConfig()
@@ -126,6 +135,7 @@ const Configs: FC = () => {
     'platform'
   )
   const initialSnapshotRef = useRef<ConfigEditModel | null>(null)
+  const draftDirtyRef = useRef(false)
   const saveOwnerRef = useRef(false)
   const operationRef = useRef<SettingsOperationOwner | null>(loadSettingsOperation())
   const [color, setColor] = useState<string | undefined | null>(globalConfig?.customTheme)
@@ -143,7 +153,7 @@ const Configs: FC = () => {
   const agentSignaturesConfigured = agentSignatures?.signatures.some((signature) => signature.enabled) ?? false
 
   useEffect(() => {
-    if (configs) {
+    if (configs && !draftDirtyRef.current) {
       setContainerPolicy(configs.containerPolicy)
       setContainerProvider(configs.containerProvider)
       setGlobalConfig(configs.globalConfig)
@@ -161,6 +171,7 @@ const Configs: FC = () => {
       // object instance after a no-op revalidation, but we want the
       // dirty flag to reset after a save anyway. Stringify wins.
       initialSnapshotRef.current = {
+        expectedRevision: configs.revision ?? 0,
         globalConfig: configs.globalConfig,
         accountPolicy: configs.accountPolicy,
         containerPolicy: configs.containerPolicy,
@@ -198,6 +209,7 @@ const Configs: FC = () => {
     ? dirtySettingsSections(initialSnapshotRef.current, currentSnapshot)
     : {}
   const dirty = logoFile !== null || brandingAction !== BrandingAction.Keep || Object.keys(dirtySections).length > 0
+  draftDirtyRef.current = dirty
 
   const logoPreviewUrl = useMemo(() => (logoFile ? URL.createObjectURL(logoFile) : undefined), [logoFile])
 
@@ -394,7 +406,9 @@ const Configs: FC = () => {
       setSaved(true)
       return
     }
-    const expectedRevision = configs.revision ?? 0
+    // Revalidation may discover a newer server revision while a local draft is
+    // open. Keep the draft tied to the revision whose values it actually used.
+    const expectedRevision = initialSnapshotRef.current?.expectedRevision ?? configs.revision ?? 0
     const pending = operationRef.current
     const owner =
       pending && pending.expectedRevision === expectedRevision && pending.signature === signature
@@ -420,7 +434,7 @@ const Configs: FC = () => {
       clearSettingsOperation()
       setLogoFile(null)
       setBrandingAction(BrandingAction.Keep)
-      initialSnapshotRef.current = currentSnapshot
+      initialSnapshotRef.current = { ...currentSnapshot, expectedRevision: result.revision }
       // A refresh failure after a confirmed commit is not a Save failure. The
       // durable revision remains authoritative and the next revalidation will
       // safely refresh write-only secret placeholders.
@@ -432,31 +446,58 @@ const Configs: FC = () => {
     }
   }
 
+  const configFailure = configError ? (
+    <RequestError
+      name={t('admin.tab.settings')}
+      stale={Boolean(configs)}
+      retrying={configValidating}
+      onRetry={mutate}
+    />
+  ) : null
+  if (!configs) return <AdminPage isLoading={configLoading}>{configFailure}</AdminPage>
+
   return (
-    <AdminPage isLoading={!configs}>
+    <AdminPage>
+      {configFailure}
       <Stack gap="md" w="100%" pb={100} className={classes.formContent}>
-        <IconTabs
-          idPrefix="settings"
-          orientation="vertical"
-          active={navItems.findIndex((i) => i.key === activeSection)}
-          onTabChange={(_, tabKey) => setActiveSection(tabKey as SectionKey)}
-          tabs={navItems.map((item) => ({
-            tabKey: item.key,
-            icon: <Icon path={item.icon} size={1} />,
-            label: (
-              <Stack gap={3} align="flex-start">
-                <Text size="sm" fw={500}>
-                  {t(`admin.content.settings.nav.${item.key}`)}
-                </Text>
-                <StatusDot status={statuses[item.key]} />
-              </Stack>
-            ),
-          }))}
-        />
+        {compactSections ? (
+          <Select
+            id="settings-section-picker"
+            label={t('interface.settings.section')}
+            withScrollArea={false}
+            attributes={{ options: { tabIndex: 0 } }}
+            styles={{ options: { maxHeight: 220, overflowY: 'auto' } }}
+            value={activeSection}
+            allowDeselect={false}
+            searchable
+            data={navItems.map((item) => ({ value: item.key, label: t(`admin.content.settings.nav.${item.key}`) }))}
+            onChange={(key) => key && setActiveSection(key as SectionKey)}
+          />
+        ) : (
+          <IconTabs
+            idPrefix="settings"
+            orientation="vertical"
+            active={navItems.findIndex((i) => i.key === activeSection)}
+            onTabChange={(_, tabKey) => setActiveSection(tabKey as SectionKey)}
+            tabs={navItems.map((item) => ({
+              tabKey: item.key,
+              icon: <Icon path={item.icon} size={1} />,
+              label: (
+                <Stack gap={3} align="flex-start">
+                  <Text size="sm" fw={500}>
+                    {t(`admin.content.settings.nav.${item.key}`)}
+                  </Text>
+                  <StatusDot status={statuses[item.key]} />
+                </Stack>
+              ),
+            }))}
+          />
+        )}
         <Stack
           id="settings-panel"
-          role="tabpanel"
-          aria-labelledby={`settings-tab-${activeSection}`}
+          role={compactSections ? 'region' : 'tabpanel'}
+          aria-label={compactSections ? t(`admin.content.settings.nav.${activeSection}`) : undefined}
+          aria-labelledby={compactSections ? undefined : `settings-tab-${activeSection}`}
           tabIndex={0}
           gap="md"
           w="100%"

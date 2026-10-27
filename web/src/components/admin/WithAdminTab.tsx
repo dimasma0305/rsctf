@@ -1,4 +1,4 @@
-import { Group, GroupProps, LoadingOverlay, Select, Stack } from '@mantine/core'
+import { Group, GroupProps, LoadingOverlay, Stack } from '@mantine/core'
 import React, { FC, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
@@ -54,17 +54,6 @@ export const WithAdminTab: FC<AdminTabProps> = ({ head, headProps, headerActions
         }
         actions={headerActions}
       />
-      {!context && (
-        <Select
-          hiddenFrom="sm"
-          label={t('common.workspace.admin_section', 'Administration section')}
-          allowDeselect={false}
-          searchable={pages.length > 6}
-          value={activePage?.path ?? null}
-          data={pages.map((page) => ({ value: page.path, label: t(page.label, page.fallback) }))}
-          onChange={(path) => path && navigate(`/admin/${path}`)}
-        />
-      )}
       {head && (
         <Group
           wrap="wrap"

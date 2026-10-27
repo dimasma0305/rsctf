@@ -439,6 +439,25 @@
           "label": "Eslogan de la Plataforma"
         },
         "title": "Configuraciones de la Plataforma"
+      },
+      "nav": {
+        "platform": "Plataforma",
+        "account": "Cuentas",
+        "container": "Contenedores",
+        "email": "Correo",
+        "captcha": "Captcha",
+        "oauth": "OAuth",
+        "registry_pull": "Acceso al registro",
+        "build_registry": "Registro de compilaciones",
+        "donations": "Donaciones",
+        "ai_links": "Enlaces de IA",
+        "agent_signatures": "Firmas de agentes",
+        "diagnostics": "Diagnóstico"
+      },
+      "status": {
+        "configured": "configurado",
+        "inactive": "desactivado",
+        "attention": "revisar"
       }
     },
     "show_all": "Mostrar Todo",

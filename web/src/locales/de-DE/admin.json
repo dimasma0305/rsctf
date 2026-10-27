@@ -439,6 +439,25 @@
           "label": "Plattform-Slogan"
         },
         "title": "Plattform-Einstellungen"
+      },
+      "nav": {
+        "platform": "Plattform",
+        "account": "Konten",
+        "container": "Container",
+        "email": "E-Mail",
+        "captcha": "Captcha",
+        "oauth": "OAuth",
+        "registry_pull": "Registry-Zugang",
+        "build_registry": "Build-Registry",
+        "donations": "Spenden",
+        "ai_links": "KI-Links",
+        "agent_signatures": "Agent-Signaturen",
+        "diagnostics": "Diagnose"
+      },
+      "status": {
+        "configured": "konfiguriert",
+        "inactive": "aus",
+        "attention": "prüfen"
       }
     },
     "show_all": "Alle anzeigen",

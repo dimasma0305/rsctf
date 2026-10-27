@@ -59,7 +59,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     getInitialValueInEffect: false,
   })
   // Retain the initial preference for Back navigation to the URL without a view.
-  const defaultView = useRef(resolveChallengeView(viewPreference)).current
+  const defaultView = useRef(resolveChallengeView(viewPreference, isCompact ? 'list' : 'cards')).current
   const [view, setUrlView] = useUrlTab('view', ['cards', 'list', 'globe'], defaultView)
   const setView = (next: ChallengeView) => {
     setUrlView(next)
