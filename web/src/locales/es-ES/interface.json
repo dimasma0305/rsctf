@@ -32,7 +32,12 @@
     "email_queued": "El correo de configuración de contraseña para {{email}} está en cola"
   },
   "settings": {
-    "section": "Sección de configuración"
+    "section": "Sección de configuración",
+    "conflict_title": "La configuración del servidor ha cambiado",
+    "conflict_message": "El borrador no se ha guardado. Consérvalo o descártalo para cargar la configuración más reciente.",
+    "discard_reload": "Descartar y recargar",
+    "discard_confirm": "¿Descartar todos los cambios sin guardar y cargar la configuración más reciente? No se podrá recuperar el borrador actual.",
+    "keep_draft": "Conservar borrador"
   },
   "home": {
     "recent_events": "Eventos recientes",

@@ -32,7 +32,12 @@
     "email_queued": "寄往{{email}}的密碼設定郵件已加入佇列"
   },
   "settings": {
-    "section": "設定區域"
+    "section": "設定區域",
+    "conflict_title": "伺服器上的設定已變更",
+    "conflict_message": "草稿尚未儲存。您可以保留草稿，或捨棄草稿並載入最新設定。",
+    "discard_reload": "捨棄草稿並重新載入",
+    "discard_confirm": "捨棄所有未儲存的變更並載入最新設定？目前的草稿將無法復原。",
+    "keep_draft": "保留草稿"
   },
   "home": {
     "recent_events": "近期賽事",

@@ -34,6 +34,7 @@ export function createDesignFixture(options = {}) {
     ...options,
     player,
     profile,
+    settings,
     users,
     failed: new Set(options.failed || []),
     requests: [],

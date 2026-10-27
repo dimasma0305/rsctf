@@ -32,7 +32,12 @@
     "email_queued": "Email thiết lập mật khẩu cho {{email}} đã được xếp hàng"
   },
   "settings": {
-    "section": "Mục cài đặt"
+    "section": "Mục cài đặt",
+    "conflict_title": "Cài đặt trên máy chủ đã thay đổi",
+    "conflict_message": "Bản nháp chưa được lưu. Giữ bản nháp hoặc bỏ bản nháp để tải cài đặt mới nhất.",
+    "discard_reload": "Bỏ bản nháp và tải lại",
+    "discard_confirm": "Bỏ mọi thay đổi chưa lưu và tải cài đặt mới nhất? Không thể khôi phục bản nháp hiện tại.",
+    "keep_draft": "Giữ bản nháp"
   },
   "home": {
     "recent_events": "Sự kiện gần đây",

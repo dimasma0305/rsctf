@@ -3,6 +3,16 @@
   max-width: calc(100vw - 32px);
 }
 
+.reloadButton {
+  max-width: 100%;
+  min-height: 44px;
+  height: auto;
+}
+.reloadButton :global(.mantine-Button-label) {
+  padding-block: 0.45rem;
+  white-space: normal;
+}
+
 .formContent {
   display: grid;
   grid-template-columns: 13rem minmax(0, 1fr);

@@ -32,7 +32,12 @@
     "email_queued": "{{email}}へのパスワード設定メールを送信待ちに追加しました"
   },
   "settings": {
-    "section": "設定セクション"
+    "section": "設定セクション",
+    "conflict_title": "サーバーの設定が変更されました",
+    "conflict_message": "下書きは保存されていません。そのまま保持するか、破棄して最新の設定を読み込めます。",
+    "discard_reload": "下書きを破棄して再読み込み",
+    "discard_confirm": "未保存の変更をすべて破棄して最新の設定を読み込みますか？現在の下書きは復元できません。",
+    "keep_draft": "下書きを保持"
   },
   "home": {
     "recent_events": "最近のイベント",

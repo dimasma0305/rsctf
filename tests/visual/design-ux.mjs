@@ -362,7 +362,9 @@ try {
       );
     });
     await check("settings-retry-preserves-new-draft-and-revision", async () => {
-      await visit("/admin/settings");
+      await visit("/admin/settings", {
+        scheme: viewport.name === "tablet" ? "light" : "dark",
+      });
       state.allowWrites = true;
       state.failAfterSave = true;
       const input = '#settings-panel input[placeholder="RS"]';
@@ -388,7 +390,7 @@ try {
       await wait('!document.querySelector("[data-request-error]")');
       assert.equal(await evaluate(`${find(input)}.value`), "New local draft");
       await clickText("button", "Save Changes");
-      await wait('document.querySelector(".mantine-Notification-root")');
+      await wait('document.querySelector("[data-settings-conflict]")');
       assert.equal(state.writes.length, 2);
       assert.equal(state.writes[1].body.expectedRevision, committedRevision);
       assert.equal(
@@ -396,6 +398,53 @@ try {
         committedRevision + 1,
         "conflicted draft must not commit",
       );
+      await wait('document.querySelector("[data-settings-conflict]")');
+      await audit(viewport.name + "-settings-conflict");
+      await click("[data-settings-conflict] button");
+      await audit(viewport.name + "-discard-draft-confirmation");
+      await clickText("[role=dialog] button", "Keep draft");
+      await wait(
+        '!document.querySelector("[role=dialog]") && document.activeElement === document.querySelector("[data-settings-conflict] button")',
+      );
+      assert.equal(await evaluate(`${find(input)}.value`), "New local draft");
+      state.failed.add("/api/admin/config");
+      await click("[data-settings-conflict] button");
+      await clickText("[role=dialog] button", "Discard draft and reload");
+      await wait(
+        'document.querySelector("[data-settings-reload-error]") && !document.querySelector("[role=dialog] button[data-loading]")',
+      );
+      assert.equal(
+        await evaluate(`${find(input)}.value`),
+        "New local draft",
+        "failed reload must preserve the draft",
+      );
+      await audit(viewport.name + "-settings-reload-error");
+      assert.equal(
+        state.writes.length,
+        2,
+        "discard/reload only reads configuration",
+      );
+      state.failed.clear();
+      await clickText("[role=dialog] button", "Discard draft and reload");
+      await wait(
+        '!document.querySelector("[role=dialog]") && !document.querySelector("[data-settings-conflict]")',
+      );
+      assert.equal(await evaluate(`${find(input)}.value`), "Other operator");
+      await wait(
+        'document.activeElement === document.getElementById("settings-panel")',
+      );
+      state.failAfterSave = false;
+      await edit("Resolved draft");
+      await clickText("button", "Save Changes");
+      await wait(
+        '!document.querySelector("[data-settings-conflict]") && !document.querySelector("button[data-loading]")',
+      );
+      assert.equal(state.writes.length, 3);
+      assert.equal(
+        state.writes[2].body.expectedRevision,
+        committedRevision + 1,
+      );
+      assert.equal(state.settings.globalConfig.title, "Resolved draft");
     });
     await check("users-error-and-retry", async () => {
       await visit("/admin/users", { failed: ["/api/admin/users"] });
@@ -556,7 +605,11 @@ try {
         await evaluate(
           'document.querySelector("#challenge-view-picker").scrollIntoView({block:"nearest"}); document.querySelector("#challenge-view-picker").focus()',
         );
-        await press("ArrowDown");
+        // The same native selectOption contract used by browser drivers:
+        // an OS picker may cancel ArrowDown on Escape instead of committing.
+        await evaluate(
+          `(() => { const select = document.querySelector('#challenge-view-picker'); select.value = 'list'; select.dispatchEvent(new Event('input', {bubbles:true})); select.dispatchEvent(new Event('change', {bubbles:true})); })()`,
+        );
         await press("Escape");
       } else {
         await clickText(".mantine-SegmentedControl-label", "List");
@@ -656,6 +709,20 @@ try {
         );
         await audit(language + "-settings-options");
         await press("Escape");
+        const settingsName = '#settings-panel input[placeholder="RS"]';
+        await click(settingsName);
+        await evaluate(`${find(settingsName)}.select()`);
+        await cdp.send("Input.insertText", { text: "Locale draft" });
+        state.allowWrites = true;
+        state.settings.revision += 1;
+        await click(".mantine-Affix-root button");
+        await wait('document.querySelector("[data-settings-conflict]")');
+        await audit(language + "-settings-conflict");
+        await click("[data-settings-conflict] button");
+        await wait('document.querySelector("[role=dialog]")');
+        await audit(language + "-discard-confirmation");
+        await press("Escape");
+        await wait('!document.querySelector("[role=dialog]")');
         await visit("/admin/users", options);
         await click(
           `[data-user-actions="${state.users[1].id}"] button:last-child`,

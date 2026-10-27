@@ -32,7 +32,12 @@
     "email_queued": "Email pengaturan kata sandi untuk {{email}} masuk antrean"
   },
   "settings": {
-    "section": "Bagian pengaturan"
+    "section": "Bagian pengaturan",
+    "conflict_title": "Pengaturan di server telah berubah",
+    "conflict_message": "Draf Anda belum disimpan. Pertahankan draf, atau buang dan muat pengaturan terbaru.",
+    "discard_reload": "Buang draf dan muat ulang",
+    "discard_confirm": "Buang semua perubahan yang belum disimpan dan muat pengaturan terbaru? Draf saat ini tidak dapat dipulihkan.",
+    "keep_draft": "Pertahankan draf"
   },
   "home": {
     "recent_events": "Event terbaru",

@@ -32,7 +32,12 @@
     "email_queued": "Password setup email queued for {{email}}"
   },
   "settings": {
-    "section": "Settings section"
+    "section": "Settings section",
+    "conflict_title": "Settings changed on the server",
+    "conflict_message": "Your draft was not saved. Keep it open, or discard it and load the latest settings.",
+    "discard_reload": "Discard draft and reload",
+    "discard_confirm": "Discard all unsaved changes and load the latest settings? Your current draft cannot be restored.",
+    "keep_draft": "Keep draft"
   },
   "home": {
     "recent_events": "Recent events",

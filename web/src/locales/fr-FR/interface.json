@@ -32,7 +32,12 @@
     "email_queued": "L’e-mail de création du mot de passe pour {{email}} a été mis en attente"
   },
   "settings": {
-    "section": "Section des paramètres"
+    "section": "Section des paramètres",
+    "conflict_title": "Les paramètres du serveur ont changé",
+    "conflict_message": "Votre brouillon n’a pas été enregistré. Conservez-le ou abandonnez-le pour charger les derniers paramètres.",
+    "discard_reload": "Abandonner et recharger",
+    "discard_confirm": "Abandonner toutes les modifications non enregistrées et charger les derniers paramètres ? Le brouillon actuel ne pourra pas être restauré.",
+    "keep_draft": "Conserver le brouillon"
   },
   "home": {
     "recent_events": "Événements récents",

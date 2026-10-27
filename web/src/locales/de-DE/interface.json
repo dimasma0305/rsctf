@@ -32,7 +32,12 @@
     "email_queued": "Die E-Mail zur Passworteinrichtung für {{email}} wurde eingereiht"
   },
   "settings": {
-    "section": "Einstellungsbereich"
+    "section": "Einstellungsbereich",
+    "conflict_title": "Die Einstellungen auf dem Server wurden geändert",
+    "conflict_message": "Ihr Entwurf wurde nicht gespeichert. Behalten Sie ihn bei oder verwerfen Sie ihn und laden Sie die neuesten Einstellungen.",
+    "discard_reload": "Entwurf verwerfen und neu laden",
+    "discard_confirm": "Alle ungespeicherten Änderungen verwerfen und die neuesten Einstellungen laden? Der aktuelle Entwurf kann nicht wiederhergestellt werden.",
+    "keep_draft": "Entwurf behalten"
   },
   "home": {
     "recent_events": "Aktuelle Wettbewerbe",

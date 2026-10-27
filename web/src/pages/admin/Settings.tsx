@@ -42,8 +42,9 @@ import {
   mdiShieldCheckOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useMemo, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { AccessibleModal } from '@Components/AccessibleModal'
 import { ColorPreview } from '@Components/ColorPreview'
 import { IconTabs } from '@Components/IconTabs'
 import { LogoBox } from '@Components/LogoBox'
@@ -136,6 +137,11 @@ const Configs: FC = () => {
   )
   const initialSnapshotRef = useRef<ConfigEditModel | null>(null)
   const draftDirtyRef = useRef(false)
+  const [configConflict, setConfigConflict] = useState(false)
+  const [discardOpened, setDiscardOpened] = useState(false)
+  const [reloadingDraft, setReloadingDraft] = useState(false)
+  const [discardError, setDiscardError] = useState(false)
+  const discardTriggerRef = useRef<HTMLButtonElement>(null)
   const saveOwnerRef = useRef(false)
   const operationRef = useRef<SettingsOperationOwner | null>(loadSettingsOperation())
   const [color, setColor] = useState<string | undefined | null>(globalConfig?.customTheme)
@@ -152,44 +158,47 @@ const Configs: FC = () => {
   const { data: agentSignatures } = useAgentSignatures()
   const agentSignaturesConfigured = agentSignatures?.signatures.some((signature) => signature.enabled) ?? false
 
-  useEffect(() => {
-    if (configs && !draftDirtyRef.current) {
-      setContainerPolicy(configs.containerPolicy)
-      setContainerProvider(configs.containerProvider)
-      setGlobalConfig(configs.globalConfig)
-      setAccountPolicy(configs.accountPolicy)
-      setBuildRegistry(configs.buildRegistry)
-      setEmail(configs.email)
-      setCaptcha(configs.captcha)
-      setOAuth(configs.oAuth)
-      setRegistry(configs.registry)
-      setProxyTrust(configs.proxyTrust)
-      setDonations(configs.donations)
-      setColor(configs.globalConfig?.customTheme)
-      // Stash baseline for dirty tracking. Identity (referential
-      // equality) isn't enough — the SWR cache may return the same
-      // object instance after a no-op revalidation, but we want the
-      // dirty flag to reset after a save anyway. Stringify wins.
-      initialSnapshotRef.current = {
-        expectedRevision: configs.revision ?? 0,
-        globalConfig: configs.globalConfig,
-        accountPolicy: configs.accountPolicy,
-        containerPolicy: configs.containerPolicy,
-        containerProvider: configs.containerProvider,
-        buildRegistry: configs.buildRegistry,
-        email: configs.email,
-        captcha: configs.captcha,
-        oAuth: configs.oAuth,
-        registry: configs.registry,
-        donations: configs.donations,
-      }
-      const pending = operationRef.current
-      if (pending && (configs.revision ?? 0) > pending.expectedRevision) {
-        operationRef.current = null
-        clearSettingsOperation()
-      }
+  const applyConfigs = useCallback((next: NonNullable<typeof configs>) => {
+    setContainerPolicy(next.containerPolicy)
+    setContainerProvider(next.containerProvider)
+    setGlobalConfig(next.globalConfig)
+    setAccountPolicy(next.accountPolicy)
+    setBuildRegistry(next.buildRegistry)
+    setEmail(next.email)
+    setCaptcha(next.captcha)
+    setOAuth(next.oAuth)
+    setRegistry(next.registry)
+    setProxyTrust(next.proxyTrust)
+    setDonations(next.donations)
+    setColor(next.globalConfig?.customTheme)
+    // Stash baseline for dirty tracking. Identity (referential
+    // equality) isn't enough — the SWR cache may return the same
+    // object instance after a no-op revalidation, but we want the
+    // dirty flag to reset after a save anyway. Stringify wins.
+    initialSnapshotRef.current = {
+      expectedRevision: next.revision ?? 0,
+      globalConfig: next.globalConfig,
+      accountPolicy: next.accountPolicy,
+      containerPolicy: next.containerPolicy,
+      containerProvider: next.containerProvider,
+      buildRegistry: next.buildRegistry,
+      email: next.email,
+      captcha: next.captcha,
+      oAuth: next.oAuth,
+      registry: next.registry,
+      donations: next.donations,
     }
-  }, [configs])
+    const pending = operationRef.current
+    if (pending && (next.revision ?? 0) > pending.expectedRevision) {
+      operationRef.current = null
+      clearSettingsOperation()
+    }
+    setConfigConflict(false)
+  }, [])
+
+  useEffect(() => {
+    if (configs && !draftDirtyRef.current) applyConfigs(configs)
+  }, [configs, applyConfigs])
 
   // Recompute the current snapshot on every render — cheap (<10 small
   // objects) and gets us a fresh dirty flag without per-field plumbing.
@@ -325,7 +334,9 @@ const Configs: FC = () => {
       if ((originalError as { response?: { status?: number } }).response?.status === 409) {
         operationRef.current = null
         clearSettingsOperation()
-        await mutate()
+        setConfigConflict(true)
+        await mutate().catch(() => undefined)
+        return null
       }
       showErrorMsg(originalError, t)
       return null
@@ -446,6 +457,32 @@ const Configs: FC = () => {
     }
   }
 
+  const discardDraft = async () => {
+    if (saveOwnerRef.current) return
+    saveOwnerRef.current = true
+    setReloadingDraft(true)
+    setDiscardError(false)
+    setDisabled(true)
+    try {
+      // SWR revalidation can return retained data after a failed read. Only a
+      // successful fresh response may authorize discarding the local draft.
+      const { data: latest } = await api.admin.adminGetConfigs()
+      await mutate(latest, { revalidate: false })
+      applyConfigs(latest)
+      operationRef.current = null
+      clearSettingsOperation()
+      setLogoFile(null)
+      setBrandingAction(BrandingAction.Keep)
+      setDiscardOpened(false)
+    } catch {
+      setDiscardError(true)
+    } finally {
+      saveOwnerRef.current = false
+      setReloadingDraft(false)
+      setDisabled(false)
+    }
+  }
+
   const configFailure = configError ? (
     <RequestError
       name={t('admin.tab.settings')}
@@ -459,6 +496,63 @@ const Configs: FC = () => {
   return (
     <AdminPage>
       {configFailure}
+      {configConflict && (
+        <Alert data-settings-conflict color="blue" title={t('interface.settings.conflict_title')}>
+          <Text size="sm">{t('interface.settings.conflict_message')}</Text>
+          <Button
+            ref={discardTriggerRef}
+            className={classes.reloadButton}
+            mt="sm"
+            variant="default"
+            disabled={disabled}
+            onClick={() => {
+              setDiscardError(false)
+              setDiscardOpened(true)
+            }}
+          >
+            {t('interface.settings.discard_reload')}
+          </Button>
+        </Alert>
+      )}
+      <AccessibleModal
+        opened={discardOpened}
+        title={t('interface.settings.conflict_title')}
+        onClose={() => !reloadingDraft && setDiscardOpened(false)}
+        withCloseButton={!reloadingDraft}
+        closeOnEscape={!reloadingDraft}
+        closeOnClickOutside={!reloadingDraft}
+        onExitTransitionEnd={() => {
+          if (discardTriggerRef.current?.isConnected) discardTriggerRef.current.focus()
+          else document.getElementById('settings-panel')?.focus()
+        }}
+      >
+        <Stack>
+          {discardError && (
+            <Alert
+              role="alert"
+              color="red"
+              data-settings-reload-error
+              title={t('interface.request.failed', { name: t('admin.tab.settings') })}
+            >
+              {t('interface.request.hint')}
+            </Alert>
+          )}
+          <Text>{t('interface.settings.discard_confirm')}</Text>
+          <Group justify="flex-end">
+            <Button variant="default" disabled={reloadingDraft} onClick={() => setDiscardOpened(false)}>
+              {t('interface.settings.keep_draft')}
+            </Button>
+            <Button
+              className={classes.reloadButton}
+              color="red"
+              loading={reloadingDraft}
+              onClick={() => void discardDraft()}
+            >
+              {t('interface.settings.discard_reload')}
+            </Button>
+          </Group>
+        </Stack>
+      </AccessibleModal>
       <Stack gap="md" w="100%" pb={100} className={classes.formContent}>
         {compactSections ? (
           <Select
@@ -1656,7 +1750,7 @@ const Configs: FC = () => {
                   background: dirty ? 'var(--mantine-color-orange-5)' : 'var(--mantine-color-teal-5)',
                 }}
               />
-              <Text size="sm" c={dirty ? 'orange' : 'dimmed'}>
+              <Text size="sm" c={dirty ? 'var(--app-text-primary)' : 'dimmed'}>
                 {dirty ? t('admin.content.settings.save_bar.unsaved') : t('admin.content.settings.save_bar.saved')}
               </Text>
             </Group>
