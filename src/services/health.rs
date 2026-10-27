@@ -268,6 +268,17 @@ pub async fn readiness(State(st): State<SharedState>) -> Response {
         } else {
             lifecycle_response(lifecycle)
         };
+    // Dependency I/O may yield while shutdown begins or ownership expires. A
+    // prior successful snapshot must not admit this replica after that wait.
+    let current_lifecycle = st.readiness.lifecycle();
+    if current_lifecycle != RuntimeReadiness::Ready {
+        response = lifecycle_response(current_lifecycle);
+    } else if response.status() == StatusCode::OK {
+        response = network_ownership_response(
+            st.config.runtime_role,
+            crate::services::ad_vpn::owns_instance_lease(),
+        );
+    }
     add_role_headers(&mut response, st.config.runtime_role);
     response
 }
@@ -365,6 +376,60 @@ mod tests {
                 StatusCode::OK
             );
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL; run database regressions serially"]
+    async fn readiness_rechecks_ownership_and_shutdown_after_waiting_for_dependencies() {
+        use crate::{app_state::AppState, models::internal::configs::AppConfig};
+        use std::sync::Arc;
+        let fixture = crate::utils::test_database::TestDatabase::new("health_ownership").await;
+        let root = std::env::temp_dir().join(format!("health-ownership-{}", uuid::Uuid::new_v4()));
+        let state = AppState::new(
+            sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(fixture.pool.clone()),
+            Arc::new(AppConfig::default()),
+            Arc::new(crate::services::cache::InMemoryCache::new()),
+            Arc::new(crate::storage::LocalBlobStorage::new(root.clone())),
+            crate::services::token::TokenService::new("health-proof-fixture-0123456789abcdef", 60),
+            Arc::new(crate::services::container::NoopContainerManager),
+        );
+        state.readiness.mark_ready();
+        for release_ownership in [true, false] {
+            crate::services::ad_vpn::acquire_instance_lease(&state.db)
+                .await
+                .unwrap();
+            let guard = state.readiness.cached.lock().await;
+            let pending = readiness(State(state.clone()));
+            tokio::pin!(pending);
+            assert!(futures::poll!(pending.as_mut()).is_pending());
+            if release_ownership {
+                crate::services::ad_vpn::release_instance_lease()
+                    .await
+                    .unwrap();
+            } else {
+                state.readiness.begin_shutdown();
+            }
+            drop(guard);
+            let response = pending.await;
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = to_bytes(response.into_body(), 64).await.unwrap();
+            assert_eq!(
+                body.as_ref(),
+                if release_ownership {
+                    b"network ownership unavailable".as_slice()
+                } else {
+                    b"shutting down".as_slice()
+                }
+            );
+            if !release_ownership {
+                crate::services::ad_vpn::release_instance_lease()
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(state);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+        fixture.close().await;
     }
 
     #[tokio::test]

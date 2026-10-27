@@ -304,9 +304,11 @@ Implemented design to preserve when evaluating changes:
   Distinguish managed-game processing from games owned by the BYOC network role.
   Sources: [network lease](src/services/ad/vpn/lease.rs),
   [BYOC registry](src/services/byoc_tunnel/mod.rs), [worker sessions](src/services/worker/registry.rs).
-  - [ ] Verify supervised exact-session ownership probes, monotonic proof expiry,
-    readiness withdrawal and fixed-label recovery gauges. Exercise explicit
-    unlock, disconnect, graceful drain and a process pause beyond proof expiry.
+  - [x] Verify supervised exact-session ownership probes, monotonic proof expiry,
+    readiness withdrawal and five fixed-label recovery gauges locally. Real
+    PostgreSQL tests cover explicit unlock, disconnect, continued ownership
+    during drain and readiness requests waiting across release/shutdown.
+  - [ ] Run the new GitHub process-pause regression beyond proof expiry.
     Kernel route fencing and external-session reconnection remain separate gates.
 
 - [x] **ARCH-12: Add worker-certificate expiry visibility and safe renewal.**
@@ -396,8 +398,11 @@ Implemented design to preserve when evaluating changes:
 ### Proposed slow-operation flow and completion evidence
 
 Local checkpoint (2026-10-27): `cargo test --lib` through the bounded wrapper
-passed 1,805 tests (471 environment-dependent tests ignored); strict all-target,
-all-feature Clippy passed with warnings denied. Snapshot-focused validation passed
+passed 1,809 tests (473 environment-dependent tests ignored). A separate serial
+run passed all 463 selected database regressions using CI's existing exclusions,
+with real PostgreSQL, Redis, Docker, S3 and mTLS fixtures. Strict all-target,
+all-feature Clippy passed with zero warnings after the network readiness change.
+Snapshot-focused validation passed
 59 tests, including real Docker/capture recovery. Registered role import/push
 recovery, checker publication/GC races, and expired-lease metrics passed against
 disposable PostgreSQL. The architecture

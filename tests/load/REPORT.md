@@ -43,8 +43,10 @@ checks on the same source revision. Its [retained report](results/architecture-r
 records 4.79 seconds from terminated ownership session to process exit and 5.00
 seconds to replacement readiness; SIGTERM drain was approximately 5.01 seconds.
 The fixture disables VPN and uses no runtime backend, so this does not establish
-live route fencing or worker-workload recovery. The complete CI gate still needs
-two stale database test fixtures corrected; this job's success is not release approval.
+live route fencing or worker-workload recovery. The complete CI run failed on
+two stale database test fixtures. Both were reproduced and corrected, then
+included in a passing local suite of 463 database regressions. A fresh complete
+CI gate is still required; this job's success is not release approval.
 
 ## Initial architecture API and exporter — 27 October 2026
 
