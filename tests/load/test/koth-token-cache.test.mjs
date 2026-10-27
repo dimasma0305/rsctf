@@ -32,6 +32,10 @@ const challengeEdit = readFileSync(
   new URL('../../../src/controllers/edit/challenges/mod.rs', import.meta.url),
   'utf8',
 );
+const challengeDeletion = readFileSync(
+  new URL('../../../src/services/challenge_lifecycle/hard_delete.rs', import.meta.url),
+  'utf8',
+);
 const panel = readFileSync(
   new URL('../../../web/src/components/KothChallengePanel.tsx', import.meta.url),
   'utf8',
@@ -79,8 +83,11 @@ test('the five-second managed KotH token poll has a bounded cache hit path', () 
 
 test('plaintext bearers stay local while cross-replica epochs are authoritative', () => {
   const tiered = section(cache, 'impl Cache for TieredCache', '#[cfg(test)]');
-  assert.match(tiered, /get_local[\s\S]*self\.l1\.get/);
-  assert.match(tiered, /set_local[\s\S]*self\.l1\.set/);
+  const localRead = section(tiered, 'async fn get_local', 'async fn get_authoritative');
+  const localWrite = section(tiered, 'async fn set_local', 'async fn set_authoritative');
+  assert.match(localRead, /self\.local_secrets\.get/);
+  assert.match(localWrite, /self\.local_secrets\.set/);
+  assert.doesNotMatch(localRead + localWrite, /self\.l[12]\./);
   assert.match(tiered, /get_authoritative[\s\S]*self\.l2\.get/);
   assert.match(tiered, /set_authoritative[\s\S]*self\.l2\.set/);
   assert.doesNotMatch(capabilityCache, /token:\s*Option<String>/);
@@ -184,7 +191,10 @@ test('deterministic no-write edit exits restore the cache epoch', () => {
   const topologyCommit = challengeEdit.indexOf('release_game_control(', topologyBegin);
   assert.ok(topologyBegin >= 0 && topologyCommit > topologyBegin);
 
-  const deletion = section(challengeEdit, 'pub async fn delete_challenge', 'pub(crate) struct BuildOutcome');
+  // The controller still authorizes before entering the extracted service.
+  const controller = challengeEdit.slice(challengeEdit.indexOf('pub async fn delete_challenge'));
+  assert.match(controller, /manager_or_admin[\s\S]*delete_challenge_core/);
+  const deletion = challengeDeletion.slice(challengeDeletion.indexOf('pub(crate) async fn delete_challenge_core'));
   const fenceFailure = deletion.indexOf('if let Err(error)');
   const restore = deletion.indexOf('finish_game_epoch_mutation_if_any', fenceFailure);
   const rejected = deletion.indexOf('return Err(error)', restore);

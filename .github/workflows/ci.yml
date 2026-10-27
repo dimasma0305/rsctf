@@ -269,6 +269,36 @@ jobs:
       - name: Run default coverage suite
         run: cargo llvm-cov --all-targets --all-features --locked --no-report
 
+      - name: Prepare real Docker snapshot recovery fixture
+        run: |
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends python3-venv
+          docker build --tag rsctf-coverage-smoke:ci \
+            examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
+          printf 'RSCTF_REAL_DOCKER_RETRY_IMAGE=%s\n' "$(docker image inspect rsctf-coverage-smoke:ci --format '{{.Id}}')" >> "$GITHUB_ENV"
+          printf 'RSCTF_DOCKER_PROXY_BIND=%s\n' "$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')" >> "$GITHUB_ENV"
+          printf 'RSCTF_DOCKER_SCOPE=ci-architecture-coverage\n' >> "$GITHUB_ENV"
+
+      - name: Prepare disposable S3 file-upload fixture
+        run: |
+          docker run --detach --rm --name rsctf-coverage-s3 --cpus 1 --memory 1g \
+            --publish 127.0.0.1:59000:9000 \
+            --env RUSTFS_ACCESS_KEY=architecture-test \
+            --env RUSTFS_SECRET_KEY=architecture-test-only-password \
+            --env RUSTFS_CONSOLE_ENABLE=false \
+            rustfs/rustfs@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b /data
+          curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 1 \
+            --max-time 2 --retry-max-time 60 http://127.0.0.1:59000/health
+          curl --fail --silent --show-error --max-time 10 --request PUT \
+            --aws-sigv4 aws:amz:us-east-1:s3 --user architecture-test:architecture-test-only-password \
+            http://127.0.0.1:59000/rsctf-coverage
+          {
+            printf 'RSCTF_S3_ENDPOINT=http://127.0.0.1:59000\n'
+            printf 'RSCTF_S3_BUCKET=rsctf-coverage\n'
+            printf 'RSCTF_S3_REGION=us-east-1\n'
+            printf 'RSCTF_S3_ACCESS_KEY=architecture-test\n'
+            printf 'RSCTF_S3_SECRET_KEY=architecture-test-only-password\n'
+          } >> "$GITHUB_ENV"
+
       - name: Run database regressions and enforce coverage floor
         # Serial within each physical PostgreSQL/Redis pair. Separate schemas
         # or Redis DB indexes do not isolate catalogs or CLIENT KILL PUBSUB.

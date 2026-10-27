@@ -10,7 +10,7 @@ const roleCompose = read('../../../deploy/compose.roles.yml');
 const localCompose = read('../../../docker-compose.yml');
 const firewall = read('../../../scripts/docker-proxy-firewall.sh');
 const gameContainers = read('../../../src/controllers/game/containers.rs');
-const sharedGameContainers = read('../../../src/controllers/game/containers/shared.rs');
+const sharedGameContainers = read('../../../src/services/player_containers/shared.rs');
 const gameContainerSources = `${gameContainers}\n${sharedGameContainers}`;
 
 test('Compose gives rsctf a private bridge target for PlatformProxy ports', () => {
