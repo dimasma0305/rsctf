@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { promisify } from 'node:util'
 import test from 'node:test'
 import { jobComponents } from '../../../scripts/ci-plan.mjs'
 
@@ -166,6 +168,50 @@ test('artifact selection distinguishes the library from the same-named binary te
   assert.equal(select([library, binary]).status, 0)
   assert.notEqual(select([binary]).status, 0)
   assert.notEqual(select([library, artifact('lib', '/tests/duplicate')]).status, 0)
+})
+
+test('privileged acceptance preserves exact application configuration without inheriting unrelated credentials', () => {
+  const source = job(ciWorkflow, 'cheat-acceptance')
+  const setup = source.match(/server_env=\(\)[\s\S]*?(?=\s+sudo env "\$\{server_env\[@\]\}")/)?.[0]
+  assert.ok(setup, 'explicit application environment required')
+  const config = { RSCTF_JWT_SECRET: 'fixture value with spaces and $literal',
+    RSCTF_DATABASE_URL: 'postgres://fixture:pass@127.0.0.1/test',
+    RSCTF_STORAGE_ROOT: '/tmp/fixture with spaces', RSCTF_COOKIE_SECURE: 'false' }
+  const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c',
+    `${setup}\nexec env -i "\${server_env[@]}" "${process.execPath}" -e 'process.stdout.write(JSON.stringify(process.env))'`], {
+    env: { PATH: process.env.PATH, UNRELATED_CREDENTIAL: 'must not reach the server', ...config }, encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(JSON.parse(result.stdout), config)
+})
+
+test('S3 fixture commands tolerate startup resets and temporary unavailability', async () => {
+  const fixture = job(ciWorkflow, 'coverage').split('name: Prepare disposable S3 file-upload fixture')[1]
+    .split('name: Run database regressions')[0]
+  const commands = [...fixture.matchAll(/curl --fail[\s\S]*?http:\/\/127\.0\.0\.1:59000\/(?:health|rsctf-coverage)/g)]
+  assert.equal(commands.length, 2, 'exercise both health and bucket creation')
+  let requests = 0
+  const server = createServer((request, response) => {
+    requests++
+    if (requests === 1) request.socket.destroy()
+    else if (requests === 2) { response.writeHead(503); response.end() }
+    else response.end('ok')
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    for (const [command] of commands) {
+      requests = 0
+      const result = await promisify(execFile)('bash', ['-e', '-o', 'pipefail', '-c',
+        command.replaceAll('127.0.0.1:59000', `127.0.0.1:${server.address().port}`)], {
+        env: { PATH: process.env.PATH }, timeout: 10_000,
+      })
+      assert.equal(result.stdout, 'ok')
+      assert.equal(requests, 3)
+    }
+  } finally {
+    server.closeAllConnections()
+    await new Promise(resolve => server.close(resolve))
+  }
 })
 
 test('Rust lint runs beside compilation but remains a mandatory publication gate', () => {
