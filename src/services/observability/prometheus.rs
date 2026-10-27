@@ -73,6 +73,15 @@ pub(crate) fn render(pool_size: u32, pool_idle: usize) -> String {
     )
     .unwrap();
     use crate::services::observability_state as durable;
+    writeln!(out, "# TYPE rsctf_control_job_reclaimed_total counter").unwrap();
+    for (kind, value) in durable::JOB_KINDS.iter().zip(&durable::RECLAIMED) {
+        writeln!(
+            out,
+            "rsctf_control_job_reclaimed_total{{kind=\"{kind}\"}} {}",
+            value.load(Relaxed)
+        )
+        .unwrap();
+    }
     for (name, values) in [
         ("control_jobs_queued", &durable::QUEUED),
         ("control_jobs_running", &durable::RUNNING),

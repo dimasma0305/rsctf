@@ -1499,6 +1499,37 @@ and the live ownership assertion are in
 
 ### Optimization ledger
 
+#### Checker publication lock comparison — 27 October 2026
+
+Build and run the real preparation/publication component comparison against a
+disposable PostgreSQL service:
+
+```sh
+scripts/bounded-cargo.sh build --release --locked \
+  --manifest-path tests/load/checker-audit/Cargo.toml
+RSCTF_TEST_DATABASE_URL=postgres://postgres:fixture@127.0.0.1:55432/fixture \
+CHECKER_AUDIT_PG_CONTAINER=your-disposable-postgres \
+  node tests/load/checker-audit.mjs
+```
+
+The runner requires Linux, `taskset`, Docker inspection access, and `/usr/bin/python3`
+with venv/pip support. It creates isolated schemas and `rsctf-checker-audit-*`
+temporary directories, then removes its own fixtures after successful samples.
+Failed clients can leave those owned fixtures for diagnosis. It neither starts nor
+stops the supplied database container. The default is 12 imports at one scheduled
+import/second, four admitted importers, four pooled connections, and three
+alternating repetitions on two CPUs. `CHECKER_AUDIT_OPERATIONS` and
+`CHECKER_AUDIT_RATE` can change the identical offered load for both modes.
+
+[The measured comparison](REPORT.md#checker-publication--27-october-2026) passed
+72 checker executions and source readbacks. Median publication p95 fell from
+9.26 to 2.05 seconds, and lock hold p95 from 1.93 seconds to 2.51 milliseconds.
+Concurrent CPU use increased from 1.01 to 1.75 cores; this change frees database
+connections and lowers queueing rather than reducing Python preparation work.
+The raw result includes full latency distributions, pool occupancy, parent/child
+CPU and memory, PostgreSQL samples, and source/executable hashes. This is a
+component benchmark without HTTP or external dependency downloads.
+
 #### Bounded file upload comparison — 27 October 2026
 
 `storage-audit.mjs` compiles and exercises the production Local/S3 implementations

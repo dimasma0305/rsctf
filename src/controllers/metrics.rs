@@ -3,7 +3,10 @@ use axum::{
     extract::State,
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
+    routing::get,
+    Router,
 };
+use std::sync::Arc;
 
 use crate::app_state::SharedState;
 
@@ -17,11 +20,23 @@ fn authorized(configured: Option<&str>, presented: Option<&str>) -> bool {
     crate::utils::crypto_utils::ct_eq(expected, actual)
 }
 
-pub(crate) async fn prometheus(
-    State(state): State<SharedState>,
+pub(crate) fn router() -> Router<SharedState> {
+    configured_router(std::env::var("RSCTF_METRICS_TOKEN").ok())
+}
+
+fn configured_router(configured: Option<String>) -> Router<SharedState> {
+    let token = configured.map(Arc::<str>::from);
+    Router::new().route(
+        "/metrics",
+        get(move |State(state), headers| prometheus(state, headers, token.clone())),
+    )
+}
+
+async fn prometheus(
+    state: SharedState,
     headers: HeaderMap,
+    configured: Option<Arc<str>>,
 ) -> impl IntoResponse {
-    let configured = std::env::var("RSCTF_METRICS_TOKEN").ok();
     let presented = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
@@ -59,3 +74,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "metrics/http_tests.rs"]
+mod http_tests;

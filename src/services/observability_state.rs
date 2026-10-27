@@ -20,6 +20,14 @@ pub(super) static QUEUED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 pub(super) static RUNNING: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 pub(super) static EXPIRED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 pub(super) static OLDEST: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+/// Process counters, unlike the sampled deployment gauges above. Count committed
+/// expired-lease claims only; ordinary queued claims and failed polls are excluded.
+pub(super) static RECLAIMED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+pub(super) fn record_control_job_reclaim(kind: &str) {
+    if let Some(index) = JOB_KINDS.iter().position(|known| *known == kind) {
+        RECLAIMED[index].fetch_add(1, Relaxed);
+    }
+}
 pub(super) static WORKER_CERT_EXPIRED: AtomicU64 = AtomicU64::new(0);
 pub(super) static WORKER_CERT_7_DAYS: AtomicU64 = AtomicU64::new(0);
 pub(super) static WORKER_CERT_30_DAYS: AtomicU64 = AtomicU64::new(0);

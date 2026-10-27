@@ -205,7 +205,7 @@ async fn collect_with_cursor(
 }
 
 #[cfg(test)]
-async fn collect_stale_checker_revisions_at(
+pub(super) async fn collect_stale_checker_revisions_at(
     pool: &sqlx::PgPool,
     storage_root: &Path,
     grace: Duration,

@@ -1,5 +1,46 @@
 # RSCTF load-test report
 
+## Checker publication — 27 October 2026
+
+The [raw checker samples](results/architecture-checker.json) compare the previous
+lock ordering (lock, prepare, publish, commit) with preparation before locking.
+Both modes compile the same production checker preparation, execution-flock,
+publication guard, and cancellation-safe PostgreSQL transaction code. Each run
+offers 12 imports at one scheduled import/second, with four concurrent importers,
+a four-connection pool, and process/child affinity restricted to two CPUs. Three
+alternating repetitions produce **72 verified publications**. Every published
+Python environment executes its checker and its 16 KiB source fixture matches.
+
+| Measurement (median of three runs) | Previous ordering | Prepare before locking |
+| --- | ---: | ---: |
+| Arrival-to-publication p95 | 9,263.58 ms | 2,049.83 ms |
+| Arrival-to-publication p99 | 10,045.57 ms | 2,064.07 ms |
+| Publication lock wait p95 | 5,583.20 ms | 2.68 ms |
+| Publication lock hold p95 | 1,931.77 ms | 2.51 ms |
+| Mean occupied pool connections | 2.934 | 0.005 |
+| Peak occupied pool connections | 4 | 1 |
+| CPU including Python children (% of one core) | 100.53 | 174.85 |
+| Parent peak RSS | 4.73 MiB | 4.43 MiB |
+
+Publication p95 fell **77.9%**, and lock hold time fell **99.9%**. The previous
+ordering accumulated a queue and took a median 21.06 seconds to drain a
+12-second offered-load window; the new ordering took 12.71 seconds. It uses more
+CPU concurrently: environment preparation is no longer serialized by PostgreSQL.
+This is a latency/pool-occupancy improvement, not a CPU saving. The largest child
+RSS was about 66.97 MiB in both modes; that measure is not the aggregate memory
+of concurrent Python children. PostgreSQL samples peaked at 1.75% CPU before and
+1.44% after, with 167.7–177.6 MiB sampled memory. They do not establish a database
+CPU improvement.
+
+The fixture creates a real Python 3.13.5 venv with bundled pip, but installs no
+external requirements. It excludes HTTP, repository parsing, the complete import
+mutation, and the application's transaction metric atomics. The before case
+reproduces the previous critical-section ordering; it is not a full v0.1.147
+server binary. Twelve observations per run are too few for production tail
+estimates, and after-run p95 varied from 1.70 to 3.89 seconds. Complete distributions,
+source/binary hashes, CPU affinity, PostgreSQL image, and raw resource samples are
+retained. The Node runner holds the shared build lock during measurements.
+
 ## Bounded file uploads — 27 October 2026
 
 The [raw storage samples](results/architecture-storage.json) compare the existing

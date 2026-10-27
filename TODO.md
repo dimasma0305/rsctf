@@ -203,7 +203,7 @@ Implemented design to preserve when evaluating changes:
   Sources: [player container lifecycle](src/controllers/game/containers.rs),
   [backend constraints](docs/deploy/scaling.md), [worker limitations](docs/deploy/workers.md).
 
-- [ ] **ARCH-08: Shorten the checker publication critical section.**
+- [x] **ARCH-08: Shorten the checker publication critical section.**
   Checker imports hold the global publication/GC database lock while preparing
   environments and installing Python dependencies. Garbage collection also holds
   that guard while scanning and deleting files. Prepare immutable artifacts in
@@ -220,7 +220,17 @@ Implemented design to preserve when evaluating changes:
     with execution leases; scan incrementally and withdraw names before deleting
     files outside the publication lock.
   - [x] Run PostgreSQL GC regression preserving reachable and executing revisions.
-  - [ ] Complete publication/cancellation concurrency and lock-occupancy benchmarks.
+  - [x] Pause the real importer's Python child while holding publication ownership:
+    preparation consumes no database connection, a ready peer still publishes,
+    and GC preserves preparing/executing revisions. Concurrent definition changes
+    reject the old import snapshot; retry succeeds, and cancellation leaves staging
+    recoverable by GC. The full PostgreSQL repository regression passes.
+  - [x] Benchmark both critical-section orderings with real Python environments
+    and PostgreSQL: 72 fixed-arrival publications pass execution/readback. Median
+    publication p95 falls 9.26→2.05 seconds, lock-hold p95 1.93 seconds→2.51 ms,
+    and mean occupied connections 2.934→0.005. Concurrent CPU increases; this is
+    a component latency/pool-capacity improvement, not a CPU or HTTP claim.
+    Full distributions and limits are in the checker section of the load report.
 
 - [ ] **ARCH-09: Reduce shared-filesystem coupling incrementally.**
   Publish suitable immutable checker/repository artifacts and completed captures
@@ -322,6 +332,10 @@ Implemented design to preserve when evaluating changes:
     job attempts/latency, transaction acquisition, and pool gauges; preserve JSON.
   - [ ] Add durable backlog/retry and network-recovery visibility; complete access
     and sustained exporter-load verification.
+  - [x] Count committed expired-lease claims by fixed job kind. PostgreSQL verifies
+    normal claims, busy polls, graceful requeue, and stale-owner completion do not
+    inflate recovery counts. Router tests cover absent/weak/wrong/correct Bearer
+    tokens, response headers, and zero database connections during scrapes.
   - [x] Add periodically sampled durable queue counts/age/expired leases and
     active-worker certificate expiry gauges, with fixed labels and sample-freshness
     visibility; queries are bounded by timeout and run outside the scrape path.
@@ -356,7 +370,11 @@ Implemented design to preserve when evaluating changes:
 ### Proposed slow-operation flow and completion evidence
 
 Local checkpoint (2026-10-27): `cargo test --lib` through the bounded wrapper
-passed 1,800 tests (461 environment-dependent tests ignored). The architecture
+passed 1,805 tests (469 environment-dependent tests ignored); strict all-target,
+all-feature Clippy passed with warnings denied. Snapshot-focused validation passed
+59 tests, including real Docker/capture recovery. Registered role import/push
+recovery, checker publication/GC races, and expired-lease metrics passed against
+disposable PostgreSQL. The architecture
 extraction additionally passed 35 focused real PostgreSQL regressions. The earlier
 PostgreSQL lane/shutdown tests (2), cleanup test (1), checker GC test (1), and
 session-lock regression against both direct PostgreSQL and PgBouncer (2 runs)

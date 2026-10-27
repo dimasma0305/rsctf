@@ -155,3 +155,74 @@ async fn shutdown_releases_only_unstarted_current_claim_and_preserves_cancellati
     .is_none());
     db.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL; run database regressions serially"]
+async fn retry_counter_counts_committed_expired_claims_and_keeps_stale_writes_fenced() {
+    use crate::services::observability_state::RECLAIMED;
+    use std::sync::atomic::Ordering::Relaxed;
+    let db = fixture().await;
+    let before = RECLAIMED[7].load(Relaxed); // SecurityDerivation, a fixed label.
+    let id = queue(&db.pool, ControlJobKind::SecurityDerivation, 1).await;
+    let first = claim_next(
+        &db.pool,
+        ControlJobKind::SecurityDerivation,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(RECLAIMED[7].load(Relaxed), before);
+    assert!(claim_next(
+        &db.pool,
+        ControlJobKind::SecurityDerivation,
+        Duration::from_secs(30)
+    )
+    .await
+    .unwrap()
+    .is_none());
+    sqlx::query(r#"UPDATE "ControlPlaneJobs" SET lease_expires_at_utc = clock_timestamp() - interval '1 second' WHERE id = $1"#)
+        .bind(id).execute(&db.pool).await.unwrap();
+    let second = claim_next(
+        &db.pool,
+        ControlJobKind::SecurityDerivation,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(RECLAIMED[7].load(Relaxed), before + 1);
+    assert!(!complete(
+        &db.pool,
+        id,
+        first.lease_token,
+        first.input_revision,
+        serde_json::json!({})
+    )
+    .await
+    .unwrap());
+    assert!(release_unstarted(&db.pool, &second).await.unwrap());
+    let third = claim_next(
+        &db.pool,
+        ControlJobKind::SecurityDerivation,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        RECLAIMED[7].load(Relaxed),
+        before + 1,
+        "re-admitting unstarted work is not expired-lease recovery"
+    );
+    assert!(complete(
+        &db.pool,
+        id,
+        third.lease_token,
+        third.input_revision,
+        serde_json::json!({})
+    )
+    .await
+    .unwrap());
+    db.close().await;
+}

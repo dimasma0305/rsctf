@@ -758,7 +758,7 @@ async fn claim_matching(
     let lease_seconds = i64::try_from(lease.as_secs().clamp(5, 900)).unwrap_or(900);
     let sql = format!(
         r#"WITH candidate AS (
-               SELECT candidate.id FROM "ControlPlaneJobs" candidate
+               SELECT candidate.id, candidate.status AS previous_status FROM "ControlPlaneJobs" candidate
                 WHERE candidate.kind = ANY($1)
                   AND (status = 0 OR (
                        status = 1 AND lease_expires_at_utc <= clock_timestamp()
@@ -775,10 +775,16 @@ async fn claim_matching(
                   lease_expires_at_utc = clock_timestamp() + make_interval(secs => $3),
                   updated_at_utc = clock_timestamp()
              FROM candidate WHERE job.id = candidate.id
-         RETURNING {JOB_COLUMNS_QUALIFIED}"#
+         RETURNING {JOB_COLUMNS_QUALIFIED}, candidate.previous_status = 1 AS reclaimed"#
     );
+    #[derive(FromRow)]
+    struct ClaimRow {
+        #[sqlx(flatten)]
+        job: JobRow,
+        reclaimed: bool,
+    }
     let requested: Vec<&str> = requested_kinds.iter().map(|kind| kind.as_str()).collect();
-    let row = sqlx::query_as::<_, JobRow>(&sql)
+    let row = sqlx::query_as::<_, ClaimRow>(&sql)
         .bind(&requested)
         .bind(lease_token)
         .bind(lease_seconds as f64)
@@ -788,6 +794,10 @@ async fn claim_matching(
         .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
     row.map(|row| {
+        if row.reclaimed {
+            crate::services::observability_state::record_control_job_reclaim(&row.job.kind);
+        }
+        let row = row.job;
         let input = row.input.clone();
         let input_revision = row.input_revision;
         let lease_token = row

@@ -5,6 +5,8 @@ its health endpoints. Set `RSCTF_METRICS_TOKEN` to a randomly generated token of
 at least 32 characters and configure the scraper's Bearer authorization header.
 Missing, short, or incorrect tokens receive HTTP 401. Keep this route restricted
 to the monitoring network at ingress; health probes remain independent.
+The token is captured when the HTTP router starts; restart the replica when
+rotating it. Scrapes do not reread process environment or acquire database connections.
 
 Scrape each replica directly. Set bounded target labels such as `role`, `instance`,
 and `installation` in Prometheus service discovery. Scraping a load balancer hides
@@ -25,6 +27,11 @@ The exporter does not query PostgreSQL or allocate a second metrics registry.
   Queue delay measures time from durable creation to execution, including prior
   attempts; execution timing includes failed and cancelled futures. A restart
   resets process counters but does not erase durable job history.
+- `control_job_reclaimed_total{kind}` counts committed claims of expired running
+  leases, using the same eight fixed job kinds. It excludes first claims, busy
+  polls, and work returned to the queue before execution during graceful drain.
+  Sum its `rate()` across replicas; unlike durable backlog gauges, it is a process
+  counter. A rising rate indicates recovery attempts, not successful completion.
 - `transaction_acquire_seconds` includes pool waiting and the `BEGIN` handshake
   for the shared cancellation-safe transaction helpers. It does not represent
   every standalone query's checkout time. Pool size and idle connections are
