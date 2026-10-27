@@ -798,7 +798,13 @@ jobs:
           # The supported all-in-one role owns the reconciler and round engine.
           # Its checker sandbox preflight requires root privilege and iptables;
           # the application itself drops checker children into its UID pool.
-          sudo --preserve-env env RSCTF_ROLE=all RSCTF_MIGRATE=0 \
+          # sudo-rs on newer runners ignores preservation of the entire env.
+          # Pass only the application configuration explicitly, with exact values.
+          server_env=()
+          for name in "${!RSCTF_@}"; do
+            server_env+=("$name=${!name}")
+          done
+          sudo env "${server_env[@]}" RSCTF_ROLE=all RSCTF_MIGRATE=0 \
             RSCTF_STORAGE_ROOT="$storage_root" \
             /usr/local/bin/rsctf-cheat-acceptance >"$server_log" 2>&1 &
           server_pid=$!
@@ -947,7 +953,7 @@ jobs:
             echo "::error::Container publication must use native architecture runners, not QEMU."
             exit 1
           fi
-          test "$(grep -c 'docker/github-builder/.github/workflows/build.yml@58cb9f5b71b1836d6f690c1e95effdeb9b98cb8a' "$workflow")" -eq 2
+          test "$(grep -c 'docker/github-builder/.github/workflows/build.yml@4345a1cea1e4cfb65c8a5e2b1b80f9e630068827' "$workflow")" -eq 2
           grep -q '^  workflow_dispatch:$' "$workflow"
           if grep -q '^    branches:' "$workflow" || grep -q '^  pull_request:' "$workflow"; then
             echo "::error::Native container builds must remain manual; normal pushes and pull requests use application CI only."
