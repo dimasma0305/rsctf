@@ -596,8 +596,9 @@ when that exact acknowledgement belongs to the current non-draining lease.
 
 The network owner refreshes a kernel `ipset` every three seconds. The set of
 capture-required endpoints persists, while each live acknowledgement has a
-15-second kernel timeout. A stopped userspace watchdog therefore cannot keep a
-route open: the live member expires in the kernel. Graceful shutdown marks the
+15-second kernel timeout, measured from the command's application in the kernel.
+When refreshes stop, the existing live member expires without another userspace
+decision. Graceful shutdown marks the
 owner draining and waits for the resulting network generation before stopping
 capture threads or releasing ownership. A replacement starts with a new epoch,
 fences stale acknowledgements, starts every desired capture, and only then
@@ -611,19 +612,26 @@ lease could still refresh a 15-second kernel member. The required worker then
 exits and releases its advisory session so process supervision can replace it;
 there is no unbounded drain state that can retain capture ownership.
 Forced cancellation also aborts the detached heartbeat and signals every pcap
-thread. If the surrounding network namespace somehow survives until supervisor
-shutdown, the old lease plus final kernel member has a 27-second worst case;
-the implementation's 28-second safety window includes one second of margin.
+thread. The 28-second window covers the old 12-second lease plus its final
+15-second live member, with one second of margin, when refresh commands complete
+within their execution budget. It is not an absolute deadline tied to the
+original ownership proof: an arbitrarily paused command can apply a relative
+timeout late. That failure mode still needs an independently enforced kernel
+fence and live traffic regression coverage.
 
-For a complete `all`/`control`/`network` container or Pod crash, the WireGuard
-socket and its isolated network namespace disappear with that workload. On a
-bare-host service where the kernel namespace survives the process, the
-installed rules remain fail-closed after the last live-set member times out (at
-most 15 seconds after its final refresh). PostgreSQL expiry plus the
-three-second watchdog provides an additional database-policy cutoff while the
-network owner is alive. These guarantees cover the managed VPN and internal
-A&D service network; directly publishing challenge-container ports outside
-that boundary bypasses rsctf policy and is unsupported for mandatory capture.
+Deleting the complete isolated network namespace removes its WireGuard device
+and firewall state. Exiting the RSCTF process alone does not establish that the
+namespace was deleted: a container runtime, Pod sandbox, sidecar sharing the
+namespace, or a host-network deployment can retain it. The Compose event sensor
+explicitly shares the owner's network namespace. Existing capture-required live
+members expire 15 seconds after their final applied refresh; this mechanism
+does not fence every VPN route. PostgreSQL expiry and the watchdog provide an
+additional policy cutoff while the network owner is running. Test namespace
+teardown, paused refresh commands, and replacement traffic on the actual
+deployment before assigning a route-recovery bound. The process recovery CI job
+has VPN disabled and cannot establish that bound. Directly published challenge
+ports outside the managed VPN/internal A&D network bypass this policy and are
+unsupported for mandatory capture.
 
 PostgreSQL generations are the acknowledgement boundary; notifications only
 reduce wake-up latency. The owner polls pending generations every five seconds

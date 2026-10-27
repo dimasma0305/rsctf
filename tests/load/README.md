@@ -17,7 +17,10 @@ regressions. `architecture-runtime.mjs` then starts real `all`, `control`, and
 cooperating `engine`/`network`/`web` processes. It checks authenticated metrics,
 exact `healthz=ok`, readiness withdrawal during SIGTERM, clean exit, duplicate
 network-owner rejection, and recovery after terminating the exact PostgreSQL
-advisory-lock session. Logs and a JSON report retain timing and binary/source
+advisory-lock session. It also pauses the replacement with `SIGSTOP` for twelve
+seconds while its PostgreSQL session still holds the lock. On `SIGCONT`, expired
+ownership proof must prevent readiness and terminate that process; a fresh
+replacement must become ready. Logs and a JSON report retain timing and binary/source
 identity for seven days. These are correctness and recovery measurements on
 debug binaries, not performance comparisons.
 

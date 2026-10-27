@@ -45,8 +45,45 @@ seconds to replacement readiness; SIGTERM drain was approximately 5.01 seconds.
 The fixture disables VPN and uses no runtime backend, so this does not establish
 live route fencing or worker-workload recovery. The complete CI run failed on
 two stale database test fixtures. Both were reproduced and corrected, then
-included in a passing local suite of 463 database regressions. A fresh complete
-CI gate is still required; this job's success is not release approval.
+included in a passing local suite of 463 database regressions. The subsequent
+complete CI run at `5013d417` passed, as recorded below. The architecture backlog
+and release/deployment gates remain open.
+
+## Network-owner process recovery on GitHub CI — 27 October 2026
+
+The [architecture runtime job](https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122243133280)
+passed on Ubuntu 24.04, kernel `6.17.0-1022-azure`, at source
+`5013d417fceebb1a5599068d28adbd634c85ca29`. The debug server and tests came from
+the same run's successful Rust build. Real Landlock/seccomp confinement, eleven
+selected PostgreSQL/Redis/Docker recovery tests, and the process harness passed.
+The [unaltered runtime report](results/architecture-runtime-ci-5013d417.json)
+records server SHA-256
+`f958027b4fcf5aa6a5763c244673e5a2e49ce7df4f40aa27f56b606034e11339`.
+
+All 17 jobs in the full workflow passed, including its required-check aggregate:
+Rust build/tests, strict Clippy, 463 selected database regressions, frontend and
+Chromium checks, Linux/Windows workers, BYOC, security, documentation, Helm,
+Kubernetes callback isolation, and anti-cheat acceptance. The library suite
+passed 1,809 tests; the default suite's 473 ignored tests are tracked separately
+from the selected environment-backed tests. Combined Rust line coverage was
+60.06%. [Machine-readable CI evidence](results/architecture-ci-5013d417.json)
+records job identities, scope, counts, and the runtime artifact digest.
+
+| Fault or lifecycle event | Observed result |
+| --- | --- |
+| Duplicate network owner | Rejected before readiness |
+| Exact ownership session terminated | Owner exited in 775.65 ms; replacement ready in 989.18 ms from termination |
+| Owner paused for twelve seconds, with advisory lock retained | On resume, readiness refused; stale owner exited in 7.51 ms |
+| Replacement following expired proof | Ready in 217.91 ms from old-owner resume |
+| SIGTERM for all/control/web/engine/network | Readiness withdrawn before HTTP closed; clean drain in 5.01–5.02 seconds |
+
+The pause test verifies that a still-connected PostgreSQL session cannot revive
+expired process-local proof. Measurements are single correctness runs on debug
+binaries, not a controlled performance comparison or a production recovery SLO.
+The fixture uses `backend=none` and disables VPN; live kernel-route withdrawal,
+external agent reconnection, and interrupted runtime workloads remain separate
+validation tasks. In particular, process exit does not imply destruction of a
+network namespace retained by a Pod sandbox or sidecar.
 
 ## Initial architecture API and exporter — 27 October 2026
 

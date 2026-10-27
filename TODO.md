@@ -308,8 +308,16 @@ Implemented design to preserve when evaluating changes:
     readiness withdrawal and five fixed-label recovery gauges locally. Real
     PostgreSQL tests cover explicit unlock, disconnect, continued ownership
     during drain and readiness requests waiting across release/shutdown.
-  - [ ] Run the new GitHub process-pause regression beyond proof expiry.
-    Kernel route fencing and external-session reconnection remain separate gates.
+  - [x] Run the GitHub process-pause regression beyond proof expiry. On commit
+    `5013d417`, a twelve-second SIGSTOP retained the PostgreSQL ownership lock;
+    after SIGCONT the stale owner refused readiness and exited in 7.51 ms.
+    A fresh replacement became ready in 217.91 ms from resume. Session loss
+    separately produced exit in 775.65 ms and replacement readiness in 989.18 ms.
+    These single-run debug-binary measurements are not recovery-time guarantees.
+    [Retained report](tests/load/results/architecture-runtime-ci-5013d417.json).
+  - [ ] Complete kernel route fencing and external-session reconnection tests.
+    The CI process fixture disables VPN. Shared network namespaces and delayed
+    relative-timeout commands need separate live-traffic validation.
 
 - [x] **ARCH-12: Add worker-certificate expiry visibility and safe renewal.**
   Worker certificates last 90 days and automatic renewal is absent. Add expiry
@@ -415,6 +423,17 @@ lint, 812 tests, and the production build passed. The architecture checker and i
 negative regression passed. These are correctness checks; the separately recorded
 18-run cache component benchmark does not establish whole-platform performance
 or deployment completion.
+
+GitHub checkpoint (2026-10-27): the [complete workflow at `5013d417`](https://github.com/dimasma0305/rsctf/actions/runs/40518627351)
+passed all 17 jobs, including the required-check aggregate. It verified the
+all-target Rust build/tests, Clippy, 463 selected database regressions, frontend
+and Chromium checks, Linux/Windows workers, BYOC, security, Helm, Kubernetes
+callback isolation, anti-cheat acceptance and real privileged architecture
+recovery. Rust line coverage was 60.06%. [CI evidence](tests/load/results/architecture-ci-5013d417.json)
+retains the exact source revision and job identities. This resolves the local
+kernel's sandbox-testing limitation for those checks; live VPN/agent/runtime
+scenarios still listed above remain open. No release or production deployment
+has been performed for this branch.
 
 The intended flow for slow operations is: HTTP authorization → application service
 → durable PostgreSQL job and operation ID → supervised executor eligible for that
