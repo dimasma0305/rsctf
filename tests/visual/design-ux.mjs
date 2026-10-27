@@ -46,7 +46,12 @@ const wait = async (expression) => {
     if (await evaluate(`Boolean(document.body && (${expression}))`)) return;
     await pause(100);
   }
-  throw new Error("Timed out: " + expression);
+  const active = await evaluate(
+    `({tag:document.activeElement?.tagName,name:document.activeElement?.textContent?.slice(0,120),owner:document.activeElement?.closest('[data-user-actions]')?.getAttribute('data-user-actions')})`,
+  );
+  throw new Error(
+    "Timed out: " + expression + "; active=" + JSON.stringify(active),
+  );
 };
 const visible = `element => element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden'`;
 const find = (selector) =>
@@ -72,6 +77,22 @@ const press = async (key) => {
       ],
       ...(key === "Enter" && type === "keyDown" ? { text: "\r" } : {}),
     });
+};
+// Wait for the specific popup to own focus before sending keyboard events.
+// DOM insertion precedes Mantine's focus trap, and an exiting menu may still
+// contain matching labels while another entity's menu is opening.
+const openUserMenu = async (group) => {
+  const trigger = group + " button:last-child";
+  await click(trigger);
+  await wait(
+    `(() => { const target = ${find(trigger)}; const menu = document.getElementById(target?.getAttribute('aria-controls')); return target?.getAttribute('aria-expanded') === 'true' && menu?.contains(document.activeElement); })()`,
+  );
+  const id = await evaluate(`${find(trigger)}.getAttribute('aria-controls')`);
+  return `[id="${id}"]`;
+};
+const chooseUserAction = async (group, label) => {
+  const menu = await openUserMenu(group);
+  await clickText(menu + " [role=menuitem]", label);
 };
 const snapshot = async (name) => {
   const shot = await cdp.send("Page.captureScreenshot", {
@@ -142,6 +163,12 @@ const check = async (name, action) => {
   } catch (error) {
     entry.status = "failed";
     entry.error = error.message;
+    entry.diagnostics = {
+      writes: state?.writes,
+      active: await evaluate(
+        `({name:document.activeElement?.textContent, owner:document.activeElement?.closest('[data-user-actions]')?.getAttribute('data-user-actions'), menus:[...document.querySelectorAll('[role=menu]')].map(menu=>({id:menu.id,opacity:getComputedStyle(menu).opacity}))})`,
+      ).catch(() => null),
+    };
     await snapshot(entry.name + "-failed").catch(() => {});
     console.error("FAIL", entry.name, error.message);
   } finally {
@@ -521,8 +548,7 @@ try {
       const id = state.users[1].id,
         group = `[data-user-actions="${id}"]`;
       assert.equal(state.writes.length, 0);
-      await click(group + " button:last-child");
-      await clickText("[role=menuitem]", "Send password setup link");
+      await chooseUserAction(group, "Send password setup link");
       await wait('document.querySelector("[role=dialog]")');
       assert.equal(
         state.writes.length,
@@ -538,8 +564,7 @@ try {
       );
       state.allowWrites = true;
       state.holdWrites = true;
-      await click(group + " button:last-child");
-      await clickText("[role=menuitem]", "Send password setup link");
+      await chooseUserAction(group, "Send password setup link");
       await clickText("[role=dialog] button", "Confirm");
       await pause(200);
       assert.equal(state.writes.length, 1);
@@ -558,23 +583,21 @@ try {
     });
     await check("user-menu-guards-and-retry-owner", async () => {
       await visit("/admin/users");
-      await click(
-        `[data-user-actions="${state.users[0].id}"] button:last-child`,
-      );
+      const self = `[data-user-actions="${state.users[0].id}"]`;
+      const selfMenu = await openUserMenu(self);
       assert.equal(
         await evaluate(
-          `${find("[role=menuitem][data-disabled]")}.textContent.trim()`,
+          `${find(selfMenu + " [role=menuitem][data-disabled]")}.textContent.trim()`,
         ),
         "Delete user",
       );
       await press("Escape");
       await wait(
-        `${find(`[data-user-actions="${state.users[0].id}"] button:last-child`)} === document.activeElement`,
+        `!document.querySelector(${JSON.stringify(selfMenu)}) && ${find(self + " button:last-child")}?.getAttribute('aria-expanded') === 'false' && ${find(self + " button:last-child")} === document.activeElement`,
       );
       const group = `[data-user-actions="${state.users[1].id}"]`;
       const send = async () => {
-        await click(group + " button:last-child");
-        await clickText("[role=menuitem]", "Send password setup link");
+        await chooseUserAction(group, "Send password setup link");
         await clickText("[role=dialog] button", "Confirm");
         await wait('!document.querySelector("[role=dialog]")');
         await wait(
@@ -585,6 +608,11 @@ try {
       state.mutationStatus = 503;
       await send();
       assert.equal(state.writes.length, 1);
+      assert.equal(
+        state.writes[0].path,
+        `/api/admin/users/${state.users[1].id}/password-email`,
+        "the selected menu must belong to the intended account",
+      );
       state.mutationStatus = 200;
       await send();
       assert.equal(state.writes.length, 2);
@@ -724,9 +752,7 @@ try {
         await press("Escape");
         await wait('!document.querySelector("[role=dialog]")');
         await visit("/admin/users", options);
-        await click(
-          `[data-user-actions="${state.users[1].id}"] button:last-child`,
-        );
+        await openUserMenu(`[data-user-actions="${state.users[1].id}"]`);
         await audit(language + "-user-menu");
         await press("Escape");
       });
