@@ -49,7 +49,9 @@ First administrator setup (required only while the user table is empty):
 Database connection budget for this release:
   {{ .Values.replicaCount }} x {{ .Values.config.dbMaxConnections }} = {{ mul .Values.replicaCount .Values.config.dbMaxConnections }} maximum application connections
 Budget all role releases together and leave headroom for migrations, operators,
-and PostgreSQL maintenance; use PgBouncer when direct pools would exceed it.
+and PostgreSQL maintenance. PgBouncer requires pool_mode=session and
+RSCTF_DB_POOL_MODE=session; transaction/statement pooling cannot preserve RSCTF
+session advisory locks. Session pooling does not remove the concurrent budget.
 {{- if .Values.workerPlane.enabled }}
 
 Trusted worker listener:

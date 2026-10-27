@@ -11,6 +11,7 @@ async fn begin_sqlx_transaction_with(
 ) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
     let pool = pool.clone();
     tokio::spawn(async move {
+        let _timer = crate::services::observability::TRANSACTION_ACQUIRE.timer();
         match statement {
             Some(statement) => pool.begin_with(statement).await,
             None => pool.begin().await,
@@ -38,9 +39,12 @@ pub(crate) async fn begin_seaorm_transaction(
     database: &DatabaseConnection,
 ) -> Result<DatabaseTransaction, DbErr> {
     let database = database.clone();
-    tokio::spawn(async move { database.begin().await })
-        .await
-        .map_err(|error| DbErr::Custom(format!("transaction start task failed: {error}")))?
+    tokio::spawn(async move {
+        let _timer = crate::services::observability::TRANSACTION_ACQUIRE.timer();
+        database.begin().await
+    })
+    .await
+    .map_err(|error| DbErr::Custom(format!("transaction start task failed: {error}")))?
 }
 
 /// Start a consistent read snapshot with its transaction characteristics set

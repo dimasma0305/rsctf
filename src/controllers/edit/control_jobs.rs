@@ -20,13 +20,7 @@ pub(crate) fn operation_id(headers: &HeaderMap) -> AppResult<Uuid> {
     Uuid::parse_str(raw).map_err(|_| AppError::bad_request("Idempotency-Key must be a UUID"))
 }
 
-pub(crate) fn fingerprint(value: &impl serde::Serialize) -> AppResult<String> {
-    let bytes = serde_json::to_vec(value)
-        .map_err(|error| AppError::internal(format!("control-job fingerprint failed: {error}")))?;
-    let encoded = String::from_utf8(bytes)
-        .map_err(|_| AppError::internal("control-job input was not UTF-8 JSON"))?;
-    Ok(crate::utils::codec::sha256_str(&encoded))
-}
+pub(crate) use crate::services::control_jobs::fingerprint;
 
 async fn authorize_job(
     st: &SharedState,

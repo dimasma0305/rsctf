@@ -5,9 +5,8 @@
 //! an exact path as unreachable, then takes that revision's cross-process
 //! execution lock before deleting a bounded batch under the publication lock.
 
-use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use nix::errno::Errno;
@@ -16,6 +15,9 @@ use nix::fcntl::{Flock, FlockArg};
 use crate::app_state::SharedState;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::single_flight::PgAdvisoryLock;
+
+#[path = "checker_gc_scan.rs"]
+mod discovery;
 
 const CHECKER_GC_LOCK_KEY: &str = "checker-artifacts:publication-gc";
 const CHECKER_GC_GRACE: Duration = Duration::from_secs(15 * 60);
@@ -28,15 +30,9 @@ const REACHABLE_SQL: &str = r#"
          WHERE ad_checker_image = $1
     )
 "#;
-const REACHABLE_PATHS_SQL: &str = r#"
-    SELECT ad_checker_image
-      FROM "GameChallenges"
-     WHERE ad_checker_image IS NOT NULL
-       AND ad_checker_image <> ''
-"#;
 
 /// Publication and activation paths must hold this guard from before the
-/// checker directory is prepared until its exact path is committed in
+/// checker directory is published until its exact path is committed in
 /// `GameChallenges`. The collector takes the same guard, closing the otherwise
 /// possible check-then-delete race across replicas.
 pub(crate) async fn acquire_checker_artifact_guard(
@@ -100,238 +96,153 @@ fn old_enough(modified: SystemTime, now: SystemTime, grace: Duration) -> bool {
     now.duration_since(modified).is_ok_and(|age| age >= grace)
 }
 
-async fn directory_children(path: &Path) -> AppResult<Vec<PathBuf>> {
-    let mut reader = tokio::fs::read_dir(path).await.map_err(|error| {
-        AppError::internal(format!("checker GC read {}: {error}", path.display()))
-    })?;
-    let mut paths = Vec::new();
-    while let Some(entry) = reader
-        .next_entry()
-        .await
-        .map_err(|error| AppError::internal(format!("checker GC read entry: {error}")))?
-    {
-        let file_type = entry
-            .file_type()
-            .await
-            .map_err(|error| AppError::internal(format!("checker GC stat: {error}")))?;
-        if file_type.is_dir() && !file_type.is_symlink() {
-            paths.push(entry.path());
-        }
-    }
-    paths.sort_unstable();
-    Ok(paths)
-}
-
-async fn collect_candidates(
-    storage_root: &Path,
-    grace: Duration,
-    limit: usize,
-    reachable: &HashSet<String>,
-) -> AppResult<(PathBuf, Vec<PathBuf>)> {
-    let checkers = storage_root.join("checkers");
-    let metadata = match tokio::fs::symlink_metadata(&checkers).await {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((checkers, Vec::new()));
-        }
-        Err(error) => {
-            return Err(AppError::internal(format!(
-                "checker GC stat {}: {error}",
-                checkers.display()
-            )));
-        }
-    };
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(AppError::internal(
-            "checker GC root must be a real directory",
-        ));
-    }
-    let canonical_root = tokio::fs::canonicalize(&checkers)
-        .await
-        .map_err(|error| AppError::internal(format!("checker GC canonical root: {error}")))?;
-    let now = SystemTime::now();
-    let mut candidates = Vec::new();
-    'games: for game in directory_children(&checkers).await? {
-        for challenge in directory_children(&game).await? {
-            let revisions = challenge.join("revisions");
-            let revisions_metadata = match tokio::fs::symlink_metadata(&revisions).await {
-                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => metadata,
-                Ok(_) => continue,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(AppError::internal(format!(
-                        "checker GC stat {}: {error}",
-                        revisions.display()
-                    )));
-                }
-            };
-            let _ = revisions_metadata;
-            let canonical_revisions =
-                tokio::fs::canonicalize(&revisions).await.map_err(|error| {
-                    AppError::internal(format!("checker GC canonical path: {error}"))
-                })?;
-            if !canonical_revisions.starts_with(&canonical_root) {
-                continue;
-            }
-            for candidate in directory_children(&revisions).await? {
-                let managed = candidate
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(revision_name_is_managed);
-                if !managed {
-                    continue;
-                }
-                let canonical_candidate =
-                    tokio::fs::canonicalize(&candidate).await.map_err(|error| {
-                        AppError::internal(format!("checker GC canonical path: {error}"))
-                    })?;
-                if canonical_candidate.parent() != Some(canonical_revisions.as_path())
-                    || !canonical_candidate.starts_with(&canonical_root)
-                {
-                    continue;
-                }
-                let marker = candidate.join(UNREACHABLE_MARKER_FILE);
-                if reachable.contains(candidate.to_string_lossy().as_ref()) {
-                    if let Err(error) = tokio::fs::remove_file(&marker).await {
-                        if error.kind() != std::io::ErrorKind::NotFound {
-                            return Err(AppError::internal(format!(
-                                "checker GC clear marker {}: {error}",
-                                marker.display()
-                            )));
-                        }
-                    }
-                    continue;
-                }
-                let marker_metadata = match tokio::fs::symlink_metadata(&marker).await {
-                    Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-                        metadata
-                    }
-                    Ok(_) => continue,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        match tokio::fs::OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&marker)
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                            Err(error) => {
-                                return Err(AppError::internal(format!(
-                                    "checker GC mark {}: {error}",
-                                    marker.display()
-                                )));
-                            }
-                        }
-                        // The safety grace begins when unreachability is first
-                        // observed, never at the revision's publication time.
-                        continue;
-                    }
-                    Err(error) => {
-                        return Err(AppError::internal(format!(
-                            "checker GC stat marker {}: {error}",
-                            marker.display()
-                        )));
-                    }
-                };
-                let unreachable_since = marker_metadata.modified().map_err(|error| {
-                    AppError::internal(format!("checker GC marker time: {error}"))
-                })?;
-                if !old_enough(unreachable_since, now, grace) {
-                    continue;
-                }
-                candidates.push(candidate);
-                if candidates.len() >= limit {
-                    break 'games;
-                }
-            }
-        }
-    }
-    Ok((canonical_root, candidates))
-}
-
-async fn collect_stale_checker_revisions_at(
+async fn collect_with_cursor(
     pool: &sqlx::PgPool,
     storage_root: &Path,
     grace: Duration,
     limit: usize,
+    cursor: &mut discovery::Discovery,
 ) -> AppResult<u64> {
-    let mut guard = acquire_checker_artifact_guard(pool).await?;
-    let reachable = sqlx::query_scalar::<_, String>(REACHABLE_PATHS_SQL)
-        .fetch_all(&mut **guard.transaction_mut())
+    let candidates = cursor
+        .scan(limit)
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .into_iter()
-        .collect::<HashSet<_>>();
-    let (canonical_root, candidates) =
-        collect_candidates(storage_root, grace, limit, &reachable).await?;
+        .map_err(|error| AppError::internal(format!("checker GC discovery: {error}")))?;
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    let canonical_root = tokio::fs::canonicalize(storage_root.join("checkers"))
+        .await
+        .map_err(|error| AppError::internal(format!("checker GC root: {error}")))?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let mut removed = 0;
     for candidate in candidates {
-        let database_path = candidate.to_string_lossy();
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        let mut guard = acquire_checker_artifact_guard(pool).await?;
         let reachable: bool = sqlx::query_scalar(REACHABLE_SQL)
-            .bind(database_path.as_ref())
+            .bind(candidate.to_string_lossy().as_ref())
             .fetch_one(&mut **guard.transaction_mut())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
+        let marker = candidate.join(UNREACHABLE_MARKER_FILE);
         if reachable {
-            let _ = tokio::fs::remove_file(candidate.join(UNREACHABLE_MARKER_FILE)).await;
+            let _ = tokio::fs::remove_file(marker).await;
+            guard.release().await?;
             continue;
         }
-
-        // Revalidate immediately before deletion. A rename or symlink swap
-        // between discovery and sweep fails closed.
         let metadata = match tokio::fs::symlink_metadata(&candidate).await {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(AppError::internal(format!("checker GC restat: {error}")));
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                guard.release().await?;
+                continue;
             }
+            Err(error) => return Err(AppError::internal(format!("checker GC restat: {error}"))),
         };
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            guard.release().await?;
             continue;
         }
         let canonical_candidate = tokio::fs::canonicalize(&candidate)
             .await
             .map_err(|error| AppError::internal(format!("checker GC revalidate: {error}")))?;
         if !canonical_candidate.starts_with(&canonical_root) {
+            guard.release().await?;
             continue;
         }
-        let Some(_execution_fence) = try_acquire_checker_gc_lease(&candidate).map_err(|error| {
-            AppError::internal(format!(
-                "checker GC execution fence {}: {error}",
-                candidate.display()
-            ))
-        })?
+        let unreachable_since = match tokio::fs::symlink_metadata(&marker).await {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata
+                .modified()
+                .map_err(|error| AppError::internal(error.to_string()))?,
+            Ok(_) => {
+                guard.release().await?;
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let created = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&marker)
+                    .await;
+                if let Err(error) = created {
+                    if error.kind() != std::io::ErrorKind::AlreadyExists {
+                        return Err(AppError::internal(format!("checker GC mark: {error}")));
+                    }
+                }
+                guard.release().await?;
+                continue;
+            }
+            Err(error) => return Err(AppError::internal(format!("checker GC marker: {error}"))),
+        };
+        if !old_enough(unreachable_since, SystemTime::now(), grace) {
+            guard.release().await?;
+            continue;
+        }
+        let Some(_execution_fence) = try_acquire_checker_gc_lease(&candidate)
+            .map_err(|error| AppError::internal(format!("checker GC execution fence: {error}")))?
         else {
+            guard.release().await?;
             continue;
         };
-        tokio::fs::remove_dir_all(&candidate)
+        // Atomically withdraw the unreachable name while publication is fenced,
+        // then delete outside the database lock. GC also recognizes this owned
+        // staging name if the process crashes before deletion completes.
+        let tombstone = candidate.with_file_name(format!(
+            ".{}.staging-{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::rename(&candidate, &tombstone)
             .await
-            .map_err(|error| {
-                AppError::internal(format!(
-                    "checker GC remove {}: {error}",
-                    candidate.display()
-                ))
-            })?;
+            .map_err(|error| AppError::internal(format!("checker GC withdraw: {error}")))?;
+        guard.release().await?;
+        tokio::fs::remove_dir_all(tombstone)
+            .await
+            .map_err(|error| AppError::internal(format!("checker GC remove: {error}")))?;
         removed += 1;
     }
-    guard
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(removed)
 }
 
-/// Sweep a bounded batch of unreachable immutable checker revisions older than
-/// the safety grace. Called only by singleton deployment maintenance.
-pub async fn collect_stale_checker_revisions(state: &SharedState) -> AppResult<u64> {
-    collect_stale_checker_revisions_at(
-        state.pg(),
-        Path::new(&state.config.storage_root),
-        CHECKER_GC_GRACE,
-        CHECKER_GC_BATCH,
+#[cfg(test)]
+async fn collect_stale_checker_revisions_at(
+    pool: &sqlx::PgPool,
+    storage_root: &Path,
+    grace: Duration,
+    limit: usize,
+) -> AppResult<u64> {
+    collect_with_cursor(
+        pool,
+        storage_root,
+        grace,
+        limit,
+        &mut discovery::Discovery::new(storage_root),
     )
     .await
+}
+
+/// The process retains only four directory iterators. Every pass bounds both
+/// discovery and deletion, including catalogs consisting entirely of live paths.
+pub async fn collect_stale_checker_revisions(state: &SharedState) -> AppResult<u64> {
+    static CURSOR: std::sync::OnceLock<tokio::sync::Mutex<discovery::Discovery>> =
+        std::sync::OnceLock::new();
+    let root = Path::new(&state.config.storage_root);
+    let mut cursor = CURSOR
+        .get_or_init(|| tokio::sync::Mutex::new(discovery::Discovery::new(root)))
+        .lock()
+        .await;
+    let result = collect_with_cursor(
+        state.pg(),
+        root,
+        CHECKER_GC_GRACE,
+        CHECKER_GC_BATCH,
+        &mut cursor,
+    )
+    .await;
+    if result.is_err() {
+        *cursor = discovery::Discovery::new(root);
+    }
+    result
 }
 
 #[cfg(test)]

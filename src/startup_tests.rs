@@ -29,14 +29,15 @@ fn feed_reconciliation_runs_only_on_durable_control_roles() {
 }
 
 #[test]
-fn mail_reconciliation_runs_only_on_the_external_control_owner() {
-    assert!(owns_mail_reconciliation(RuntimeRole::All));
-    assert!(owns_mail_reconciliation(RuntimeRole::Control));
-    assert!(owns_mail_reconciliation(RuntimeRole::Development));
-    assert!(!owns_mail_reconciliation(RuntimeRole::Web));
-    assert!(!owns_mail_reconciliation(RuntimeRole::Engine));
-    assert!(!owns_mail_reconciliation(RuntimeRole::Network));
-    assert!(!owns_mail_reconciliation(RuntimeRole::Migrate));
+fn advanced_topology_owns_mail_and_repository_consumers() {
+    use rsctf::runtime_workers::{for_role, DurableWorker};
+    let engine = for_role(RuntimeRole::Engine);
+    assert!(engine.contains(&DurableWorker::MailDelivery));
+    assert!(engine.contains(&DurableWorker::ChallengeImport));
+    assert!(engine.contains(&DurableWorker::RepositoryPush));
+    assert!(engine.contains(&DurableWorker::RepositoryScan));
+    assert!(for_role(RuntimeRole::Web).is_empty());
+    assert!(for_role(RuntimeRole::Network).is_empty());
 }
 
 #[test]
@@ -46,16 +47,4 @@ fn combined_role_with_migrations_disabled_takes_schema_verification_path() {
     assert!(should_run_migrations(RuntimeRole::Migrate, true));
     assert!(should_run_migrations(RuntimeRole::Development, true));
     assert!(!should_run_migrations(RuntimeRole::Web, false));
-}
-
-#[test]
-fn repository_workers_are_required_in_control_and_development_topologies() {
-    let source = include_str!("main.rs");
-    assert_eq!(
-        source.matches("\"repository binding scheduler\"").count(),
-        2
-    );
-    assert_eq!(source.matches("\"repository push worker\"").count(), 2);
-    assert!(source.contains("services::repo_binding_scheduler::start"));
-    assert!(source.contains("start_repo_push_worker"));
 }

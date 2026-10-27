@@ -5,6 +5,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+mod prometheus;
+pub(crate) use prometheus::render;
+
 const UPPER_BOUNDS_MICROS: [u64; 14] = [
     10,
     100,
@@ -94,6 +97,12 @@ pub(crate) static CHECKER_COMPLETED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CHECKER_TIMED_OUT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CHECKER_NO_RUNWAY: AtomicU64 = AtomicU64::new(0);
 pub(crate) static SCOREBOARD_REBUILD: Histogram = Histogram::new();
+pub(crate) static TRANSACTION_ACQUIRE: Histogram = Histogram::new();
+pub(crate) static CONTROL_JOB_QUEUE_DELAY: Histogram = Histogram::new();
+pub(crate) static CONTROL_JOB_EXECUTION: Histogram = Histogram::new();
+pub(crate) static CONTROL_JOB_STARTED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CONTROL_JOB_FAILED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CONTROL_JOB_SUCCEEDED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

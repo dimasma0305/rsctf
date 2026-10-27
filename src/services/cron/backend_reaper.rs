@@ -12,16 +12,18 @@ use crate::{
 /// Revoke and destroy A&D/KotH backends once their game window closes. These
 /// workloads are not represented by expiring `Containers` rows in every path,
 /// so they need an explicit end-of-game lifecycle sweep.
-pub(super) async fn reap_ended_backends(state: &SharedState) -> AppResult<u64> {
+pub(super) async fn reap_ad_service(state: &SharedState, id: i32) -> AppResult<u64> {
     let services: Vec<(i32, i32, i32)> = sqlx::query_as(
         r#"SELECT service.id, service.participation_id, service.challenge_id
              FROM "AdTeamServices" service
              JOIN "Games" game ON game.id = service.game_id
-            WHERE game.end_time_utc <= now() - ($1 * interval '1 second')
+            WHERE service.id = $2
+              AND game.end_time_utc <= now() - ($1 * interval '1 second')
               AND (service.container_id IS NOT NULL OR service.host <> '')
             ORDER BY service.id"#,
     )
     .bind(super::ADVANCE_BUDGET_SECS as i64)
+    .bind(id)
     .fetch_all(state.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -88,19 +90,25 @@ pub(super) async fn reap_ended_backends(state: &SharedState) -> AppResult<u64> {
         }
         distributed.release().await?;
     }
+    Ok(reaped)
+}
 
+pub(super) async fn reap_koth_target(state: &SharedState, id: i32) -> AppResult<u64> {
     let targets: Vec<(i32, i32)> = sqlx::query_as(
         r#"SELECT target.id, target.challenge_id
              FROM "KothTargets" target
              JOIN "Games" game ON game.id = target.game_id
-            WHERE game.end_time_utc <= now() - ($1 * interval '1 second')
+            WHERE target.id = $2
+              AND game.end_time_utc <= now() - ($1 * interval '1 second')
               AND (target.container_id IS NOT NULL OR target.host <> '')
             ORDER BY target.id"#,
     )
     .bind(super::ADVANCE_BUDGET_SECS as i64)
+    .bind(id)
     .fetch_all(state.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut reaped = 0;
     for (target_id, challenge_id) in targets {
         let key = format!("shared-container:{challenge_id}");
         let _local = crate::utils::single_flight::coalesce(&key).await;

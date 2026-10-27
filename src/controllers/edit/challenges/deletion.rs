@@ -1,4 +1,4 @@
-use sqlx::{Executor, Postgres, Transaction};
+use sqlx::{Postgres, Transaction};
 
 use crate::utils::enums::ChallengeType;
 use crate::utils::error::{AppError, AppResult};
@@ -7,21 +7,9 @@ use crate::utils::single_flight::PgAdvisoryLock;
 
 type DeletionState = (i16, bool, bool, i32, i32, bool, bool, bool);
 
-const PENDING_MUTATION_SQL: &str = r#"SELECT challenge.deletion_pending, game.deletion_pending
-         FROM "GameChallenges" challenge
-         JOIN "Games" game ON game.id = challenge.game_id
-        WHERE challenge.id = $1 AND challenge.game_id = $2
-        FOR SHARE OF challenge, game"#;
-
-fn validate_pending_mutation(state: Option<(bool, bool)>) -> AppResult<()> {
-    match state {
-        None => Err(AppError::not_found("Challenge not found")),
-        Some((true, _)) | Some((_, true)) => {
-            Err(AppError::conflict("Challenge or game is being deleted"))
-        }
-        Some((false, false)) => Ok(()),
-    }
-}
+pub(crate) use crate::services::challenge_mutations::reject_pending_mutation;
+#[cfg(test)]
+use crate::services::challenge_mutations::validate_pending_mutation;
 
 #[cfg(test)]
 pub(super) async fn acquire_definition_lock(
@@ -30,28 +18,6 @@ pub(super) async fn acquire_definition_lock(
     challenge_id: i32,
 ) -> AppResult<PgAdvisoryLock> {
     crate::services::challenge_workloads::acquire_definition_lock(pool, game_id, challenge_id).await
-}
-
-/// Refuse every definition/review mutation once either the challenge or its
-/// parent game has committed a durable hard-delete fence. A caller that passes
-/// a retained transaction also keeps both rows stable until that transaction
-/// commits; pool callers get the same snapshot check without retaining a row
-/// lock across slow or separately-transactional work.
-pub(crate) async fn reject_pending_mutation<'e, E>(
-    executor: E,
-    game_id: i32,
-    challenge_id: i32,
-) -> AppResult<()>
-where
-    E: Executor<'e, Database = Postgres>,
-{
-    let state = sqlx::query_as::<_, (bool, bool)>(PENDING_MUTATION_SQL)
-        .bind(challenge_id)
-        .bind(game_id)
-        .fetch_optional(executor)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    validate_pending_mutation(state)
 }
 
 /// Atomically deny new work and protect immutable Jeopardy scoring history.

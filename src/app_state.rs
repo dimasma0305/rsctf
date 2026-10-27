@@ -46,6 +46,8 @@ pub struct AppState {
     /// Durable worker identities, sessions, placements and desired/observed
     /// workload state. Cheap clones share the application's PostgreSQL pool.
     pub worker_store: crate::services::worker_store::WorkerStore,
+    /// Best-effort wakeup; durable control jobs are always discovered by polling.
+    pub(crate) control_job_wakeup: tokio::sync::Notify,
     /// Sharded, process-local fairness limits for long-lived player proxies.
     pub(crate) proxy_admission: crate::services::proxy_admission::ProxyAdmission,
     /// Bounded active large-attachment streams. The permit is owned by the
@@ -175,6 +177,7 @@ impl AppState {
             worker_issuer,
             workers,
             worker_store,
+            control_job_wakeup: tokio::sync::Notify::new(),
             proxy_admission: crate::services::proxy_admission::ProxyAdmission::new(),
             asset_download_admission: Default::default(),
             monitor_export_admission: Default::default(),

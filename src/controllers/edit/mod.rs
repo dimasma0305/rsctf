@@ -14,8 +14,6 @@ use axum::http::{header, HeaderMap};
 use axum::response::Response;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use bollard::image::{BuildImageOptions, CreateImageOptions};
-use bollard::Docker;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use sea_orm::{
@@ -32,9 +30,9 @@ use crate::controllers::game::ContainerInfoModel;
 use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser};
 use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::{
-    ad_flag, ad_round, ad_team_service, attachment, build_record, challenge_review, container,
-    division, division_challenge_config, flag_context, game, game_challenge, game_instance,
-    game_manager, game_notice, koth_target, local_file, participation, post, team, user,
+    ad_flag, ad_round, ad_team_service, attachment, challenge_review, container, division,
+    division_challenge_config, flag_context, game, game_challenge, game_instance, game_manager,
+    game_notice, koth_target, local_file, participation, post, team, user,
 };
 use crate::services::container::{ContainerResourceLimits, ContainerSpec};
 use crate::utils::codec::sha256_str;
@@ -945,7 +943,7 @@ async fn manager_or_admin(
 // ============================================================================
 
 mod ad;
-mod builds;
+use crate::services::challenge_builds as builds;
 mod challenges;
 pub(crate) use challenges::recover_bulk_delete_jobs;
 mod data_transfer;

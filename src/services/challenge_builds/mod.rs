@@ -1,8 +1,27 @@
-//! edit: image build seam (see edit/mod.rs for the router + shared DTOs/helpers).
-use super::*;
+//! Application service for immutable challenge image builds and durable retries.
+use crate::app_state::SharedState;
+use crate::models::data::{build_record, game_challenge};
+use crate::utils::enums::ChallengeBuildStatus;
+use crate::utils::error::{AppError, AppResult};
+use bollard::{
+    image::{BuildImageOptions, CreateImageOptions},
+    Docker,
+};
+use chrono::{DateTime, Utc};
+use futures::StreamExt;
+use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use uuid::Uuid;
+
+pub(crate) struct BuildOutcome {
+    pub(crate) status: ChallengeBuildStatus,
+    pub(crate) log: Option<String>,
+    pub(crate) image_digest: Option<String>,
+}
 
 mod archive;
+mod docker_io;
 use archive::zip_bytes_to_tar;
+use docker_io::{build_from_context, pull_image};
 mod backfill;
 pub use backfill::backfill_build_records;
 #[cfg(test)]
@@ -54,7 +73,7 @@ fn bulk_retry_status_eligible(status: i16) -> bool {
         || status == ChallengeBuildStatus::MissingDockerfile as i16
 }
 
-pub(super) fn invalidated_build_status(
+pub(crate) fn invalidated_build_status(
     container_image: Option<&str>,
     _original_archive_blob_path: Option<&str>,
     _build_context_subdir: Option<&str>,
@@ -153,9 +172,13 @@ async fn run_challenge_build_with_intent(
     // `started` doubles as the enqueue instant — this port runs the build inline,
     // so it is enqueued and started in the same breath.
     let started = Utc::now();
-    if super::challenges::reject_pending_mutation(st.pg(), challenge.game_id, challenge.id)
-        .await
-        .is_err()
+    if crate::services::challenge_mutations::reject_pending_mutation(
+        st.pg(),
+        challenge.game_id,
+        challenge.id,
+    )
+    .await
+    .is_err()
     {
         return (
             superseded_build_outcome(
@@ -532,12 +555,22 @@ pub(crate) async fn admin_reenqueue_build(
     challenge: &game_challenge::Model,
     attempt: i32,
 ) -> AppResult<Option<build_record::Model>> {
-    super::challenges::reject_pending_mutation(st.pg(), challenge.game_id, challenge.id).await?;
+    crate::services::challenge_mutations::reject_pending_mutation(
+        st.pg(),
+        challenge.game_id,
+        challenge.id,
+    )
+    .await?;
     let (_outcome, record) = run_challenge_build(st, challenge, "AutoRetry", attempt).await;
     // A deletion fence may have committed while slow image work ran. Do not let
     // the admin endpoint turn the resulting absent audit row into a fresh queued
     // record on a challenge that is already draining.
-    super::challenges::reject_pending_mutation(st.pg(), challenge.game_id, challenge.id).await?;
+    crate::services::challenge_mutations::reject_pending_mutation(
+        st.pg(),
+        challenge.game_id,
+        challenge.id,
+    )
+    .await?;
     Ok(record)
 }
 
@@ -842,159 +875,5 @@ pub(crate) async fn build_challenge_image(
                     && !crate::services::challenge_images::shared_docker_daemon_acknowledged());
             pull_image(&docker, &image, portable_required).await
         }
-    }
-}
-
-/// Build the challenge image from a persisted archive. Docker's build endpoint
-/// consumes a *tar* context; this port's packages are zip archives (see
-/// import/export), so a validated ZIP is repacked into a tar. Opaque legacy
-/// blobs are rejected instead of being passed to a privileged Docker daemon.
-async fn build_from_context(
-    docker: &Docker,
-    image: &str,
-    archive: Vec<u8>,
-    context_subdir: Option<&str>,
-) -> BuildOutcome {
-    let tar = match zip_bytes_to_tar(&archive, context_subdir) {
-        Ok(tar) => tar,
-        Err(error) => {
-            return BuildOutcome {
-                status: ChallengeBuildStatus::Failed,
-                log: Some(format!("Rejected unsafe build archive: {error}")),
-                image_digest: None,
-            };
-        }
-    };
-
-    let labels = canonical_managed_image_tag(image)
-        .map(|reference| {
-            std::collections::HashMap::from([
-                (
-                    crate::services::container::IMAGE_SCOPE_LABEL.to_string(),
-                    crate::services::container::docker_installation_scope(),
-                ),
-                (
-                    crate::services::container::IMAGE_REFERENCE_LABEL.to_string(),
-                    reference,
-                ),
-            ])
-        })
-        .unwrap_or_default();
-    let options = BuildImageOptions::<String> {
-        t: image.to_string(),
-        dockerfile: "Dockerfile".to_string(),
-        rm: true,
-        labels,
-        version: ARCHIVE_BUILDER_VERSION,
-        session: Some(uuid::Uuid::new_v4().to_string()),
-        ..Default::default()
-    };
-
-    // `Some(_)` pins the tar param to bollard's concrete `bytes::Bytes`, so
-    // `.into()` resolves `From<Vec<u8>>` without naming the transitive crate.
-    let mut stream = docker.build_image(options, None, Some(tar.into()));
-
-    let mut progress = progress::BuildProgress::default();
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(info) => progress.record(info),
-            Err(e) => {
-                progress.fail(format!("build transport error: {e:?}"));
-                break;
-            }
-        }
-    }
-    let (mut log, failed) = progress.into_parts();
-
-    match failed {
-        Some(err) => {
-            log.push_str(&err);
-            BuildOutcome {
-                status: ChallengeBuildStatus::Failed,
-                log: cap_build_log(log),
-                image_digest: None,
-            }
-        }
-        None => match inspect_immutable_image(docker, image, ImageOperation::ArchiveBuild, false)
-            .await
-        {
-            Ok(reference) => BuildOutcome {
-                status: ChallengeBuildStatus::Success,
-                log: cap_build_log(log),
-                image_digest: Some(reference),
-            },
-            Err(error) => {
-                log.push_str(&format!("\nimmutable image resolution failed: {error}"));
-                BuildOutcome {
-                    status: ChallengeBuildStatus::Failed,
-                    log: cap_build_log(log),
-                    image_digest: None,
-                }
-            }
-        },
-    }
-}
-
-/// Pull the referenced image when there is no local build context, mirroring the
-/// best-effort `create_image` pull in `DockerContainerManager::create`. A
-/// successful pull is a successful "build" of a registry-shipped challenge.
-async fn pull_image(docker: &Docker, image: &str, portable_required: bool) -> BuildOutcome {
-    let options = CreateImageOptions {
-        from_image: image.to_string(),
-        ..Default::default()
-    };
-    let mut stream = docker.create_image(Some(options), None, None);
-
-    let mut log = String::new();
-    let mut failed: Option<String> = None;
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(info) => {
-                if let Some(s) = info.status {
-                    log.push_str(&s);
-                    log.push('\n');
-                }
-                if let Some(err) = info.error {
-                    failed = Some(err);
-                }
-            }
-            Err(e) => {
-                failed = Some(format!("pull transport error: {e}"));
-                break;
-            }
-        }
-    }
-
-    match failed {
-        Some(err) => {
-            log.push_str(&err);
-            BuildOutcome {
-                status: ChallengeBuildStatus::Failed,
-                log: cap_build_log(log),
-                image_digest: None,
-            }
-        }
-        None => match inspect_immutable_image(
-            docker,
-            image,
-            ImageOperation::RegistryPull,
-            portable_required,
-        )
-        .await
-        {
-            Ok(reference) => BuildOutcome {
-                status: ChallengeBuildStatus::Success,
-                log: cap_build_log(log),
-                image_digest: Some(reference),
-            },
-            Err(error) => {
-                log.push_str(&format!("\nimmutable image resolution failed: {error}"));
-                BuildOutcome {
-                    status: ChallengeBuildStatus::Failed,
-                    log: cap_build_log(log),
-                    image_digest: None,
-                }
-            }
-        },
     }
 }

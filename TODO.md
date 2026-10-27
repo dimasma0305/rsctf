@@ -4,6 +4,308 @@ The approved UI/UX and backend rollout is tracked step by step in
 [IMPROVEMENTS.md](IMPROVEMENTS.md). Unchecked historical items below must be verified
 against the current implementation before being treated as confirmed gaps.
 
+## Architecture review and improvement backlog — 2026-10-27
+
+This section consolidates the initial architecture review and image request, the
+first improvement review, and the follow-up review of architectural flows. The
+reference is `main` at `bff5d1a31ae6f964d877fd1fc11cf8328e8e99de`, version
+`0.1.147`. Findings describe that source revision; live production topology was
+not inspected. Implementation and validation are in progress on
+`feat/architecture-backlog`; unchecked parent tasks still have outstanding gates.
+Performance benefits are
+hypotheses until measured with controlled before/after benchmarks.
+
+### Completed review and architecture reference
+
+- [x] Review the frontend, backend composition, authentication, competition domains,
+  realtime feeds, background jobs, database access, caches, storage, challenge
+  execution, network ownership, agents, and release workflows at component level.
+  This was a source review, not an exhaustive correctness or security audit.
+- [x] Produce the [architecture image](docs/public/diagrams/rsctf-architecture-v0.1.147.png)
+  and [editable Mermaid source](docs/public/diagrams/rsctf-architecture-v0.1.147.mmd).
+  Both retain the source revision and the advanced-role worker-wiring caveat.
+
+Implemented design to preserve when evaluating changes:
+
+- React 19/TypeScript with Mantine, routing, internationalization, and bounded,
+  viewer-scoped SWR memory caching. HTTP reads recover from missed live events.
+- One modular Rust/Axum/Tokio application composed through `AppState`. Controllers,
+  competition services, jobs, and hubs are modules within this application.
+- PostgreSQL is authoritative for business data, scores, rounds, durable operations,
+  worker desired state, and evidence. SeaORM and bound SQLx queries share one pool.
+- Bounded local caching, with Redis L2 when configured. Split roles also use Redis
+  for live-event fanout, distributed rate limits, and coordination. Live events are
+  best-effort notifications; durable state and cursor reads provide recovery.
+- Content-addressed local or S3 blob storage, plus working files for repositories,
+  checkers, captures, and snapshots. S3 alone does not remove the shared POSIX
+  filesystem requirement for split roles.
+- Selectable Docker, Kubernetes, trusted-worker, and no-runtime backends. Trusted
+  remote Docker workers currently execute Jeopardy workloads. Participant BYOC
+  agents have a separate trust boundary and use outbound WSS/yamux; trusted workers
+  use outbound mutual TLS. Player traffic is distinct from API/live-feed traffic.
+- A single active network owner holds process-local VPN, SSH, tunnel, and worker
+  session state. Runtime profiles are `all x1`, `web xN + control x1`, or
+  `web xN + engine xN + network x1`; the advanced profile replaces `control`.
+  `migrate` is a one-shot role. `development` is an API-focused preview role.
+- GitHub Actions checks and publishes server/BYOC images, native worker binaries,
+  and the Helm chart. No replacement of Rust/Axum, React, PostgreSQL, or Redis has
+  demonstrated a benefit in this review.
+
+### P1 — Correctness, recovery, and gameplay responsiveness
+
+- [ ] **ARCH-01: Complete and centralize runtime worker ownership.**
+  Advanced `web + engine + network` deployments omit startup calls for challenge
+  imports, revision effects, repository pushes/scans, and mutation retention.
+  Queued imports can remain pending. Define a central worker/capability matrix
+  and ensure each supported topology has an eligible, supervised consumer.
+  Validation: enqueue and finish representative work under each topology, exercise
+  restart/reclaim behavior, and verify no duplicate side effects. Replace the
+  relevant source-string presence assertions with behavior/ownership tests.
+  Sources: [startup wiring](src/main.rs), [role capabilities](src/models/internal/configs.rs),
+  [startup tests](src/startup_tests.rs), [import queue](src/controllers/edit/test_container/import_jobs.rs).
+  - [x] Centralize worker registration and cover every supported role topology;
+    include the previously omitted advanced-role mail consumer.
+  - [ ] Complete real queue-consumption and restart tests for each topology.
+
+- [x] **ARCH-02: Make database-pooling compatibility explicit.**
+  Network ownership, capture ownership, and other operations depend on PostgreSQL
+  session advisory locks. Transaction-pooled PgBouncer cannot preserve those
+  semantics, while deployment guidance currently recommends PgBouncer without
+  specifying this restriction. Use direct or session-preserving connections for
+  lock-owning operations; only introduce transaction pooling for separately
+  verified compatible paths. Document the topology and validate configuration
+  where reliable detection is possible.
+  Validation: prove exclusion, cancellation, unlock, and disconnect behavior using
+  direct/session-pooled connections; document or reject unsupported arrangements.
+  Sources: [network lease](src/services/ad/vpn/lease.rs),
+  [capture ownership](src/services/traffic/capture/owner.rs),
+  [shared locking](src/utils/single_flight.rs), [pool budget](docs/deploy/scaling.md).
+  - [x] Declare direct/session pooling and reject declared transaction/statement
+    pooling; correct all deployment recommendations. Remote pool configuration
+    still requires operator verification.
+  - [x] Run real exclusion, cancellation, unlock, and forced-disconnect regression
+    against PostgreSQL 18.4 directly and through session-mode PgBouncer 1.24.1.
+
+- [ ] **ARCH-03: Separate urgent gameplay jobs from slow builds.**
+  Builds, resets, rollouts, and other control jobs share two execution slots per
+  process. Two slow builds can delay a player service reset; a job has a 14-minute
+  execution budget. Introduce separate bounded lanes for gameplay recovery,
+  builds, and maintenance, with reserved recovery capacity and deployment-wide
+  resource limits. HTTP replica count should not implicitly determine the
+  installation's background-work budget. Preserve existing idempotency and leases.
+  Validation: hold two builds open while submitting resets and prove recovery
+  progresses; measure queue age, reset latency, runtime pressure, and fairness
+  across games and replicas, including sustained backlog.
+  Sources: [executor](src/services/control_jobs.rs),
+  [player reset admission](src/controllers/game/ad/scoreboard.rs).
+  - [x] Add deployment-wide gameplay/build/maintenance lanes and PostgreSQL
+    regressions proving two running builds leave reset capacity across replicas.
+  - [ ] Complete fixed-rate runtime benchmarks and sustained cross-game fairness tests.
+
+- [ ] **ARCH-04: Supervise control-job execution and graceful shutdown.**
+  `control_jobs::kick()` launches detached tasks without the shutdown signal used
+  by other workers. They can keep claiming during drain; interrupted jobs may
+  remain leased for up to 15 minutes. Replace detached execution with a supervised
+  executor using `JoinSet` or Tokio's `TaskTracker`, integrated with the existing
+  shutdown signal. Stop claims, drain/cancel execution, then relinquish only leases
+  whose external work has stopped. Keep crash recovery fenced and idempotent.
+  Validation: SIGTERM during builds, resets, and rollouts; no new claims after
+  drain starts; bounded recovery after restart; no duplicate containers or stale
+  owner writes. Check panic and cancellation paths as well as clean completion.
+  Sources: [job tasks and leases](src/services/control_jobs.rs),
+  [process shutdown](src/main.rs).
+  - [x] Replace detached kicks with notifications to a supervised executor; fence
+    release of unstarted claims and preserve cancellation intent in PostgreSQL tests.
+  - [ ] Complete process-signal/runtime lifecycle regressions and recovery measurements.
+
+- [ ] **ARCH-05: Bound and isolate end-of-event workload cleanup.**
+  The ended-backend reaper fetches every eligible A&D service and KotH target and
+  processes them sequentially. It runs before provisioning recovery in the same
+  maintenance chain. Move it to an independently supervised, bounded worker with
+  paginated claims, per-pass time/operation budgets, and per-item retry state.
+  Reuse the established image-cleanup scheduling pattern. Preserve final snapshots,
+  capture teardown acknowledgements, backend identity, and event-extension checks.
+  Validation: large ended events, slow/failing snapshots and destroys, restart,
+  and concurrent event extension; provisioning recovery must continue and cleanup
+  must eventually finish without losing retained data or leaking containers.
+  Sources: [ended-backend reaper](src/services/cron/backend_reaper.rs),
+  [maintenance ordering](src/services/cron/mod.rs),
+  [independent image cleanup](src/services/cron/image_cleanup.rs).
+  - [x] Isolate teardown, cap each pass, and persist per-item retry/lease state in
+    forward migration `m0360_backend_cleanup_claims`.
+  - [x] Test a 2,000-row cleanup backlog, concurrent claims, delayed retries,
+    restart fencing, future-event exclusion, and preservation of backend IDs.
+  - [ ] Exercise real snapshot/capture/destruction failures and event-extension races.
+
+### P2 — Boundaries, storage, contracts, and availability
+
+- [ ] **ARCH-06: Move business operations out of HTTP controllers.**
+  Background services call controller functions for builds, rollouts,
+  reconciliation, repository work, and other domain operations. Extract cohesive
+  application/domain services called by both HTTP handlers and background workers.
+  Keep request parsing and HTTP response mapping in controllers, and keep
+  authorization and domain invariants enforceable at the application boundary.
+  Add dependency-direction checks that prevent new service-to-controller coupling.
+  Validation: preserve wire contracts, authorization failures, retry behavior,
+  scoring results, and background execution without constructing an HTTP request.
+  Sources: [job dispatch](src/services/control_jobs/execution.rs),
+  [repository scheduler](src/services/repo_binding_scheduler.rs),
+  [maintenance](src/services/cron/mod.rs).
+  - [x] Extract image builds, build jobs, workload rollouts, and shared challenge
+    mutation fences into application services; retain controller compatibility.
+  - [x] Add CI checks for module size/naming and a dependency ratchet, with a
+    negative regression. The legacy dependency list is explicit remaining work.
+  - [ ] Extract remaining reconciliation, repository, and lifecycle operations.
+
+- [ ] **ARCH-07: Delegate privileged runtime operations away from public web roles.**
+  Public API handlers currently perform container operations directly; the local
+  Docker backend consequently grants web replicas root-equivalent daemon access.
+  This is an acknowledged deployment tradeoff, not by itself a confirmed exploit.
+  Extend durable commands and reconciliation so HTTP roles authorize and enqueue
+  work while isolated runtime owners execute it. Address lifecycle delegation
+  before enabling currently unsupported split hybrid worker deployments.
+  Validation: web replicas operate without a Docker socket; create/reset/destroy
+  survive lost replies and executor restarts; authorization, ownership, capacity,
+  and stale-command fences hold across replicas. Measure added request latency.
+  Sources: [player container lifecycle](src/controllers/game/containers.rs),
+  [backend constraints](docs/deploy/scaling.md), [worker limitations](docs/deploy/workers.md).
+
+- [ ] **ARCH-08: Shorten the checker publication critical section.**
+  Checker imports hold the global publication/GC database lock while preparing
+  environments and installing Python dependencies. Garbage collection also holds
+  that guard while scanning and deleting files. Prepare immutable artifacts in
+  isolated staging directories first, then briefly lock to validate, publish
+  atomically, and commit their identity. Bound GC scans and retain cross-process
+  execution/deletion protection; staging artifacts need explicit cleanup ownership.
+  Validation: a slow dependency installation must not block an unrelated checker
+  publication; race publication, execution, GC, cancellation, and crash recovery.
+  Measure lock hold/wait times and database-pool occupancy.
+  Sources: [import preparation](src/services/git_sync/mod.rs),
+  [checker preparation](src/services/git_sync/checker.rs),
+  [publication/GC guard](src/services/git_sync/checker_gc.rs).
+  - [x] Prepare repository checkers before publication locking and protect staging
+    with execution leases; scan incrementally and withdraw names before deleting
+    files outside the publication lock.
+  - [x] Run PostgreSQL GC regression preserving reachable and executing revisions.
+  - [ ] Complete publication/cancellation concurrency and lock-occupancy benchmarks.
+
+- [ ] **ARCH-09: Reduce shared-filesystem coupling incrementally.**
+  Publish suitable immutable checker/repository artifacts and completed captures
+  to object storage, with bounded local caches. Define which paths remain mutable
+  working state and which can be reconstructed. Preserve existing shared POSIX
+  rename/flock semantics until every dependent workflow has a tested replacement.
+  Retain content-addressed deduplication, reference-aware cleanup, and retention.
+  Validation: multi-host publication/execution, eviction, missing objects, interrupted
+  uploads, concurrent deletion, and backup/restore consistency. Compare disk usage,
+  duplicate bytes, filesystem/object-store I/O, and cold/warm latency; include object
+  request and transfer costs before choosing the design.
+  Sources: [blob storage](src/storage/mod.rs), [blob references](src/services/blob_refs.rs),
+  [shared storage requirements](docs/deploy/scaling.md).
+
+- [ ] **ARCH-10: Restore a reproducible backend/frontend API contract pipeline.**
+  `web/package.json` generates a client from `/openapi/v1.json`, but the reviewed
+  Rust router does not expose that specification endpoint. Add Rust-derived OpenAPI
+  using `utoipa` or an equivalently verified approach, generate the TypeScript
+  contract, and make CI detect drift. Introduce coverage incrementally while
+  preserving established endpoints and manually extended client behavior.
+  Validation: schema coverage and regeneration checks plus real response-contract
+  tests for envelopes, enum representations, timestamps, nullability, errors, and
+  authentication. Generated types do not replace authorization tests.
+  Sources: [client generation](web/package.json), [client contract](web/src/Api.ts),
+  [router](src/server.rs).
+
+- [ ] **ARCH-11: Define and test network-owner recovery targets.**
+  Live VPN, SSH, BYOC, proxy, and trusted-worker sessions belong to one active
+  process. Prioritize bounded restart/reconnect recovery, fencing, readiness,
+  route withdrawal, and operator-visible recovery state. Establish recovery-time
+  targets and measure them. Consider sharding only after connection or bandwidth
+  measurements justify it; live sockets cannot be recovered merely by storing
+  registry metadata in Redis.
+  Validation: owner restart, database lease loss, network partition, stale-session
+  reconnect, and rolling replacement; prevent simultaneous owners and stale routes.
+  Distinguish managed-game processing from games owned by the BYOC network role.
+  Sources: [network lease](src/services/ad/vpn/lease.rs),
+  [BYOC registry](src/services/byoc_tunnel/mod.rs), [worker sessions](src/services/worker/registry.rs).
+
+- [ ] **ARCH-12: Add worker-certificate expiry visibility and safe renewal.**
+  Worker certificates last 90 days and automatic renewal is absent. Add expiry
+  alerts and authenticated, recoverable certificate rotation with a bounded
+  transition policy. Preserve exact worker identity, revocation, and session fencing.
+  Validation: expiry, interrupted renewal, lost responses, clock skew, revoked
+  workers, replay attempts, and reconnect during certificate replacement; do not
+  require an unplanned manual re-enrollment to restore ordinary service.
+  Sources: [certificate issuance](src/services/worker_pki.rs),
+  [worker authority](src/services/worker/authority.rs), [agent client](agents/worker-agent/src/client/mod.rs).
+
+- [ ] **ARCH-13: Expose actionable metrics across runtime roles.**
+  Export existing operational counters through a Prometheus-compatible interface;
+  evaluate `metrics` and `metrics-exporter-prometheus` while retaining the admin
+  JSON contract. Add bounded-label metrics for queue age, failed/retried jobs,
+  database-pool waits, checker delay, cache behavior, and reconnect duration.
+  Document aggregation by role/instance and alert thresholds. Never label metrics
+  with flags, credentials, user identities, or arbitrary cache keys.
+  Validation: counter/histogram semantics, restart behavior, exporter access,
+  multi-replica aggregation, and CPU/memory/cardinality under sustained load.
+  Sources: [existing metrics](src/services/observability.rs),
+  [admin metrics response](src/controllers/admin/realtime.rs).
+  - [x] Expose authenticated Prometheus output for existing counters/histograms,
+    job attempts/latency, transaction acquisition, and pool gauges; preserve JSON.
+  - [ ] Add durable backlog/retry and network-recovery visibility; complete access
+    and sustained exporter-load verification.
+
+### P3 — Benchmark before replacing
+
+- [ ] **ARCH-14: Separate cache responsibilities and evaluate the response-cache implementation.**
+  The shared cache trait handles response acceleration, local secrets, one-time
+  credentials, and authoritative coordination/version operations. Give those
+  contracts explicit boundaries before replacing an implementation. The current
+  memory cache scans expiry and compacts eviction metadata under an exclusive
+  lock; a full working set with frequent insertions can stall unrelated readers.
+  Compare a sharded design and Moka for ordinary response caching. Moka is already
+  used for scoreboard snapshots. Preserve atomic credential consumption/CAS,
+  authorization freshness, TTL behavior, bounded memory, and outage semantics.
+  Validation: mixed reads/writes above cache capacity, expiry bursts, invalidation
+  races, single-flight behavior, and Redis interruption. Compare CPU at fixed load,
+  p95/p99 latency, hit rate, allocations, lock contention, and peak memory. Keep the
+  existing implementation if a candidate cannot demonstrate a safe improvement.
+  Sources: [cache contracts and implementation](src/services/cache.rs),
+  [capability cache fences](src/services/ad/koth_capability_cache.rs),
+  [existing Moka usage](src/controllers/game/scoreboard_page.rs).
+
+### Proposed slow-operation flow and completion evidence
+
+Local checkpoint (2026-10-27): `cargo test --lib` through the bounded wrapper
+passed 1,794 tests (453 environment-dependent tests ignored). The focused real
+PostgreSQL lane/shutdown tests (2), cleanup test (1), checker GC test (1), and
+session-lock regression against both direct PostgreSQL and PgBouncer (2 runs)
+also passed. The architecture checker and its negative regression passed. These
+results are correctness checks, not runtime performance or deployment evidence.
+
+The intended flow for slow operations is: HTTP authorization → application service
+→ durable PostgreSQL job and operation ID → supervised executor eligible for that
+job → bounded gameplay/build/maintenance lane → runtime adapter. Clients receive an
+operation ID and recover status through the API. This flow applies to slow work;
+ordinary reads and short transactional mutations keep their direct request paths.
+
+Suggested order: ARCH-01–05 first; then ARCH-06 and ARCH-10, followed by runtime
+isolation, checker publication, storage, and network recovery. Certificate renewal
+and observability can proceed independently where their prerequisites permit.
+Evaluate ARCH-14 after baseline instrumentation is available.
+
+- [ ] Add regression coverage for each changed failure boundary using real
+  PostgreSQL/runtime/browser behavior where the behavior depends on it.
+- [ ] Run applicable fixed-arrival-rate before/after scenarios on the same host,
+  release configuration, dataset, and topology. Record latency distributions,
+  CPU/RAM, database/runtime pressure, queue delays, storage growth, and recovery
+  time. Check scores, duplicate side effects, authorization, and retained data.
+- [ ] Complete the repository's bounded build/check/test workflows for implemented
+  changes and record evidence; do not mark a hypothesis as a measured improvement.
+- [ ] Update the architecture image, Mermaid source, role matrix, deployment
+  guidance, and completion statuses to match each shipped design change.
+- [ ] For artifact-affecting implementations, follow immutable release/deployment
+  verification and record the live version/digest. This TODO and diagram-only
+  update requires no application release or production deployment.
+
 ## Docker runtime scalability
 
 The platform already applies per-container CPU, memory, PID, writable-layer, and

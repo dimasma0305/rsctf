@@ -34,6 +34,7 @@ use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::AppResult;
 use chrono::Utc;
 
+mod backend_cleanup;
 mod backend_reaper;
 mod delivery_health;
 mod image_cleanup;
@@ -101,20 +102,12 @@ pub fn start_maintenance(
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let maintenance = tokio::spawn(maintenance_supervisor(state.clone(), shutdown.clone()));
-        let image_cleanup = tokio::spawn(image_cleanup::supervise(state, shutdown));
-        tokio::join!(
-            await_supervisor("maintenance", maintenance),
-            await_supervisor("Docker image cleanup", image_cleanup),
-        );
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn(maintenance_supervisor(state.clone(), shutdown.clone()));
+        tasks.spawn(image_cleanup::supervise(state.clone(), shutdown.clone()));
+        tasks.spawn(backend_cleanup::supervise(state, shutdown.clone()));
+        crate::services::supervision::join_required_workers(tasks, shutdown, "maintenance").await;
     })
-}
-
-async fn await_supervisor(label: &'static str, task: tokio::task::JoinHandle<()>) {
-    match task.await {
-        Ok(()) => tracing::info!(supervisor = label, "cron: supervisor stopped"),
-        Err(error) => tracing::error!(supervisor = label, %error, "cron: supervisor task failed"),
-    }
 }
 
 async fn maintenance_supervisor(
@@ -364,12 +357,6 @@ async fn run_jobs(state: &SharedState) {
         }
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: ended KotH crown-cycle recovery failed: {e}"),
-    }
-
-    match backend_reaper::reap_ended_backends(state).await {
-        Ok(n) if n > 0 => tracing::info!("cron: reaped {n} ended-game A&D backend(s)"),
-        Ok(_) => {}
-        Err(e) => tracing::warn!("cron: ended-game A&D teardown failed: {e}"),
     }
 
     match crate::controllers::edit::recover_accepted_provisioning(state).await {
@@ -827,19 +814,4 @@ async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
 /// invalidation for exceptional corrections.
 async fn refresh_recent_games_cache(state: &SharedState) {
     state.cache.remove("_RecentGames").await;
-}
-
-#[cfg(test)]
-mod supervision_tests {
-    #[test]
-    fn image_cleanup_cannot_cancel_event_critical_maintenance() {
-        let source = include_str!("mod.rs");
-        let (production, _) = source
-            .rsplit_once("\n#[cfg(test)]\nmod supervision_tests")
-            .expect("supervision tests remain separate from production code");
-        assert!(production.contains("tokio::spawn(maintenance_supervisor("));
-        assert!(production.contains("tokio::spawn(image_cleanup::supervise("));
-        assert!(production.contains("tokio::join!("));
-        assert!(!production.contains("scheduled_cleanup(state)"));
-    }
 }

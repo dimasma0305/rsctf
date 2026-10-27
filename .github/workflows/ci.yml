@@ -72,6 +72,7 @@ jobs:
 
       - name: Check formatting
         run: |
+          node scripts/check-architecture.mjs
           cargo fmt --all -- --check
           cargo fmt --manifest-path tests/load/retention-audit/Cargo.toml -- --check
 

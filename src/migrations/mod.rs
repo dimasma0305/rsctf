@@ -213,6 +213,12 @@ mod m0356_telemetry_global_usage_repair;
 mod m0357_variant_flag_uniqueness;
 mod m0358_hint_publication;
 pub(crate) mod m0359_game_schedule_changes;
+pub(crate) mod m0360_backend_cleanup_claims;
+
+#[cfg(test)]
+pub(crate) use m0261_control_plane_jobs::UP_SQL as CONTROL_JOBS_SQL;
+#[cfg(test)]
+pub(crate) use m0263_control_job_cancellation::UP_SQL as CONTROL_JOB_CANCELLATION_SQL;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -452,6 +458,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0357_variant_flag_uniqueness::Migration),
             Box::new(m0358_hint_publication::Migration),
             Box::new(m0359_game_schedule_changes::Migration),
+            Box::new(m0360_backend_cleanup_claims::Migration),
         ]
     }
 }
@@ -596,10 +603,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 189);
+        assert_eq!(names.len(), 190);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 82..],
+            &names[names.len() - 83..],
             [
                 "m0108_koth_observer_rotation_operations",
                 "m0109_operator_console_latest_rows",
@@ -683,6 +690,7 @@ mod tests {
                 "m0357_variant_flag_uniqueness",
                 "m0358_hint_publication",
                 "m0359_game_schedule_changes",
+                "m0360_backend_cleanup_claims",
             ]
         );
     }

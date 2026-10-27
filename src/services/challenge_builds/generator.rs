@@ -1,6 +1,7 @@
 //! Coordinated builder for trusted repository `generator/Dockerfile` sources.
 
 use super::*;
+use crate::utils::enums::ChallengeType;
 
 const GENERATOR_FINGERPRINT_SQL: &str = r#"SELECT challenge.original_archive_blob_path,
               challenge.variant_generator_build_context_subdir,
@@ -72,7 +73,7 @@ async fn publish_generator_build(
         challenge.id,
     )
     .await?;
-    super::super::challenges::reject_pending_mutation(
+    crate::services::challenge_mutations::reject_pending_mutation(
         &mut **definition_lock.transaction_mut(),
         challenge.game_id,
         challenge.id,

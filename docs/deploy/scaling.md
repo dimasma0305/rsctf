@@ -69,7 +69,7 @@ image pre-pull and smoke-start preflight remain the default startup preparation.
 | `all` | Exactly 1 | API, React client, hubs, maintenance, all A&D/KotH rounds, VPN/BYOC/SSH, packet capture, and migrations |
 | `web` | 1 or more | Public API, React client, and hubs; no round or deployment-maintenance ownership |
 | `control` | Exactly 1 | Stateful BYOC/container-exec API, maintenance, all round processing, VPN/BYOC/SSH, packet capture; no migrations |
-| `engine` | 1 or more | Health endpoints, maintenance election, and managed-container A&D/KotH rounds |
+| `engine` | 1 or more | Health/metrics endpoints, durable jobs, maintenance, and managed-container A&D/KotH rounds |
 | `network` | Exactly 1 | Stateful BYOC/container-exec API, VPN/BYOC/SSH, packet capture, and rounds for games containing BYOC services |
 | `migrate` | One-shot | Apply PostgreSQL migrations and exit |
 
@@ -78,6 +78,32 @@ it with `engine` plus `network`; never run `control` alongside those roles.
 PostgreSQL locks, unique constraints, and durable round leases allow engine
 workers to be active-active. The network role remains singleton because
 WireGuard, firewall rules, SSH listeners, and live yamux tunnels are process-local.
+
+The composition-root worker registry (`src/runtime_workers.rs`) assigns challenge
+imports, revision effects, repository pushes/scans, mutation retention, mail
+delivery, and control jobs to `all`, `control`, `engine`, and `development`.
+Neither `web` nor `network` consumes those queues. PostgreSQL claims coordinate
+multiple eligible engine replicas; process-local wakeups are hints, backed by
+polling. The advanced topology therefore has consumers for the same durable
+work as the simple split deployment.
+
+Control jobs have deployment-wide admission limits: two gameplay jobs
+(`AdReset`, `AdReconcile`), two build jobs, and one maintenance job
+(`VariantGeneration`, `SecurityDerivation`). Adding web or engine replicas does
+not raise those limits. Within a lane, games without running work take priority,
+then the oldest queued job runs. Supervised workers stop claiming on shutdown.
+An unstarted claim can be returned immediately; an interrupted external operation
+retains its lease until the existing 15-minute crash-recovery window expires.
+
+Ended A&D/KotH workloads have a separate cleanup supervisor. A pass claims at most
+16 individual rows and has a 270-second budget, with a 240-second per-item budget.
+Failed items back off independently, up to 15 minutes. A timed-out item's
+10-minute lease is retained because an external operation may still be finishing.
+Final snapshots and capture teardown fences remain prerequisites for destruction;
+backend identities survive failures. This worker does not block the maintenance
+chain's accepted-participation recovery.
+
+See [monitoring](monitoring.md) for authenticated metrics on every serving role.
 
 Scheduler ownership is per game, not per service. If any A&D service in a game
 is BYOC/self-hosted, the network role owns that whole game's rounds; engine
@@ -281,8 +307,9 @@ for a safe retry of the same command; it never runs `up` on failure.
 That two-web default budgets `2×27 + 38 = 92` application connections against
 the bundled PostgreSQL limit of 100. It preserves a small stop-the-world
 migration and administration reserve, but it does not leave room for a surge
-web replica: `3×27 + 38 = 119`. Put PgBouncer in front of PostgreSQL or provide
-a separately reviewed connection budget first.
+web replica: `3×27 + 38 = 119`. Review and increase PostgreSQL's connection
+budget before adding that replica. Session-mode PgBouncer alone does not reduce
+the number of simultaneously active application sessions.
 
 For a shared Docker challenge backend, include both overrides so web API replicas
 and the control owner reach the same daemon:
@@ -303,8 +330,9 @@ narrow checker capability set and also uses `NET_ADMIN` for WireGuard plus
 capabilities. The web replicas retain Docker access
 because their API routes may create or destroy player containers.
 
-Scale only the public web service. The five-web example assumes PgBouncer or an
-external PostgreSQL connection budget sized with the formula below:
+Scale only the public web service. The five-web example requires a PostgreSQL
+connection budget sized with the formula below. Any PgBouncer must preserve
+sessions (`pool_mode=session`, `RSCTF_DB_POOL_MODE=session`):
 
 ```bash
 docker compose up -d --scale rsctf=5
@@ -636,8 +664,15 @@ VPN network callback owner at 36 can open 176 connections. Leave capacity for
 migration, administration, PostgreSQL workers, and failure overlap during rolling updates.
 Include every temporary `maxSurge` web/engine Pod in that rollout ceiling, not
 only the steady-state replica count.
-Use PgBouncer or smaller role-specific pools before increasing PostgreSQL's
-limit blindly.
+Use smaller role-specific pools before increasing PostgreSQL's limit blindly.
+PgBouncer is supported only with `pool_mode=session`: RSCTF retains session
+advisory locks for network/capture ownership and multi-stage operations. Set
+`RSCTF_DB_POOL_MODE=session` when using it, or `direct` (the default) for direct
+PostgreSQL connections. Declared `transaction` and `statement` modes fail startup.
+This declaration cannot inspect a remote pooler's actual configuration; operators
+must verify it. Session pooling retains an assigned backend for each connected
+client and therefore does not eliminate the deployment's concurrent connection
+budget. Transaction pooling requires separating all session-owning paths first.
 
 Pool validation accounts for connections retained across nested operations. Let
 `R=RSCTF_REPO_SCAN_CONCURRENCY` and

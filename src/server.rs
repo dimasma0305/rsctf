@@ -86,6 +86,7 @@ fn trace_route<B>(request: &Request<B>) -> &str {
 /// here (this is what the router integration test exercises).
 fn common_api_router(game_router: Router<SharedState>) -> Router<SharedState> {
     Router::new()
+        .route("/metrics", get(controllers::metrics::prometheus))
         .route("/livez", get(crate::services::health::liveness))
         .route("/healthz", get(crate::services::health::readiness))
         .route("/_rsctf/anti-autofill.js", get(anti_autofill_script))
@@ -131,6 +132,7 @@ pub fn web_api_router() -> Router<SharedState> {
 /// to the scalable web pool.
 pub fn stateful_api_router() -> Router<SharedState> {
     Router::new()
+        .route("/metrics", get(controllers::metrics::prometheus))
         .route("/livez", get(crate::services::health::liveness))
         .route("/healthz", get(crate::services::health::readiness))
         .merge(controllers::event_security::router())
@@ -262,6 +264,7 @@ async fn unmatched_hub_route() -> Response {
 /// from a worker that is not intended to receive user traffic.
 pub fn build_health_router(state: SharedState) -> Router {
     Router::new()
+        .route("/metrics", get(controllers::metrics::prometheus))
         .route("/livez", get(crate::services::health::liveness))
         .route("/healthz", get(crate::services::health::readiness))
         .layer(TraceLayer::new_for_http().make_span_with(RedactedHttpMakeSpan))

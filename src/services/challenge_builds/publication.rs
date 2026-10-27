@@ -100,7 +100,7 @@ pub(super) async fn publish_build_outcome(
         challenge.id,
     )
     .await?;
-    super::super::challenges::reject_pending_mutation(
+    crate::services::challenge_mutations::reject_pending_mutation(
         &mut **definition_lock.transaction_mut(),
         challenge.game_id,
         challenge.id,

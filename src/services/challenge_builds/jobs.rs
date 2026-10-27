@@ -17,8 +17,12 @@ pub(crate) async fn enqueue_challenge_build_job(
     attempt: i32,
     operation_id: Uuid,
 ) -> AppResult<crate::services::control_jobs::ControlJobModel> {
-    super::super::challenges::reject_pending_mutation(st.pg(), challenge.game_id, challenge.id)
-        .await?;
+    crate::services::challenge_mutations::reject_pending_mutation(
+        st.pg(),
+        challenge.game_id,
+        challenge.id,
+    )
+    .await?;
     let trigger = match trigger {
         "Manual" | "AutoRetry" | "Bulk" => trigger,
         _ => return Err(AppError::bad_request("unsupported build trigger")),
@@ -366,7 +370,7 @@ mod tests {
     fn durable_build_admission_checks_the_live_finalizing_phase() {
         assert!(FINALIZING_IMAGE_CLAIM_SQL.contains("cleanup_removal_started = TRUE"));
         assert!(FINALIZING_IMAGE_CLAIM_SQL.contains("cleanup_claim_until > clock_timestamp()"));
-        let interactive = include_str!("../builds.rs");
+        let interactive = include_str!("mod.rs");
         assert!(interactive.contains("ensure_cleanup_not_finalizing("));
         let generator = include_str!("generator.rs");
         assert!(generator.contains("ensure_cleanup_not_finalizing("));

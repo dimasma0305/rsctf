@@ -618,18 +618,7 @@ mod reopen_round_tests {
     }
 }
 
-pub(crate) async fn load_challenge(
-    st: &SharedState,
-    game_id: i32,
-    c_id: i32,
-) -> AppResult<game_challenge::Model> {
-    game_challenge::Entity::find()
-        .filter(game_challenge::Column::Id.eq(c_id))
-        .filter(game_challenge::Column::GameId.eq(game_id))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Challenge not found"))
-}
+pub(crate) use crate::services::challenge_mutations::load_challenge;
 
 #[path = "helpers/challenge_rows.rs"]
 mod challenge_rows;

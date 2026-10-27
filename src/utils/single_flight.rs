@@ -392,6 +392,10 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "session_lock_tests.rs"]
+mod session_lock_tests;
+
 /// Owned per-key guard. The key map stores only weak references, so cancellation
 /// while waiting cannot retain a user/game/container lock for the process life.
 pub struct CoalesceGuard {

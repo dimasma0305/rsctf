@@ -9,6 +9,7 @@ pub mod exercise;
 pub mod game;
 pub mod honeypot;
 pub mod info;
+pub(crate) mod metrics;
 pub mod oauth;
 pub mod proxy;
 pub mod team;

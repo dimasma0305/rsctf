@@ -22,6 +22,9 @@ pub(crate) use cancellation::{finish as finish_cancellation, requested as cancel
 mod admission;
 #[path = "control_jobs/execution.rs"]
 mod execution;
+#[path = "control_jobs/supervisor.rs"]
+mod supervisor;
+pub use supervisor::{kick, start};
 #[path = "control_jobs/lookup.rs"]
 mod lookup;
 pub use lookup::{get_ad_reset_for_participation, latest_for_game};
@@ -216,6 +219,14 @@ fn validate_enqueue(scope_key: &str, fingerprint: &str, input: &Value) -> AppRes
 
 fn database_error(error: sqlx::Error) -> AppError {
     AppError::internal(error.to_string())
+}
+
+pub(crate) fn fingerprint(value: &impl serde::Serialize) -> AppResult<String> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| AppError::internal(format!("control-job fingerprint failed: {error}")))?;
+    let encoded = String::from_utf8(bytes)
+        .map_err(|_| AppError::internal("control-job input was not UTF-8 JSON"))?;
+    Ok(crate::utils::codec::sha256_str(&encoded))
 }
 
 fn is_unique_violation(error: &sqlx::Error) -> bool {
@@ -702,17 +713,56 @@ pub async fn claim_next(
     kind: ControlJobKind,
     lease: Duration,
 ) -> AppResult<Option<ClaimedControlJob>> {
+    claim_matching(pool, supervisor::Lane::for_kind(kind), &[kind], lease).await
+}
+
+async fn claim_matching(
+    pool: &sqlx::PgPool,
+    lane: supervisor::Lane,
+    requested_kinds: &[ControlJobKind],
+    lease: Duration,
+) -> AppResult<Option<ClaimedControlJob>> {
+    // Serialize admission by lane across every owner replica. A web scale-out
+    // cannot increase the global build budget or consume reserved reset slots.
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(database_error)?;
+    let owns_admission: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(lane.lock_key())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    if !owns_admission {
+        return Ok(None);
+    }
+    let kinds: Vec<&str> = lane.kinds().iter().map(|kind| kind.as_str()).collect();
+    let active: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM "ControlPlaneJobs"
+            WHERE kind = ANY($1) AND status = 1
+              AND lease_expires_at_utc > clock_timestamp()"#,
+    )
+    .bind(&kinds)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if active >= lane.slots() {
+        return Ok(None);
+    }
     let lease_token = Uuid::new_v4();
     let lease_seconds = i64::try_from(lease.as_secs().clamp(5, 900)).unwrap_or(900);
     let sql = format!(
         r#"WITH candidate AS (
-               SELECT id FROM "ControlPlaneJobs"
-                WHERE kind = $1
+               SELECT candidate.id FROM "ControlPlaneJobs" candidate
+                WHERE candidate.kind = ANY($1)
                   AND (status = 0 OR (
                        status = 1 AND lease_expires_at_utc <= clock_timestamp()
                   ))
-                ORDER BY created_at_utc, id
-                FOR UPDATE SKIP LOCKED LIMIT 1
+                ORDER BY (SELECT COUNT(*) FROM "ControlPlaneJobs" active
+                           WHERE active.game_id = candidate.game_id
+                             AND active.kind = ANY($4) AND active.status = 1
+                             AND active.lease_expires_at_utc > clock_timestamp()),
+                         candidate.created_at_utc, candidate.id
+                FOR UPDATE OF candidate SKIP LOCKED LIMIT 1
            )
            UPDATE "ControlPlaneJobs" job
               SET status = 1, lease_token = $2,
@@ -721,13 +771,16 @@ pub async fn claim_next(
              FROM candidate WHERE job.id = candidate.id
          RETURNING {JOB_COLUMNS_QUALIFIED}"#
     );
+    let requested: Vec<&str> = requested_kinds.iter().map(|kind| kind.as_str()).collect();
     let row = sqlx::query_as::<_, JobRow>(&sql)
-        .bind(kind.as_str())
+        .bind(&requested)
         .bind(lease_token)
         .bind(lease_seconds as f64)
-        .fetch_optional(pool)
+        .bind(&kinds)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
     row.map(|row| {
         let input = row.input.clone();
         let input_revision = row.input_revision;
@@ -877,96 +930,6 @@ pub async fn fail(
     .await
     .map_err(database_error)?;
     Ok(false)
-}
-
-static CONTROL_JOB_WORKERS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
-static NEXT_KIND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Best-effort wake-up. PostgreSQL owns queued work and lease recovery; this
-/// process-local gate only bounds how many external operations one replica may
-/// run at once. Maintenance invokes this too, so a crash or lost wake-up is not
-/// terminal.
-pub fn kick(state: SharedState) {
-    let Ok(permit) = CONTROL_JOB_WORKERS.clone().try_acquire_owned() else {
-        return;
-    };
-    tokio::spawn(async move {
-        let _permit = permit;
-        if let Err(error) = drain_bounded(&state, 8).await {
-            tracing::warn!(%error, "control-plane job drain failed");
-        }
-    });
-}
-
-pub async fn drain_bounded(state: &StateHandle, limit: usize) -> AppResult<usize> {
-    const KINDS: [ControlJobKind; 8] = [
-        ControlJobKind::AdReconcile,
-        ControlJobKind::AdReset,
-        ControlJobKind::ChallengeBuild,
-        ControlJobKind::BuildBatch,
-        ControlJobKind::WorkloadRollout,
-        ControlJobKind::VariantGeneration,
-        ControlJobKind::SecurityDerivation,
-        ControlJobKind::ImagePreflight,
-    ];
-    let mut processed = 0;
-    while processed < limit {
-        let mut claimed = None;
-        let first = NEXT_KIND.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % KINDS.len();
-        for offset in 0..KINDS.len() {
-            let kind = KINDS[(first + offset) % KINDS.len()];
-            if let Some(job) = claim_next(state.pg(), kind, Duration::from_secs(15 * 60)).await? {
-                claimed = Some(job);
-                break;
-            }
-        }
-        let Some(job) = claimed else {
-            break;
-        };
-        let id = job.model.id;
-        let lease_token = job.lease_token;
-        if !set_progress(state.pg(), id, lease_token, 0, 1).await? {
-            tracing::warn!(%id, "control-plane job lost its lease before execution");
-            processed += 1;
-            continue;
-        }
-        let execution = tokio::time::timeout(
-            Duration::from_secs(CONTROL_JOB_EXECUTION_BUDGET_SECONDS),
-            execution::execute_claimed(state, &job),
-        )
-        .await;
-        match execution {
-            Ok(Ok(result)) => {
-                let _ = complete(state.pg(), id, lease_token, job.input_revision, result).await?;
-            }
-            Ok(Err(error)) => {
-                if !fail(
-                    state.pg(),
-                    id,
-                    lease_token,
-                    job.input_revision,
-                    &error.to_string(),
-                )
-                .await?
-                {
-                    tracing::warn!(%id, "control-plane job failure lost its lease fence");
-                }
-            }
-            Err(_) => {
-                let _ = fail(
-                    state.pg(),
-                    id,
-                    lease_token,
-                    job.input_revision,
-                    "Control-plane job exceeded its total deadline",
-                )
-                .await?;
-            }
-        }
-        processed += 1;
-    }
-    Ok(processed)
 }
 
 #[cfg(test)]

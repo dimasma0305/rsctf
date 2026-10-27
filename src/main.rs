@@ -25,8 +25,7 @@ use rsctf::services::cache::{Cache, InMemoryCache, RedisCache, TieredCache};
 use rsctf::services::event_bus::EventBus;
 use rsctf::services::token::TokenService;
 use startup_policy::{
-    owns_feed_reconciliation, owns_mail_reconciliation, owns_suspicion_reconciliation,
-    should_run_migrations,
+    owns_feed_reconciliation, owns_suspicion_reconciliation, should_run_migrations,
 };
 
 const HTTP_DEREGISTRATION_DELAY: Duration = Duration::from_secs(5);
@@ -636,11 +635,8 @@ fn start_background_services(
             rsctf::services::discord_webhook::start_reconciler(state.clone(), shutdown.clone()),
         ));
     }
-    if owns_mail_reconciliation(role) {
-        required.push(RequiredTask::Unit(
-            "mail outbox reconciler",
-            rsctf::services::mail_outbox::start_reconciler(state.clone(), shutdown.clone()),
-        ));
+    for (name, handle) in rsctf::runtime_workers::start(state, shutdown.clone()) {
+        required.push(RequiredTask::Unit(name, handle));
     }
     if let Some(worker_plane) = worker_plane {
         let service = worker_plane.service.clone();
@@ -659,29 +655,6 @@ fn start_background_services(
     }
     match role {
         RuntimeRole::All | RuntimeRole::Control => {
-            required.push(RequiredTask::Unit(
-                "challenge import worker",
-                rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "challenge revision effect worker",
-                rsctf::controllers::edit::start_challenge_revision_effect_worker(
-                    state.clone(),
-                    shutdown.clone(),
-                ),
-            ));
-            required.push(RequiredTask::Unit(
-                "mutation retention worker",
-                rsctf::services::mutation_retention::start(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "repository push worker",
-                rsctf::controllers::edit::start_repo_push_worker(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "repository binding scheduler",
-                rsctf::services::repo_binding_scheduler::start(state.clone(), shutdown.clone()),
-            ));
             if rsctf::services::ad_vpn::enabled() {
                 required.push(RequiredTask::Unit(
                     "A&D network reconcile",
@@ -753,32 +726,7 @@ fn start_background_services(
                 ),
             ));
         }
-        RuntimeRole::Development => {
-            required.push(RequiredTask::Unit(
-                "challenge import worker",
-                rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "challenge revision effect worker",
-                rsctf::controllers::edit::start_challenge_revision_effect_worker(
-                    state.clone(),
-                    shutdown.clone(),
-                ),
-            ));
-            required.push(RequiredTask::Unit(
-                "mutation retention worker",
-                rsctf::services::mutation_retention::start(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "repository push worker",
-                rsctf::controllers::edit::start_repo_push_worker(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "repository binding scheduler",
-                rsctf::services::repo_binding_scheduler::start(state.clone(), shutdown.clone()),
-            ));
-        }
-        RuntimeRole::Web | RuntimeRole::Migrate => {}
+        RuntimeRole::Development | RuntimeRole::Web | RuntimeRole::Migrate => {}
     }
 
     if let Some(topology) = rsctf::services::runtime_topology::spawn(

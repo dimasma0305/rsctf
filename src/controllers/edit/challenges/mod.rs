@@ -46,7 +46,6 @@ pub(crate) use repo_push::commit_latest_to_checkout_for_test;
 pub use repo_push::start as start_repo_push_worker;
 pub use review::{approve_challenge, list_pending_challenges, reject_challenge};
 pub use revision_effects::start as start_challenge_revision_effect_worker;
-pub(crate) use workload::execute_workload_rollout_job;
 pub use workload::rollout_workloads;
 
 const INSERTABLE_GAME_SQL: &str =
@@ -943,15 +942,4 @@ pub(crate) async fn delete_challenge_core(
         flush_game_scoreboards(&st, id).await;
     }
     Ok(MessageResponse::ok(""))
-}
-
-/// Outcome of the image-build seam: the terminal build status plus a captured
-/// (and length-capped) log to surface on the challenge row.
-pub(crate) struct BuildOutcome {
-    pub(crate) status: ChallengeBuildStatus,
-    pub(crate) log: Option<String>,
-    /// Exact runtime reference produced by this attempt. A successful outcome
-    /// always carries either a portable repository digest or, for a verified
-    /// single-Docker-daemon topology, a daemon-local image id.
-    pub(crate) image_digest: Option<String>,
 }

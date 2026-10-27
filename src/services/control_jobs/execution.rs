@@ -40,12 +40,18 @@ pub(super) async fn execute_claimed(
             Ok(serde_json::json!({ "launched": launched, "failures": failures }))
         }
         "ChallengeBuild" => {
-            crate::controllers::edit::execute_challenge_build_job(state, &job.model, &job.input)
-                .await
+            crate::services::challenge_builds::execute_challenge_build_job(
+                state, &job.model, &job.input,
+            )
+            .await
         }
-        "BuildBatch" => crate::controllers::edit::execute_build_batch_job(state, job).await,
+        "BuildBatch" => {
+            crate::services::challenge_builds::execute_build_batch_job(state, job).await
+        }
         "WorkloadRollout" => {
-            let result = crate::controllers::edit::execute_workload_rollout_job(state, job).await?;
+            let result =
+                crate::services::workload_rollouts::execute_workload_rollout_job(state, job)
+                    .await?;
             serde_json::to_value(result)
                 .map_err(|error| AppError::internal(format!("rollout result failed: {error}")))
         }

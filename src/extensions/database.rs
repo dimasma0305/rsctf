@@ -1,5 +1,7 @@
 //! Database connection helper.
 
+mod pooling;
+
 use std::time::Duration;
 
 use sea_orm::{DatabaseConnection, SqlxPostgresConnector};
@@ -97,6 +99,7 @@ fn pool_budget_from_env() -> PoolBudget {
 }
 
 pub async fn connect(url: &str) -> anyhow::Result<DatabaseConnection> {
+    pooling::validate()?;
     // The default 50-connection monolith budget is the active VPN all-role
     // safety floor (34) plus the measured capability-authentication ceiling
     // (16). The dedicated semaphore prevents that burst path from consuming
