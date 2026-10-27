@@ -1,0 +1,98 @@
+{
+  "actions": {
+    "edit": "編集",
+    "more": "その他",
+    "retry": "再試行"
+  },
+  "request": {
+    "failed": "{{name}}を読み込めませんでした",
+    "hint": "接続を確認して、もう一度お試しください。",
+    "stale": "最後に読み込んだデータを表示しています。最新の情報ではない可能性があります。"
+  },
+  "navigation": {
+    "admin_section": "管理セクション",
+    "events": "イベント",
+    "guide": "ガイド"
+  },
+  "users": {
+    "search": "ユーザーを検索",
+    "import": "インポート",
+    "import_csv": "CSV をインポート",
+    "import_history": "インポート履歴",
+    "email_verified": "メール認証",
+    "verified": "認証済み",
+    "unverified": "未認証",
+    "toggle_verification": "{{name}}のメール認証状態を変更",
+    "verification_hint": "このアカウントのメール認証状態を更新します。",
+    "actions_for": "{{name}}への操作",
+    "password_link": "パスワード設定リンクを送信",
+    "reset_password": "パスワードをリセット",
+    "delete": "ユーザーを削除",
+    "email_confirm": "{{name}}にパスワード設定メールを送信しますか？",
+    "email_queued": "{{email}}へのパスワード設定メールを送信待ちに追加しました"
+  },
+  "settings": {
+    "section": "設定セクション",
+    "conflict_title": "サーバーの設定が変更されました",
+    "conflict_message": "下書きは保存されていません。そのまま保持するか、破棄して最新の設定を読み込めます。",
+    "discard_reload": "下書きを破棄して再読み込み",
+    "discard_confirm": "未保存の変更をすべて破棄して最新の設定を読み込みますか？現在の下書きは復元できません。",
+    "keep_draft": "下書きを保持"
+  },
+  "home": {
+    "recent_events": "最近のイベント",
+    "view_all": "すべて表示",
+    "player_guide": "プレイヤーガイド",
+    "pinned": "固定されたお知らせ",
+    "live_count": "{{count}} 件開催中",
+    "upcoming_count": "{{count}} 件開催予定",
+    "announcements": "ニュースとお知らせ"
+  },
+  "event": {
+    "live": "開催中",
+    "upcoming": "開催予定",
+    "completed": "終了",
+    "days": "{{count}} 日",
+    "minutes": "{{count}} 分",
+    "hours": "{{count}} 時間",
+    "participants": "チーム：{{teams}} · 参加者：{{users}}",
+    "team_limit": "1チーム最大 {{count}} 人",
+    "unlimited": "チーム人数制限なし",
+    "solo": "個人戦"
+  },
+  "challenges": {
+    "cards": "カード",
+    "list": "リスト",
+    "globe": "地球",
+    "view": "問題の表示形式",
+    "filter_options": "絞り込みと表示"
+  },
+  "dashboard": {
+    "users": "ユーザー",
+    "teams": "チーム",
+    "containers": "コンテナ",
+    "refresh": "ダッシュボードを更新",
+    "submission_trend": "提出の推移",
+    "submission_trend_description": "選択した期間内の提出数。",
+    "submissions": "提出",
+    "submission_trend_range": "提出の集計期間",
+    "no_submission_activity": "提出はありません",
+    "no_submission_activity_description": "この期間内に参加者が問題を解き始めると、提出がここに表示されます。",
+    "popular_games": "人気のイベント",
+    "participants": "参加者",
+    "reviews": "レビュー",
+    "popular_games_scroll": "スクロール可能な人気イベントの表",
+    "recent_reviews": "最近のレビュー",
+    "recent_writeups": "最近の解説",
+    "recent_cheats": "最近の不正報告",
+    "recent_reviews_scroll": "スクロール可能な最近の問題レビュー",
+    "recent_writeups_scroll": "スクロール可能な最近の解説",
+    "recent_cheats_scroll": "スクロール可能な最近の不正報告",
+    "positive_review": "高評価",
+    "negative_review": "低評価",
+    "day": "日",
+    "week": "週",
+    "month": "月",
+    "year": "年"
+  }
+}

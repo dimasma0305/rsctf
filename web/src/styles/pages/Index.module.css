@@ -1,6 +1,26 @@
 .home {
   min-width: 0;
 }
+.pinnedNotice {
+  display: none;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--app-accent-border);
+  border-radius: var(--mantine-radius-md);
+  background: var(--app-accent-surface);
+}
+.pinnedNotice > svg {
+  flex-shrink: 0;
+  margin-top: 0.25rem;
+  color: var(--app-accent-text);
+}
+.pinnedNotice a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  overflow-wrap: anywhere;
+}
 
 .dashboard {
   display: grid;
@@ -39,6 +59,12 @@
 }
 
 @media (max-width: 900px) {
+  .pinnedNotice {
+    display: flex;
+  }
+  .shortcuts {
+    display: none;
+  }
   .dashboard {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas: 'games' 'feed';
@@ -49,13 +75,13 @@
     position: static;
   }
 
-  .recentList > :nth-child(n + 3) {
+  .recentList > :nth-child(n + 2) {
     display: none;
   }
 
   .recentList {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

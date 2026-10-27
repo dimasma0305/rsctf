@@ -439,6 +439,25 @@
           "label": "スローガン"
         },
         "title": "プラットフォーム設定"
+      },
+      "nav": {
+        "platform": "プラットフォーム",
+        "account": "アカウント",
+        "container": "コンテナ",
+        "email": "メール",
+        "captcha": "Captcha",
+        "oauth": "OAuth",
+        "registry_pull": "レジストリ認証",
+        "build_registry": "ビルドレジストリ",
+        "donations": "寄付",
+        "ai_links": "AI リンク",
+        "agent_signatures": "エージェント署名",
+        "diagnostics": "診断"
+      },
+      "status": {
+        "configured": "設定済み",
+        "inactive": "オフ",
+        "attention": "要確認"
       }
     },
     "show_all": "すべてを表示",

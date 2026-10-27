@@ -34,7 +34,7 @@ export interface PrimaryNavigationItem {
 export const PRIMARY_NAVIGATION: PrimaryNavigationItem[] = [
   { icon: mdiHomeVariantOutline, label: 'common.tab.home', link: '/' },
   { icon: mdiNoteTextOutline, label: 'common.tab.post', link: '/posts' },
-  { icon: mdiFlagOutline, label: 'common.tab.game', link: '/games' },
+  { icon: mdiFlagOutline, label: 'interface.navigation.events', link: '/games' },
   {
     icon: mdiFormatListChecks,
     label: 'common.tab.challenge_catalog',
@@ -43,7 +43,7 @@ export const PRIMARY_NAVIGATION: PrimaryNavigationItem[] = [
     requiresAuth: true,
   },
   { icon: mdiAccountGroupOutline, label: 'common.tab.team', link: '/teams' },
-  { icon: mdiBookOpenPageVariantOutline, label: 'common.tab.guide', link: '/guide' },
+  { icon: mdiBookOpenPageVariantOutline, label: 'interface.navigation.guide', link: '/guide' },
   {
     icon: mdiHandHeart,
     label: 'common.tab.donations',

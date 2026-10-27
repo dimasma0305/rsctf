@@ -439,6 +439,25 @@
           "label": "平臺標語"
         },
         "title": "平臺設置"
+      },
+      "nav": {
+        "platform": "平台",
+        "account": "帳號",
+        "container": "容器",
+        "email": "電子郵件",
+        "captcha": "Captcha",
+        "oauth": "OAuth",
+        "registry_pull": "拉取憑證",
+        "build_registry": "建置倉庫",
+        "donations": "捐贈",
+        "ai_links": "AI 連結",
+        "agent_signatures": "代理程式簽章",
+        "diagnostics": "診斷"
+      },
+      "status": {
+        "configured": "已設定",
+        "inactive": "關閉",
+        "attention": "需檢查"
       }
     },
     "show_all": "顯示全部",

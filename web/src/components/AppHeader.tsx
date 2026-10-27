@@ -308,7 +308,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
         })}
         <UnstyledButton
           className={classes.dockItem}
-          aria-label={t('common.button.more_navigation', 'More navigation options')}
+          aria-label={t('interface.actions.more')}
           aria-expanded={opened}
           aria-haspopup="dialog"
           data-guide="more-navigation"
@@ -321,7 +321,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
             <Icon path={mdiMenu} size={0.88} />
           </span>
           <Text component="span" size="xs" fw={650}>
-            {t('common.button.more', 'More')}
+            {t('interface.actions.more')}
           </Text>
         </UnstyledButton>
       </nav>

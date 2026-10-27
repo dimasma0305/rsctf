@@ -71,9 +71,15 @@ try {
     await cdp.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:name==='light-id'?'reduce':'no-preference'}]})
     await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('language',JSON.stringify(${JSON.stringify(language)}));localStorage.setItem('mantine-color-scheme-value',${JSON.stringify(scheme)});`})
     for (const [path, expected] of pages) {
-      await visit(path, expected)
+      await visit(path, path === '/admin/users' && language === 'id-ID' ? 'Impor' : expected)
       await audit(name + path.replaceAll('/','--').replace('?section=','-'))
     }
+  }
+  const selectSettings = async (label) => {
+    await click('#settings-section-picker')
+    await wait(`document.querySelector('[role=option]')`)
+    await evaluate(`Array.from(document.querySelectorAll('[role=option]')).find(e=>e.textContent.trim()===${JSON.stringify(label)}).click()`)
+    await wait(`document.querySelector('#settings-section-picker')?.value===${JSON.stringify(label)}`)
   }
   if (!screensOnly) {
     await cdp.send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:false})
@@ -110,17 +116,17 @@ try {
     await keyboard('ArrowDown',40)
     assert.equal(await evaluate('document.activeElement.getAttribute("href")'),'/admin/settings#section=email')
     await keyboard('Enter',13)
-    await wait(`location.hash==='#section=email' && document.querySelector('#settings-tab-email[aria-selected=true]')`)
+    await wait(`location.hash==='#section=email' && document.querySelector('#settings-section-picker')?.value==='Email'`)
     await evaluate('window.__rsctfOldNavigationDocument = true')
     await cdp.send('Page.reload')
-    await wait(`!window.__rsctfOldNavigationDocument && document.querySelector('#settings-tab-email[aria-selected=true]')`)
-    await click('#settings-tab-platform')
+    await wait(`!window.__rsctfOldNavigationDocument && document.querySelector('#settings-section-picker')?.value==='Email'`)
+    await selectSettings('Platform')
     await wait(`document.querySelector('#settings-panel input[placeholder=RS]')?.value==='RSCTF'`)
     await evaluate(`document.querySelector('#settings-panel input[placeholder=RS]').focus();document.querySelector('#settings-panel input[placeholder=RS]').select()`)
     await cdp.send('Input.insertText',{text:'Unsaved fixture title'})
     await wait(`document.querySelector('#settings-panel input[placeholder=RS]')?.value==='Unsaved fixture title'`)
     const readCount = reads.filter((p)=>p==='/api/admin/config').length
-    await click('#settings-tab-email')
+    await selectSettings('Email')
     await wait(`location.hash==='#section=email'`)
     await evaluate('history.back()')
     await wait(`document.querySelector('#settings-panel input[placeholder=RS]')?.value==='Unsaved fixture title'`)

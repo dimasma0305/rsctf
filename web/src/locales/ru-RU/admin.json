@@ -439,6 +439,25 @@
           "label": "Слоган"
         },
         "title": "Настройки платформы"
+      },
+      "nav": {
+        "platform": "Платформа",
+        "account": "Учётные записи",
+        "container": "Контейнеры",
+        "email": "Почта",
+        "captcha": "Captcha",
+        "oauth": "OAuth",
+        "registry_pull": "Доступ к реестру",
+        "build_registry": "Реестр сборок",
+        "donations": "Пожертвования",
+        "ai_links": "Ссылки ИИ",
+        "agent_signatures": "Сигнатуры агентов",
+        "diagnostics": "Диагностика"
+      },
+      "status": {
+        "configured": "настроено",
+        "inactive": "выкл.",
+        "attention": "проверить"
       }
     },
     "show_all": "Показать всё",

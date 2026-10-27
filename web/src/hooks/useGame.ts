@@ -425,9 +425,9 @@ export const getGameDurationMinutes = (status: GameStatus, startTime: Dayjs, end
   Math.max(0, status === GameStatus.OnGoing ? endTime.diff(now, 'minute') : endTime.diff(startTime, 'minute'))
 
 export const toLimitTag = (t: TFunction, limit?: number) => {
-  if (!limit || limit === 0) return t('game.tag.multiplayer')
-  if (limit === 1) return t('game.tag.individual')
-  return t('game.tag.limited', { count: limit })
+  if (!limit || limit === 0) return t('interface.event.unlimited')
+  if (limit === 1) return t('interface.event.solo')
+  return t('interface.event.team_limit', { count: limit })
 }
 
 export const useAdminGame = (numId: number) => {
@@ -491,7 +491,13 @@ export const useGameScoreboardPoll = (
   numId: number,
   status: GameStatus,
   isTabActive: boolean,
-  { scoreboard, error, isValidating, mutate, key }: {
+  {
+    scoreboard,
+    error,
+    isValidating,
+    mutate,
+    key,
+  }: {
     scoreboard: unknown
     error: unknown
     isValidating: boolean

@@ -1,0 +1,98 @@
+{
+  "actions": {
+    "edit": "Edit",
+    "more": "Lainnya",
+    "retry": "Coba lagi"
+  },
+  "request": {
+    "failed": "Gagal memuat {{name}}",
+    "hint": "Periksa koneksi Anda dan coba lagi.",
+    "stale": "Menampilkan data terakhir yang dimuat. Data ini mungkin sudah berubah."
+  },
+  "navigation": {
+    "admin_section": "Bagian administrasi",
+    "events": "Event",
+    "guide": "Panduan"
+  },
+  "users": {
+    "search": "Cari pengguna",
+    "import": "Impor",
+    "import_csv": "Impor CSV",
+    "import_history": "Riwayat impor",
+    "email_verified": "Verifikasi email",
+    "verified": "Terverifikasi",
+    "unverified": "Belum terverifikasi",
+    "toggle_verification": "Ubah verifikasi email {{name}}",
+    "verification_hint": "Memperbarui status verifikasi email akun ini.",
+    "actions_for": "Tindakan untuk {{name}}",
+    "password_link": "Kirim tautan pengaturan kata sandi",
+    "reset_password": "Atur ulang kata sandi",
+    "delete": "Hapus pengguna",
+    "email_confirm": "Kirim email pengaturan kata sandi kepada {{name}}?",
+    "email_queued": "Email pengaturan kata sandi untuk {{email}} masuk antrean"
+  },
+  "settings": {
+    "section": "Bagian pengaturan",
+    "conflict_title": "Pengaturan di server telah berubah",
+    "conflict_message": "Draf Anda belum disimpan. Pertahankan draf, atau buang dan muat pengaturan terbaru.",
+    "discard_reload": "Buang draf dan muat ulang",
+    "discard_confirm": "Buang semua perubahan yang belum disimpan dan muat pengaturan terbaru? Draf saat ini tidak dapat dipulihkan.",
+    "keep_draft": "Pertahankan draf"
+  },
+  "home": {
+    "recent_events": "Event terbaru",
+    "view_all": "Lihat semua",
+    "player_guide": "Panduan pemain",
+    "pinned": "Pengumuman disematkan",
+    "live_count": "{{count}} berlangsung",
+    "upcoming_count": "{{count}} mendatang",
+    "announcements": "Berita & pengumuman"
+  },
+  "event": {
+    "live": "Berlangsung",
+    "upcoming": "Mendatang",
+    "completed": "Selesai",
+    "days": "{{count}} hari",
+    "minutes": "{{count}} mnt",
+    "hours": "{{count}} jam",
+    "participants": "Tim: {{teams}} · Pemain: {{users}}",
+    "team_limit": "Maks. {{count}} orang per tim",
+    "unlimited": "Ukuran tim tidak dibatasi",
+    "solo": "Individu"
+  },
+  "challenges": {
+    "cards": "Kartu",
+    "list": "Daftar",
+    "globe": "Globe",
+    "view": "Tampilan tantangan",
+    "filter_options": "Filter dan tampilan"
+  },
+  "dashboard": {
+    "users": "Pengguna",
+    "teams": "Tim",
+    "containers": "Container",
+    "refresh": "Muat ulang dasbor",
+    "submission_trend": "Tren pengiriman",
+    "submission_trend_description": "Jumlah pengiriman selama rentang waktu yang dipilih.",
+    "submissions": "Pengiriman",
+    "submission_trend_range": "Rentang tren pengiriman",
+    "no_submission_activity": "Belum ada pengiriman",
+    "no_submission_activity_description": "Pengiriman akan muncul saat peserta mulai menyelesaikan tantangan dalam rentang waktu ini.",
+    "popular_games": "Event populer",
+    "participants": "Peserta",
+    "reviews": "Ulasan",
+    "popular_games_scroll": "Tabel event populer yang dapat digulir",
+    "recent_reviews": "Ulasan terbaru",
+    "recent_writeups": "Writeup terbaru",
+    "recent_cheats": "Laporan kecurangan terbaru",
+    "recent_reviews_scroll": "Ulasan tantangan terbaru yang dapat digulir",
+    "recent_writeups_scroll": "Writeup terbaru yang dapat digulir",
+    "recent_cheats_scroll": "Laporan kecurangan terbaru yang dapat digulir",
+    "positive_review": "Positif",
+    "negative_review": "Negatif",
+    "day": "Hari",
+    "week": "Minggu",
+    "month": "Bulan",
+    "year": "Tahun"
+  }
+}

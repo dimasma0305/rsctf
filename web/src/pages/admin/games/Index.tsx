@@ -18,6 +18,7 @@ import {
   Table,
   Text,
   UnstyledButton,
+  VisuallyHidden,
   alpha,
   useMantineTheme,
 } from '@mantine/core'
@@ -454,14 +455,7 @@ const Games: FC = () => {
                       {gameTitle.slice(0, 1)}
                     </Avatar>
                     <Stack gap={2} className={mobileClasses.identity}>
-                      <UnstyledButton
-                        component={Link}
-                        to={`/games/${game.id}`}
-                        className={mobileClasses.publicLink}
-                        aria-label={t('admin.button.games.open_public', 'Open public page for {{name}}', {
-                          name: gameTitle,
-                        })}
-                      >
+                      <UnstyledButton component={Link} to={`/games/${game.id}`} className={mobileClasses.publicLink}>
                         <Group wrap="nowrap" gap={6} w="100%">
                           <Text
                             component="h2"
@@ -558,9 +552,9 @@ const Games: FC = () => {
                       to={`/admin/games/${game.id}/info`}
                       h={44}
                       leftSection={<Icon path={mdiPencilOutline} size={0.85} />}
-                      aria-label={t('admin.button.games.edit', 'Edit {{name}}', { name: gameTitle })}
                     >
                       {t('admin.button.games.edit_short', 'Edit game')}
+                      <VisuallyHidden> {gameTitle}</VisuallyHidden>
                     </Button>
                   </Box>
                 </Stack>

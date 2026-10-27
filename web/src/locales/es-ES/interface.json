@@ -1,0 +1,98 @@
+{
+  "actions": {
+    "edit": "Editar",
+    "more": "Más",
+    "retry": "Reintentar"
+  },
+  "request": {
+    "failed": "No se pudo cargar {{name}}",
+    "hint": "Comprueba tu conexión y vuelve a intentarlo.",
+    "stale": "Se muestran los últimos datos cargados. Puede que no estén actualizados."
+  },
+  "navigation": {
+    "admin_section": "Sección de administración",
+    "events": "Eventos",
+    "guide": "Guía"
+  },
+  "users": {
+    "search": "Buscar usuarios",
+    "import": "Importar",
+    "import_csv": "Importar CSV",
+    "import_history": "Historial de importación",
+    "email_verified": "Verificación del correo",
+    "verified": "Verificado",
+    "unverified": "Sin verificar",
+    "toggle_verification": "Cambiar la verificación del correo de {{name}}",
+    "verification_hint": "Actualiza la verificación del correo de esta cuenta.",
+    "actions_for": "Acciones para {{name}}",
+    "password_link": "Enviar enlace para configurar la contraseña",
+    "reset_password": "Restablecer contraseña",
+    "delete": "Eliminar usuario",
+    "email_confirm": "¿Enviar un correo de configuración de contraseña a {{name}}?",
+    "email_queued": "El correo de configuración de contraseña para {{email}} está en cola"
+  },
+  "settings": {
+    "section": "Sección de configuración",
+    "conflict_title": "La configuración del servidor ha cambiado",
+    "conflict_message": "El borrador no se ha guardado. Consérvalo o descártalo para cargar la configuración más reciente.",
+    "discard_reload": "Descartar y recargar",
+    "discard_confirm": "¿Descartar todos los cambios sin guardar y cargar la configuración más reciente? No se podrá recuperar el borrador actual.",
+    "keep_draft": "Conservar borrador"
+  },
+  "home": {
+    "recent_events": "Eventos recientes",
+    "view_all": "Ver todos",
+    "player_guide": "Guía del jugador",
+    "pinned": "Anuncio fijado",
+    "live_count": "{{count}} en curso",
+    "upcoming_count": "{{count}} próximos",
+    "announcements": "Noticias y anuncios"
+  },
+  "event": {
+    "live": "En curso",
+    "upcoming": "Próximo",
+    "completed": "Finalizado",
+    "days": "{{count}} d",
+    "minutes": "{{count}} min",
+    "hours": "{{count}} h",
+    "participants": "Equipos: {{teams}} · Jugadores: {{users}}",
+    "team_limit": "Hasta {{count}} por equipo",
+    "unlimited": "Tamaño de equipo ilimitado",
+    "solo": "Individual"
+  },
+  "challenges": {
+    "cards": "Tarjetas",
+    "list": "Lista",
+    "globe": "Globo",
+    "view": "Vista de desafíos",
+    "filter_options": "Filtros y vista"
+  },
+  "dashboard": {
+    "users": "Usuarios",
+    "teams": "Equipos",
+    "containers": "Contenedores",
+    "refresh": "Actualizar panel",
+    "submission_trend": "Evolución de envíos",
+    "submission_trend_description": "Volumen de envíos durante el periodo seleccionado.",
+    "submissions": "Envíos",
+    "submission_trend_range": "Periodo de los envíos",
+    "no_submission_activity": "No hay envíos",
+    "no_submission_activity_description": "Los envíos aparecerán aquí cuando los participantes empiecen a resolver desafíos durante este periodo.",
+    "popular_games": "Eventos populares",
+    "participants": "Participantes",
+    "reviews": "Reseñas",
+    "popular_games_scroll": "Tabla desplazable de eventos populares",
+    "recent_reviews": "Reseñas recientes",
+    "recent_writeups": "Soluciones recientes",
+    "recent_cheats": "Informes de trampas recientes",
+    "recent_reviews_scroll": "Reseñas recientes de desafíos desplazables",
+    "recent_writeups_scroll": "Soluciones recientes desplazables",
+    "recent_cheats_scroll": "Informes de trampas recientes desplazables",
+    "positive_review": "Positiva",
+    "negative_review": "Negativa",
+    "day": "Día",
+    "week": "Semana",
+    "month": "Mes",
+    "year": "Año"
+  }
+}

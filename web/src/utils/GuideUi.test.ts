@@ -194,7 +194,7 @@ test('delivery tutorials follow the real static, direct, VPN, and WSRX controls'
 })
 
 test('guide handbook has searchable linked topics, progress and explicit walkthrough controls', () => {
-  assert.match(navigation, /common\.tab\.guide[\s\S]*\/guide/)
+  assert.match(navigation, /interface\.navigation\.guide[\s\S]*\/guide/)
   assert.match(page, /<PageHeader/)
   assert.match(page, /filterGuideTopics\(topics, search\)/)
   assert.match(page, /selectedGuideTopic\(topics, hash\)/)

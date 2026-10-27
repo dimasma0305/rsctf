@@ -607,6 +607,9 @@ jobs:
       - name: Exercise team invites and canceled requests in Chromium
         run: node tests/visual/team-access.mjs
 
+      - name: Exercise responsive design, retries, and account actions in Chromium
+        run: node tests/visual/design-ux.mjs
+
       - name: Retain account access browser diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -615,6 +618,7 @@ jobs:
           path: |
             visual-audit-output/account-access/
             visual-audit-output/team-access/
+            visual-audit-output/design-ux/
           if-no-files-found: ignore
           retention-days: 3
 

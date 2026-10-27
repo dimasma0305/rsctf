@@ -34,20 +34,21 @@ export const GameColorMap = new Map<GameStatus, string>([
 export const getGameStatusLabel = (t: TFunction, status: GameStatus) => {
   switch (status) {
     case GameStatus.OnGoing:
-      return t('game.content.lifecycle.live', 'Live now')
+      return t('interface.event.live')
     case GameStatus.Coming:
-      return t('game.content.lifecycle.upcoming', 'Upcoming')
+      return t('interface.event.upcoming')
     case GameStatus.Ended:
-      return t('game.content.lifecycle.past', 'Completed')
+      return t('interface.event.completed')
   }
 }
 
 interface GameCardProps {
   game: BasicGameInfoModel
   showMembership?: boolean
+  layout?: 'card' | 'row'
 }
 
-export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...others }) => {
+export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, layout = 'card', ...others }) => {
   const { t } = useTranslation()
   const { locale } = useLanguage()
 
@@ -56,16 +57,14 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
   const durationMinutes = Math.max(0, endTime.diff(startTime, 'minute'))
   const durationLabel =
     durationMinutes >= 48 * 60
-      ? t('game.content.duration_days', {
-          defaultValue: '{{count}} days',
+      ? t('interface.event.days', {
           count: Math.ceil(durationMinutes / (24 * 60)),
         })
       : durationMinutes < 60
-        ? t('game.content.duration_minutes', {
-            defaultValue: '{{count}} min',
+        ? t('interface.event.minutes', {
             count: Math.max(1, durationMinutes),
           })
-        : t('game.content.duration', { hours: Math.ceil(durationMinutes / 60) })
+        : t('interface.event.hours', { count: Math.ceil(durationMinutes / 60) })
   const color = GameColorMap.get(status) ?? 'gray'
   const statusLabel = getGameStatusLabel(t, status)
   const eventTitle = title || t('game.content.untitled', 'Untitled event')
@@ -86,7 +85,7 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
   })()
 
   return (
-    <Card {...others} component="article" className={classes.root}>
+    <Card {...others} component="article" className={classes.root} data-layout={layout}>
       <Link to={`/games/${game.id}`} className={classes.link} data-guide="event-card">
         <div className={classes.visual} style={{ '--event-hue': `${eventHue}deg` } as CSSProperties}>
           {poster ? (
@@ -173,7 +172,7 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
                 variant="light"
                 leftSection={<Icon path={mdiAccountGroupOutline} size={0.58} aria-hidden="true" />}
               >
-                {t('game.content.event_participants', '{{teams}} teams · {{users}} players', {
+                {t('interface.event.participants', {
                   teams: teamCount ?? 0,
                   users: userCount ?? 0,
                 })}

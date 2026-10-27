@@ -74,11 +74,13 @@ test('dense admin inventories use readable breakpoints and manageable pages', ()
 
 test('admin navigation keeps every section discoverable without a horizontal scrollbar', () => {
   const navigation = readFileSync('src/components/admin/WithAdminTab.tsx', 'utf8')
+  const workspaceBar = readFileSync('src/components/WorkspaceBar.tsx', 'utf8')
   const rail = readFileSync('src/components/AppNavbar.tsx', 'utf8')
   const drawer = readFileSync('src/components/AppHeader.tsx', 'utf8')
   const workers = readFileSync('src/pages/admin/workers.tsx', 'utf8')
 
-  assert.match(navigation, /hiddenFrom="sm"/)
+  assert.match(workspaceBar, /isMobile && isAdmin && !context/)
+  assert.match(workspaceBar, /interface\.navigation\.admin_section/)
   assert.match(navigation, /getAdminNavigation\(user\)/)
   assert.match(rail, /getWorkspaceNavigation\(location.pathname, user/)
   assert.match(drawer, /getWorkspaceNavigation\(location.pathname, user/)
@@ -150,11 +152,14 @@ test('admin action columns expose text to assistive technology', () => {
 })
 
 test('repeated mobile action landmarks use entity-specific names', () => {
-  for (const page of ['src/pages/admin/Teams.tsx', 'src/pages/admin/Users.tsx', 'src/pages/admin/games/Index.tsx']) {
+  for (const page of ['src/pages/admin/Teams.tsx', 'src/pages/admin/games/Index.tsx']) {
     const source = readFileSync(page, 'utf8')
     assert.doesNotMatch(source, /component="section"\s+aria-label=\{t\('common\.label\.action'/, page)
     assert.match(source, /component="section"[\s\S]*?Actions for \{\{name\}\}/, page)
   }
+  const userActions = readFileSync('src/components/admin/UserActions.tsx', 'utf8')
+  assert.match(userActions, /role="group"[\s\S]*?interface\.users\.actions_for/)
+  assert.match(readFileSync('src/pages/admin/Users.tsx', 'utf8'), /<UserActions[\s\S]*?user=\{user\}/)
 })
 
 test('game notices keep one realtime connection across ordinary rerenders', () => {
