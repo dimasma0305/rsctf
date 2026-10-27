@@ -107,6 +107,10 @@ Implemented design to preserve when evaluating changes:
   - [x] Add deployment-wide gameplay/build/maintenance lanes and PostgreSQL
     regressions proving two running builds leave reset capacity across replicas.
   - [ ] Complete fixed-rate runtime benchmarks and sustained cross-game fairness tests.
+  - [ ] Investigate the measured API/database overhead from idle worker polling:
+    the initial 100/s API comparison increased median p95 from 4.35 to 6.19 ms
+    and PostgreSQL CPU from 17.16% to 29.31% of one core; retain durability and
+    bounded recovery while reducing empty-queue transaction work.
 
 - [ ] **ARCH-04: Supervise control-job execution and graceful shutdown.**
   `control_jobs::kick()` launches detached tasks without the shutdown signal used
@@ -336,6 +340,9 @@ Implemented design to preserve when evaluating changes:
     normal claims, busy polls, graceful requeue, and stale-owner completion do not
     inflate recovery counts. Router tests cover absent/weak/wrong/correct Bearer
     tokens, response headers, and zero database connections during scrapes.
+  - [x] Sustain 100 authenticated scrapes/s plus 10 health reads/s for 30 seconds:
+    p95 0.688 ms, 186 fixed series, 10,960 response bytes, 3.56% app CPU, no
+    dropped/failed requests or token leakage. Network recovery metrics remain open.
   - [x] Add periodically sampled durable queue counts/age/expired leases and
     active-worker certificate expiry gauges, with fixed labels and sample-freshness
     visibility; queries are bounded by timeout and run outside the scrape path.
@@ -366,6 +373,11 @@ Implemented design to preserve when evaluating changes:
     record the final measured source hashes and limits/tradeoffs in the report.
   - [x] Record the final source/executable hashes and all 18 fixed-rate samples in
     `tests/load/results/architecture-cache.json`, with tradeoffs in the load report.
+  - [x] Pass real Redis interruption/reconnect, bounded cross-replica staleness,
+    authoritative mutation failure, secret isolation and exactly-once consumption.
+    Six release API samples and exporter/outage checks are recorded in
+    `tests/load/results/architecture-platform.json`. The API latency regression
+    is explicitly recorded; it remains a follow-up under ARCH-03.
 
 ### Proposed slow-operation flow and completion evidence
 

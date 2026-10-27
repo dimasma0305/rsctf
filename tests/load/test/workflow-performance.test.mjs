@@ -152,6 +152,22 @@ test('integration jobs use the exact same-run test outputs instead of compiling 
   }
 })
 
+test('artifact selection distinguishes the library from the same-named binary test', () => {
+  const filter = job(ciWorkflow, 'rust').match(/test_binary="\$\(jq -rs '([^']+)'/)?.[1]
+  assert.ok(filter)
+  const artifact = (kind, executable) => ({ reason: 'compiler-artifact',
+    target: { name: 'rsctf', kind: [kind] }, profile: { test: true }, executable })
+  const select = (items) => spawnSync('jq', ['-rs', filter], {
+    input: items.map((item) => JSON.stringify(item)).join('\n'), encoding: 'utf8',
+  })
+  const binary = artifact('bin', '/tests/main')
+  const library = artifact('lib', '/tests/library')
+  assert.equal(select([binary, library]).stdout.trim(), '/tests/library')
+  assert.equal(select([library, binary]).status, 0)
+  assert.notEqual(select([binary]).status, 0)
+  assert.notEqual(select([library, artifact('lib', '/tests/duplicate')]).status, 0)
+})
+
 test('Rust lint runs beside compilation but remains a mandatory publication gate', () => {
   const lint = job(ciWorkflow, 'rust-lint')
   const rust = job(ciWorkflow, 'rust')

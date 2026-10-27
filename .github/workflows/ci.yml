@@ -164,7 +164,7 @@ jobs:
       - name: Stage same-run integration binaries
         run: |
           cargo test --all-targets --all-features --locked --no-run --message-format=json > "$RUNNER_TEMP/rsctf-test-artifacts.jsonl"
-          test_binary="$(jq -rs '[.[] | select(.reason == "compiler-artifact" and .target.name == "rsctf" and .profile.test == true and .executable != null)] | if length == 1 then .[0].executable else error("expected one rsctf library test binary") end' "$RUNNER_TEMP/rsctf-test-artifacts.jsonl")"
+          test_binary="$(jq -rs '[.[] | select(.reason == "compiler-artifact" and .target.name == "rsctf" and .target.kind == ["lib"] and .profile.test == true and .executable != null)] | if length == 1 then .[0].executable else error("expected one rsctf library test binary") end' "$RUNNER_TEMP/rsctf-test-artifacts.jsonl")"
           install -D -m 0755 "$test_binary" ci-artifacts/rsctf-tests
           sandbox_binary="$(jq -rs '[.[] | select(.reason == "compiler-artifact" and .target.name == "checker_sandbox" and .profile.test == true and .executable != null)] | if length == 1 then .[0].executable else error("expected one checker sandbox test binary") end' "$RUNNER_TEMP/rsctf-test-artifacts.jsonl")"
           install -m 0755 "$sandbox_binary" ci-artifacts/checker-sandbox-tests
@@ -242,6 +242,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          submodules: recursive
 
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev
@@ -899,6 +900,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          submodules: recursive
 
       - name: Install runtime test dependencies
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev iptables python3-venv postgresql-client
@@ -936,6 +938,7 @@ jobs:
             repository_update_preserves_challenge_solves_and_refreshes_content
             real_cleanup_preserves_snapshot_and_runtime_across_export_capture_and_destroy_failures
             real_redis_l1_fill_shares_payload_and_preserves_authoritative_operations
+            real_redis_interruption_bounds_staleness_and_fails_closed_for_credentials_and_fences
             services::control_jobs::supervisor::pg_tests
           )
           for filter in "${filters[@]}"; do

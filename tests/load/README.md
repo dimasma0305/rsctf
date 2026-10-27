@@ -1529,6 +1529,50 @@ and the live ownership assertion are in
 
 ### Optimization ledger
 
+#### Architecture HTTP/exporter comparison — 27 October 2026
+
+`architecture-platform.mjs` owns disposable databases, Redis and temporary
+application processes. It acquires the shared build/benchmark lock, migrates each
+revision, clones one fixture for identical inputs, alternates three samples per
+revision, and checks authenticated metrics and a real Redis stop/start. Use Linux,
+Docker, k6 2.0.0 and separately saved optimized binaries from the exact revisions
+in [the report](REPORT.md#architecture-api-and-exporter--27-october-2026).
+Build each through `scripts/bounded-cargo.sh build --release --locked --bin rsctf`;
+copy its executable before building the other worktree. Clear the local protocol
+package's release artifacts through the wrapper when switching worktrees so
+Cargo cannot reuse the other checkout's same-version protocol library.
+
+Build the disposable runtime tools image with the host's combined CA bundle:
+
+```sh
+docker build --secret id=system_ca,src=/etc/ssl/certs/ca-certificates.crt \
+  -t rsctf-architecture-runtime:local tests/load/architecture-runtime
+ARCHITECTURE_BASELINE_BINARY=/absolute/baseline-rsctf \
+ARCHITECTURE_CANDIDATE_BINARY=/absolute/candidate-rsctf \
+ARCHITECTURE_CANDIDATE_REVISION=44fdef0f95f58f3607ea3b054949fa700657d32e \
+PG_CONTAINER=rsctf-architecture-pg \
+ARCHITECTURE_DOCKER_NETWORK=rsctf-architecture-test \
+ARCHITECTURE_DATABASE_PASSWORD="$ARCHITECTURE_TEST_PASSWORD" \
+ARCHITECTURE_ROLE=development node tests/load/architecture-platform.mjs
+```
+
+The existing disposable PostgreSQL must be reachable as `architecture-pg:5432`
+on that network and as `127.0.0.1:55432` from the host; dedicated override variables
+in the runner support another alias/host port. It refuses a PostgreSQL container
+without the `rsctf-architecture-` prefix and writes its owned files under
+`/workspace`. The runtime image and Redis 7 Alpine image must already be available.
+Development is an explicit API-only measurement scope; the default `all` profile
+requires working checker confinement and uses an isolated privileged network
+namespace. Neither profile is a VPN or external-worker acceptance test.
+
+At 100 requests/s, the candidate's median HTTP p95 was 6.19 ms versus 4.35 ms and
+mean app CPU 7.30% versus 6.94%. The complete six-run JSON, integrity evidence,
+exporter sample and outage sample are in `results/architecture-platform.json`.
+This records a regression, not a platform performance win. Exporter p95 was
+0.688 ms at 100 scrapes/s with 186 bounded series. The separate `metrics-scrape`
+npm command accepts a loopback `TARGET`, selected `METRICS_APP_PID`, disposable
+`PG_CONTAINER`, strong `RSCTF_METRICS_TOKEN` and `SUMMARY_JSON`.
+
 #### Checker publication lock comparison — 27 October 2026
 
 Build and run the real preparation/publication component comparison against a

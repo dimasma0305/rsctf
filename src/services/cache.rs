@@ -844,3 +844,7 @@ impl Cache for TieredCache {
 #[cfg(test)]
 #[path = "cache/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cache/redis_interruption_tests.rs"]
+mod redis_interruption_tests;

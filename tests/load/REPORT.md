@@ -1,5 +1,59 @@
 # RSCTF load-test report
 
+## Architecture API and exporter — 27 October 2026
+
+The [complete run](results/architecture-platform.json) compares separately built
+release executables from `bff5d1a31ae6f964d877fd1fc11cf8328e8e99de` and
+`44fdef0f95f58f3607ea3b054949fa700657d32e`. Three alternating repetitions per
+revision offer 100 authenticated scoreboard-page requests/second for 30 seconds,
+using the same cloned PostgreSQL fixture: 500 teams, 20 challenges and 10,000
+solves. Both processes use two CPU affinities, two Tokio threads and a 50-slot
+database pool. The managed host has a four-core cgroup budget shared with the
+load generator and PostgreSQL. There is no application memory limit in this
+host-process profile. Hashes identify both binaries, the harness and service images.
+
+| Median across three repetitions | Baseline | Architecture candidate |
+| --- | ---: | ---: |
+| HTTP p95 | 4.35 ms | 6.19 ms |
+| HTTP p99 | 30.75 ms | 62.55 ms |
+| Mean app CPU (% of one core) | 6.94 | 7.30 |
+| Peak app RSS | 124.04 MiB | 127.69 MiB |
+| Mean PostgreSQL CPU (% of one core) | 17.16 | 29.31 |
+
+All **18,005 requests** completed without dropped iterations, 5xx responses or
+contract violations. Before/after integrity checks verified every scoreboard
+page against the full board, the CTFtime export and unique first solves. This
+does **not** demonstrate an API performance improvement: p95 increased 42.5%
+(1.85 ms), app CPU increased 5.1%, and PostgreSQL CPU increased 70.8%. The
+candidate also starts the newly registered durable workers in the development
+role. Idle queue polling is a follow-up target; these measurements do not isolate
+which change caused the increase. The component cache/checker gains below must
+not be advertised as a whole-platform latency gain.
+
+The supported development role was necessary because the local kernel returns
+`ENOSYS` for Landlock. These are real HTTP/database/cache measurements but do not
+exercise production engine, VPN or worker topology. GitHub's required architecture
+runtime gate separately checks privileged startup and recovery. A 500/s pilot
+dropped 3,599 iterations under load-generator pressure and is not a valid held-rate
+comparison; all reportable samples use 100/s. An earlier six-sample run also showed
+higher candidate p95, but its final outage phase exposed Docker's reassignment of
+an automatically published Redis port. The fixture now keeps that port fixed.
+
+The candidate's authenticated exporter sustained **100 scrapes/s plus 10 health
+checks/s** for 30 seconds: metrics p95 **0.688 ms**, 10,960 response bytes, 186 fixed
+series, 3.56% mean app CPU and 57.05 MiB peak RSS. Missing/wrong credentials were
+rejected; every authorized response had `no-store`, finite unique series, no
+token leakage and all eight recovery counters. No requests failed or dropped.
+These are absolute costs, not a before/after exporter speedup.
+
+Stopping and restarting the fixture's Redis kept liveness available, withdrew
+readiness, and restored readiness. All 15 malformed registration requests during
+the outage returned their expected 400 response. Separately, the real-Redis TCP
+interruption regression passed in 10.62 seconds: response staleness expires,
+authoritative reads/CAS/checked writes fail closed, local secrets remain local,
+and 32 consumers across two caches consume exactly one credential after recovery.
+
+
 ## Checker publication — 27 October 2026
 
 The [raw checker samples](results/architecture-checker.json) compare the previous
