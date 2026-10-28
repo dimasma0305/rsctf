@@ -164,6 +164,12 @@ Implemented design to preserve when evaluating changes:
   - [x] Replace detached kicks with notifications to a supervised executor; fence
     release of unstarted claims and preserve cancellation intent in PostgreSQL tests.
   - [ ] Complete process-signal/runtime lifecycle regressions and recovery measurements.
+  - [x] Reproduce and fix the partial-drain timeout panic: completed Tokio task
+    handles were polled twice after the timeout. Retain one pinned join future
+    through timeout/cancellation and verify remaining workers are dropped before
+    drain returns. The focused startup regression and the real development-process
+    rollout drain deadline pass. Rollout worker observations are injected; this
+    does not establish native-worker reconnection or full-topology acceptance.
 
 - [x] **ARCH-05: Bound and isolate end-of-event workload cleanup.**
   The ended-backend reaper fetches every eligible A&D service and KotH target and

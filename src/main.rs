@@ -845,7 +845,7 @@ fn supervise_background_tasks(
     }
 }
 
-async fn drain_background_services(mut background: BackgroundServices, role: RuntimeRole) {
+async fn drain_background_services(background: BackgroundServices, role: RuntimeRole) {
     // A round pipeline may legitimately own work for up to 240 seconds. Stop
     // new claims immediately through the watch channel, then let the in-flight
     // owner finish before another replica needs to recover its durable lease.
@@ -862,20 +862,35 @@ async fn drain_background_services(mut background: BackgroundServices, role: Run
         | RuntimeRole::Migrate => Duration::from_secs(30),
     };
 
-    let drain = async {
-        futures::future::join_all(background.optional.iter_mut()).await;
-        futures::future::join_all(background.required.iter_mut()).await;
-    };
-    if tokio::time::timeout(drain_timeout, drain).await.is_err() {
+    drain_tasks(
+        background
+            .optional
+            .into_iter()
+            .chain(background.required)
+            .collect(),
+        drain_timeout,
+    )
+    .await;
+}
+
+async fn drain_tasks(tasks: Vec<tokio::task::JoinHandle<()>>, deadline: Duration) {
+    let aborts = tasks
+        .iter()
+        .map(|task| task.abort_handle())
+        .collect::<Vec<_>>();
+    // Keep one join future alive across timeout. Reconstructing it from mutable
+    // handles would poll already-completed handles again and panic during drain.
+    let drain = futures::future::join_all(tasks);
+    tokio::pin!(drain);
+    if tokio::time::timeout(deadline, &mut drain).await.is_err() {
         tracing::warn!("background drain timed out; aborting remaining workers");
-        for task in background.optional.iter().chain(background.required.iter()) {
+        for task in aborts {
             task.abort();
         }
         // `abort` schedules cancellation. Await every handle so listener
         // sockets and supervised inner tasks are actually dropped before the
         // network singleton lease is explicitly released by the caller.
-        futures::future::join_all(background.optional).await;
-        futures::future::join_all(background.required).await;
+        drain.await;
     }
 }
 

@@ -10,6 +10,7 @@ import path from 'node:path'
 import http from 'node:http'
 import net from 'node:net'
 import { setTimeout as pause } from 'node:timers/promises'
+import { rolloutShutdown } from './control-job-shutdown/rollout.mjs'
 
 const execute = promisify(execFile)
 const binary = process.env.ARCHITECTURE_RUNTIME_BINARY
@@ -19,7 +20,11 @@ assert.match(pgContainer || '', /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/, 'disposable Post
 const database = new URL(process.env.RSCTF_TEST_DATABASE_URL)
 assert.equal(database.hostname, '127.0.0.1', 'only loopback PostgreSQL is supported')
 assert.equal(process.env.RSCTF_SHUTDOWN_DISPOSABLE, '1', 'explicit disposable acknowledgement required')
-const role = 'control'
+const scenario = process.env.SHUTDOWN_SCENARIO || 'all'
+assert.ok(['all', 'rollout'].includes(scenario))
+const role = process.env.SHUTDOWN_ROLE || 'control'
+assert.ok(role === 'control' || (role === 'development' && scenario === 'rollout'))
+if (process.env.CI) assert.equal(role, 'control', 'CI requires production confinement')
 const id = randomBytes(8).toString('hex')
 const name = `rsctf_shutdown_${id}`
 const network = `rsctf-shutdown-${id}`
@@ -40,7 +45,7 @@ const config = {
   RSCTF_JWT_SECRET: randomBytes(32).toString('hex'),
   RSCTF_IDENTITY_HASH_KEY: randomBytes(32).toString('hex'),
   RSCTF_EVENT_VPN_CREDENTIAL_KEY: randomBytes(32).toString('hex'),
-  RSCTF_CONTAINER_BACKEND: 'docker', RSCTF_STORAGE_BACKEND: 'local',
+  RSCTF_CONTAINER_BACKEND: scenario === 'rollout' ? 'none' : 'docker', RSCTF_STORAGE_BACKEND: 'local',
   RSCTF_SHARED_DOCKER_DAEMON: 'true', RSCTF_SHARED_STORAGE: 'true',
   RSCTF_DOCKER_SCOPE: name,
   RSCTF_AD_VPN_ENABLED: 'false', RSCTF_AD_VPN_SERVICES_NETWORK: network,
@@ -188,12 +193,13 @@ async function signalWhileActive(kind, job, force, releaseWork, verify) {
   assert.equal((await jobState(queued)).status, 0, 'no claim after drain begins')
   assert.equal(app.result, null, 'active work must remain supervised during drain')
   if (force) {
-    assert.equal(app.child.kill('SIGKILL'), true)
-    await finish('SIGKILL')
+    if (force === 'deadline') await finish()
+    else { assert.equal(app.child.kill('SIGKILL'), true); await finish('SIGKILL') }
+    const interruptedAfterMs = performance.now() - started
     const interrupted = await jobState(job)
     assert.equal(interrupted.status, 1)
     assert.ok(interrupted.lease_token && Date.parse(interrupted.lease_expires_at_utc) > Date.now(), 'crash must retain its live lease')
-    await releaseWork()
+    await releaseWork(true)
     // Simulate expiry only after confirmed process death. This exercises recovery
     // without falsely reporting a fifteen-minute production lease as fast recovery.
     await sql(`UPDATE "ControlPlaneJobs" SET lease_expires_at_utc=clock_timestamp()-interval '1 second' WHERE id='${job}';
@@ -201,23 +207,25 @@ async function signalWhileActive(kind, job, force, releaseWork, verify) {
     const recovery = performance.now()
     await start(); await succeeded(job); await succeeded(queued)
     await verify()
-    observations.push({ kind, scenario: 'sigterm-then-crash', recoveryAfterInjectedExpiryMs: performance.now() - recovery,
+    observations.push({ kind, scenario: force === 'deadline' ? 'sigterm-drain-deadline' : 'sigterm-then-crash',
+      interruptedAfterMs, recoveryAfterInjectedExpiryMs: performance.now() - recovery,
       productionLeaseSeconds: 900, noClaimsDuringDrain: true })
     await stop()
   } else {
     await releaseWork(); await finish(); await succeeded(job)
+    const drainMs = performance.now() - started
     assert.equal((await jobState(queued)).status, 0)
     await verify()
     const receipt = JSON.stringify((await jobState(job)).result)
     await start(); await succeeded(queued)
     assert.equal(JSON.stringify((await jobState(job)).result), receipt, 'restart must preserve terminal receipt')
     await verify(); await stop()
-    observations.push({ kind, scenario: 'graceful-sigterm', totalWithRestartMs: performance.now() - started, noClaimsDuringDrain: true })
+    observations.push({ kind, scenario: 'graceful-sigterm', drainMs, totalWithRestartMs: performance.now() - started, noClaimsDuringDrain: true })
   }
 }
 try {
   await sql(`CREATE DATABASE "${name}"`); ownsDatabase = true
-  await docker(['network', 'create', '--internal', '--subnet', subnet, network]); ownsNetwork = true
+  if (scenario === 'all') { await docker(['network', 'create', '--internal', '--subnet', subnet, network]); ownsNetwork = true }
   await new Promise(resolve => gateServer.listen(0, '0.0.0.0', resolve))
   await start('migrate')
   let seed = await readFile(new URL('./restore-drill/seed.sql', import.meta.url), 'utf8')
@@ -227,34 +235,41 @@ try {
     UPDATE "GameChallenges" SET "Type"=1;
     INSERT INTO "GameChallenges" SELECT (jsonb_populate_record(NULL::"GameChallenges",to_jsonb(c)||'{"id":2,"Type":4,"title":"Reset shutdown","ad_allow_self_reset":true}')).* FROM "GameChallenges" c WHERE id=1;
     INSERT INTO "AdTeamServices" (id,game_id,participation_id,challenge_id,host,port,status) VALUES (1,1,1,2,'',80,0)`)
-  for (const force of [false, true]) {
-    const fixture = await buildFixture(1)
-    await start()
-    const job = await enqueue('ChallengeBuild', 1, { challengeId: 1, trigger: 'Manual', attempt: force ? 2 : 1 }, fixture.fingerprint)
-    await until(() => fixture.gate.entered, 'Docker RUN reached external barrier', 60_000)
-    await signalWhileActive('ChallengeBuild', job, force, () => fixture.release(), async () => {
-      const row = await jobState(job)
-      const inspect = JSON.parse((await docker(['image', 'inspect', fixture.image])).stdout)[0]
-      assert.equal(row.result.imageDigest, inspect.Id)
-      assert.equal(await sql(`SELECT count(*) FROM "BuildRecords" WHERE challenge_id=1 AND attempt=${force ? 2 : 1}`), '1', 'one build receipt per attempt')
-    })
+  if (scenario === 'all') {
+    for (const force of [false, true]) {
+      const fixture = await buildFixture(1)
+      await start()
+      const job = await enqueue('ChallengeBuild', 1, { challengeId: 1, trigger: 'Manual', attempt: force ? 2 : 1 }, fixture.fingerprint)
+      await until(() => fixture.gate.entered, 'Docker RUN reached external barrier', 60_000)
+      await signalWhileActive('ChallengeBuild', job, force, async interrupted => {
+        if (interrupted) await until(() => fixture.gate.responses.size === 0,
+          'Docker cancelled the disconnected build before lease recovery', 10_000)
+        fixture.release()
+      }, async () => {
+        const row = await jobState(job)
+        const inspect = JSON.parse((await docker(['image', 'inspect', fixture.image])).stdout)[0]
+        assert.equal(row.result.imageDigest, inspect.Id)
+        assert.equal(await sql(`SELECT count(*) FROM "BuildRecords" WHERE challenge_id=1 AND attempt=${force ? 2 : 1}`), '1', 'one build receipt per attempt')
+      })
+    }
+    const imageId = JSON.parse((await docker(['image', 'inspect', [...images][0]])).stdout)[0].Id
+    await sql(`UPDATE "GameChallenges" SET container_image='${imageId}',build_image_digest='${imageId}',build_status=1 WHERE id=2`)
+    for (const force of [false, true, 'deadline']) {
+      const previous = await sql('SELECT COALESCE(container_id,\'\') FROM "AdTeamServices" WHERE id=1')
+      const job = await enqueue('AdReset', 2, { serviceId: 1, participationId: 1, expectedBackendId: previous || null, playerPolicy: false })
+      await lockCheckpoint(job); await start()
+      await until(activeCheckpoint, 'reset created Docker replacement and is checkpointing', 60_000)
+      const created = await resources(job); assert.equal(created.length, 1)
+      await signalWhileActive('AdReset', job, force, unlockCheckpoint, async () => {
+        assert.deepEqual(await resources(job), created, 'recovery must reuse the exact Docker replacement')
+        const backend = await sql('SELECT container_id FROM "AdTeamServices" WHERE id=1')
+        assert.ok(created[0].startsWith(backend) || backend.startsWith(created[0]))
+        assert.equal((await jobState(job)).result.reset, true)
+        if (previous) assert.equal((await docker(['ps', '-aq', '--filter', `id=${previous}`])).stdout.trim(), '', 'retired container must be gone')
+      })
+    }
   }
-  const imageId = JSON.parse((await docker(['image', 'inspect', [...images][0]])).stdout)[0].Id
-  await sql(`UPDATE "GameChallenges" SET container_image='${imageId}',build_image_digest='${imageId}',build_status=1 WHERE id=2`)
-  for (const force of [false, true]) {
-    const previous = await sql('SELECT COALESCE(container_id,\'\') FROM "AdTeamServices" WHERE id=1')
-    const job = await enqueue('AdReset', 2, { serviceId: 1, participationId: 1, expectedBackendId: previous || null, playerPolicy: false })
-    await lockCheckpoint(job); await start()
-    await until(activeCheckpoint, 'reset created Docker replacement and is checkpointing', 60_000)
-    const created = await resources(job); assert.equal(created.length, 1)
-    await signalWhileActive('AdReset', job, force, unlockCheckpoint, async () => {
-      assert.deepEqual(await resources(job), created, 'recovery must reuse the exact Docker replacement')
-      const backend = await sql('SELECT container_id FROM "AdTeamServices" WHERE id=1')
-      assert.ok(created[0].startsWith(backend) || backend.startsWith(created[0]))
-      assert.equal((await jobState(job)).result.reset, true)
-      if (previous) assert.equal((await docker(['ps', '-aq', '--filter', `id=${previous}`])).stdout.trim(), '', 'retired container must be gone')
-    })
-  }
+  await rolloutShutdown({ sql, start, enqueue, until, jobState, signalWhileActive })
 } catch (error) { failure = error }
 finally {
   for (const gate of gates.values()) { gate.open = true; for (const response of gate.responses) response.end('cleanup\n') }
@@ -262,7 +277,12 @@ finally {
   if (app) { app.child.kill('SIGKILL'); await app.exited; logs.push(app.log()); app = null }
   gateServer.closeAllConnections(); await new Promise(resolve => gateServer.close(resolve))
   for (const job of operations) for (const container of await resources(job).catch(() => [])) await docker(['rm', '-f', container]).catch(error => { failure ||= error })
-  for (const image of images) await docker(['image', 'rm', '-f', image]).catch(error => { failure ||= error })
+  // Include prior image IDs made dangling by rebuilding this invocation's tag.
+  const scope = hash(`explicit\0${name}`).slice(0, 32)
+  const builtIds = (await docker(['image', 'ls', '-aq', '--filter', `label=rsctf.image.scope=${scope}`])).stdout.trim().split('\n').filter(Boolean)
+  for (const image of new Set([...images, ...builtIds])) await docker(['image', 'rm', '-f', image]).catch(error => {
+    if (!/No such image/.test(error.stderr || '')) failure ||= error
+  })
   if (ownsNetwork) await docker(['network', 'rm', network]).catch(error => { failure ||= error })
   if (ownsDatabase) {
     ownsDatabase = false // Drop from the administrative connection, never from the target.
@@ -274,8 +294,12 @@ finally {
   if (failure) await writeFile(reportPath + '.log', diagnostics, { mode: 0o600 })
   await writeFile(reportPath, JSON.stringify({ date: new Date().toISOString(), role, kernel: release(),
     sourceRevision: process.env.GITHUB_SHA || (await execute('git', ['rev-parse', 'HEAD'])).stdout.trim(),
+    sourceDirty: Boolean((await execute('git', ['status', '--porcelain'])).stdout.trim()),
+    binarySourceRevision: process.env.ARCHITECTURE_RUNTIME_SOURCE_REVISION || process.env.GITHUB_SHA || null,
     binarySha256: hash(await readFile(binary)), harnessSha256: hash(await readFile(new URL(import.meta.url))),
-    scope: 'Real Docker archive builds and A&D resets during SIGTERM and forced process death. Crash recovery injects lease expiry after death; no production recovery-time claim. VPN disabled.',
+    rolloutFixtureSha256: hash(await readFile(new URL('./control-job-shutdown/rollout.mjs', import.meta.url))),
+    seedSha256: hash(await readFile(new URL('./restore-drill/seed.sql', import.meta.url))),
+    scope: `${scenario === 'all' ? 'Real Docker archive builds and A&D resets; ' : ''}durable rollout with injected worker observations. SIGTERM and forced process death. Crash recovery injects lease expiry after death; no production recovery-time claim. VPN disabled; no native worker reconnect.`,
     observations, passed: !failure, failure: failure?.message }, null, 2) + '\n')
   await rm(directory, { recursive: true, force: true })
 }

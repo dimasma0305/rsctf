@@ -967,7 +967,7 @@ jobs:
           RESTORE_REPORT: ${{ runner.temp }}/architecture-runtime/restore-report.json
         run: node tests/load/restore-drill.mjs
 
-      - name: Interrupt active Docker builds and resets
+      - name: Interrupt active builds, resets and durable rollouts
         env:
           ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture
           SHUTDOWN_PG_CONTAINER: ${{ job.services.postgres.id }}

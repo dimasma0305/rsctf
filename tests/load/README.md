@@ -25,7 +25,13 @@ The harness creates and removes its own database, internal bridge, build tags,
 and operation-labelled containers. It never stops an existing application.
 Crash cases assert the live lease is retained, then inject expiry **after the old
 process is confirmed dead**. Recovery measurements exclude the production
-15-minute lease wait. VPN traffic and native-worker rollouts need separate tests.
+15-minute lease wait. A reset and a rollout also exhaust the real process drain
+deadline while work remains blocked, then recover after injected expiry.
+The rollout cases use real PostgreSQL desired-state changes and inject worker
+readiness observations; they do not exercise native worker execution/reconnection.
+`SHUTDOWN_SCENARIO=rollout SHUTDOWN_ROLE=development` runs only these control-flow
+cases on a host without checker confinement. CI always uses the production control
+role, with confinement enabled. VPN traffic needs separate tests.
 
 The same job runs a destructive **disposable-fixture-only** restore drill. It
 creates random databases inside the selected PostgreSQL container; it never backs

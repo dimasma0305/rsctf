@@ -16,6 +16,7 @@ for (const [name, overrides, expected] of [
   ['remote database', { RSCTF_TEST_DATABASE_URL: 'postgres://fixture@production.invalid/db' }, /only loopback PostgreSQL/],
   ['container option injection', { SHUTDOWN_PG_CONTAINER: '--privileged' }, /disposable PostgreSQL container/],
   ['relative binary', { ARCHITECTURE_RUNTIME_BINARY: 'rsctf' }, /absolute tested server binary/],
+  ['CI development fallback', { CI: 'true', SHUTDOWN_ROLE: 'development', SHUTDOWN_SCENARIO: 'rollout' }, /CI requires production confinement/],
 ]) {
   test(`shutdown harness refuses unsafe setup: ${name}`, () => {
     const result = spawnSync(process.execPath, [script], { env: { ...env, ...overrides }, encoding: 'utf8', timeout: 5000 })

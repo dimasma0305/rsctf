@@ -22,8 +22,12 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 For shutdown during external work, run the
 [control-job shutdown harness](../../../../tests/load/control-job-shutdown.mjs).
 It uses the real control process and Docker builds/resets, with graceful and forced
-exit cases. The [load README](../../../../tests/load/README.md) documents required
-isolation and the explicitly injected crash-recovery lease expiry.
+exit cases. Rollout cases use durable worker state with injected observations;
+they do not replace native-worker acceptance. The [load README](../../../../tests/load/README.md)
+documents required isolation and the explicitly injected crash-recovery lease expiry.
+The focused Rust regression for a partially completed drain is in
+[startup_tests.rs](../../../../src/startup_tests.rs):
+`scripts/bounded-cargo.sh test --bin rsctf drain_deadline_joins_completed_tasks_once_and_cancels_remaining_work`.
 
 For backup consistency, use the
 [disposable restore drill](../../../../tests/load/restore-drill.mjs) and its
