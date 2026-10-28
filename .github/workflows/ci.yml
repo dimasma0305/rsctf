@@ -1014,6 +1014,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends busybox-static
 
+      - name: Validate engineering navigation links
+        run: |
+          node --test .agents/skills/rsctf-engineering/scripts/check-navigation.test.mjs
+          node .agents/skills/rsctf-engineering/scripts/check-navigation.mjs
+
       - name: Enforce Rust file size limit
         shell: bash
         run: |
@@ -1095,7 +1100,7 @@ jobs:
             echo "::error::Container publication must use native architecture runners, not QEMU."
             exit 1
           fi
-          test "$(grep -c 'docker/github-builder/.github/workflows/build.yml@58cb9f5b71b1836d6f690c1e95effdeb9b98cb8a' "$workflow")" -eq 2
+          test "$(grep -c 'docker/github-builder/.github/workflows/build.yml@4345a1cea1e4cfb65c8a5e2b1b80f9e630068827' "$workflow")" -eq 2
           grep -q '^  workflow_dispatch:$' "$workflow"
           if grep -q '^    branches:' "$workflow" || grep -q '^  pull_request:' "$workflow"; then
             echo "::error::Native container builds must remain manual; normal pushes and pull requests use application CI only."

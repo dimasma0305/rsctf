@@ -5,11 +5,36 @@ description: Implement, review, debug, optimize, test, or deploy changes in the 
 
 # RSCTF Engineering
 
-Use this workflow for repository work under `/root/homelab/rsctf`. Keep the design small,
+Use this workflow from the current RSCTF Git checkout (resolve it with
+`git rev-parse --show-toplevel`). Keep the design small,
 preserve public behavior unless the request changes it, and finish with evidence rather
 than an implementation-only handoff.
 
 ## Route the task
+
+Start with [application-map.md](references/application-map.md) to find a feature,
+symptom, or request flow. Follow its links only into the relevant layer:
+
+- Pages, shared UI, hooks, viewer identity, and browser cache:
+  [frontend-map.md](references/frontend-map.md)
+- API registration, domain owners, SQL, security, and library reuse:
+  [backend-map.md](references/backend-map.md)
+- Roles, background work, runtimes, agents, storage, and deployment:
+  [runtime-map.md](references/runtime-map.md)
+- Focused checks, browser/load suites, CI, and release evidence:
+  [checks-map.md](references/checks-map.md)
+- Worktree integration, batching, and build resource limits:
+  [fast-development.md](references/fast-development.md)
+
+The maps locate code; the rules below govern changes. Confirm paths and behavior
+in the active branch. Do not treat a TODO or another branch's implementation as
+shipped behavior. Maintain the relevant map when moving an owner, adding a feature,
+or changing its verification entry point; run
+`node .agents/skills/rsctf-engineering/scripts/check-navigation.mjs` afterward.
+It checks local links and explicit coverage of public controller/service/hub/storage
+module families and frontend pages; a new domain needs a map entry.
+The [effectiveness report](references/navigation-effectiveness.md) records coverage,
+owner-lookup measurements and their limits.
 
 Read only the references relevant to the work, but read each selected file completely:
 
