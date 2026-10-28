@@ -1,0 +1,30 @@
+{
+  "date": "2026-10-28T09:53:52.176Z",
+  "role": "development",
+  "kernel": "6.18.55",
+  "sourceRevision": "e3842eba9bc60c748522ef1a74557c8564cfe16c",
+  "binarySha256": "4aee29146ab647596985322a412cff7b70b4855924fda92216ff86f082042874",
+  "harnessSha256": "9ffc80d5d5bbc242338a447c3a6765811d8a6176bc280dc6d9342f5ae0f4c9fc",
+  "rolloutFixtureSha256": "f4be083f7936762ae33e9edbb200374ee5a261d60a2ad5ccb50b0ef6d40752c0",
+  "seedSha256": "b1ff81ea5747e2730dc84fadf8f151569f46e67bd9c0b4723031454d94719cf1",
+  "scope": "durable rollout with injected worker observations. SIGTERM and forced process death. Crash recovery injects lease expiry after death; no production recovery-time claim. VPN disabled; no native worker reconnect.",
+  "observations": [
+    {
+      "kind": "WorkloadRollout",
+      "scenario": "graceful-sigterm",
+      "drainMs": 5163.584744,
+      "totalWithRestartMs": 10817.199027,
+      "noClaimsDuringDrain": true
+    },
+    {
+      "kind": "WorkloadRollout",
+      "scenario": "sigterm-then-crash",
+      "interruptedAfterMs": 1328.3750519999994,
+      "recoveryAfterInjectedExpiryMs": 370.4467070000028,
+      "productionLeaseSeconds": 900,
+      "noClaimsDuringDrain": true
+    }
+  ],
+  "passed": false,
+  "failure": "Expected values to be strictly equal:\n\n101 !== 0\n"
+}

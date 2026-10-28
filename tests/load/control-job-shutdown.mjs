@@ -179,8 +179,8 @@ async function buildFixture(challenge) {
   const blob = path.join(directory, archive.slice(0, 2), archive.slice(2, 4), archive)
   await mkdir(path.dirname(blob), { recursive: true }); await writeFile(blob, await readFile(archivePath))
   await sql(`UPDATE "GameChallenges" SET container_image=${literal(image)}, original_archive_blob_path='${archive}',
-    build_context_subdir='', build_status=5 WHERE id=${challenge}`)
-  const fingerprint = hash(JSON.stringify({ archive, containerImage: image, context: '' }))
+    build_context_subdir='.', build_status=5 WHERE id=${challenge}`)
+  const fingerprint = hash(JSON.stringify({ archive, containerImage: image, context: '.' }))
   return { image, fingerprint, gate, release() { gate.open = true; for (const response of gate.responses) response.end('continue\n') } }
 }
 async function signalWhileActive(kind, job, force, releaseWork, verify) {
@@ -231,7 +231,7 @@ try {
   let seed = await readFile(new URL('./restore-drill/seed.sql', import.meta.url), 'utf8')
   for (const [key, value] of Object.entries({ USER: randomUUID(), POSTER: 'a'.repeat(64), WRITEUP: 'b'.repeat(64), POSTER_SIZE: 1, WRITEUP_SIZE: 1 })) seed = seed.replaceAll(`:${key}:`, String(value))
   await sql(seed)
-  await sql(`UPDATE "Games" SET start_time_utc=now()-interval '1 hour',end_time_utc=now()+interval '1 day';
+  await sql(`UPDATE "Games" SET start_time_utc=now()-interval '1 hour',end_time_utc=now()+interval '1 day',ad_scoring_paused=true;
     UPDATE "GameChallenges" SET "Type"=1;
     INSERT INTO "GameChallenges" SELECT (jsonb_populate_record(NULL::"GameChallenges",to_jsonb(c)||'{"id":2,"Type":4,"title":"Reset shutdown","ad_allow_self_reset":true}')).* FROM "GameChallenges" c WHERE id=1;
     INSERT INTO "AdTeamServices" (id,game_id,participation_id,challenge_id,host,port,status) VALUES (1,1,1,2,'',80,0)`)
@@ -240,7 +240,11 @@ try {
       const fixture = await buildFixture(1)
       await start()
       const job = await enqueue('ChallengeBuild', 1, { challengeId: 1, trigger: 'Manual', attempt: force ? 2 : 1 }, fixture.fingerprint)
-      await until(() => fixture.gate.entered, 'Docker RUN reached external barrier', 60_000)
+      await until(async () => {
+        const row = await jobState(job)
+        assert.notEqual(row.status, 3, `build failed before external barrier: ${row.error}`)
+        return fixture.gate.entered
+      }, 'Docker RUN reached external barrier', 60_000)
       await signalWhileActive('ChallengeBuild', job, force, async interrupted => {
         if (interrupted) await until(() => fixture.gate.responses.size === 0,
           'Docker cancelled the disconnected build before lease recovery', 10_000)
@@ -270,7 +274,14 @@ try {
     }
   }
   await rolloutShutdown({ sql, start, enqueue, until, jobState, signalWhileActive })
-} catch (error) { failure = error }
+} catch (error) {
+  failure = error
+  if (ownsDatabase) {
+    const jobs = await sql(`SELECT COALESCE(json_agg(json_build_object('kind',kind,'status',status,'error',error)), '[]')
+      FROM "ControlPlaneJobs"`).catch(() => '[]')
+    logs.push(`Fixture job outcomes: ${jobs}`)
+  }
+}
 finally {
   for (const gate of gates.values()) { gate.open = true; for (const response of gate.responses) response.end('cleanup\n') }
   await unlockCheckpoint().catch(error => { failure ||= error })

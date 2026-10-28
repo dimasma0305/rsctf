@@ -1,5 +1,25 @@
 # RSCTF load-test report
 
+## Shutdown correctness — 28 October 2026
+
+A real `SIGTERM` during a rollout that outlived the drain budget exposed a panic:
+the timeout dropped the join future, then shutdown polled completed Tokio handles
+again. The [before report](results/control-job-shutdown-before.json) records exit
+101 using the earlier server binary (`4aee2914…`). Keeping one pinned join future
+through cancellation fixes the double poll. The [after report](results/control-job-shutdown-rollout.json)
+uses committed source `10db7448`, records exact server/harness/fixture hashes and
+passes graceful shutdown, SIGKILL recovery and the real drain deadline. The latter
+exits cleanly in 35.09 seconds (five seconds of HTTP deregistration plus the
+30-second worker budget). No new job is claimed during drain, and restart preserves
+the workload generation and terminal receipt.
+
+These are development-role control-flow tests with real PostgreSQL and injected
+worker observations, not native-worker or VPN acceptance. Crash recovery retains
+the live lease, then injects expiry only after the old process exits; the recorded
+recovery time excludes the production 15-minute lease. This is a correctness fix,
+not a throughput improvement. Production-role Docker shutdown checks run separately
+in CI with Landlock/seccomp enabled.
+
 ## Disposable restore drills — 28 October 2026
 
 The [local](results/architecture-restore-local.json) and

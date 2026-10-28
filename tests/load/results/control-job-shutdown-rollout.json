@@ -1,0 +1,39 @@
+{
+  "date": "2026-10-28T10:09:12.416Z",
+  "role": "development",
+  "kernel": "6.18.55",
+  "sourceRevision": "10db74485402fa6b8fb25ab975358d1f7ec9b7bf",
+  "sourceDirty": false,
+  "binarySourceRevision": "10db74485402fa6b8fb25ab975358d1f7ec9b7bf",
+  "binarySha256": "12bf142ce481d74a2b81c474692649737843fa23a60b16504271d8ce7590f040",
+  "harnessSha256": "b18041cbaad05a271b866b895b34fc757d29dce0d06989126a2cec2274454777",
+  "rolloutFixtureSha256": "f4be083f7936762ae33e9edbb200374ee5a261d60a2ad5ccb50b0ef6d40752c0",
+  "seedSha256": "b1ff81ea5747e2730dc84fadf8f151569f46e67bd9c0b4723031454d94719cf1",
+  "scope": "durable rollout with injected worker observations. SIGTERM and forced process death. Crash recovery injects lease expiry after death; no production recovery-time claim. VPN disabled; no native worker reconnect.",
+  "observations": [
+    {
+      "kind": "WorkloadRollout",
+      "scenario": "graceful-sigterm",
+      "drainMs": 5158.856366,
+      "totalWithRestartMs": 10804.377833,
+      "noClaimsDuringDrain": true
+    },
+    {
+      "kind": "WorkloadRollout",
+      "scenario": "sigterm-then-crash",
+      "interruptedAfterMs": 1317.1727740000024,
+      "recoveryAfterInjectedExpiryMs": 415.7460339999998,
+      "productionLeaseSeconds": 900,
+      "noClaimsDuringDrain": true
+    },
+    {
+      "kind": "WorkloadRollout",
+      "scenario": "sigterm-drain-deadline",
+      "interruptedAfterMs": 35090.560752,
+      "recoveryAfterInjectedExpiryMs": 383.56388900000456,
+      "productionLeaseSeconds": 900,
+      "noClaimsDuringDrain": true
+    }
+  ],
+  "passed": true
+}
