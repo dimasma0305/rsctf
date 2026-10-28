@@ -1,5 +1,27 @@
 # RSCTF load-test report
 
+## Disposable restore drills — 28 October 2026
+
+The [local](results/architecture-restore-local.json) and
+[S3](results/architecture-restore-s3.json) drills use harness revision
+`16e8e28c` and the debug server built from `4908ab90`; no runtime source changed
+between those revisions. Each report records exact source, fixture, adapter and
+binary hashes. Both restored all rows in 191 tables after deleting the source
+database, retained the account session and nonzero score, and downloaded two
+referenced objects. Missing/corrupted objects and an incorrectly signed session
+were rejected. The S3 run restored current object contents into a fresh RustFS
+prefix; the local run restored sharded files. Both restored mutable working files.
+
+| Fixture | Database dump | Backup observed | Restore through readiness and HTTP smoke |
+| --- | --- | --- | --- |
+| Local blobs | 852,204 bytes | 298 ms | 2,657 ms |
+| S3 blobs | 852,207 bytes | 324 ms | 2,861 ms |
+
+These are single-run correctness timings for a tiny stopped-writer fixture, not
+production recovery targets or before/after performance gains. They exclude
+initial writer drain, offsite transfer and final process teardown. Multi-host
+working storage, object-version history and active container recovery remain open.
+
 ## Architecture API after idle-poll correction — 27 October 2026
 
 The [second complete comparison](results/architecture-platform.json) uses baseline
