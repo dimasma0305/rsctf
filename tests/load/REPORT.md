@@ -20,6 +20,19 @@ recovery time excludes the production 15-minute lease. This is a correctness fix
 not a throughput improvement. Production-role Docker shutdown checks run separately
 in CI with Landlock/seccomp enabled.
 
+The [complete CI run](https://github.com/dimasma0305/rsctf/actions/runs/40670463254)
+passed on PR head `6fda8f8b` (tested merge `0dddcc8a`). Its
+[control-role report](results/control-job-shutdown-ci.json) passes all eight
+scenarios: two builds, three resets and three durable rollouts. Graceful drains
+take 5.12 seconds; the reset and rollout deadline cases exit cleanly at 35.06
+seconds. Reset recovery retains the exact Docker replacement; rollout recovery
+does not advance generation again. The five interrupted cases recover 0.50–1.19
+seconds after **injected** expiry, not after the initial signal. These are single
+correctness-run observations, not an availability target. The report records a
+dirty CI workspace; its harness and fixture hashes match the committed files,
+and the workflow separately verifies the source revision of the same-run server
+artifact before executing it. No production deployment is represented.
+
 ## Disposable restore drills — 28 October 2026
 
 The [local](results/architecture-restore-local.json) and

@@ -163,7 +163,15 @@ Implemented design to preserve when evaluating changes:
   [process shutdown](src/main.rs).
   - [x] Replace detached kicks with notifications to a supervised executor; fence
     release of unstarted claims and preserve cancellation intent in PostgreSQL tests.
-  - [ ] Complete process-signal/runtime lifecycle regressions and recovery measurements.
+  - [x] Exercise real control-role SIGTERM during Docker builds and A&D resets,
+    forced process death before a reset replacement checkpoint, and the actual
+    drain deadline. CI at `6fda8f8b` passes eight shutdown scenarios, including
+    durable rollouts with injected worker observations. Claims stop during drain;
+    reset recovery reuses the same Docker container and rollout recovery preserves
+    its generation. Crash cases retain leases and inject expiry after process death.
+  - [ ] Complete native-worker rollout/reconnection acceptance and recovery
+    measurements that include the production lease wait; injected worker readiness
+    and expiry do not establish those guarantees.
   - [x] Reproduce and fix the partial-drain timeout panic: completed Tokio task
     handles were polled twice after the timeout. Retain one pinned join future
     through timeout/cancellation and verify remaining workers are dropped before

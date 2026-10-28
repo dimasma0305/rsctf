@@ -22,7 +22,8 @@ node tests/load/control-job-shutdown.mjs
 ```
 
 The harness creates and removes its own database, internal bridge, build tags,
-and operation-labelled containers. It never stops an existing application.
+operation-labelled containers and their Docker-generated anonymous volumes.
+It never stops an existing application.
 Crash cases assert the live lease is retained, then inject expiry **after the old
 process is confirmed dead**. Recovery measurements exclude the production
 15-minute lease wait. A reset and a rollout also exhaust the real process drain

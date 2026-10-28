@@ -33,6 +33,7 @@ const directory = await mkdtemp(path.join(tmpdir(), 'rsctf-shutdown-'))
 const reportPath = path.resolve(process.env.SHUTDOWN_REPORT || 'tests/load/results/control-job-shutdown.json')
 const observations = []
 const images = new Set()
+const volumes = new Set()
 const operations = new Set()
 const logs = []
 const gates = new Map()
@@ -157,6 +158,14 @@ async function activeCheckpoint() {
 async function resources(job) {
   return (await docker(['ps', '-aq', '--filter', `label=rsctf.operation=ad-reset:${job}`])).stdout.trim().split('\n').filter(Boolean)
 }
+async function trackVolumes(container) {
+  const inspected = JSON.parse((await docker(['inspect', container])).stdout)[0]
+  for (const mount of inspected.Mounts || []) {
+    if (mount.Type !== 'volume') continue
+    assert.match(mount.Name, /^[a-f0-9]{64}$/, 'fixture must use only Docker-generated anonymous volumes')
+    volumes.add(mount.Name)
+  }
+}
 const gateServer = http.createServer((req, res) => {
   const gate = gates.get(req.url)
   if (!gate) { res.writeHead(404).end(); return }
@@ -262,8 +271,13 @@ try {
       const previous = await sql('SELECT COALESCE(container_id,\'\') FROM "AdTeamServices" WHERE id=1')
       const job = await enqueue('AdReset', 2, { serviceId: 1, participationId: 1, expectedBackendId: previous || null, playerPolicy: false })
       await lockCheckpoint(job); await start()
-      await until(activeCheckpoint, 'reset created Docker replacement and is checkpointing', 60_000)
+      await until(async () => {
+        const row = await jobState(job)
+        assert.notEqual(row.status, 3, `reset failed before external checkpoint: ${row.error}`)
+        return activeCheckpoint()
+      }, 'reset created Docker replacement and is checkpointing', 60_000)
       const created = await resources(job); assert.equal(created.length, 1)
+      await trackVolumes(created[0])
       await signalWhileActive('AdReset', job, force, unlockCheckpoint, async () => {
         assert.deepEqual(await resources(job), created, 'recovery must reuse the exact Docker replacement')
         const backend = await sql('SELECT container_id FROM "AdTeamServices" WHERE id=1')
@@ -287,7 +301,11 @@ finally {
   await unlockCheckpoint().catch(error => { failure ||= error })
   if (app) { app.child.kill('SIGKILL'); await app.exited; logs.push(app.log()); app = null }
   gateServer.closeAllConnections(); await new Promise(resolve => gateServer.close(resolve))
-  for (const job of operations) for (const container of await resources(job).catch(() => [])) await docker(['rm', '-f', container]).catch(error => { failure ||= error })
+  for (const job of operations) for (const container of await resources(job).catch(() => [])) {
+    await trackVolumes(container).catch(error => { failure ||= error })
+    await docker(['rm', '-f', container]).catch(error => { failure ||= error })
+  }
+  for (const volume of volumes) await docker(['volume', 'rm', volume]).catch(error => { failure ||= error })
   // Include prior image IDs made dangling by rebuilding this invocation's tag.
   const scope = hash(`explicit\0${name}`).slice(0, 32)
   const builtIds = (await docker(['image', 'ls', '-aq', '--filter', `label=rsctf.image.scope=${scope}`])).stdout.trim().split('\n').filter(Boolean)
