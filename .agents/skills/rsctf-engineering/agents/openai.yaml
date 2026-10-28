@@ -1,4 +1,4 @@
 interface:
   display_name: "RSCTF Engineering"
-  short_description: "Implement, verify, optimize, and deploy RSCTF changes safely."
-  default_prompt: "Apply the RSCTF repository workflow to implement and verify this change, including production deployment when required."
+  short_description: "Find RSCTF feature owners, implement changes, and verify them."
+  default_prompt: "Start with the RSCTF application map to locate the feature, owners, and focused checks. Apply the engineering workflow, including production deployment when required."
