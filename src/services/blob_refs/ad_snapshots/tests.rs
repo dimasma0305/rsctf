@@ -261,6 +261,10 @@ async fn extended_event_and_replaced_runtime_get_new_final_snapshots_without_los
         b"first final state"
     );
 
+    // Pause after staging admission has committed. Both captures still overlap,
+    // but this publication test must not race the separate fail-fast admission
+    // guard, which may legitimately return RetryableUnavailable under contention.
+    storage.hold_next.store(true, Ordering::SeqCst);
     let (one, two) = tokio::join!(
         store_service_snapshot(
             &db.pool,
@@ -270,19 +274,29 @@ async fn extended_event_and_replaced_runtime_get_new_final_snapshots_without_los
             "second.tar",
             b"second final state"
         ),
-        store_service_snapshot(
-            &db.pool,
-            &storage,
-            source("runtime-7", later_end),
-            None,
-            "second.tar",
-            b"concurrent second final state"
-        )
+        async {
+            storage.started.notified().await;
+            let result = store_service_snapshot(
+                &db.pool,
+                &storage,
+                source("runtime-7", later_end),
+                None,
+                "second.tar",
+                b"concurrent second final state",
+            )
+            .await;
+            storage.resume.notify_one();
+            result
+        }
     );
     let second = one.unwrap().unwrap();
     assert_eq!(second.id, two.unwrap().unwrap().id);
     assert_ne!(first.id, second.id);
     assert_owned(&db.pool, &second).await;
+    assert_eq!(
+        storage.load(&second.hash).await.unwrap(),
+        b"concurrent second final state"
+    );
     assert!(!storage.exists(&first.hash).await);
     assert_eq!(
         available_service_snapshots(&db.pool, &[7]).await.unwrap(),
