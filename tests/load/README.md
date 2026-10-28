@@ -73,7 +73,10 @@ the same Ubuntu version to preserve libc compatibility.
 It runs the PostgreSQL import/repository recovery, checker publication/GC,
 Docker snapshot teardown, Redis authoritative-operation, and control-job lane
 regressions. `architecture-runtime.mjs` then starts real `all`, `control`, and
-cooperating `engine`/`network`/`web` processes. It checks authenticated metrics,
+cooperating `engine`/`network`/`web` processes. These roles start sequentially
+because the process fixture shares one network namespace. Deployed containers
+have separate namespaces; this fixture does not validate concurrent checker
+workloads sharing one namespace. It checks authenticated metrics,
 exact `healthz=ok`, readiness withdrawal during SIGTERM, clean exit, duplicate
 network-owner rejection, and recovery after terminating the exact PostgreSQL
 advisory-lock session. It also pauses the replacement with `SIGSTOP` for twelve

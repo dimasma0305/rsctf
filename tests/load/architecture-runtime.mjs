@@ -143,11 +143,15 @@ try {
       await terminate(app)
     }
     // Real cooperating processes, one shared filesystem and one source build.
+    // This process-only fixture shares the runner's network namespace, unlike
+    // deployed engine/network containers. Serialize startup so the two checker
+    // firewall installers cannot race on the same OUTPUT jump. No checker
+    // workloads run here; shared-namespace workload isolation is not tested.
     const engine = await start('engine')
-    const network = await start('network')
-    const web = await start('web')
     await ready(engine)
+    const network = await start('network')
     await ready(network)
+    const web = await start('web')
     await ready(web)
     const duplicate = await start('network')
     await exitWithin(duplicate, 15_000, 1)
