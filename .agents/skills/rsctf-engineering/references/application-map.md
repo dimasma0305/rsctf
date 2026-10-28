@@ -6,6 +6,9 @@ suite. All source paths are relative to the current checkout. Start at
 This map describes main at `93278eb8` when introduced. Source on the active branch
 is authoritative; maintain the map as owners move.
 
+See [navigation-effectiveness.md](navigation-effectiveness.md) for coverage,
+lookup measurements, reproduction and limitations.
+
 ## Choose a feature
 
 Browser URLs are navigation examples, not a backend authorization policy.

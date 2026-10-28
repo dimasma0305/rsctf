@@ -9,7 +9,8 @@ Start with the feature row in [application-map.md](application-map.md). Read
 [web/src/App.tsx](../../../../web/src/App.tsx) imports `~react-pages`, renders `useRoutes`, and composes the
 theme, notifications, dialogs, WSRX, guide, viewer identity and SWR providers.
 An `Index.tsx` represents its directory, brackets represent parameters, and
-`[...all].tsx` is the fallback. Sibling `.ts` helpers and CSS files are not pages.
+[the fallback page](../../../../web/src/pages/%5B...all%5D.tsx) handles unmatched
+routes. Sibling `.ts` helpers and CSS files are not pages.
 
 | Browser surface | Source directory | Shared ownership to inspect |
 | --- | --- | --- |

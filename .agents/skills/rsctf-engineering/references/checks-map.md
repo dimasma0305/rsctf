@@ -24,7 +24,7 @@ Commands below run from the repository root unless stated otherwise.
 | Caches / Redis recovery | Cache tests, response-key/invalidation tests | [tests/load/redis-outage.mjs](../../../../tests/load/redis-outage.mjs), fixed-rate affected reads with correct authorization/visibility |
 | Deployment / network policy | [scripts/validate-compose-security.sh](../../../../scripts/validate-compose-security.sh), [scripts/validate-helm-chart.sh](../../../../scripts/validate-helm-chart.sh) | Docker firewall tests, real Kubernetes callback isolation, live role/digest checks |
 | Load harness / CI scripts | [tests/load/test/](../../../../tests/load/test/), [tests/load/package.json](../../../../tests/load/package.json) | Harness contracts and exact failing workflow phase |
-| Navigation skill docs | `node .agents/skills/rsctf-engineering/scripts/check-navigation.mjs` | Review owner/caller accuracy; no runtime rebuild for prose-only changes |
+| Navigation skill docs | `node --test .agents/skills/rsctf-engineering/scripts/check-navigation.test.mjs`, then `node .agents/skills/rsctf-engineering/scripts/check-navigation.mjs` | Link/module/page coverage plus source review; [effectiveness evidence](navigation-effectiveness.md) |
 
 A test's name or source presence is discovery, not evidence it ran. Record exact
 filters, environment-dependent ignores, runtime/backend and tested source SHA.

@@ -38,7 +38,7 @@ architecture-branch work; do not blindly regenerate the legacy client.
 | A&D scoring, roster, resets, snapshots | [src/services/ad/scoring/](../../../../src/services/ad/scoring/), [src/services/ad/roster.rs](../../../../src/services/ad/roster.rs), [src/services/ad/reset.rs](../../../../src/services/ad/reset.rs), [src/services/ad/snapshots.rs](../../../../src/services/ad/snapshots.rs) |
 | KotH policy, callbacks and capability authentication | [src/controllers/game/koth/](../../../../src/controllers/game/koth/), [src/services/ad/koth_api_capability.rs](../../../../src/services/ad/koth_api_capability.rs), [src/services/ad/koth_capability_cache.rs](../../../../src/services/ad/koth_capability_cache.rs), [src/services/ad/koth_reporter.rs](../../../../src/services/ad/koth_reporter.rs) |
 | Challenge lifecycle and runtime policy | [src/services/container.rs](../../../../src/services/container.rs), [src/services/challenge_workloads.rs](../../../../src/services/challenge_workloads.rs), [src/services/container_policy.rs](../../../../src/services/container_policy.rs) |
-| Durable jobs and mutation receipts | [src/services/control_jobs.rs](../../../../src/services/control_jobs.rs), [src/services/control_jobs/](../../../../src/services/control_jobs/), [src/services/mutation_operations.rs](../../../../src/services/mutation_operations.rs), [src/services/mutation_retention.rs](../../../../src/services/mutation_retention.rs) |
+| Durable jobs and mutation receipts | [src/services/control_jobs.rs](../../../../src/services/control_jobs.rs), [src/services/control_jobs/](../../../../src/services/control_jobs/), [src/services/mutation_operations.rs](../../../../src/services/mutation_operations.rs), [src/services/mutation_retention.rs](../../../../src/services/mutation_retention.rs), [src/services/mutation_retention/](../../../../src/services/mutation_retention/) |
 | Repositories, checker publication, image preflight | [src/services/git_sync/](../../../../src/services/git_sync/), [src/services/repo_binding_scheduler.rs](../../../../src/services/repo_binding_scheduler.rs), [src/services/image_preflight/](../../../../src/services/image_preflight/) |
 | Notifications and commit-to-live delivery | [src/services/event_bus.rs](../../../../src/services/event_bus.rs), [src/services/feed_publication.rs](../../../../src/services/feed_publication.rs), [src/services/game_event_feed.rs](../../../../src/services/game_event_feed.rs), [src/services/submission_feed.rs](../../../../src/services/submission_feed.rs), [src/services/notice_delivery.rs](../../../../src/services/notice_delivery.rs) |
 | Mail, webhooks, donations | [src/services/mail_outbox.rs](../../../../src/services/mail_outbox.rs), [src/services/mail.rs](../../../../src/services/mail.rs), [src/services/discord_webhook.rs](../../../../src/services/discord_webhook.rs), [src/services/donations/](../../../../src/services/donations/) |
@@ -68,6 +68,21 @@ Find test modules next to the owner: `mod tests`, `#[path]`, sibling
 `*_tests.rs`, or subdirectory `tests.rs`. An ignored database test must be run
 with a real disposable database and the correct filter; default unit success
 alone does not cover it.
+
+## Additional boundary owners
+
+These entry points complete the public module-family index; use their callers and
+adjacent tests when a feature crosses admission, identity, export or telemetry.
+
+| Responsibility | Owning implementation |
+| --- | --- |
+| Remaining HTTP boundaries | [src/controllers/event_security.rs](../../../../src/controllers/event_security.rs), [src/controllers/honeypot.rs](../../../../src/controllers/honeypot.rs), [src/controllers/proxy/](../../../../src/controllers/proxy/) |
+| JWT, managed tokens, captcha and live roster | [src/services/token.rs](../../../../src/services/token.rs), [src/services/managed_api_token.rs](../../../../src/services/managed_api_token.rs), [src/services/captcha.rs](../../../../src/services/captcha.rs), [src/services/live_roster.rs](../../../../src/services/live_roster.rs) |
+| Download, proxy and export admission | [src/services/asset_admission.rs](../../../../src/services/asset_admission.rs), [src/services/proxy_admission.rs](../../../../src/services/proxy_admission.rs), [src/services/bulk_export.rs](../../../../src/services/bulk_export.rs), [src/services/monitor_export.rs](../../../../src/services/monitor_export.rs) |
+| Image identity, event configuration and admin retention | [src/services/challenge_images.rs](../../../../src/services/challenge_images.rs), [src/services/game_config.rs](../../../../src/services/game_config.rs), [src/services/admin_mutation_retention.rs](../../../../src/services/admin_mutation_retention.rs) |
+| Artifact scanning and raw observation writers | [src/services/agent_artifacts/](../../../../src/services/agent_artifacts/), [src/services/flag_egress_observations.rs](../../../../src/services/flag_egress_observations.rs), [src/services/honeypot_listener.rs](../../../../src/services/honeypot_listener.rs) |
+| Hub streams and connection admission | [src/hubs/admin.rs](../../../../src/hubs/admin.rs), [src/hubs/user.rs](../../../../src/hubs/user.rs), [src/hubs/attack.rs](../../../../src/hubs/attack.rs), [src/hubs/monitor.rs](../../../../src/hubs/monitor.rs), [src/hubs/admission.rs](../../../../src/hubs/admission.rs) |
+| Storage interface | [src/storage/blob_storage.rs](../../../../src/storage/blob_storage.rs) |
 
 ## Existing libraries and primitives
 

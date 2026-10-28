@@ -873,7 +873,9 @@ jobs:
           sudo apt-get install --yes --no-install-recommends busybox-static
 
       - name: Validate engineering navigation links
-        run: node .agents/skills/rsctf-engineering/scripts/check-navigation.mjs
+        run: |
+          node --test .agents/skills/rsctf-engineering/scripts/check-navigation.test.mjs
+          node .agents/skills/rsctf-engineering/scripts/check-navigation.mjs
 
       - name: Enforce Rust file size limit
         shell: bash

@@ -31,6 +31,10 @@ in the active branch. Do not treat a TODO or another branch's implementation as
 shipped behavior. Maintain the relevant map when moving an owner, adding a feature,
 or changing its verification entry point; run
 `node .agents/skills/rsctf-engineering/scripts/check-navigation.mjs` afterward.
+It checks local links and explicit coverage of public controller/service/hub/storage
+module families and frontend pages; a new domain needs a map entry.
+The [effectiveness report](references/navigation-effectiveness.md) records coverage,
+owner-lookup measurements and their limits.
 
 Read only the references relevant to the work, but read each selected file completely:
 
