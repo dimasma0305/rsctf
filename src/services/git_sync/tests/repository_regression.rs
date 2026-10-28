@@ -117,6 +117,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .expect("initial import");
     assert!(first.created);
     let challenge_id = first.challenge_id;
+    super::score_curve_regression::assert_score_curve_sync(&state, game.id, &challenge_dir).await;
     #[cfg(target_os = "linux")]
     super::checker_publication::assert_preparation_publication_and_cancellation(
         &state,
@@ -237,10 +238,12 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
                   disable_blood_bonus = TRUE,
                   original_score = 777,
                   min_score_rate = 0.4,
-                  difficulty = 9.0
+                  difficulty = 9.0,
+                  score_curve = $2
             WHERE id = $1"#,
     )
     .bind(challenge_id)
+    .bind(ScoreCurve::Linear as i16)
     .execute(state.pg())
     .await
     .expect("record challenge progress");
@@ -260,7 +263,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .expect("write replacement handout");
     tokio::fs::write(
         &manifest,
-        "name: Renamed\ndescription: after sync\ntype: StaticAttachment\ncategory: Misc\nprovide: handout.txt\nsubmissionLimit: 99\nminScoreRate: 0.1\ndifficulty: 2\nflags:\n  - flag{new}\n  - flag{new}\n",
+        "name: Renamed\ndescription: after sync\ntype: StaticAttachment\ncategory: Misc\nprovide: handout.txt\nsubmissionLimit: 99\nminScoreRate: 0.1\ndifficulty: 2\nscoreCurve: Logarithmic\nflags:\n  - flag{new}\n  - flag{new}\n",
     )
     .await
     .expect("write updated manifest");
@@ -346,6 +349,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     assert_eq!(row.original_score, 777);
     assert_eq!(row.min_score_rate, 0.4);
     assert_eq!(row.difficulty, 9.0);
+    assert_eq!(row.score_curve, ScoreCurve::Linear);
     assert_eq!(row.variant_mode as i16, 1);
     assert!(row.variant_generator_image.is_some());
     assert!(row.variant_generator_digest.is_some());

@@ -2,7 +2,8 @@
 
 use crate::app_state::SharedState;
 use crate::utils::enums::{
-    ChallengeCategory, ChallengeType, ChallengeVariantMode, NetworkMode, SolveReceiptMode,
+    ChallengeCategory, ChallengeType, ChallengeVariantMode, NetworkMode, ScoreCurve,
+    SolveReceiptMode,
 };
 use crate::utils::error::{AppError, AppResult};
 use sea_orm::EntityTrait;
@@ -73,6 +74,7 @@ struct ChallengeSnapshotRow {
     disable_blood_bonus: bool,
     min_score_rate: f64,
     difficulty: f64,
+    score_curve: i16,
     network_mode: Option<i16>,
     variant_mode: i16,
     variant_generator_image: Option<String>,
@@ -109,6 +111,8 @@ impl ChallengeSnapshotRow {
             <SolveReceiptMode as sea_orm::ActiveEnum>::try_from_value(&self.solve_receipt_mode)
                 .map_err(|error| AppError::internal(error.to_string()))?;
         let revision = self.revision;
+        let score_curve = <ScoreCurve as sea_orm::ActiveEnum>::try_from_value(&self.score_curve)
+            .map_err(|error| AppError::internal(error.to_string()))?;
         let source_yaml_path = self.source_yaml_path;
         Ok((
             git_sync::ChallengePushSnapshot {
@@ -130,6 +134,7 @@ impl ChallengeSnapshotRow {
                 disable_blood_bonus: self.disable_blood_bonus,
                 min_score_rate: self.min_score_rate,
                 difficulty: self.difficulty,
+                score_curve,
                 network_mode,
                 variant_mode,
                 variant_generator_image: self.variant_generator_image,
@@ -517,7 +522,7 @@ async fn snapshot_after_checkout(
                       submission_limit, container_image, memory_limit,
                       storage_limit, cpu_count, expose_port, flag_template,
                       enable_traffic_capture, enable_shared_container,
-                      disable_blood_bonus, min_score_rate, difficulty,
+                      disable_blood_bonus, min_score_rate, difficulty, score_curve,
                       network_mode::smallint AS network_mode,
                       variant_mode::smallint AS variant_mode,
                       variant_generator_image, variant_generator_digest,

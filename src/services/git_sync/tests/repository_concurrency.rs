@@ -239,11 +239,14 @@ pub(super) async fn assert_queued_pushback_remote_head(
         .await
     });
     started_rx.await.unwrap();
-    sqlx::query(r#"UPDATE "GameChallenges" SET title = 'queued latest' WHERE id = $1"#)
-        .bind(challenge_id)
-        .execute(state.pg())
-        .await
-        .unwrap();
+    sqlx::query(
+        r#"UPDATE "GameChallenges" SET title = 'queued latest', score_curve = $2 WHERE id = $1"#,
+    )
+    .bind(challenge_id)
+    .bind(ScoreCurve::Logarithmic as i16)
+    .execute(state.pg())
+    .await
+    .unwrap();
     let second_state = state.clone();
     let mut second = tokio::spawn(async move {
         crate::services::repository_push::commit_latest_to_checkout_for_test(
@@ -279,6 +282,8 @@ pub(super) async fn assert_queued_pushback_remote_head(
     .await;
     assert!(head.contains("name: queued latest"));
     assert!(!head.contains("name: queued stale"));
+    let parsed: ChallengeYaml = serde_norway::from_str(&head).unwrap();
+    assert_eq!(parsed.score_curve, Some(ScoreCurve::Logarithmic));
     assert_eq!(
         sqlx::query_scalar::<_, String>(r#"SELECT title FROM "GameChallenges" WHERE id = $1"#,)
             .bind(challenge_id)

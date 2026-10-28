@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use super::GitCredentials;
 use crate::models::data::game_challenge;
-use crate::utils::enums::{ChallengeVariantMode, NetworkMode, SolveReceiptMode};
+use crate::utils::enums::{ChallengeVariantMode, NetworkMode, ScoreCurve, SolveReceiptMode};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::scoring::{
     DEFAULT_CHALLENGE_SUBMISSION_LIMIT, DEFAULT_JEOPARDY_DIFFICULTY,
@@ -23,10 +23,9 @@ use crate::utils::scoring::{
 /// Serializable mirror of [`ChallengeYaml`](super::ChallengeYaml) used to
 /// REGENERATE a `challenge.yml` from the DB row (the inverse of
 /// [`import_manifest`](super::import_manifest)). A separate struct so the read
-/// model stays Deserialize-only; every field is `skip_serializing_if` so a
-/// default/absent value is omitted rather than written as a noisy `key:` line —
-/// matching YamlDotNet's `OmitNull | OmitEmptyCollections` in RSCTF.
-#[derive(Debug, Default, Serialize)]
+/// model stays Deserialize-only. Most default/absent fields are omitted;
+/// scoreCurve is explicit because omission preserves the destination's curve.
+#[derive(Debug, Serialize)]
 struct ChallengeYamlOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -52,6 +51,9 @@ struct ChallengeYamlOut {
     min_score_rate: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     difficulty: Option<f64>,
+    // Always explicit: omitting Standard would preserve a different curve on re-import.
+    #[serde(rename = "scoreCurve")]
+    score_curve: ScoreCurve,
     #[serde(rename = "submissionLimit", skip_serializing_if = "Option::is_none")]
     submission_limit: Option<i32>,
     #[serde(rename = "disableBloodBonus", skip_serializing_if = "Option::is_none")]
@@ -149,6 +151,7 @@ pub(crate) struct ChallengePushSnapshot {
     pub(crate) disable_blood_bonus: bool,
     pub(crate) min_score_rate: f64,
     pub(crate) difficulty: f64,
+    pub(crate) score_curve: ScoreCurve,
     pub(crate) network_mode: Option<NetworkMode>,
     pub(crate) variant_mode: ChallengeVariantMode,
     pub(crate) variant_generator_image: Option<String>,
@@ -184,6 +187,7 @@ impl From<&game_challenge::Model> for ChallengePushSnapshot {
             disable_blood_bonus: challenge.disable_blood_bonus,
             min_score_rate: challenge.min_score_rate,
             difficulty: challenge.difficulty,
+            score_curve: challenge.score_curve,
             network_mode: challenge.network_mode,
             variant_mode: challenge.variant_mode,
             variant_generator_image: challenge.variant_generator_image.clone(),
@@ -207,11 +211,11 @@ impl From<&game_challenge::Model> for ChallengePushSnapshot {
 /// [`import_manifest`](super::import_manifest)'s field mapping, mirroring RSCTF
 /// `ChallengeYamlSerializer.Serialize`.
 ///
-/// Round-trip-safe: only NON-default fields are emitted (defaults match the
+/// Round-trip-safe: most default fields are omitted (defaults match the
 /// importer — a 10-point minimum from the default 1,000, `difficulty 5`, egress
-/// false, self-reset true), so
-/// a freshly-imported challenge serializes back to a minimal file with no diff
-/// churn. Platform-managed state (build status/log, original score, archive path)
+/// false, self-reset true). The score curve is always explicit so importing an
+/// exported Standard selection can replace an existing non-default curve.
+/// Platform-managed state (build status/log, original score, archive path)
 /// is never written. An AUTO-BUILT image tag (`rsctf/<game>/…`, see the parent
 /// module's `image_tag`) is omitted so the "build from ./src" intent
 /// round-trips instead of freezing into a "pull this registry image" on re-sync.
@@ -276,6 +280,7 @@ fn serialize_challenge_inner(
         min_score_rate: (ch.min_score_rate != DEFAULT_JEOPARDY_MIN_SCORE_RATE)
             .then_some(ch.min_score_rate),
         difficulty: (ch.difficulty != DEFAULT_JEOPARDY_DIFFICULTY).then_some(ch.difficulty),
+        score_curve: ch.score_curve,
         submission_limit: (ch.submission_limit != DEFAULT_CHALLENGE_SUBMISSION_LIMIT)
             .then_some(ch.submission_limit),
         disable_blood_bonus: ch.disable_blood_bonus.then_some(true),
@@ -644,6 +649,21 @@ mod tests {
 
         let parsed = parse(&serialize_challenge(&challenge, &[]).unwrap());
         assert_eq!(parsed.min_score_rate, Some(0.25));
+    }
+
+    #[test]
+    fn every_score_curve_round_trips_explicitly_including_standard() {
+        for curve in [
+            ScoreCurve::Standard,
+            ScoreCurve::Linear,
+            ScoreCurve::Logarithmic,
+        ] {
+            let mut challenge = challenge(ChallengeType::StaticAttachment);
+            challenge.score_curve = curve;
+            let yaml = serialize_challenge(&challenge, &[]).unwrap();
+            assert!(yaml.contains(&format!("scoreCurve: {curve:?}")));
+            assert_eq!(parse(&yaml).score_curve, Some(curve));
+        }
     }
 
     #[test]

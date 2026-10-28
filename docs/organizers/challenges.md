@@ -32,6 +32,29 @@ Add at least one valid flag or configure the dynamic flag behavior required by t
 
 Choose an initial score, minimum score, and decay method. rsctf supports standard exponential, linear, and logarithmic decay, plus first/second/third-solve bonuses. Simulate expected solve counts so the final value is not surprising.
 
+For repository-managed Jeopardy challenges, select the curve in `challenge.yml`
+or `challenge.yaml`:
+
+```yaml
+name: Example challenge
+type: StaticAttachment
+scoreCurve: Logarithmic
+minScoreRate: 0.01
+difficulty: 5
+```
+
+`scoreCurve` accepts exactly `Standard`, `Linear`, or `Logarithmic`. The capitalized
+key spelling `ScoreCurve` is also accepted; exports use `scoreCurve`. Invalid
+values fail validation instead of being ignored. If the field is omitted or
+null, new challenges use `Standard` and existing challenges keep their saved
+curve, including selections made in the admin editor. Push-on-edit always
+exports the selected curve, including `Standard`.
+
+Set the curve before the event starts. Repository sync preserves locked
+Jeopardy scoring once the event starts or the challenge has submission/solve
+history; a requested curve change is reported as a deferred grading update.
+The curve does not replace A&D or KotH scoring rules.
+
 ## Attachments
 
 Upload only the files players need. Remove credentials, source-control history, internal hostnames, and unintended answers. Download the attachment using a normal player account before enabling the challenge.

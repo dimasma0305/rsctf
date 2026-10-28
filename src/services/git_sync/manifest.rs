@@ -5,7 +5,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use crate::utils::enums::{ChallengeVariantMode, NetworkMode, SolveReceiptMode};
+use crate::utils::enums::{ChallengeVariantMode, NetworkMode, ScoreCurve, SolveReceiptMode};
 use crate::utils::error::{AppError, AppResult};
 
 /// In-memory shape of one `.gzevent` event manifest, mirroring RSCTF
@@ -80,6 +80,9 @@ pub struct ChallengeYaml {
     #[serde(rename = "minScoreRate")]
     pub min_score_rate: Option<f64>,
     pub difficulty: Option<f64>,
+    /// Omission preserves an existing selection; new challenges use Standard.
+    #[serde(rename = "scoreCurve", alias = "ScoreCurve")]
+    pub score_curve: Option<ScoreCurve>,
     /// When true the challenge opts out of sync entirely -- never created.
     pub ignore: Option<bool>,
     pub hints: Option<Vec<String>>,
