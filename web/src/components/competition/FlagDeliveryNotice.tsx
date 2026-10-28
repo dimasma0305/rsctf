@@ -1,4 +1,5 @@
 import { Button } from '@mantine/core'
+import { mdiAlertCircleOutline } from '@mdi/js'
 import { useTranslation } from 'react-i18next'
 import { CompetitionNotice } from './CompetitionNotice'
 
@@ -15,6 +16,7 @@ export function FlagDeliveryNotice({
   if (count <= 0 || round <= 0) return null
   return (
     <CompetitionNotice
+      icon={mdiAlertCircleOutline}
       title={t('game.content.ad.delivery_notice.title', {
         count,
         defaultValue: '{{count}} A&D flag deliveries failed across this event',

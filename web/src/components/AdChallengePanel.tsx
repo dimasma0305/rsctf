@@ -590,7 +590,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
       )}
 
       {adState.flagsReady && adState.flagDeliveryFailures > 0 && (
-        <Alert color="orange" icon={<Icon path={mdiAlertCircleOutline} size={0.9} />} role="status">
+        <Alert color="orange" role="status">
           <FlagDeliveryNotice count={adState.flagDeliveryFailures} round={adState.currentRound} />
         </Alert>
       )}

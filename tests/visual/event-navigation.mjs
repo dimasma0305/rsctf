@@ -24,7 +24,7 @@ const responses = {
   '/api/game/901/details/participant':{rank},
   '/api/game/901/notices':[],
   '/api/game/901/scoreboard':{updateTimeUtc:now,bloodBonus:0,challenges,challengeCount:items.length,items:[rank],timelines:[],divisions:[]},
-  '/api/game/901/scoreboard/page':{snapshotVersion:'fixture',updateTimeUtc:now,bloodBonus:0,challenges,challengeCount:items.length,items:[rank],timelines:[],divisions:[],total:1,skip:0,count:50,located:false},
+  '/api/game/901/scoreboard/page':{snapshotVersion:'fixture',updateTimeUtc:now,bloodBonus:0,challenges,challengeCount:items.length,items:[rank],timelines:[],divisions:[],total:120,skip:0,count:30,located:false},
   '/api/game/901/ad/state':state,
   '/api/game/901/ad/token':{exists:false,hint:'',canManage:false,revision:1,participationId:7,teamId:7},
   '/api/game/901/ad/ssh/key':{exists:false,algorithm:'',fingerprint:'',platformGenerated:false,revision:1},
@@ -64,7 +64,7 @@ try {
  cdp.on('Runtime.exceptionThrown',e=>errors.push(e.exceptionDetails.exception?.description || e.exceptionDetails.text))
  await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`if(location.origin===${JSON.stringify(target)}) {
  localStorage.setItem('language',JSON.stringify('en-US'));
- localStorage.setItem('mantine-color-scheme-value','dark');
+ localStorage.setItem('mantine-color-scheme-value',new URL(location.href).searchParams.get('fixtureTheme') || 'dark');
  localStorage.setItem('challenge-explorer-view',JSON.stringify('list'));
  localStorage.setItem('scoreboard-tab-901',JSON.stringify('jeopardy'));
  localStorage.setItem('rsctf-player-guide:${profile.userId}',JSON.stringify({interactiveEnabled:false,completedVersion:1,seenFeatures:[]}));
@@ -75,6 +75,12 @@ try {
   let value=responses[path],status=200
   if(!['GET','HEAD'].includes(request.method)) {status=405;value={status,title:'Fixture mutation blocked'}}
   else if(value===undefined) {unknown.add(path);value=[]}
+  if(path==='/api/game/901/scoreboard/page' && status===200) {
+   const params=new URL(request.url).searchParams
+   const skip=Number(params.get('skip') || 0)
+   const count=Number(params.get('count') || 30)
+   value={...value,skip,count,total:count*4,items:[{...rank,id:rank.id+skip,rank:rank.rank+skip}]}
+  }
   await cdp.send('Fetch.fulfillRequest',{requestId,responseCode:status,responseHeaders:[{name:'Content-Type',value:'application/json'}],body:Buffer.from(JSON.stringify(value)).toString('base64')})
  })
  for(const [name,width,height,reduced=false] of [['desktop',1600,1000],['wide',1920,1080],['laptop',1024,768],['mobile',390,844],['compact',320,568],['tablet-reduced',768,1024,true]]) {
@@ -99,8 +105,13 @@ try {
   await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
   await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
   await waitFor(`!document.querySelector('[role="dialog"]')`)
-  await evaluate(`${delivery}.querySelector('summary').click(); document.querySelector('[data-team-summary] button').click()`)
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  await evaluate(`${delivery}.querySelector('summary').click(); document.querySelector('[data-team-summary] button').scrollIntoView({block:'center',behavior:'instant'})`)
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  await evaluate(`document.querySelector('[data-team-summary] button').click()`)
   await waitFor(`document.querySelector('input[type="password"]')`)
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  await evaluate(`document.querySelector('input[type="password"]').focus({preventScroll:true})`)
   assert.equal(await evaluate(`!!document.querySelector('[data-team-summary] a[href="/games/901/attack"]')`),false)
   assert.equal(await evaluate(`document.body.innerText.includes('Attack Feed')`),false)
   await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
@@ -158,6 +169,37 @@ try {
   await waitFor(`[...document.querySelectorAll('[data-motion]')].every(e=>getComputedStyle(e).opacity==='1' && getComputedStyle(e).transform==='none')`)
   assert.equal(await evaluate(`document.querySelectorAll('#main-content').length`),1,'rapid navigation never retains an outgoing page')
   assert.equal(await evaluate(`[...document.querySelectorAll('[data-motion]')].every(e=>getComputedStyle(e).opacity==='1' && getComputedStyle(e).transform==='none')`),true,'interrupted entrances settle into visible content')
+ }
+ // The active-round warning must stay aligned and readable in both themes.
+ Object.assign(state,{currentRound:417,startRound:97,epochTicks:8,roundEndsAt:Date.now()+600000,flagDeliveryFailures:4})
+ for(const theme of ['dark','light']) for(const [name,width,height] of [['desktop',1600,1000],['mobile',390,844],['compact',320,568]]) {
+  await cdp.send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false})
+  await cdp.send('Page.navigate',{url:`${target}/games/901/challenges?fixtureTheme=${theme}`})
+  await waitFor(`document.querySelector('[data-round-messages]')?.textContent.includes('4 A&D flag deliveries')`)
+  await waitFor(`document.documentElement.getAttribute('data-mantine-color-scheme')==='${theme}'`)
+  const notice = `document.querySelector('[data-competition-notice]')`
+  await evaluate(`document.querySelector('[data-competition-status]').scrollIntoView({block:'center',behavior:'instant'})`)
+  await inspect(`${name}-${theme}-active-notice`)
+  const rect = await evaluate(`(() => { const r=document.querySelector('[data-competition-status]').getBoundingClientRect();return {x:r.x+scrollX,y:r.y+scrollY,width:r.width,height:r.height,scale:1} })()`)
+  const shot=await cdp.send('Page.captureScreenshot',{format:'png',clip:rect,captureBeyondViewport:true})
+  writeFileSync(`${output}/${name}-${theme}-status-strip.png`,Buffer.from(shot.data,'base64'))
+  await evaluate(`${notice}.querySelector('summary').click()`)
+  await inspect(`${name}-${theme}-active-explanation`)
+  await cdp.send('Page.navigate',{url:`${target}/games/901/scoreboard?fixtureTheme=${theme}`})
+  const pagination = `document.querySelector('nav[aria-label="Scoreboard result pages"]')`
+  await waitFor(`${pagination}?.textContent.includes('Page 1 of 4')`)
+  await waitFor(`document.documentElement.getAttribute('data-mantine-color-scheme')==='${theme}'`)
+  await evaluate(`${pagination}.scrollIntoView({block:'center',behavior:'instant'})`)
+  assert.equal(await evaluate(`${pagination}.querySelector('[aria-label="Previous page"]').disabled`),true)
+  await inspect(`${name}-${theme}-pagination`)
+  const pageRect=await evaluate(`(() => {const r=${pagination}.getBoundingClientRect();return {x:r.x+scrollX,y:r.y+scrollY,width:r.width,height:r.height,scale:1}})()`)
+  const pageShot=await cdp.send('Page.captureScreenshot',{format:'png',clip:pageRect,captureBeyondViewport:true})
+  writeFileSync(`${output}/${name}-${theme}-pagination-controls.png`,Buffer.from(pageShot.data,'base64'))
+  await evaluate(`${pagination}.querySelector('[aria-label="Next page"]').focus()`)
+  await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'})
+  await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  await waitFor(`${pagination}?.textContent.includes('Page 2 of 4')`)
+  assert.equal(await evaluate(`${pagination}.querySelector('[aria-label="Previous page"]').disabled`),false)
  }
  // A paused round retains the frozen remaining time; a warmup never looks live.
  for(const phase of ['paused','warmup']) {

@@ -246,6 +246,8 @@ details and filters must retain the correct mode semantics.
 `event-navigation.mjs` also verifies keyboard expansion of competition notices,
 their event-wide scope and next action, toolkit opening, and the absence of a
 duplicate Attack Feed link in the team menu. Notices reuse the route's state read.
+It also captures active notices and scoreboard pagination in light/dark themes at
+desktop, mobile, and 320px, including keyboard paging and disabled boundary controls.
 
 ### Challenge workspace
 

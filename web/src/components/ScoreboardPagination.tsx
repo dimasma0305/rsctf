@@ -48,7 +48,7 @@ export const ScoreboardPagination: FC<ScoreboardPaginationProps> = ({ value, onC
         total={totalPages}
         boundaries={compact ? 1 : Math.max(0, Math.floor(boundaries))}
         siblings={compact ? 0 : 1}
-        size="xl"
+        size="md"
         autoContrast
         className={classes.pagination}
         getItemProps={(page) => ({

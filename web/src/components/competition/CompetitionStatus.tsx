@@ -1,5 +1,5 @@
 import { Button, Group } from '@mantine/core'
-import { mdiAlertCircleOutline, mdiCrown, mdiPauseCircleOutline, mdiSwordCross } from '@mdi/js'
+import { mdiCrown, mdiSwordCross } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { useTranslation } from 'react-i18next'
 import { adRoundSecondsRemaining } from '@Utils/adState'
@@ -149,25 +149,18 @@ export const CompetitionStatus = ({
       <div role="status" aria-live="polite" aria-atomic="true">
         {(messages.length > 0 || (hasAd && state && state.currentRound > 0 && state.flagDeliveryFailures > 0)) && (
           <div className={classes.messages} data-round-messages>
-            <Icon
-              path={state?.scoringPaused ? mdiPauseCircleOutline : mdiAlertCircleOutline}
-              size={0.85}
-              aria-hidden="true"
-            />
-            <div>
-              {messages.map(({ title, description }) => (
-                <CompetitionNotice key={title} title={title}>
-                  <p>{description}</p>
-                </CompetitionNotice>
-              ))}
-              {hasAd && state && (
-                <FlagDeliveryNotice
-                  count={state.flagDeliveryFailures}
-                  round={state.currentRound}
-                  onToolkit={onAdToolkit}
-                />
-              )}
-            </div>
+            {messages.map(({ title, description }) => (
+              <CompetitionNotice key={title} title={title}>
+                <p>{description}</p>
+              </CompetitionNotice>
+            ))}
+            {hasAd && state && (
+              <FlagDeliveryNotice
+                count={state.flagDeliveryFailures}
+                round={state.currentRound}
+                onToolkit={onAdToolkit}
+              />
+            )}
           </div>
         )}
       </div>
