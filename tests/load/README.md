@@ -5,6 +5,28 @@ implementation flaws and capacity limits under real concurrency (not just peak r
 
 ## Architecture runtime gate
 
+`control-job-shutdown.mjs` starts the real production control role and interrupts
+active Docker archive builds and A&D resets. It checks readiness withdrawal,
+no new claims during drain, graceful completion, and recovery after SIGKILL with
+the same operation identity and Docker replacement. It requires root, supported
+checker confinement, Docker, Python, loopback disposable PostgreSQL and Redis:
+
+```sh
+RSCTF_SHUTDOWN_DISPOSABLE=1 \
+SHUTDOWN_PG_CONTAINER=rsctf-architecture-pg \
+RSCTF_TEST_DATABASE_URL="$DISPOSABLE_POSTGRES_URL" \
+RSCTF_TEST_REDIS_URL="$DISPOSABLE_REDIS_URL" \
+ARCHITECTURE_RUNTIME_BINARY="$TESTED_RSCTF_BINARY" \
+SHUTDOWN_REPORT=/tmp/rsctf-shutdown-report.json \
+node tests/load/control-job-shutdown.mjs
+```
+
+The harness creates and removes its own database, internal bridge, build tags,
+and operation-labelled containers. It never stops an existing application.
+Crash cases assert the live lease is retained, then inject expiry **after the old
+process is confirmed dead**. Recovery measurements exclude the production
+15-minute lease wait. VPN traffic and native-worker rollouts need separate tests.
+
 The same job runs a destructive **disposable-fixture-only** restore drill. It
 creates random databases inside the selected PostgreSQL container; it never backs
 up or drops an existing application database. Use a matching tested server binary,

@@ -967,6 +967,15 @@ jobs:
           RESTORE_REPORT: ${{ runner.temp }}/architecture-runtime/restore-report.json
         run: node tests/load/restore-drill.mjs
 
+      - name: Interrupt active Docker builds and resets
+        env:
+          ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture
+          SHUTDOWN_PG_CONTAINER: ${{ job.services.postgres.id }}
+          RSCTF_SHUTDOWN_DISPOSABLE: '1'
+          SHUTDOWN_BASE_IMAGE: postgres:18-alpine
+          SHUTDOWN_REPORT: ${{ runner.temp }}/architecture-runtime/control-job-shutdown.json
+        run: sudo --preserve-env "$(command -v node)" tests/load/control-job-shutdown.mjs
+
       - name: Restore referenced S3 objects and database together
         env:
           ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture

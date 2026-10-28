@@ -19,6 +19,12 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 
 ## Discover the smallest meaningful check
 
+For shutdown during external work, run the
+[control-job shutdown harness](../../../../tests/load/control-job-shutdown.mjs).
+It uses the real control process and Docker builds/resets, with graceful and forced
+exit cases. The [load README](../../../../tests/load/README.md) documents required
+isolation and the explicitly injected crash-recovery lease expiry.
+
 For backup consistency, use the
 [disposable restore drill](../../../../tests/load/restore-drill.mjs) and its
 [fixture](../../../../tests/load/restore-drill/seed.sql). The load README documents
