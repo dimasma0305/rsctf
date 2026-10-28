@@ -126,9 +126,12 @@ try {
   await evaluate(`${q('#browseTeams')}.click()`)
   assert.equal(await evaluate(`${root}.activeElement.id`), 'ranklist')
   await inspect('desktop-teams-inspector')
+  // Exercise the supported overlay path deterministically in headless Chromium,
+  // where a native fullscreen request can remain pending under viewport emulation.
+  await evaluate(`Object.defineProperty(${q('.midrow')}, 'requestFullscreen', { value: () => Promise.reject(new DOMException('Fullscreen unavailable in this fixture', 'NotAllowedError')) })`)
   await evaluate(`${q('#fsBtn')}.focus()`); await press('Enter', 13)
   await waitFor(`${q('.midrow')}.classList.contains('theater')`)
-  await waitFor(`${root}.fullscreenElement === ${q('.midrow')}`)
+  await waitFor(`${q('.midrow')}.matches(':popover-open')`)
   await waitFor(`${q('#fsBtn')}.getAttribute('aria-label') === 'Exit theater mode'`)
   assert.equal(await evaluate(`${root}.host.dataset.theater`), 'on')
   assert.equal(await evaluate(`getComputedStyle(${q('.theater-hud')}).display`), 'flex', 'theater shows the floating HUD')
@@ -283,6 +286,29 @@ try {
   await inspect('light-koth-ranking')
   data = createArenaFixture('koth', 8); await navigate()
   assert.equal(await evaluate(`${q('[data-rm="koth"]')}.getAttribute('aria-pressed')`), 'true')
+  // A production-shaped event with no Jeopardy challenges must still have land.
+  data = createArenaFixture('live-only', 8)
+  for (const [width,height] of [[1600,1100],[320,568]]) {
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false})
+    await navigate()
+    assert.equal(await evaluate(`${root}.querySelectorAll('.country').length`),3,'A&D and both KotH challenges have countries')
+    assert.equal(await evaluate(`${q('[data-rm="jeopardy"]')}.hidden`),true,'no invented Jeopardy ranking')
+    await evaluate(`${q('#arena-tab-islands')}.click(); ${q('.territory-choice[data-challenge-id="101"]')}.click()`)
+    assert.match(await evaluate(`${q('#territoryDetail')}.innerText`),/Per-team services/)
+    assert.doesNotMatch(await evaluate(`${q('#territoryDetail')}.innerText`),/accepted solves|Unconquered|1000 points/)
+    await evaluate(`${q('.territory-choice[data-challenge-id="102"]')}.click()`)
+    assert.match(await evaluate(`${q('#territoryDetail')}.innerText`),/Held by Northern Lights/)
+    assert.equal(await evaluate(`${q('#territoryDetail a')}.getAttribute('href')`),'/games/901/challenges#102-Beacon')
+    await inspect(`live-only-countries-${width}`)
+    await evaluate(`${q('.territory-choice[data-challenge-id="103"]')}.click()`)
+    assert.match(await evaluate(`${q('#territoryDetail')}.innerText`),/No current holder/)
+    assert.equal(await evaluate(`${q('#territoryProgress')}.hidden`),true)
+  }
+  data = createArenaFixture('mixed', 8)
+  data.scoreboard.challenges = {}
+  data.koth.hills = []; data.koth.teams = []
+  await navigate()
+  assert.equal(await evaluate(`${root}.querySelectorAll('.country').length`),1,'A&D-only board supplies its own land without a general catalog')
   data = createArenaFixture('jeopardy', 0)
   await cdp.send('Page.navigate', {url:`${target}/games/901/attack`})
   await waitFor(`${q('#connectionStatus')}?.textContent === 'Waiting for teams'`)

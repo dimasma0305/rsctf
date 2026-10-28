@@ -239,6 +239,13 @@ No scoring, authorization, endpoint or polling cadence changes are introduced.
 
 For the full-page audit, run `node tests/visual/attack-arena-fixtures.mjs --serve`
 alongside the preview, then target `http://127.0.0.1:63020` with game ID `901`.
+Add `--live-only` to reproduce an event with one A&D service, two KotH hills,
+and no Jeopardy challenges. Every challenge must have land, while service/holder
+details and filters must retain the correct mode semantics.
+
+`event-navigation.mjs` also verifies keyboard expansion of competition notices,
+their event-wide scope and next action, toolkit opening, and the absence of a
+duplicate Attack Feed link in the team menu. Notices reuse the route's state read.
 
 ### Challenge workspace
 

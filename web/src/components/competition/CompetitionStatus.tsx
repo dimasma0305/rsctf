@@ -1,11 +1,13 @@
-import { Button, Group, Text } from '@mantine/core'
+import { Button, Group } from '@mantine/core'
 import { mdiAlertCircleOutline, mdiCrown, mdiPauseCircleOutline, mdiSwordCross } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { useTranslation } from 'react-i18next'
 import { adRoundSecondsRemaining } from '@Utils/adState'
 import { epochProgress } from '@Utils/epochProgress'
 import type { AdStateModel } from '@Api'
+import { CompetitionNotice } from './CompetitionNotice'
 import classes from './CompetitionStatus.module.css'
+import { FlagDeliveryNotice } from './FlagDeliveryNotice'
 
 interface CompetitionStatusProps {
   state?: AdStateModel
@@ -32,22 +34,46 @@ export const CompetitionStatus = ({
   const messages = [
     ...(state?.scoringPaused
       ? [
-          t(
-            'game.content.ad.scoring_paused_description',
-            'Round progression, checker scoring, and captured-flag submissions are paused by the event operator.'
-          ),
+          {
+            title: t('game.content.ad.scoring_paused', 'Scoring paused'),
+            description: t(
+              'game.content.ad.scoring_paused_description',
+              'Round progression, checker scoring, and captured-flag submissions are paused by the event operator.'
+            ),
+          },
         ]
       : []),
-    ...(state?.currentRound === 0 ? [t('game.content.ad.warmup_pill', 'Warmup — scoring not yet active')] : []),
-    ...(hasAd && state && state.currentRound > 0 && !state.flagsReady
-      ? [t('game.content.ad.flags_syncing.label', 'Flags syncing — wait before attacking')]
-      : []),
-    ...(hasAd && state && state.flagDeliveryFailures > 0
+    ...(state?.currentRound === 0
       ? [
-          t('game.content.ad.flag_delivery_failed.label', {
-            count: state.flagDeliveryFailures,
-            defaultValue: '{{count}} flag deliveries need attention',
-          }),
+          {
+            title: t('game.content.ad.warmup_pill', 'Warmup — scoring not yet active'),
+            description: t(
+              'game.arena.warmup_help',
+              'The first scoring round has not started. Use the toolkit to prepare your connection and wait for the organizer to start the event.'
+            ),
+          },
+        ]
+      : []),
+    ...(hasAd && state && state.currentRound > 0 && !state.flagsReady
+      ? [
+          {
+            title: t('game.content.ad.flags_syncing.label', 'Flags syncing — wait before attacking'),
+            description: t(
+              'game.content.ad.flags_syncing.description',
+              'This round’s flags are still syncing. Wait before attacking or updating your defended flag.'
+            ),
+          },
+        ]
+      : []),
+    ...(awaitingUpdate
+      ? [
+          {
+            title: t('game.arena.awaiting_round_update', 'Awaiting round update'),
+            description: t(
+              'game.arena.awaiting_round_help',
+              'The last reported round deadline has passed, but a newer round has not arrived. The page refreshes automatically. If this persists, check your connection and ask the organizer to inspect the round engine; a zero timer does not prove a new round has started.'
+            ),
+          },
         ]
       : []),
   ]
@@ -121,7 +147,7 @@ export const CompetitionStatus = ({
         </Group>
       </div>
       <div role="status" aria-live="polite" aria-atomic="true">
-        {messages.length > 0 && (
+        {(messages.length > 0 || (hasAd && state && state.currentRound > 0 && state.flagDeliveryFailures > 0)) && (
           <div className={classes.messages} data-round-messages>
             <Icon
               path={state?.scoringPaused ? mdiPauseCircleOutline : mdiAlertCircleOutline}
@@ -129,11 +155,18 @@ export const CompetitionStatus = ({
               aria-hidden="true"
             />
             <div>
-              {messages.map((message) => (
-                <Text key={message} size="xs">
-                  {message}
-                </Text>
+              {messages.map(({ title, description }) => (
+                <CompetitionNotice key={title} title={title}>
+                  <p>{description}</p>
+                </CompetitionNotice>
               ))}
+              {hasAd && state && (
+                <FlagDeliveryNotice
+                  count={state.flagDeliveryFailures}
+                  round={state.currentRound}
+                  onToolkit={onAdToolkit}
+                />
+              )}
             </div>
           </div>
         )}

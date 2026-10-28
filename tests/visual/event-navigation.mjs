@@ -24,8 +24,10 @@ const responses = {
   '/api/game/901/details/participant':{rank},
   '/api/game/901/notices':[],
   '/api/game/901/scoreboard':{updateTimeUtc:now,bloodBonus:0,challenges,challengeCount:items.length,items:[rank],timelines:[],divisions:[]},
+  '/api/game/901/scoreboard/page':{snapshotVersion:'fixture',updateTimeUtc:now,bloodBonus:0,challenges,challengeCount:items.length,items:[rank],timelines:[],divisions:[],total:1,skip:0,count:50,located:false},
   '/api/game/901/ad/state':state,
   '/api/game/901/ad/token':{exists:false,hint:'',canManage:false,revision:1,participationId:7,teamId:7},
+  '/api/game/901/ad/ssh/key':{exists:false,algorithm:'',fingerprint:'',platformGenerated:false,revision:1},
   '/api/game/901/events/page':[],
   '/api/game/901/events/backfill':{events:[],nextCursor:0,hasMore:false},
 }
@@ -79,10 +81,34 @@ try {
   await cdp.send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false})
   await cdp.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:reduced?'reduce':'no-preference'}]})
   await cdp.send('Page.navigate',{url:`${target}/games/901/challenges`})
-  await waitFor(`document.querySelector('[data-round-messages]')?.textContent.includes('17 flag deliveries')`)
+  await waitFor(`document.querySelector('[data-round-messages]')?.textContent.includes('17 A&D flag deliveries')`)
   assert.match(await evaluate(`document.querySelector('[data-competition-status]').innerText`),/178/)
   assert.equal(await evaluate(`document.querySelector('[data-round-deadline]').textContent`),'Awaiting round update')
-  assert.ok(await evaluate(`document.querySelector('[data-competition-status]').getBoundingClientRect().height < ${width>=1600?105:200}`),'round status must be a compact toolbar, not a tall card')
+  assert.ok(await evaluate(`document.querySelector('[data-competition-status]').getBoundingClientRect().height < ${width>=1600?170:330}`),'collapsed notices keep the round toolbar bounded')
+  const delivery = `[...document.querySelectorAll('[data-competition-notice]')].find(e => e.querySelector('summary')?.textContent.includes('flag deliveries'))`
+  await evaluate(`${delivery}.querySelector('summary').focus()`)
+  await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'})
+  await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  await waitFor(`${delivery}.open`)
+  assert.match(await evaluate(`${delivery}.innerText`),/event-wide count.*not a count of failed attacks/)
+  assert.match(await evaluate(`${delivery}.innerText`),/contact the event organizer/)
+  assert.doesNotMatch(await evaluate(`${delivery}.innerText`),/operator has been notified/)
+  await inspect(`${name}-delivery-explanation`)
+  await evaluate(`${delivery}.querySelector('button').click()`)
+  await waitFor(`document.querySelector('[role="dialog"]')`)
+  await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+  await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+  await waitFor(`!document.querySelector('[role="dialog"]')`)
+  await evaluate(`${delivery}.querySelector('summary').click(); document.querySelector('[data-team-summary] button').click()`)
+  await waitFor(`document.querySelector('input[type="password"]')`)
+  assert.equal(await evaluate(`!!document.querySelector('[data-team-summary] a[href="/games/901/attack"]')`),false)
+  assert.equal(await evaluate(`document.body.innerText.includes('Attack Feed')`),false)
+  await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+  await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+  await waitFor(`!document.querySelector('input[type="password"]')`)
+  await evaluate(`window.scrollTo({top:0,behavior:'instant'}); document.querySelector('#main-content').scrollTo({top:0,behavior:'instant'})`)
+  await waitFor(`window.scrollY===0 && document.querySelector('#main-content').scrollTop===0`)
+  await evaluate(`Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})))`)
   await inspect(`${name}-live-challenges`)
   const baseline=await evaluate(geometry)
   for(const destination of ['scoreboard','monitor/events','challenges']) {
@@ -116,12 +142,20 @@ try {
    await inspect(`${name}-${destination.replaceAll('/','-')}`)
   }
   // A second navigation must not wait for the first route's entrance to finish.
-  await evaluate(`(() => {
+  await evaluate(`new Promise((resolve,reject) => {
     document.querySelector('[data-event-workspace-header] a[href="/games/901/scoreboard"]').click();
-    requestAnimationFrame(() => document.querySelector('[data-event-workspace-header] a[href="/games/901/challenges"]')?.click());
-  })()`)
+    const deadline=performance.now()+5000;
+    const interrupt=()=>{
+      if(location.pathname.endsWith('/scoreboard') && document.querySelector('[data-event-tabs] [aria-current="page"]')?.getAttribute('href') === '/games/901/scoreboard') {
+        document.querySelector('[data-event-workspace-header] a[href="/games/901/challenges"]').click(); resolve();
+      } else if(performance.now()>deadline) reject(new Error('First route did not commit'));
+      else requestAnimationFrame(interrupt);
+    };
+    requestAnimationFrame(interrupt);
+  })`)
   await waitFor(`location.pathname.endsWith('/challenges') && document.querySelector('[data-challenge-list]')`)
   await evaluate(`Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().endTime !== Infinity).map(a => a.finished.catch(() => {})))`)
+  await waitFor(`[...document.querySelectorAll('[data-motion]')].every(e=>getComputedStyle(e).opacity==='1' && getComputedStyle(e).transform==='none')`)
   assert.equal(await evaluate(`document.querySelectorAll('#main-content').length`),1,'rapid navigation never retains an outgoing page')
   assert.equal(await evaluate(`[...document.querySelectorAll('[data-motion]')].every(e=>getComputedStyle(e).opacity==='1' && getComputedStyle(e).transform==='none')`),true,'interrupted entrances settle into visible content')
  }

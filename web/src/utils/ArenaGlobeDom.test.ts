@@ -143,11 +143,44 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
       settled,
       'disabling motion settles a pending transition'
     )
+    globe.setData([
+      {
+        id: 'Web',
+        name: 'Web',
+        color: '#123456',
+        challenges: [
+          { id: 20, name: 'Defend web', mode: 'ad', base: 0, solveCount: 0, solvers: [] },
+          {
+            id: 21,
+            name: 'Hill',
+            mode: 'koth',
+            base: 0,
+            solveCount: 0,
+            solvers: [],
+            holderKnown: true,
+            holder: { name: '<img src=x>', color: '#abcdef' },
+          },
+        ],
+      },
+    ])
+    assert.equal(root.querySelectorAll('.country').length, 2, 'live-only challenges have land')
+    const choices = [...root.querySelectorAll<HTMLButtonElement>('.territory-choice')]
+    choices[0].click()
+    assert.match(root.getElementById('territoryDetail')!.textContent!, /no single owner/)
+    assert.doesNotMatch(root.getElementById('territoryDetail')!.textContent!, /accepted solves|Unconquered|0 points/)
+    assert.equal(globe.solveByTitle(0, 0, 'Defend web', teams[0]), false, 'A&D events cannot become Jeopardy solves')
+    choices[1].click()
+    assert.match(root.getElementById('territoryDetail')!.textContent!, /Held by <img src=x>/)
+    assert.equal(root.querySelectorAll('img').length, 0, 'holder names remain text')
+    assert.match(root.querySelector<HTMLAnchorElement>('#territoryDetail a')!.href, /\/challenges#21-/)
+    assert.equal((root.getElementById('territoryProgress') as HTMLProgressElement).hidden, true)
+    assert.equal(globe.solveRandom(0, 0, teams[0]), null)
+    const finalYaw = root.getElementById('arena')!.dataset.globeYaw
     globe.destroy()
     root
       .getElementById('arena')!
       .dispatchEvent(new browser.KeyboardEvent('keydown', { key: 'ArrowRight' }) as unknown as Event)
-    assert.equal(root.getElementById('arena')!.dataset.globeYaw, settled, 'teardown removes camera listeners')
+    assert.equal(root.getElementById('arena')!.dataset.globeYaw, finalYaw, 'teardown removes camera listeners')
   } finally {
     globe.destroy()
     host.remove()

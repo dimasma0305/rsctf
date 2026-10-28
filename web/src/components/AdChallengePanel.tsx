@@ -6,6 +6,7 @@ import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR, { type KeyedMutator } from 'swr'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
+import { FlagDeliveryNotice } from '@Components/competition/FlagDeliveryNotice'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
@@ -590,11 +591,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
 
       {adState.flagsReady && adState.flagDeliveryFailures > 0 && (
         <Alert color="orange" icon={<Icon path={mdiAlertCircleOutline} size={0.9} />} role="status">
-          {t('game.content.ad.flag_delivery_failed.description', {
-            count: adState.flagDeliveryFailures,
-            defaultValue:
-              '{{count}} service did not acknowledge this round’s flag. The operator has been notified; health evidence will identify affected services.',
-          })}
+          <FlagDeliveryNotice count={adState.flagDeliveryFailures} round={adState.currentRound} />
         </Alert>
       )}
 

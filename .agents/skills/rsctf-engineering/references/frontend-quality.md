@@ -15,6 +15,10 @@
   registration policy that can differ by deployment or event.
 - Keep server authorization authoritative. Protected routes should redirect or show a
   clear authenticated state, but must not rely on route hiding to protect data.
+- Status notices must explain the condition, its scope and impact, and a useful next
+  action. Use an accessible disclosure when details would crowd the normal layout;
+  never rely on hover-only text. Do not claim someone was notified without backend
+  evidence, or present an event-wide count as a fault in the current team's service.
 - Reuse SWR keys and mutate the correct cache after writes. Avoid a second profile or
   config cache with different semantics.
 

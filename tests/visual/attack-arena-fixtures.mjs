@@ -18,6 +18,8 @@ window.WebSocket = class extends EventTarget {
 };`
 
 export function createArenaFixture(mode = 'jeopardy', count = 49) {
+  const liveOnly = mode === 'live-only'
+  if (liveOnly) mode = 'mixed'
   const { config, now } = createCompetitionFixture()
   // Exercise a managed accent as well as the default theme. Focus-ring text
   // over this red accent surface previously failed contrast in light mode.
@@ -27,6 +29,16 @@ export function createArenaFixture(mode = 'jeopardy', count = 49) {
   const ad = { teams: mode === 'mixed' ? teams : [], challenges: mode === 'mixed' ? [{ challengeId: 101, title: 'Relay', category: 'Web' }] : [], epochTicks: mode === 'mixed' ? 10 : 0, currentEpoch: 2, latestRound: 20, currentRoundEndsAt: now + 60000, tickSeconds: 60, evidence: { acceptedCaptures: 12 }, fullySettled: false, started: true, isFrozenView: false }
   const koth = { teams: mode === 'mixed' || mode === 'koth' ? teams : [], hills: mode === 'mixed' || mode === 'koth' ? [{ challengeId: 102, title: 'Beacon', lastCheckStatus: 'Up', currentHolderTeamName: names[0] }] : [], epochTicks: mode === 'jeopardy' ? 0 : 10, latestRound: 20, currentRoundEndsAt: now + 60000, fullySettled: false }
   const scoreboard = { items: names.map((name, i) => ({ id: i + 1, name, score: 8000 - i * 100, solvedCount: 24 - i % 20 })), challenges: Object.fromEntries(['Web', 'Crypto', 'Reverse', 'Pwn'].map((category, ci) => [category, Array.from({ length: 3 }, (_, i) => ({ id: 1000 + ci * 10 + i, title: `${category} challenge ${i + 1}`, score: 500, solved: 0, bloods: [], type: 'StaticAttachment' }))])) }
+  if (liveOnly) {
+    scoreboard.challenges = {
+      Web: [
+        {id:101,title:'Relay',type:'AttackDefense',score:1000,solved:0,bloods:[]},
+        {id:102,title:'Beacon',type:'KingOfTheHill',score:1000,solved:0,bloods:[]},
+      ],
+      PPC: [{id:103,title:'PPC hill',type:'KingOfTheHill',score:1000,solved:0,bloods:[]}],
+    }
+    koth.hills.push({challengeId:103,title:'PPC hill',lastCheckStatus:'Up',currentHolderTeamName:null})
+  }
   const responses = {
     '/api/config': config, '/api/captcha': { type: 'None' },
     '/api/game/901': { id: 901, title: 'INTECHFEST · Globe spectator fixture', start: now - 3600000, end: now + 3600000 },
@@ -41,7 +53,7 @@ export function createArenaFixture(mode = 'jeopardy', count = 49) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv.includes('--serve')) {
-  const { fixture } = createArenaFixture()
+  const { fixture } = createArenaFixture(process.argv.includes('--live-only') ? 'live-only' : 'jeopardy')
   http.createServer(async (req, res) => {
     try {
       if (/^\/(?:api\/|hub)/i.test(req.url)) {
