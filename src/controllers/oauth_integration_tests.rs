@@ -67,6 +67,16 @@ fn provider(address: SocketAddr) -> Provider {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn discord_split_cookies_issue_a_live_session_and_rejections_never_do() {
+    exercise_discord(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL and Chromium; run the OAuth browser gate"]
+async fn discord_browser_accepts_session_and_removes_only_state_cookie() {
+    exercise_discord(true).await;
+}
+
+async fn exercise_discord(browser: bool) {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
     let options = PgConnectOptions::from_str(&database_url)
@@ -241,6 +251,9 @@ async fn discord_split_cookies_issue_a_live_session_and_rejections_never_do() {
     assert_eq!(rejected.headers().get_all(SET_COOKIE).iter().count(), 1);
 
     profile_mode.store(0, Ordering::Relaxed);
+    if browser {
+        browser_flow(&st, address, peer).await;
+    }
     sqlx::query(r#"UPDATE "AspNetUsers" SET email_confirmed=FALSE WHERE id=$1"#)
         .bind(user_id)
         .execute(&pool)
@@ -272,4 +285,90 @@ async fn discord_split_cookies_issue_a_live_session_and_rejections_never_do() {
         .await
         .unwrap();
     admin.close().await;
+}
+
+async fn browser_flow(st: &SharedState, provider_address: SocketAddr, peer: SocketAddr) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route(
+            "/begin",
+            get(move |State(st): State<SharedState>| async move {
+                // Preserve the actual start handler's Set-Cookie header. Only the
+                // provider location is redirected to this disposable consent page.
+                let mut response = start(
+                    State(st),
+                    Path("discord".into()),
+                    Query(StartQuery {
+                        return_url: Some("/done".into()),
+                    }),
+                )
+                .await;
+                let location =
+                    reqwest::Url::parse(response.headers()[header::LOCATION].to_str().unwrap())
+                        .unwrap();
+                let state = location
+                    .query_pairs()
+                    .find(|(key, _)| key == "state")
+                    .unwrap()
+                    .1
+                    .into_owned();
+                response.headers_mut().insert(
+                    header::LOCATION,
+                    format!("http://localhost:{}/consent?state={state}", address.port())
+                        .parse()
+                        .unwrap(),
+                );
+                response
+            }),
+        )
+        .route(
+            "/consent",
+            get(move |Query(query): Query<CallbackQuery>| async move {
+                Redirect::to(&format!(
+                    "http://{address}/callback?code=test-discord-code&state={}",
+                    query.state.unwrap()
+                ))
+            }),
+        )
+        .route(
+            "/callback",
+            get(
+                move |State(st): State<SharedState>,
+                      headers: HeaderMap,
+                      Query(query): Query<CallbackQuery>| async move {
+                    let secure = st.config.cookie_secure;
+                    let result = callback_with_provider(
+                        st,
+                        provider(provider_address),
+                        headers,
+                        query,
+                        peer,
+                    )
+                    .await;
+                    response::callback_response(result, "discord", secure)
+                },
+            ),
+        )
+        .route("/done", get(|| async { "signed in" }))
+        .route("/account/login", get(|| async { "login" }))
+        .merge(crate::controllers::account::router())
+        .with_state(st.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut command = tokio::process::Command::new("node");
+    command
+        .arg("tests/visual/oauth-cookie-browser.mjs")
+        .arg(format!("http://{address}"))
+        .kill_on_drop(true);
+    let result = tokio::time::timeout(Duration::from_secs(60), command.output()).await;
+    server.abort();
+    let _ = server.await;
+    let output = result
+        .expect("browser deadline")
+        .expect("start Node browser harness");
+    assert!(
+        output.status.success(),
+        "browser regression failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

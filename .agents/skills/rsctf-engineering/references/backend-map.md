@@ -26,9 +26,9 @@ rg -n 'pub (async )?fn|pub\(crate\) (async )?fn' src/services/ad
 ```
 
 Use [web/src/Api.ts](../../../../web/src/Api.ts) to find callers and expected wire shapes, then confirm
-against Rust handlers/DTOs. On this baseline, `web genapi` still references a
-specification endpoint not provided by main. The incremental Utoipa pipeline is
-architecture-branch work; do not blindly regenerate the legacy client.
+against Rust handlers/DTOs. The incremental Utoipa pipeline covers durable job
+reads and cancellation; see [API contract](../../../../docs/deploy/api-contract.md).
+It does not yet cover the whole legacy client.
 
 ## Domain services
 
@@ -46,8 +46,18 @@ architecture-branch work; do not blindly regenerate the legacy client.
 | Event security, honeypots, flag egress | [src/services/event_security/](../../../../src/services/event_security/), [src/services/honeypot_telemetry.rs](../../../../src/services/honeypot_telemetry.rs), [src/services/flag_egress_feed.rs](../../../../src/services/flag_egress_feed.rs), [src/bin/rsctf-event-sensor.rs](../../../../src/bin/rsctf-event-sensor.rs) |
 | Health, metrics, audit | [src/services/health.rs](../../../../src/services/health.rs), [src/services/observability.rs](../../../../src/services/observability.rs), [src/services/audit.rs](../../../../src/services/audit.rs), [src/controllers/admin/realtime.rs](../../../../src/controllers/admin/realtime.rs) |
 
-Main still contains business operations in controllers. Follow actual callers
-rather than assuming the service extraction on the architecture branch is merged.
+Shared lifecycle operations are extracted into these application services.
+Controllers still own HTTP adaptation and some orchestration; follow actual callers.
+
+| Responsibility | Owning implementation |
+| --- | --- |
+| API contract and metrics endpoints | [api_contract](../../../../src/controllers/api_contract.rs), [metrics](../../../../src/controllers/metrics.rs) |
+| Challenge editing and builds | [bulk_challenges](../../../../src/services/bulk_challenges.rs), [challenge_builds](../../../../src/services/challenge_builds/), [challenge_lifecycle](../../../../src/services/challenge_lifecycle.rs), [challenge_mutations](../../../../src/services/challenge_mutations.rs), [workload_rollouts](../../../../src/services/workload_rollouts.rs) |
+| Player and exercise runtime lifecycle | [player_containers](../../../../src/services/player_containers.rs), [exercise_containers](../../../../src/services/exercise_containers.rs), [container_teardown](../../../../src/services/container_teardown.rs), [deletion_locks](../../../../src/services/deletion_locks.rs) |
+| Authorization and team effects | [game_authorization](../../../../src/services/game_authorization.rs), [team_effects](../../../../src/services/team_effects.rs), [team_invites](../../../../src/services/team_invites.rs) |
+| Invalidation and configuration effects | [asset_invalidation](../../../../src/services/asset_invalidation.rs), [game_cache](../../../../src/services/game_cache.rs), [scoreboard_invalidation](../../../../src/services/scoreboard_invalidation.rs), [configuration_effects](../../../../src/services/configuration_effects.rs) |
+| Repository operations | [repository_bindings](../../../../src/services/repository_bindings.rs), [repository_push](../../../../src/services/repository_push.rs) |
+| Supervision and sampled operational state | [supervision](../../../../src/services/supervision.rs), [observability_state](../../../../src/services/observability_state.rs) |
 
 ## Data, authorization and wire contracts
 

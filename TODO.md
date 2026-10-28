@@ -6,6 +6,27 @@ against the current implementation before being treated as confirmed gaps.
 
 ## Architecture review and improvement backlog — 2026-10-27
 
+### Follow-up integration — 2026-10-28
+
+- [x] Integrate main through deb89691, preserving dependency updates, CI fixes and
+  the engineering navigation gate.
+- [x] Map the 22 additional architecture module owners and add a route/policy/test
+  index for OAuth, durable jobs and player container operations.
+- [x] Run the new Chromium + real OAuth exchange + PostgreSQL session regression.
+  It follows cross-site top-level redirects without API interception. This
+  loopback test does not replace a TLS reverse-proxy deployment smoke test.
+  Successful login retains the session and clears only state; an unbound callback
+  returns to login and the next profile request remains unauthorized. Local run:
+  1 passed in 2.91 seconds. Integrated library suite: 1,809 passed, 474 ignored;
+  load-harness suite: 525 passed, 3 skipped. These are correctness checks, not
+  performance benchmarks or a full integrated CI/release gate.
+- [ ] Add an automated coordinated database/files/object-storage restore drill,
+  including missing-object detection and measured recovery time.
+- [ ] Complete the open ARCH-03/04/07/09/11/13 acceptance work below; integration
+  does not imply runtime delegation, capture offload or kernel recovery is done.
+- [ ] Pass the complete integrated CI gate and verify an immutable production
+  rollout. Current task environment has no deployment credentials or VPN.
+
 This section consolidates the initial architecture review and image request, the
 first improvement review, and the follow-up review of architectural flows. The
 reference is `main` at `bff5d1a31ae6f964d877fd1fc11cf8328e8e99de`, version

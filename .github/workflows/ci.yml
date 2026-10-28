@@ -267,6 +267,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Verify browser for real OAuth cookie regression
+        run: node --input-type=module -e "import { resolveChromium } from './tests/visual/cdp.mjs'; resolveChromium()"
+
       - name: Run default coverage suite
         run: cargo llvm-cov --all-targets --all-features --locked --no-report
 

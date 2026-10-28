@@ -5,6 +5,18 @@ Read [verification-release.md](verification-release.md) for completion rules,
 [fast-development.md](fast-development.md) for worktree/build batching.
 Commands below run from the repository root unless stated otherwise.
 
+The real OAuth cookie regression uses Chromium, a disposable PostgreSQL schema,
+and a local provider. Set RSCTF_TEST_DATABASE_URL to a disposable database and
+CHROME_BIN if Chromium is not on PATH, then run:
+
+```sh
+scripts/bounded-cargo.sh test --lib discord_browser_accepts_session_and_removes_only_state_cookie -- --ignored --test-threads=1
+```
+
+It follows real cross-site redirects and checks the next authenticated profile
+request. It does not emulate a deployed TLS reverse proxy; retain that smoke test
+in the release gate. CI coverage discovers and runs this ignored database test.
+
 ## Discover the smallest meaningful check
 
 | Changed boundary | Locate / run first | Broader verification |

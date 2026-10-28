@@ -25,7 +25,7 @@ Supported shapes are `all x1`, `web xN + control x1`, and
 `web xN + engine xN + network x1`. Split roles require Redis and shared POSIX
 working storage, including when blobs use S3. Check
 [docs/deploy/scaling.md](../../../../docs/deploy/scaling.md) for constraints, pool budgeting, proxy routes, and
-the advanced-role worker-wiring gap addressed on the architecture branch.
+the centralized [worker registration](../../../../src/runtime_workers.rs).
 
 Public web and stateful routing are separated in [src/server.rs](../../../../src/server.rs).
 `/api/stateful/...` and `/hub/containerExec...` must reach the singleton owner;
@@ -49,8 +49,10 @@ dependencies/topology/drain. Inspect role/capability headers and
 For a stuck job, follow enqueue → durable row/operation ID → eligible role →
 claim/expiry → execution → receipt. Search callers as well as the loop. Cancellation
 of an HTTP request does not prove external Docker/Git/checker work stopped.
-Do not assume detached control execution, cleanup isolation, or all advanced
-consumers are fixed on main because the architecture branch implements changes.
+Control execution uses [supervised lanes](../../../../src/services/control_jobs/supervisor.rs).
+The [runtime tests](../../../../src/runtime_worker_tests.rs) exercise registered
+consumers. Runtime shutdown and sustained cross-game fairness still need the
+end-to-end evidence tracked in TODO.md.
 
 ## Runtime adapters and trust boundaries
 
