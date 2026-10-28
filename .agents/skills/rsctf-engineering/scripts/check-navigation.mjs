@@ -80,7 +80,7 @@ let coveredPages = 0
 for (const page of pages) {
   const path = relative(repositoryRoot, page).split(sep).join('/')
   if ([...mapTargets].some(target => target === path ||
-      (target !== 'web/src/pages' && path.startsWith(`${target}/`)))) coveredPages++
+      (target.startsWith('web/src/pages/') && path.startsWith(`${target}/`)))) coveredPages++
   else problems.push(`Unmapped page: ${path}; add its file or owning page-family link`)
 }
 coverage.push(`page families ${coveredPages}/${pages.length}`)

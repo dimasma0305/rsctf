@@ -53,4 +53,7 @@ test('navigation rejects stale links and unmapped domains/pages without dependin
   writeFileSync(map, good.replace('[page](../../../../web/src/pages/Index.tsx)',
     '[broad root](../../../../web/src/pages/)'))
   assert.match(run().stderr, /Unmapped page/)
+  writeFileSync(map, good.replace('[page](../../../../web/src/pages/Index.tsx)',
+    '[broad ancestor](../../../../web/src/)'))
+  assert.match(run().stderr, /Unmapped page/)
 })
