@@ -38,7 +38,8 @@ or `challenge.yaml`:
 ```yaml
 name: Example challenge
 type: StaticAttachment
-scoreCurve: Logarithmic
+# Uncomment to select Standard, Linear, or Logarithmic explicitly.
+# scoreCurve: Standard
 minScoreRate: 0.01
 difficulty: 5
 ```
