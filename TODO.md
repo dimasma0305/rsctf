@@ -26,7 +26,10 @@ against the current implementation before being treated as confirmed gaps.
     remove originals, restore all table rows, verify session/score/downloads, and
     reject missing/corrupt blobs. Run the same tested binary in CI; guard against
     non-loopback databases and unacknowledged destructive fixture creation.
-  - [ ] Extend the drill to S3 object versions and multi-host working storage.
+  - [x] Restore referenced S3 object contents under a fresh prefix after removing
+    originals; verify downloads through RSCTF's real S3 backend and reject missing
+    and corrupted objects. CI provisions a pinned disposable RustFS fixture.
+  - [ ] Verify object-version history and multi-host working storage restoration.
 - [ ] Complete the open ARCH-03/04/07/09/11/13 acceptance work below; integration
   does not imply runtime delegation, capture offload or kernel recovery is done.
 - [ ] Pass the complete integrated CI gate and verify an immutable production

@@ -24,9 +24,16 @@ score, poster/writeup bytes, and mutable working files. Missing/corrupted blobs
 and an incorrectly signed session must be rejected. The report contains source,
 harness, fixture and binary hashes plus observed backup/restore durations; those
 tiny-fixture measurements are not production recovery guarantees. The current
-scope is stopped writers and local storage, not S3, multi-host storage or active
+scope is stopped writers, not multi-host storage or active
 containers. PostgreSQL client tools run inside the selected container so
 `pg_dump` matches the database major version.
+
+Set `RESTORE_STORAGE_BACKEND=s3` with the usual `RSCTF_S3_ENDPOINT`,
+`RSCTF_S3_BUCKET`, `RSCTF_S3_ACCESS_KEY` and `RSCTF_S3_SECRET_KEY` for the S3
+variant. It accepts only a loopback HTTP test endpoint, writes only random owned
+prefixes in an existing disposable bucket, and cleans those objects afterward.
+CI provisions a pinned RustFS fixture. The drill restores current referenced object
+contents under a fresh prefix; object-version history is outside this test.
 
 The required `architecture-runtime` CI job uses the server and test executables
 from the same run's Rust job, verifies the source revision, and executes the real

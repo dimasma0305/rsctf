@@ -24,7 +24,8 @@ For backup consistency, use the
 [fixture](../../../../tests/load/restore-drill/seed.sql). The load README documents
 its acknowledgement, PostgreSQL container and tested-binary requirements.
 It restores local files and all database rows, checks score/session/downloads,
-and rejects missing or corrupt objects; S3/multi-host recovery is still separate.
+and rejects missing or corrupt objects. Its S3 variant restores referenced contents
+under a fresh prefix; multi-host and object-version-history recovery remain separate.
 
 | Changed boundary | Locate / run first | Broader verification |
 | --- | --- | --- |

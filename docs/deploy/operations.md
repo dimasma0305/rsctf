@@ -58,7 +58,11 @@ the restored application. Missing/corrupt blobs and incorrectly signed sessions
 must fail. CI runs it against the same tested server artifact and retains timing
 and source/binary hashes.
 
-This test does not establish S3 or multi-host recovery guarantees. For S3, preserve
+The S3 variant additionally backs up referenced objects, deletes the original
+objects and restores into a fresh prefix, then reads them through RSCTF's S3
+adapter. It uses an isolated loopback RustFS fixture and checks the same corruption
+and reference boundaries. It does not establish multi-host or object-version-history
+recovery guarantees. For production S3, preserve
 the referenced object versions and shared mutable working storage together with
 the database snapshot; restoring only the POSIX volume is insufficient. Do not
 resume writes until restored references have been checked against object inventory.

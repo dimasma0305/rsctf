@@ -967,6 +967,33 @@ jobs:
           RESTORE_REPORT: ${{ runner.temp }}/architecture-runtime/restore-report.json
         run: node tests/load/restore-drill.mjs
 
+      - name: Restore referenced S3 objects and database together
+        env:
+          ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture
+          RESTORE_PG_CONTAINER: ${{ job.services.postgres.id }}
+          RSCTF_RESTORE_DISPOSABLE: '1'
+          RESTORE_STORAGE_BACKEND: s3
+          RESTORE_REPORT: ${{ runner.temp }}/architecture-runtime/restore-s3-report.json
+          RSCTF_S3_ENDPOINT: http://127.0.0.1:59000
+          RSCTF_S3_BUCKET: rsctf-restore
+          RSCTF_S3_ACCESS_KEY: architecture-test
+          RSCTF_S3_SECRET_KEY: architecture-test-only-password
+        run: |
+          docker run --detach --rm --name rsctf-restore-s3 --cpus 1 --memory 1g \
+            --publish 127.0.0.1:59000:9000 \
+            --env RUSTFS_ACCESS_KEY=architecture-test \
+            --env RUSTFS_SECRET_KEY=architecture-test-only-password \
+            --env RUSTFS_CONSOLE_ENABLE=false \
+            rustfs/rustfs@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b /data
+          trap 'docker rm --force rsctf-restore-s3 >/dev/null' EXIT
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 1 \
+            --max-time 2 --retry-max-time 60 http://127.0.0.1:59000/health
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 1 \
+            --max-time 2 --retry-max-time 60 --request PUT \
+            --aws-sigv4 aws:amz:us-east-1:s3 --user architecture-test:architecture-test-only-password \
+            http://127.0.0.1:59000/rsctf-restore
+          node tests/load/restore-drill.mjs
+
       - name: Exercise role startup, SIGTERM, exclusion and lease-loss recovery
         env:
           ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture
