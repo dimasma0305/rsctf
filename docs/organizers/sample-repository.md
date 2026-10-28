@@ -16,6 +16,21 @@ The public [`dimasma0305/rsctf-challenges`](https://github.com/dimasma0305/rsctf
 | Claim marker | `KingOfTheHill` | Exclusive shared hill and `/koth/king` marker scoring |
 | Proof arena | `KingOfTheHill` | Concurrent API play with managed target evidence reporting |
 
+Selecting a curve in YAML requires rsctf **v0.1.148 or newer**. Every Jeopardy
+example leaves the optional field commented out:
+
+```yaml
+# scoreCurve: Standard
+```
+
+Uncomment it to select `Standard`, `Linear`, or `Logarithmic`. Omitting `scoreCurve` defaults a new
+challenge to `Standard` and preserves an existing challenge's saved curve on rescan.
+Set `scoreCurve: Standard` explicitly to reset an unlocked selection. Choose the
+curve before the event starts; scoring changes are deferred once the event starts
+or the challenge has submission/solve history. See [challenge scoring](./challenges)
+and the example repository's
+[manifest reference](https://github.com/dimasma0305/rsctf-challenges/blob/main/docs/configuration.md#jeopardy-score-curves).
+
 The event manifest is `.gzevent` at the challenge repository root. Challenges use
 the layout `challenges/AD/<category>/<challenge>/`,
 `challenges/Koth/<category>/<challenge>/`, or
