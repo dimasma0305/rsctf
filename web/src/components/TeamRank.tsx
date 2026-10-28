@@ -16,7 +16,7 @@ import {
 } from '@mantine/core'
 import { useClipboard } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
-import { mdiCheck, mdiChevronDown, mdiExclamationThick, mdiKey, mdiOpenInNew, mdiSword } from '@mdi/js'
+import { mdiCheck, mdiChevronDown, mdiExclamationThick, mdiKey } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import cx from 'clsx'
 import { FC, useEffect, useMemo } from 'react'
@@ -133,18 +133,6 @@ export const TeamRank: FC<TeamRankProps> = ({ teamState, compact = false, ...pro
               )}
               <Button component="a" href={`/games/${numId}/scoreboard`} variant="default" size="sm">
                 {t('game.tab.scoreboard')}
-              </Button>
-              <Button
-                component="a"
-                href={`/games/${numId}/attack`}
-                target="_blank"
-                rel="noreferrer"
-                variant="subtle"
-                size="sm"
-                leftSection={<Icon path={mdiSword} size={0.8} aria-hidden="true" />}
-                rightSection={<Icon path={mdiOpenInNew} size={0.7} aria-hidden="true" />}
-              >
-                {t('game.button.attack')}
               </Button>
             </Stack>
           </Popover.Dropdown>

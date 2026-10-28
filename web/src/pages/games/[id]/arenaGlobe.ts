@@ -2,9 +2,9 @@ import { catalogChallengeHash, catalogChallengeIdFromHash, eventChallengeHash } 
 import { parseUrlFragment, updateUrlFragment } from '@Utils/UrlFragment'
 import { addArenaLighting, createArenaOcean } from './arenaAtmosphere'
 import { arenaHome, createArenaCamera } from './arenaCamera'
+import { countryColor, countryStatus, isJeopardyCountry, type ArenaCategory, type ArenaCountry } from './arenaCountries'
 import { buildArenaGeography, type ContinentGeometry, type CountryGeometry } from './arenaGeography'
 import { faceLocation, projectGlobe, sphereLocation, type GlobePoint } from './arenaGlobeModel'
-import type { JeopCategory, JeopChallenge } from './arenaJeopardy'
 import { projectSurface } from './arenaProjection'
 import { createArenaSettlements } from './arenaSettlements'
 
@@ -18,12 +18,13 @@ interface Team {
 }
 interface Hill {
   id: string
+  cid?: number
   name: string
   x: number
   y: number
   owner?: Team
 }
-interface Territory extends JeopChallenge, CountryGeometry {
+interface Territory extends ArenaCountry, CountryGeometry {
   categoryId: string
   category: string
   color: string
@@ -145,6 +146,12 @@ export function createArenaGlobe(deps: GlobeDeps) {
     refreshDetails()
   }
   function refreshDetails() {
+    const jeopardy = territories.filter(isJeopardyCountry)
+    if (!jeopardy.length) filter = 'all'
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-territory-filter]')) {
+      button.hidden = !jeopardy.length && button.dataset.territoryFilter !== 'all'
+      button.setAttribute('aria-pressed', String(button.dataset.territoryFilter === filter))
+    }
     for (const territory of territories) {
       const active = territory.id === selected
       territory.choice.setAttribute('aria-pressed', String(active))
@@ -152,32 +159,33 @@ export function createArenaGlobe(deps: GlobeDeps) {
       territory.shape.classList.toggle('is-selected', active)
       territory.border.classList.toggle('is-selected', active)
       territory.borderLight.classList.toggle('is-selected', active)
-      const summary = `${territory.name} · ${territory.category} · ${territory.base} pts · ${territory.solveCount ? `${territory.solveCount} solves` : 'Unconquered'}`
-      if (territory.choice.getAttribute('aria-label') !== summary) {
-        territory.choice.setAttribute('aria-label', summary)
+      const summary = `${territory.name} · ${territory.category} · ${countryStatus(territory)}`
+      if (territory.choice.dataset.summary !== summary) {
+        territory.choice.dataset.summary = summary
         const title = document.createElement('span'),
           meta = document.createElement('span')
         title.textContent = territory.name
         title.className = 'territory-name'
-        meta.textContent = `${territory.category} · ${territory.base} pts · ${territory.solveCount ? `${territory.solveCount} solves` : 'Unconquered'}`
+        meta.textContent = `${territory.category} · ${countryStatus(territory)}`
         meta.className = 'territory-meta'
         territory.choice.replaceChildren(title, meta)
       }
       territory.pin.setAttribute('aria-label', summary)
-      territory.pin.textContent = `${territory.solveCount ? '⚑' : '◇'} ${territory.name}`
+      territory.pin.textContent = `${territory.mode === 'ad' ? '⚔' : territory.mode === 'koth' ? '♛' : territory.solveCount ? '⚑' : '◇'} ${territory.name}`
       territory.pin.title = summary
       territory.choice.hidden =
-        (filter === 'open' && territory.solveCount > 0) ||
-        (filter === 'solved' && territory.solveCount === 0) ||
+        (filter === 'open' && (!isJeopardyCountry(territory) || territory.solveCount > 0)) ||
+        (filter === 'solved' && (!isJeopardyCountry(territory) || territory.solveCount === 0)) ||
         !`${territory.name} ${territory.category}`.toLowerCase().includes(search.value.trim().toLowerCase())
     }
     get('challengeCount').textContent = String(territories.length)
-    const conquered = territories.filter((t) => t.solveCount > 0).length
-    const summary = `${conquered} / ${territories.length} countries conquered · ${continents.length} continents`
+    const conquered = jeopardy.filter((t) => t.solveCount > 0).length
+    const summary = `${territories.length} countries · ${continents.length} continents${jeopardy.length ? ` · ${conquered} / ${jeopardy.length} Jeopardy challenges solved` : ''}`
     if (get('territorySummary').textContent !== summary) get('territorySummary').textContent = summary
     const progress = get<HTMLProgressElement>('territoryProgress')
     if (progress) {
-      progress.max = Math.max(1, territories.length)
+      progress.hidden = jeopardy.length === 0
+      progress.max = Math.max(1, jeopardy.length)
       progress.value = conquered
     }
     const results = get('territoryResults')
@@ -192,7 +200,9 @@ export function createArenaGlobe(deps: GlobeDeps) {
     const t = territories.find((t) => t.id === selected)
     dirty = true
     const signature = JSON.stringify(
-      t ? [t.id, t.name, t.category, t.base, t.solveCount, t.solvers] : [null, territories.length > 0]
+      t
+        ? [t.id, t.name, t.category, t.mode, t.base, t.solveCount, t.solvers, t.holder, t.holderKnown]
+        : [null, territories.length > 0]
     )
     if (signature === detailSignature) return
     detailSignature = signature
@@ -202,18 +212,32 @@ export function createArenaGlobe(deps: GlobeDeps) {
     heading.textContent = t ? t.name : 'Explore a country'
     const copy = document.createElement('p')
     copy.textContent = t
-      ? `${t.category} continent · ${t.base} points · ${t.solveCount} accepted solves`
+      ? isJeopardyCountry(t)
+        ? `${t.category} continent · ${t.base} points · ${t.solveCount} accepted solves`
+        : `${t.category} continent · ${countryStatus(t)}`
       : 'Each category is a continent. Select a country on the globe or in the list to explore its challenge.'
     detail.append(heading, copy)
     if (t) {
       const badge = document.createElement('span')
       badge.className = 'territory-badge'
-      badge.textContent = t.solveCount ? '⚑ Conquered' : '◇ Unconquered'
+      badge.textContent =
+        t.mode === 'ad'
+          ? '⚔ Attack & Defense'
+          : t.mode === 'koth'
+            ? '♛ King of the Hill'
+            : t.solveCount
+              ? '⚑ Conquered'
+              : '◇ Unconquered'
       detail.prepend(badge)
       const status = document.createElement('p')
-      status.textContent = t.solveCount
-        ? `First solve: ${t.solvers[0]?.name || 'Not available in the public snapshot'}`
-        : 'Unconquered — no accepted solves yet.'
+      status.textContent =
+        t.mode === 'ad'
+          ? 'Each team defends its own service. Captured flags contribute to A&D scoring; this country has no single owner. Open the challenge for your service and targets.'
+          : t.mode === 'koth'
+            ? 'The holder comes from the public KotH snapshot. Control can change during play; this is not a permanent Jeopardy solve. Open the challenge for capture instructions.'
+            : t.solveCount
+              ? `First solve: ${t.solvers[0]?.name || 'Not available in the public snapshot'}`
+              : 'Unconquered — no accepted solves yet.'
       detail.append(status)
       if (t.solvers.length) {
         const list = document.createElement('ul')
@@ -233,9 +257,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
       detail.append(link)
       if (focusedLink) link.focus({ preventScroll: true })
     }
-    if (!territories.length)
-      copy.textContent =
-        'No Jeopardy countries in the current public snapshot. Teams and KotH hills remain on the globe.'
+    if (!territories.length) copy.textContent = 'No challenges are available in the current public snapshot.'
     dirty = true
   }
   function paint() {
@@ -269,7 +291,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
       t.shape.setAttribute('d', land.fill)
       t.border.setAttribute('d', land.edge)
       t.borderLight.setAttribute('d', land.edge)
-      t.shape.style.setProperty('--land-color', t.solvers[0]?.color || t.color)
+      t.shape.style.setProperty('--land-color', countryColor(t) || t.color)
       t.pin.hidden = !p.visible || p.z < 0.24
       const compact =
         t.id !== selected &&
@@ -298,7 +320,8 @@ export function createArenaGlobe(deps: GlobeDeps) {
       }
     }
     for (const [index, hill] of deps.hills().entries()) {
-      const p = projectGlobe(sphereLocation(index, deps.hills().length, -0.8), yaw, pitch, 1.04)
+      const country = territories.find((t) => t.id === hill.cid)
+      const p = projectGlobe(country?.location || sphereLocation(index, deps.hills().length, -0.8), yaw, pitch, 1.04)
       hill.x = p.x
       hill.y = p.y
       const marker = root.getElementById(`hill-${hill.id}`)
@@ -354,7 +377,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
       }
     }
   }
-  function setData(categories: JeopCategory[]) {
+  function setData(categories: ArenaCategory[]) {
     const incoming = categories
       .flatMap((category) =>
         category.challenges.map((c) => ({
@@ -445,10 +468,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
       continent.label.textContent = category.name
       continent.group.setAttribute('aria-label', `${category.name} continent`)
       continent.button.textContent = `${category.name} · ${category.challenges.length} ${category.challenges.length === 1 ? 'country' : 'countries'}`
-      continent.button.setAttribute(
-        'aria-label',
-        `Explore ${category.name} continent, ${category.challenges.length} countries`
-      )
+      continent.button.title = `Explore ${category.name} continent, ${category.challenges.length} countries`
     }
     if (!territories.some((t) => t.id === selected)) selected = null
     const bookmarked = catalogChallengeIdFromHash(window.location.hash)
@@ -615,14 +635,14 @@ export function createArenaGlobe(deps: GlobeDeps) {
       paint()
     },
     solveByTitle(_x: number, _y: number, title: string, team: { name: string; color: string }) {
-      const matches = territories.filter((t) => t.name.toLowerCase() === title.toLowerCase())
+      const matches = territories.filter((t) => isJeopardyCountry(t) && t.name.toLowerCase() === title.toLowerCase())
       // The feed carries a title: ambiguous names wait for the authoritative poll.
       if (matches.length !== 1) return false
       markSolved(matches[0], team)
       return true
     },
     solveRandom(_x: number, _y: number, team: { name: string; color: string }) {
-      const open = territories.filter((t) => !t.solvers.some((s) => s.name === team.name))
+      const open = territories.filter((t) => isJeopardyCountry(t) && !t.solvers.some((s) => s.name === team.name))
       const t = open[Math.floor(Math.random() * open.length)]
       if (!t) return null
       markSolved(t, team)

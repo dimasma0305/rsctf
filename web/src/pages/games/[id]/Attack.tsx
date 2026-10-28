@@ -33,8 +33,8 @@ import { usePageTitle } from '@Hooks/usePageTitle'
 import type { AdScoreboardModel, DetailedGameInfoModel } from '@Api'
 import workspace from '@Styles/GameWorkspace.module.css'
 import arenaEffects from './arenaEffects.css?inline'
+import { buildArenaCountries, CATEGORY_COLOR, isJeopardyCountry } from './arenaCountries'
 import { createArenaGlobe } from './arenaGlobe'
-import { acceptedTerritorySolvers } from './arenaGlobeModel'
 import { createArenaInspector } from './arenaInspector'
 import type { JeopCategory } from './arenaJeopardy'
 import { arenaTeamInitials, arenaTeamLabel, arenaTeamPosition, initialArenaRanking } from './arenaPresentation'
@@ -137,7 +137,7 @@ const ARENA_BODY = `
           <span class="selection-score" id="selectionScore"></span>
           <button class="btn" id="clearTeam">Clear team</button>
         </div>
-        <p class="globe-help map-legend">◇ Unconquered · ⚑ Solved · Borders separate challenge countries; coastlines group category continents. Numbered outposts are teams. A country's tint and flag mark its first solver, not exclusive ownership. The gold ring marks your selection. Terrain, roads, and settlements are decorative, not player locations or game state.</p>
+        <p class="globe-help map-legend">◇ Jeopardy · ⚔ A&D · ♛ KotH. Every challenge has a country; categories form continents. Jeopardy flags mark the first solver, KotH colors show the current holder, and A&D services remain neutral because every team defends its own instance. Numbered outposts are teams. The gold ring marks your selection. Terrain, roads, and settlements are decorative, not player locations or game state.</p>
       </section>
       <aside class="panel inspector" aria-label="Arena explorer">
         <div class="inspector-tabs" role="tablist" aria-label="Explore the arena">
@@ -149,7 +149,7 @@ const ARENA_BODY = `
           <div>
             <h2>Challenge countries</h2>
             <p id="territorySummary" role="status">Loading countries</p>
-            <progress id="territoryProgress" value="0" max="1" aria-label="Countries with an accepted solve"></progress>
+            <progress id="territoryProgress" value="0" max="1" aria-label="Jeopardy challenges with an accepted solve"></progress>
           </div>
           <section id="territoryDetail" aria-label="Selected country" aria-live="polite"></section>
           <div class="territory-directory">
@@ -157,8 +157,8 @@ const ARENA_BODY = `
             <input id="territorySearch" type="search" placeholder="Name or category">
             <div class="territory-filters" role="group" aria-label="Filter challenge countries">
               <button class="btn" data-territory-filter="all" aria-pressed="true">All</button>
-              <button class="btn" data-territory-filter="open" aria-pressed="false">Unconquered</button>
-              <button class="btn" data-territory-filter="solved" aria-pressed="false">Solved</button>
+              <button class="btn" data-territory-filter="open" aria-pressed="false">Unsolved Jeopardy</button>
+              <button class="btn" data-territory-filter="solved" aria-pressed="false">Solved Jeopardy</button>
             </div>
             <p id="territoryResults" role="status"></p>
             <div id="jeop" role="region" tabindex="0" aria-label="Challenge countries grouped by continent"></div>
@@ -1831,56 +1831,8 @@ function runArena(
     }
   }
 
-  // Jeopardy categories for the constellation overlay: every challenge on the standard
-  // scoreboard that is NOT an A&D service or KotH hill, grouped by category, with the
-  // live (dynamic) point value and the blood solvers (gold/silver/bronze, ordered).
-  const CATEGORY_COLOR: any = {
-    Misc: '#46e3a0',
-    Crypto: '#ffc637',
-    Pwn: '#ff4d6a',
-    Web: '#34e3ff',
-    Reverse: '#a06bff',
-    Blockchain: '#ff8c42',
-    Forensics: '#ff5bd0',
-    Hardware: '#8bd450',
-    Mobile: '#5b8cff',
-    PPC: '#ff6f91',
-    AI: '#2ee6c0',
-    Pentest: '#e0b24a',
-    OSINT: '#b07bff',
-  }
-  function buildJeopCats(ad: AdScoreboardModel, jp: any): JeopCategory[] {
-    const adIds = new Set(((ad && ad.challenges) || []).map((c: any) => c.challengeId))
-    const ch = (jp && jp.challenges) || {}
-    const out: JeopCategory[] = []
-    Object.keys(ch).forEach((catName) => {
-      // Jeopardy stars only: drop A&D + KotH challenges. The jeopardy scoreboard
-      // payload carries every enabled challenge, so without the type filter KotH
-      // hills (which aren't in the A&D-board adIds set) leak in as jeopardy stars.
-      const list = (ch[catName] || []).filter(
-        (c: any) => !adIds.has(c.id) && c.type !== 'AttackDefense' && c.type !== 'KingOfTheHill'
-      )
-      if (!list.length) return
-      out.push({
-        id: catName,
-        name: catName.toUpperCase(),
-        color: CATEGORY_COLOR[catName] || '#7fd7ff',
-        challenges: list.map((c: any) => ({
-          id: c.id,
-          name: c.title,
-          base: Math.round(c.score || 0),
-          solveCount: c.solved || 0,
-          solvers: acceptedTerritorySolvers(
-            c.id,
-            jp?.items || [],
-            c.bloods || [],
-            (name) => teamByName(name)?.color || '#7fd7ff'
-          ),
-        })),
-      })
-    })
-    return out
-  }
+  const buildCountries = (ad: AdScoreboardModel, koth: any, jp: any) =>
+    buildArenaCountries(ad, koth, jp, (name) => teamByName(name)?.color || '#7fd7ff')
   // Fold the KotH per-team totals (koth.teams, by participationId) and the standard
   // jeopardy scoreboard (jp.items, by team name) onto the arena teams, for the two
   // non-A&D ranking modes. A&D score stays t.score from the A&D board.
@@ -1974,11 +1926,11 @@ function runArena(
       h.y = CY + HILLR * Math.sin(ang)
     })
 
-    const categories = buildJeopCats(ad, jp)
+    const categories = buildCountries(ad, koth, jp)
     const availableModes = {
       ad: SERVICES.length > 0,
       koth: HILLS.length > 0,
-      jeopardy: categories.some((category) => category.challenges.length > 0),
+      jeopardy: categories.some((category) => category.challenges.some(isJeopardyCountry)),
     }
     if (!preview && (!rankModeChosen || !availableModes[rankMode])) {
       rankMode = initialArenaRanking(SERVICES.length, HILLS.length)
@@ -2068,7 +2020,7 @@ function runArena(
   function applyLivePoll(ad: AdScoreboardModel, koth: any, jp: any) {
     applyAuxScores(koth, jp)
     applyKothRoundClock(koth)
-    jeop.setData(buildJeopCats(ad, jp))
+    jeop.setData(buildCountries(ad, koth, jp))
     applyOfficialAdBoard(ad)
     const kothHills = koth && koth.hills ? koth.hills : []
     kothHills.forEach((kh: any) => {

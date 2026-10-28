@@ -48,7 +48,13 @@ test('round strip preserves reported epoch and flag failures without presenting 
   assert.match(html, /<dd>178<\/dd>/)
   assert.match(html, /<dd>18<\/dd>/)
   assert.match(html, /<dd>1\/8<\/dd>/)
-  assert.match(html, /17 flag deliveries need attention/)
+  assert.match(html, /17 A&amp;D flag deliveries failed across this event/)
+  assert.match(html, /<details/)
+  assert.match(html, /<summary>/)
+  assert.match(html, /In round 178/)
+  assert.match(html, /not a count of failed attacks or necessarily a problem with your team/)
+  assert.match(html, /contact the event organizer/)
+  assert.doesNotMatch(html, /operator has been notified/)
   assert.match(html, /Awaiting round update/)
   assert.doesNotMatch(html, />0s</)
   assert.match(html, /role="status"/)
@@ -62,7 +68,7 @@ test('round strip keeps paused, warmup, loading and KotH-only states honest', as
   assert.match(paused, /Scoring paused/)
   assert.doesNotMatch(paused, /Awaiting round update/)
   const loading = await render(undefined)
-  assert.doesNotMatch(loading, /Warmup|17 flag deliveries/)
+  assert.doesNotMatch(loading, /Warmup|flag deliveries/)
   const warmup = await render({
     ...state,
     currentRound: 0,

@@ -131,10 +131,6 @@
         "label": "Flag 正在同步 — 请稍后再进攻",
         "description": "本回合的 Flag 仍在同步。请等待同步完成后再进攻或更新防守 Flag。"
       },
-      "flag_delivery_failed": {
-        "label": "{{count}} 个 Flag 分发需要处理",
-        "description": "本回合有 {{count}} 个服务未确认收到 Flag。管理员已收到提示；健康检查结果会标明受影响的服务。"
-      },
       "no_service": {
         "title": "你的队伍尚未分配服务",
         "description": "如果你预期看到容器，可能是尚未配置完成。请管理员在 A&D Ops 控制台中点击 \"Ensure containers\"。"

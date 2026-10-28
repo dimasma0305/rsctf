@@ -4,6 +4,9 @@
     "empty_description": "Riwayat skor akan ditampilkan di sini saat tersedia. Peringkat saat ini ada di bawah."
   },
   "arena": {
+    "notice_details": "Detail",
+    "warmup_help": "Ronde penilaian pertama belum dimulai. Gunakan toolkit untuk menyiapkan koneksi dan tunggu penyelenggara memulai acara.",
+    "awaiting_round_help": "Batas waktu ronde terakhir telah lewat, tetapi ronde baru belum diterima. Halaman diperbarui otomatis. Jika terus terjadi, periksa koneksi dan minta penyelenggara memeriksa mesin ronde; waktu nol belum membuktikan ronde baru telah dimulai.",
     "scoring_status": "Status penilaian",
     "awaiting_round_update": "Menunggu pembaruan ronde",
     "epoch": "Epoch",
@@ -79,6 +82,14 @@
     "find_my_team": "Cari Tim Saya"
   },
   "content": {
+    "ad": {
+      "delivery_notice": {
+        "title": "{{count}} pengiriman flag A&D gagal di seluruh acara ini",
+        "meaning": "Pada ronde {{round}}, RSCTF tidak dapat memastikan flag pertahanan baru telah sampai ke beberapa layanan tim. Jumlah ini mencakup seluruh acara, bukan jumlah serangan gagal atau selalu berarti tim kamu bermasalah.",
+        "impact": "Layanan yang terdampak mungkin masih menyimpan flag lama. Pemberitahuan ini tidak menyebutkan tim yang terdampak dan tidak membuktikan adanya penalti skor.",
+        "action": "Buka tantangan A&D kamu untuk memeriksa layanan dan koneksinya. Jika ada masalah, hubungi penyelenggara dengan menyertakan ronde dan nama tantangan. Penyelenggara perlu memeriksa operasi A&D dan log pengiriman flag sebelum mengubah atau memulai ulang layanan."
+      }
+    },
     "scoreboard": {
       "refresh_error": "Papan skor gagal diperbarui. Hasil sebelumnya ditampilkan."
     },
