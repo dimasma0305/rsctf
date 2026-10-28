@@ -127,7 +127,10 @@ pub(super) async fn reap_expired_containers(state: &SharedState) -> AppResult<u6
         }
         let candidate = candidate.into_model()?;
         attempted += 1;
-        match crate::controllers::game::destroy_managed_container_row(state, &candidate, true).await
+        match crate::services::player_containers::reaping::destroy_managed_container_row(
+            state, &candidate, true,
+        )
+        .await
         {
             Ok(true) => reaped += 1,
             Ok(false) => {}

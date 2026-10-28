@@ -4,6 +4,13 @@ An rsctf backup is complete only when it contains PostgreSQL and the uploaded-fi
 
 ## Docker backup
 
+Stop application writers before taking **either** snapshot, and keep them stopped
+until both the database dump and file/object snapshot are complete. This includes
+web, control, engine and network roles, scheduled imports, and any external writer
+to the shared storage. Taking a live database dump first and stopping writes only
+for the later file copy can leave restored references pointing at deleted files.
+Keep PostgreSQL running to produce its logical dump.
+
 Create a PostgreSQL dump from the managed Compose stack:
 
 ```bash
@@ -14,7 +21,8 @@ docker compose exec -T db \
   > "../backups/rsctf-$(date -u +%Y%m%dT%H%M%SZ).dump"
 ```
 
-Back up the named file volume as well. A portable method is to stop writes briefly and archive the mounted volume with a temporary container; determine the actual volume name with:
+While writers remain stopped, archive the named file volume with a temporary
+container; determine the actual volume name with:
 
 ```bash
 docker volume ls --filter label=com.docker.compose.project=rsctf
@@ -39,6 +47,47 @@ A backup you have never restored is only a hope. On an isolated installation:
 3. Restore the same configuration secrets.
 4. Start the matching rsctf version.
 5. Verify accounts, one game, attachments, writeups, and a score.
+
+The disposable regression in `tests/load/restore-drill.mjs` automates this local
+storage path. It creates its own databases, migrates and seeds an event with an
+accepted solve and writeup, shuts down its writer, dumps PostgreSQL and copies
+files/configuration, removes the originals, and restores into a new database.
+It compares all public table rows, validates blob hashes and sizes, checks mutable
+working files, and exercises authenticated downloads and the scoreboard through
+the restored application. Missing/corrupt blobs and incorrectly signed sessions
+must fail. CI runs it against the same tested server artifact and retains timing
+and source/binary hashes.
+
+The S3 variant additionally backs up referenced objects, deletes the original
+objects and restores into a fresh prefix, then reads them through RSCTF's S3
+adapter. It uses an isolated loopback RustFS fixture and checks the same corruption
+and reference boundaries. It does not establish multi-host or object-version-history
+recovery guarantees. For production S3, preserve
+the referenced object versions and shared mutable working storage together with
+the database snapshot; restoring only the POSIX volume is insufficient. Do not
+resume writes until restored references have been checked against object inventory.
+
+## Extending an ended event
+
+An event extension and admission of ended-workload cleanup take the same database
+row lock. If the extension commits first, cleanup skips the newly active event.
+Once cleanup has claimed a service or target, extending the event returns HTTP
+409 until cleanup completes. Its durable claim remains through a failed attempt,
+executor restart, or expired lease: an expired lease alone does not prove that
+snapshot capture or container destruction has stopped.
+
+Keep an eligible maintenance consumer running (`all`, `control`, or `engine`) and
+resolve the snapshot/runtime error reported in its logs. Retry the same editor
+operation after cleanup recovery finishes; successful retries are idempotent.
+Do not manually clear cleanup tokens or runtime identifiers to bypass this
+conflict, because doing so can allow an old teardown to remove a resumed workload.
+
+Retained A&D snapshots are available only when they represent the current event
+end and, while a runtime is present, that exact container. An extension or runtime
+replacement can therefore hide the previous final snapshot. Cleanup preserves
+its stored reference until a valid replacement commits; a failed or cancelled
+upload does not discard it. The new snapshot remains downloadable after the
+runtime is destroyed, subject to the configured retention and access policy.
 
 ## Update Docker Compose
 

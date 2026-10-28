@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-28T03:21:59.336Z",
+  "node": "v24.19.0",
+  "kernel": "6.18.55",
+  "sourceRevision": "16e8e28c6addbf24ecb9601966b1dfc5a56490aa",
+  "binarySourceRevision": "4908ab90ab2467acec2360d32846c4939d1c0cea",
+  "harnessSha256": "1c5a8423c12c04ed5573bbbb4e402e7583ce1dd7f304428604de16e08429f512",
+  "seedSha256": "b1ff81ea5747e2730dc84fadf8f151569f46e67bd9c0b4723031454d94719cf1",
+  "blobAdapterSha256": "451cde738cd45c4abcedfb2cec4a77a7bc34e2b31bf90422d6725152b11ef087",
+  "binarySha256": "4aee29146ab647596985322a412cff7b70b4855924fda92216ff86f082042874",
+  "backend": "s3",
+  "scope": "Stopped-writer PostgreSQL dump/restore, referenced blobs, mutable files and configuration. No multi-host or live-workload recovery.",
+  "observations": [
+    {
+      "event": "backup",
+      "milliseconds": 324.0510409999997,
+      "databaseBytes": 852207
+    },
+    {
+      "event": "restored-ready-and-smoked",
+      "milliseconds": 2860.9936690000004,
+      "tables": 191,
+      "referencedObjects": 2,
+      "missingAndCorruptObjectsRejected": true,
+      "wrongSecretRejected": true
+    }
+  ],
+  "passed": true
+}

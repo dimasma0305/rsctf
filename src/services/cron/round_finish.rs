@@ -637,7 +637,7 @@ pub(super) async fn refresh_score_rollups(state: &SharedState, game_id: i32) -> 
                         false
                     }
                 };
-                let koth_complete = match crate::controllers::game::koth::refresh_epoch_rollups(
+                let koth_complete = match crate::services::ad::koth_scoring::refresh_epoch_rollups(
                     state.pg(),
                     game_id,
                     now,
@@ -779,9 +779,10 @@ pub(super) async fn finish_prepared_round(
     // identity. Reload the snapshot either way and never exec a stale container.
     if !newly_prepared {
         let repair_failures = match async {
-            let job =
-                crate::controllers::edit::request_ad_reconcile_job(state, game.id, false, false)
-                    .await?;
+            let job = crate::services::ad::provision::request_ad_reconcile_job(
+                state, game.id, false, false,
+            )
+            .await?;
             let remaining = pipeline_deadline
                 .saturating_duration_since(tokio::time::Instant::now())
                 .min(std::time::Duration::from_secs(90));
@@ -905,7 +906,9 @@ pub(super) async fn finish_prepared_round(
     // Repair only after the KotH checker persisted its sample. Held targets in an
     // active scoring game require a matching dead-container receipt, so a partial
     // checker failure cannot silently clear responsibility.
-    if let Err(error) = crate::controllers::game::koth::ensure_koth_hills(state, game.id).await {
+    if let Err(error) =
+        crate::services::ad::koth_provisioning::ensure_koth_hills(state, game.id).await
+    {
         tracing::warn!(
             game = game.id,
             round = next_number,
@@ -946,7 +949,7 @@ pub(super) async fn finish_prepared_round(
         .cache
         .remove(&format!("_KothTimelineFrozen_{}", game.id))
         .await;
-    crate::controllers::game::invalidate_combined_scoreboard(state, game.id).await;
+    crate::services::scoreboard_invalidation::invalidate_combined_scoreboard(state, game.id).await;
     if let Ok(challenge_ids) =
         sqlx::query_scalar::<_, i32>(r#"SELECT challenge_id FROM "KothTargets" WHERE game_id = $1"#)
             .bind(game.id)
@@ -972,7 +975,7 @@ pub(super) async fn finish_prepared_round(
         })
         .to_string(),
     );
-    crate::controllers::game::publish_scoreboard_changed(state, game.id, "engines");
+    crate::services::scoreboard_invalidation::publish_scoreboard_changed(state, game.id, "engines");
     tracing::debug!(
         game = game.id,
         round = next_number,

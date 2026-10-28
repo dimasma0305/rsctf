@@ -213,6 +213,14 @@ mod m0356_telemetry_global_usage_repair;
 mod m0357_variant_flag_uniqueness;
 mod m0358_hint_publication;
 pub(crate) mod m0359_game_schedule_changes;
+pub(crate) mod m0360_backend_cleanup_claims;
+pub(crate) mod m0361_worker_certificate_rotation;
+pub(crate) mod m0362_pending_backend_cleanup;
+
+#[cfg(test)]
+pub(crate) use m0261_control_plane_jobs::UP_SQL as CONTROL_JOBS_SQL;
+#[cfg(test)]
+pub(crate) use m0263_control_job_cancellation::UP_SQL as CONTROL_JOB_CANCELLATION_SQL;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -452,6 +460,9 @@ impl MigratorTrait for Migrator {
             Box::new(m0357_variant_flag_uniqueness::Migration),
             Box::new(m0358_hint_publication::Migration),
             Box::new(m0359_game_schedule_changes::Migration),
+            Box::new(m0360_backend_cleanup_claims::Migration),
+            Box::new(m0361_worker_certificate_rotation::Migration),
+            Box::new(m0362_pending_backend_cleanup::Migration),
         ]
     }
 }
@@ -582,7 +593,7 @@ fn migration_ledger_diff(expected: &[String], applied: &[String]) -> (Vec<String
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, str::FromStr, time::Duration};
+    use std::{collections::HashSet, str::FromStr};
 
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     use sqlx::{ConnectOptions as _, Connection as _};
@@ -596,10 +607,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 189);
+        assert_eq!(names.len(), 192);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 82..],
+            &names[names.len() - 85..],
             [
                 "m0108_koth_observer_rotation_operations",
                 "m0109_operator_console_latest_rows",
@@ -683,6 +694,9 @@ mod tests {
                 "m0357_variant_flag_uniqueness",
                 "m0358_hint_publication",
                 "m0359_game_schedule_changes",
+                "m0360_backend_cleanup_claims",
+                "m0361_worker_certificate_rotation",
+                "m0362_pending_backend_cleanup",
             ]
         );
     }
@@ -790,22 +804,11 @@ mod tests {
             .expect("disconnecting the old client clears the cutover fence");
 
         process_pool.close().await;
-        let mut remaining_sessions = 1_i64;
-        for _ in 0..40 {
-            remaining_sessions = sqlx::query_scalar(
-                "SELECT COUNT(*)::bigint FROM pg_stat_activity WHERE datname = $1",
-            )
-            .bind(&database_name)
-            .fetch_one(&admin)
-            .await
-            .unwrap();
-            if remaining_sessions == 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert_eq!(remaining_sessions, 0);
-        sqlx::query(&format!(r#"DROP DATABASE "{database_name}""#))
+        // The admission assertions above are the cutover contract. PostgreSQL
+        // can still be retiring a closed pool's backend under coverage load;
+        // fixture disposal must not impose an unrelated two-second deadline.
+        // This UUID-named database belongs exclusively to this test.
+        sqlx::query(&format!(r#"DROP DATABASE "{database_name}" WITH (FORCE)"#))
             .execute(&admin)
             .await
             .unwrap();

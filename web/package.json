@@ -15,7 +15,8 @@
     "build": "pnpm check && vite build",
     "preview": "vite preview",
     "prettier": "prettier --write src --write plugins --write *.mjs --write *.mts",
-    "genapi": "swagger-typescript-api generate -p http://localhost:8080/openapi/v1.json -t template -o src --module-name-first-tag --sort-routes"
+    "genapi": "node scripts/generate-contracts.mjs",
+    "genapi:check": "node scripts/generate-contracts.mjs --check"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

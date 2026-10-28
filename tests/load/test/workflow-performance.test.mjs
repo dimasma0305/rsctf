@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { promisify } from 'node:util'
 import test from 'node:test'
 import { jobComponents } from '../../../scripts/ci-plan.mjs'
 
@@ -143,13 +145,29 @@ test('integration jobs use the exact same-run test outputs instead of compiling 
   assert.doesNotMatch(rust, /cargo check/)
   assert.match(rust, /name: ci-server-\$\{\{ github\.sha }}/)
   assert.match(rust, /retention-days: 1/)
-  for (const name of ['kubernetes-callback', 'cheat-acceptance']) {
+  for (const name of ['kubernetes-callback', 'cheat-acceptance', 'architecture-runtime']) {
     const source = job(ciWorkflow, name)
     assert.match(source, /needs: \[plan, rust\]/)
     assert.match(source, /name: ci-server-\$\{\{ github\.sha }}/)
     assert.match(source, /source-sha\)" = "\$GITHUB_SHA"/)
     assert.doesNotMatch(source, /cargo (build|test)|rust-cache|rust-toolchain/)
   }
+})
+
+test('artifact selection distinguishes the library from the same-named binary test', () => {
+  const filter = job(ciWorkflow, 'rust').match(/test_binary="\$\(jq -rs '([^']+)'/)?.[1]
+  assert.ok(filter)
+  const artifact = (kind, executable) => ({ reason: 'compiler-artifact',
+    target: { name: 'rsctf', kind: [kind] }, profile: { test: true }, executable })
+  const select = (items) => spawnSync('jq', ['-rs', filter], {
+    input: items.map((item) => JSON.stringify(item)).join('\n'), encoding: 'utf8',
+  })
+  const binary = artifact('bin', '/tests/main')
+  const library = artifact('lib', '/tests/library')
+  assert.equal(select([binary, library]).stdout.trim(), '/tests/library')
+  assert.equal(select([library, binary]).status, 0)
+  assert.notEqual(select([binary]).status, 0)
+  assert.notEqual(select([library, artifact('lib', '/tests/duplicate')]).status, 0)
 })
 
 test('privileged acceptance preserves exact application configuration without inheriting unrelated credentials', () => {
@@ -165,6 +183,35 @@ test('privileged acceptance preserves exact application configuration without in
   })
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(JSON.parse(result.stdout), config)
+})
+
+test('S3 fixture commands tolerate startup resets and temporary unavailability', async () => {
+  const fixture = job(ciWorkflow, 'coverage').split('name: Prepare disposable S3 file-upload fixture')[1]
+    .split('name: Run database regressions')[0]
+  const commands = [...fixture.matchAll(/curl --fail[\s\S]*?http:\/\/127\.0\.0\.1:59000\/(?:health|rsctf-coverage)/g)]
+  assert.equal(commands.length, 2, 'exercise both health and bucket creation')
+  let requests = 0
+  const server = createServer((request, response) => {
+    requests++
+    if (requests === 1) request.socket.destroy()
+    else if (requests === 2) { response.writeHead(503); response.end() }
+    else response.end('ok')
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    for (const [command] of commands) {
+      requests = 0
+      const result = await promisify(execFile)('bash', ['-e', '-o', 'pipefail', '-c',
+        command.replaceAll('127.0.0.1:59000', `127.0.0.1:${server.address().port}`)], {
+        env: { PATH: process.env.PATH }, timeout: 10_000,
+      })
+      assert.equal(result.stdout, 'ok')
+      assert.equal(requests, 3)
+    }
+  } finally {
+    server.closeAllConnections()
+    await new Promise(resolve => server.close(resolve))
+  }
 })
 
 test('Rust lint runs beside compilation but remains a mandatory publication gate', () => {

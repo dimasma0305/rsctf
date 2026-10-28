@@ -25,8 +25,7 @@ use rsctf::services::cache::{Cache, InMemoryCache, RedisCache, TieredCache};
 use rsctf::services::event_bus::EventBus;
 use rsctf::services::token::TokenService;
 use startup_policy::{
-    owns_feed_reconciliation, owns_mail_reconciliation, owns_suspicion_reconciliation,
-    should_run_migrations,
+    owns_feed_reconciliation, owns_suspicion_reconciliation, should_run_migrations,
 };
 
 const HTTP_DEREGISTRATION_DELAY: Duration = Duration::from_secs(5);
@@ -153,8 +152,13 @@ async fn async_main() -> anyhow::Result<()> {
 
     let worker_store =
         rsctf::services::worker_store::WorkerStore::new(db.get_postgres_connection_pool().clone());
+    let worker_issuer = if capabilities.network {
+        rsctf::services::worker_pki::WorkerIssuer::from_env()?
+    } else {
+        None
+    };
     let worker_plane = if capabilities.network {
-        rsctf::services::worker::bind_from_env(worker_store.clone()).await?
+        rsctf::services::worker::bind_from_env(worker_store.clone(), worker_issuer.clone()).await?
     } else {
         None
     };
@@ -329,15 +333,19 @@ async fn async_main() -> anyhow::Result<()> {
     };
     rsctf::services::ad_vpn::initialize_backend(containers.backend_kind())
         .map_err(|error| anyhow::anyhow!("A&D VPN backend configuration failed: {error}"))?;
-    if capabilities.network {
+    let mut network_lease_monitor = if capabilities.network {
         // Network ownership is intentionally single-active for now, including
         // BYOC when the optional WireGuard VPN is disabled. A second owner
         // fails startup instead of serving a divergent in-memory tunnel registry.
         rsctf::services::ad_vpn::acquire_instance_lease(&db)
             .await
             .map_err(|error| anyhow::anyhow!("network singleton lease failed: {error}"))?;
-        rsctf::services::ad_vpn::start_instance_lease_monitor();
-    }
+        Some(AbortOnDrop(
+            rsctf::services::ad_vpn::start_instance_lease_monitor(),
+        ))
+    } else {
+        None
+    };
 
     let events = if replica_mode {
         EventBus::distributed(
@@ -348,11 +356,6 @@ async fn async_main() -> anyhow::Result<()> {
         )?
     } else {
         EventBus::local()
-    };
-    let worker_issuer = if capabilities.network {
-        rsctf::services::worker_pki::WorkerIssuer::from_env()?
-    } else {
-        None
     };
     if capabilities.network && worker_plane.is_some() != worker_issuer.is_some() {
         return Err(anyhow::anyhow!(
@@ -475,6 +478,17 @@ async fn async_main() -> anyhow::Result<()> {
     });
 
     let stop_reason = tokio::select! {
+        result = async {
+            match network_lease_monitor.as_mut() {
+                Some(monitor) => monitor.join().await,
+                None => std::future::pending().await,
+            }
+        } => {
+            // Ownership must remain monitored even while other workers drain.
+            // A failed monitor cannot safely enter the ordinary 250-second drain.
+            tracing::error!(?result, "network ownership monitor exited unexpectedly; terminating fail-closed");
+            std::process::exit(1);
+        }
         result = &mut server => StopReason::Server(result),
         _ = wait_for_shutdown_signal() => {
             StopReason::Signal
@@ -535,6 +549,14 @@ async fn async_main() -> anyhow::Result<()> {
             tracing::warn!(%error, "network singleton lease release was not clean");
         }
     }
+    if let Some(mut monitor) = network_lease_monitor.take() {
+        if !tokio::time::timeout(Duration::from_secs(3), monitor.join())
+            .await
+            .is_ok_and(|result| result.is_ok())
+        {
+            tracing::warn!("network ownership monitor did not finish cleanly after release");
+        }
+    }
     serve_result.map_err(|error| anyhow::anyhow!("HTTP server task failed: {error}"))??;
     if let Some(failure) = worker_failure {
         anyhow::bail!(failure);
@@ -585,6 +607,10 @@ fn start_background_services(
     use rsctf::services::cron::{self, RoundSchedulerScope};
 
     let mut required = Vec::new();
+    required.push(RequiredTask::Unit(
+        "durable monitoring sampler",
+        rsctf::services::observability_state::start(state.clone(), shutdown.clone()),
+    ));
     if role.capabilities().api {
         required.push(RequiredTask::Unit(
             "scoreboard read-ahead",
@@ -636,11 +662,8 @@ fn start_background_services(
             rsctf::services::discord_webhook::start_reconciler(state.clone(), shutdown.clone()),
         ));
     }
-    if owns_mail_reconciliation(role) {
-        required.push(RequiredTask::Unit(
-            "mail outbox reconciler",
-            rsctf::services::mail_outbox::start_reconciler(state.clone(), shutdown.clone()),
-        ));
+    for (name, handle) in rsctf::runtime_workers::start(state, shutdown.clone()) {
+        required.push(RequiredTask::Unit(name, handle));
     }
     if let Some(worker_plane) = worker_plane {
         let service = worker_plane.service.clone();
@@ -659,29 +682,6 @@ fn start_background_services(
     }
     match role {
         RuntimeRole::All | RuntimeRole::Control => {
-            required.push(RequiredTask::Unit(
-                "challenge import worker",
-                rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "challenge revision effect worker",
-                rsctf::controllers::edit::start_challenge_revision_effect_worker(
-                    state.clone(),
-                    shutdown.clone(),
-                ),
-            ));
-            required.push(RequiredTask::Unit(
-                "mutation retention worker",
-                rsctf::services::mutation_retention::start(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "repository push worker",
-                rsctf::controllers::edit::start_repo_push_worker(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "repository binding scheduler",
-                rsctf::services::repo_binding_scheduler::start(state.clone(), shutdown.clone()),
-            ));
             if rsctf::services::ad_vpn::enabled() {
                 required.push(RequiredTask::Unit(
                     "A&D network reconcile",
@@ -753,32 +753,7 @@ fn start_background_services(
                 ),
             ));
         }
-        RuntimeRole::Development => {
-            required.push(RequiredTask::Unit(
-                "challenge import worker",
-                rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "challenge revision effect worker",
-                rsctf::controllers::edit::start_challenge_revision_effect_worker(
-                    state.clone(),
-                    shutdown.clone(),
-                ),
-            ));
-            required.push(RequiredTask::Unit(
-                "mutation retention worker",
-                rsctf::services::mutation_retention::start(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "repository push worker",
-                rsctf::controllers::edit::start_repo_push_worker(state.clone(), shutdown.clone()),
-            ));
-            required.push(RequiredTask::Unit(
-                "repository binding scheduler",
-                rsctf::services::repo_binding_scheduler::start(state.clone(), shutdown.clone()),
-            ));
-        }
-        RuntimeRole::Web | RuntimeRole::Migrate => {}
+        RuntimeRole::Development | RuntimeRole::Web | RuntimeRole::Migrate => {}
     }
 
     if let Some(topology) = rsctf::services::runtime_topology::spawn(
@@ -870,7 +845,7 @@ fn supervise_background_tasks(
     }
 }
 
-async fn drain_background_services(mut background: BackgroundServices, role: RuntimeRole) {
+async fn drain_background_services(background: BackgroundServices, role: RuntimeRole) {
     // A round pipeline may legitimately own work for up to 240 seconds. Stop
     // new claims immediately through the watch channel, then let the in-flight
     // owner finish before another replica needs to recover its durable lease.
@@ -887,20 +862,35 @@ async fn drain_background_services(mut background: BackgroundServices, role: Run
         | RuntimeRole::Migrate => Duration::from_secs(30),
     };
 
-    let drain = async {
-        futures::future::join_all(background.optional.iter_mut()).await;
-        futures::future::join_all(background.required.iter_mut()).await;
-    };
-    if tokio::time::timeout(drain_timeout, drain).await.is_err() {
+    drain_tasks(
+        background
+            .optional
+            .into_iter()
+            .chain(background.required)
+            .collect(),
+        drain_timeout,
+    )
+    .await;
+}
+
+async fn drain_tasks(tasks: Vec<tokio::task::JoinHandle<()>>, deadline: Duration) {
+    let aborts = tasks
+        .iter()
+        .map(|task| task.abort_handle())
+        .collect::<Vec<_>>();
+    // Keep one join future alive across timeout. Reconstructing it from mutable
+    // handles would poll already-completed handles again and panic during drain.
+    let drain = futures::future::join_all(tasks);
+    tokio::pin!(drain);
+    if tokio::time::timeout(deadline, &mut drain).await.is_err() {
         tracing::warn!("background drain timed out; aborting remaining workers");
-        for task in background.optional.iter().chain(background.required.iter()) {
+        for task in aborts {
             task.abort();
         }
         // `abort` schedules cancellation. Await every handle so listener
         // sockets and supervised inner tasks are actually dropped before the
         // network singleton lease is explicitly released by the caller.
-        futures::future::join_all(background.optional).await;
-        futures::future::join_all(background.required).await;
+        drain.await;
     }
 }
 

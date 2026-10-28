@@ -41,7 +41,7 @@ pub(crate) const MAX_USER_NAME_BYTES: usize = 128;
 pub(super) const MAX_ACCOUNT_TOKEN_BYTES: usize = 256;
 pub(super) const MAX_ENCODED_EMAIL_BYTES: usize = 1_024;
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$YBSHJA9ANNWFII7EsOe1rw$O5h6h9EwR/6Pyoe9wCcjK91HivbrgJZwb44fhsiqonw";
-pub(crate) const REGISTRATION_LOCK_ID: i64 = 0x5253_4354_4652_4547; // "RSCTFREG"
+pub(crate) use crate::services::mail_outbox::REGISTRATION_LOCK_ID;
 
 mod avatar;
 mod bootstrap;

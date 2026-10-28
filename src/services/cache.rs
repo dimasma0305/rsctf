@@ -21,6 +21,8 @@ const LOCAL_MAX_ENTRIES: usize = 16_384;
 const LOCAL_MAX_BYTES: usize = 64 * 1024 * 1024;
 const L1_MAX_ENTRIES: usize = 4_096;
 const L1_MAX_BYTES: usize = 32 * 1024 * 1024;
+#[path = "cache/response.rs"]
+pub(crate) mod response;
 const EXPIRED_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 const REDIS_IO_TIMEOUT: Duration = Duration::from_millis(750);
 const REDIS_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -216,11 +218,7 @@ impl InMemoryCache {
         Self::with_limits(LOCAL_MAX_ENTRIES, LOCAL_MAX_BYTES)
     }
 
-    fn l1() -> Self {
-        Self::with_limits(L1_MAX_ENTRIES, L1_MAX_BYTES)
-    }
-
-    fn with_limits(max_entries: usize, max_bytes: usize) -> Self {
+    pub(crate) fn with_limits(max_entries: usize, max_bytes: usize) -> Self {
         assert!(max_entries > 0, "cache entry limit must be positive");
         assert!(max_bytes > 0, "cache byte limit must be positive");
         Self {
@@ -700,15 +698,21 @@ impl Cache for RedisCache {
 /// issues it and normally `≤ l1_ttl` everywhere else. Callers whose fill can
 /// race a mutation must also account for a stale post-remove write to L2.
 pub struct TieredCache {
-    l1: InMemoryCache,
+    l1: response::ResponseCache,
+    // Plaintext local secrets never enter a response namespace or the shared tier.
+    // The combined entry/payload limits remain the original L1 limits.
+    local_secrets: response::LocalSecrets,
     l2: Arc<dyn Cache>,
     l1_ttl: Duration,
 }
 
 impl TieredCache {
     pub fn new(l2: Arc<dyn Cache>, l1_ttl: Duration) -> Self {
+        let l1 = response::ResponseCache::new();
+        let local_secrets = l1.local_secrets();
         Self {
-            l1: InMemoryCache::l1(),
+            l1,
+            local_secrets,
             l2,
             l1_ttl,
         }
@@ -717,6 +721,11 @@ impl TieredCache {
     /// Cap the L1 copy's lifetime at `l1_ttl` (never hold it longer than L2 would).
     fn l1_ttl(&self, requested: Option<Duration>) -> Option<Duration> {
         Some(requested.map_or(self.l1_ttl, |t| t.min(self.l1_ttl)))
+    }
+
+    async fn invalidate_local_views(&self, key: &str) {
+        self.l1.remove(key).await;
+        self.local_secrets.remove(key).await;
     }
 }
 
@@ -744,7 +753,7 @@ impl Cache for TieredCache {
     }
 
     async fn get_local(&self, key: &str) -> Option<Bytes> {
-        self.l1.get(key).await
+        self.local_secrets.get(key).await
     }
 
     async fn get_authoritative(&self, key: &str) -> Option<Bytes> {
@@ -755,7 +764,7 @@ impl Cache for TieredCache {
         // L2 is authoritative for a distributed one-time consume. Clear L1 even
         // when L2 misses so a stale local copy can never resurrect the value.
         let value = self.l2.get_and_remove(key).await;
-        self.l1.remove(key).await;
+        self.invalidate_local_views(key).await;
         value
     }
 
@@ -763,7 +772,7 @@ impl Cache for TieredCache {
         let removed = self.l2.compare_and_remove(key, expected).await;
         // Always evict L1: on a failed comparison it may contain the stale value
         // that caused the mismatch and must be refreshed from authoritative L2.
-        self.l1.remove(key).await;
+        self.invalidate_local_views(key).await;
         removed
     }
 
@@ -773,7 +782,7 @@ impl Cache for TieredCache {
             self.l1.set(key, value, self.l1_ttl(ttl)).await;
         } else {
             // A local stale value must not hide the authoritative winner.
-            self.l1.remove(key).await;
+            self.invalidate_local_views(key).await;
         }
         inserted
     }
@@ -787,7 +796,7 @@ impl Cache for TieredCache {
         let inserted = self.l2.set_if_absent_authoritative(key, value, ttl).await;
         // Version-pointer readers bypass L1, while clearing this replica's copy
         // also prevents an accidental ordinary read from observing an old one.
-        self.l1.remove(key).await;
+        self.invalidate_local_views(key).await;
         inserted
     }
 
@@ -797,12 +806,12 @@ impl Cache for TieredCache {
     }
 
     async fn set_local(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
-        self.l1.set(key, value, self.l1_ttl(ttl)).await;
+        self.local_secrets.set(key, value, self.l1_ttl(ttl)).await;
     }
 
     async fn set_authoritative(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
         self.l2.set_authoritative(key, value, ttl).await;
-        self.l1.remove(key).await;
+        self.invalidate_local_views(key).await;
     }
 
     async fn compare_and_set_authoritative(
@@ -818,12 +827,12 @@ impl Cache for TieredCache {
             .await;
         // Pointer reads bypass L1, but clear any ordinary local copy on both a
         // match and mismatch so this replica cannot retain obsolete metadata.
-        self.l1.remove(key).await;
+        self.invalidate_local_views(key).await;
         replaced
     }
 
     async fn remove(&self, key: &str) {
-        self.l1.remove(key).await;
+        self.invalidate_local_views(key).await;
         self.l2.remove(key).await;
     }
 
@@ -833,4 +842,9 @@ impl Cache for TieredCache {
 }
 
 #[cfg(test)]
+#[path = "cache/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cache/redis_interruption_tests.rs"]
+mod redis_interruption_tests;

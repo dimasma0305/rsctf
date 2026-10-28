@@ -87,7 +87,9 @@ async fn game_revision(
 }
 
 async fn ensure_epoch_is_open(connection: &mut sqlx::PgConnection, game_id: i32) -> AppResult<()> {
-    if crate::controllers::edit::ad_epoch_scoring_started_locked(connection, game_id).await? {
+    if crate::services::challenge_mutations::ad_epoch_scoring_started_locked(connection, game_id)
+        .await?
+    {
         return Err(AppError::conflict(
             "Challenge import is locked after A&D/KotH epoch scoring has started.",
         ));
@@ -147,11 +149,13 @@ async fn resolve_existing_locked(
     };
     match ids.as_slice() {
         [] => Ok(None),
-        [challenge_id] => {
-            crate::controllers::edit::load_challenge_locked(connection, game_id, *challenge_id)
-                .await
-                .map(Some)
-        }
+        [challenge_id] => crate::services::challenge_mutations::load_challenge_locked(
+            connection,
+            game_id,
+            *challenge_id,
+        )
+        .await
+        .map(Some),
         _ => Err(AppError::bad_request(
             "repository manifest is already linked to multiple challenges",
         )),

@@ -1,0 +1,98 @@
+%% RSCTF implemented architecture, origin/main bff5d1a31ae6f964d877fd1fc11cf8328e8e99de (v0.1.147).
+%% Source-derived supported topology; the running production topology was not inspected.
+%% Modules inside RSCTF are in the same application and are not independently deployed services.
+%% Evidence: src/main.rs; src/server.rs; src/app_state.rs; src/models/internal/configs.rs.
+%% Frontend: web/src/App.tsx; web/src/utils/Cache.ts; web/src/hooks/useRecoveringHub.ts.
+%% Cache/events: src/services/cache.rs; src/services/event_bus.rs.
+%% Database access: src/app_state.rs:196; SeaORM owns the shared SQLx PgPool.
+%% Storage: src/storage/{mod,blob_storage,local_blob_storage,s3_blob_storage}.rs; src/services/blob_refs.rs.
+%% Execution: src/services/container.rs; src/services/k8s; src/services/worker/container_backend.rs.
+%% Agents: lib/worker-protocol/README.md; agents/worker-agent/src; agents/byoc-agent/src.
+%% Network: src/services/byoc_tunnel; src/services/ad/{vpn,ssh}; src/controllers/proxy.
+%% Operations: docs/deploy/scaling.md; docs/deploy/workers.md; deploy/compose*.yml; charts/rsctf.
+flowchart TB
+    players[Players / teams]
+    staff[Organizers / administrators]
+    automation[API / CLI automation]
+    browser["React 19 + TypeScript SPA<br/>Mantine / Router / i18next<br/>SWR: bounded, viewer-scoped memory cache"]
+    edge["Optional Caddy / Kubernetes ingress<br/>HTTPS API + WSS live updates<br/>Public vs stateful route selection"]
+    players --> browser
+    staff --> browser
+    browser <-->|"/api/* + /hub/*"| edge
+    automation --> edge
+
+    subgraph application["RSCTF: one Rust Axum / Tokio application, composed through AppState"]
+        boundary["HTTP / WebSocket boundary<br/>JWT session cookies / bearer API tokens<br/>RBAC / CSRF / rate limits / optional event VPN gate"]
+        domains["Domain controllers + services<br/>Accounts / teams / events / challenges<br/>Jeopardy / Attack-Defense / King-of-the-Hill<br/>Exercises / writeups / scoreboards / operator tools"]
+        jobs["Background work<br/>Round engine / sandboxed checkers / durable leases<br/>Repository import / image builds / preflight / retention<br/>Control jobs / mail outbox / reconciliation"]
+        live["Realtime hubs + EventBus<br/>SignalR-compatible JSON over WebSocket<br/>Bounded local broadcast; Redis fanout in split roles<br/>Read/cursor recovery after gaps"]
+        security["Security + evidence<br/>Audit / anti-cheat / honeypots / suspicion<br/>Event VPN telemetry / traffic captures / flag egress"]
+        cache["Cache abstraction<br/>Bounded process-local cache<br/>Redis deployment: 1-second L1 + shared L2"]
+        dbaccess["Database access<br/>SeaORM + bound SQLx queries<br/>One shared PgPool"]
+        runtime["ContainerManager<br/>Docker / Kubernetes / Worker / Noop<br/>Selected at startup; bounded lifecycle admission"]
+        network["Single-active network ownership<br/>WireGuard / SSH / authenticated player proxy<br/>BYOC yamux sessions / trusted worker sessions<br/>PostgreSQL lease; process-local registries"]
+        boundary --> domains
+        domains --> jobs
+        domains --> live
+        jobs --> live
+        domains --> security
+        domains --> cache
+        domains --> dbaccess
+        jobs --> dbaccess
+        security --> dbaccess
+        domains --> runtime
+        jobs --> runtime
+        boundary --> network
+    end
+    edge <--> boundary
+    live --> edge
+
+    postgres[("PostgreSQL 18<br/>Authoritative business data, scores, rounds<br/>Durable jobs / outboxes / worker desired state<br/>Migrations, locks, leases, evidence")]
+    redis[("Redis<br/>Optional for combined all; required for split<br/>Shared cache / PubSub / rate limits / coordination")]
+    blobs[("Content-addressed blobs<br/>Local filesystem OR S3-compatible object store<br/>SHA-256 deduplication / range streams / reference cleanup")]
+    files[("Working filesystem<br/>Repository worktrees / checkers / captures / snapshots<br/>Split roles require shared POSIX files with rename + flock")]
+    dbaccess --> postgres
+    network --> postgres
+    cache -.-> redis
+    live -.-> redis
+    jobs -.-> redis
+    domains --> blobs
+    jobs --> files
+    security --> files
+
+    docker["Local Docker challenge containers"]
+    kube["Kubernetes challenge Pods / Services"]
+    worker["Trusted remote worker agent<br/>Linux / native Windows Docker<br/>Jeopardy workloads only"]
+    byoc["Team-owned BYOC agent<br/>Participant service / flags / optional exec<br/>Separate trust boundary from infrastructure workers"]
+    runtime -.->|"backend option"| docker
+    runtime -.->|"backend option"| kube
+    runtime -.->|"durable desired state"| postgres
+    worker -.->|"outbound mTLS 1.3, control + data channels"| network
+    network -.->|"reconcile worker desired state"| worker
+    byoc -.->|"outbound WSS + yamux"| network
+    players -.->|"Optional authenticated proxy / VPN"| network
+    players -.->|"Direct game endpoints, when enabled"| docker
+    players -.->|"Direct game endpoints, when enabled"| kube
+    network -.-> docker
+    network -.-> kube
+    sensor["Optional event sensor<br/>Aggregate flow and flag observations<br/>Authenticated telemetry API"]
+    sensor -.-> security
+
+    integrations["Optional external integrations<br/>Discord / Google OAuth, captcha, SMTP<br/>Git repositories / OCI registry<br/>Discord webhooks / donations"]
+    boundary -.-> integrations
+    jobs -.-> integrations
+
+    profiles["Runtime profiles: same binary/image<br/>Small: all x1<br/>Split: web xN + control x1<br/>Advanced: web xN + engine xN + network x1<br/>migrate: one-shot; development: API-focused preview<br/>Control is replaced by engine + network in advanced topology<br/>Any game with BYOC stays with network; engine owns managed-only games"]
+    gap["REVIEW FINDING: advanced role wiring gap<br/>Import / revision effects / repository push / repository scan<br/>and mutation-retention workers start only in all, control, development.<br/>Advanced engine + network roles omit these startup calls.<br/>Enqueued import jobs can remain pending.<br/>Evidence: src/main.rs:661-783; import_jobs.rs:335,730,922"]
+    build["GitHub Actions<br/>Rust / frontend / repository / security checks<br/>Regression + integration + load-harness checks<br/>Server + BYOC OCI images / native worker binaries / Helm chart"]
+    build -.-> profiles
+    profiles -.-> application
+    gap -.-> jobs
+    classDef warning fill:#fff0df,stroke:#b56a15,color:#6c3d09;
+    classDef optional fill:#f4f0ff,stroke:#7853b5,stroke-dasharray:5 4,color:#342450;
+    classDef authoritative fill:#e2f4f0,stroke:#168475,color:#124b44;
+    classDef core fill:#e8f0ff,stroke:#3a70b0,color:#183b66;
+    class integrations,sensor,worker,byoc,docker,kube optional;
+    class postgres authoritative;
+    class browser,boundary,domains,jobs,live,security,cache,dbaccess,runtime,network core;
+    class gap warning;

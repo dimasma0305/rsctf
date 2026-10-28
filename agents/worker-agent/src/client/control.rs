@@ -377,7 +377,7 @@ pub async fn run_session(
             lane_number,
         )));
     }
-    let result = control_loop(stream, welcome, runtime, dispatcher).await;
+    let result = control_loop(stream, welcome, runtime, dispatcher, connector.identity()).await;
     for task in &data_tasks {
         task.abort();
     }
@@ -387,11 +387,21 @@ pub async fn run_session(
     result
 }
 
+struct SessionTasks([tokio::task::AbortHandle; 2]);
+impl Drop for SessionTasks {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
+        }
+    }
+}
+
 async fn control_loop(
     stream: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
     welcome: ServerWelcome,
     runtime: SharedRuntime,
     dispatcher: OperationDispatcher,
+    identity: &crate::config::AgentConfig,
 ) -> Result<(), ClientError> {
     let (mut reader, mut writer) = tokio::io::split(stream);
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<ControlEnvelope>(OUTBOUND_QUEUE);
@@ -407,10 +417,27 @@ async fn control_loop(
         runtime,
         outbound_tx.clone(),
     );
+    let _tasks = SessionTasks([writer_task.abort_handle(), heartbeat_task.abort_handle()]);
     tokio::pin!(writer_task);
+
+    let mut renewal_tick = tokio::time::interval(Duration::from_secs(60 * 60));
+    renewal_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut renewal_pending = false;
+    let mut renewal_deadline = tokio::time::Instant::now();
 
     let result = loop {
         tokio::select! {
+            _ = renewal_tick.tick(), if welcome.certificate_renewal && !renewal_pending => {
+                if let Some(request) = crate::renewal::prepare(identity).await? {
+                    outbound_tx.send(ControlEnvelope::new(welcome.session.session_epoch, ControlMessage::RenewCertificate(request)))
+                        .await.map_err(|_| ClientError::Transport("renewal control writer closed".into()))?;
+                    renewal_pending = true;
+                    renewal_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                }
+            }
+            _ = tokio::time::sleep_until(renewal_deadline), if renewal_pending => {
+                break Err(ClientError::Transport("certificate renewal response timed out; retrying durable operation".into()));
+            }
             message = read_json_frame::<_, ControlEnvelope>(&mut reader) => {
                 let envelope = message?;
                 validate_revision(envelope.protocol_revision)?;
@@ -418,6 +445,11 @@ async fn control_loop(
                     break Err(ClientError::Protocol("received stale session epoch".to_string()));
                 }
                 match envelope.body {
+                    ControlMessage::CertificateRenewed(response) if renewal_pending => {
+                        crate::renewal::install(identity, response).await?;
+                        tracing::info!("worker certificate renewed; reconnecting with the new certificate");
+                        break Ok(());
+                    }
                     ControlMessage::InventoryRequest(_)
                     | ControlMessage::EnsureWorkload(_)
                     | ControlMessage::EnsureAbsent(_)
@@ -437,7 +469,6 @@ async fn control_loop(
             }
         }
     };
-    heartbeat_task.abort();
     result
 }
 
@@ -607,6 +638,16 @@ mod tests {
     use crate::runtime::WorkerRuntime;
 
     struct HangingProbeRuntime;
+
+    #[tokio::test]
+    async fn dropping_control_session_cancels_writer_and_heartbeat() {
+        let writer = tokio::spawn(std::future::pending::<()>());
+        let heartbeat = tokio::spawn(std::future::pending::<()>());
+        let tasks = SessionTasks([writer.abort_handle(), heartbeat.abort_handle()]);
+        drop(tasks);
+        assert!(writer.await.unwrap_err().is_cancelled());
+        assert!(heartbeat.await.unwrap_err().is_cancelled());
+    }
 
     #[async_trait]
     impl WorkerRuntime for HangingProbeRuntime {

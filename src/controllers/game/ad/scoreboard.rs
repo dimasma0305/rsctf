@@ -157,17 +157,9 @@ fn reserve_scoreboard_refresh(key: &str) -> Option<ScoreboardRefreshReservation>
     Some(ScoreboardRefreshReservation { shard })
 }
 
-fn stale_scoreboard_key(current_key: &str) -> String {
-    format!("{current_key}:stale")
-}
+pub(crate) use crate::services::scoreboard_invalidation::stale_scoreboard_key;
 
-fn scoreboard_cache_key(game_id: i32, is_monitor: bool) -> String {
-    if is_monitor {
-        format!("_AdScoreBoard_{game_id}")
-    } else {
-        format!("_AdScoreBoardFrozen_{game_id}")
-    }
-}
+pub(crate) use crate::services::scoreboard_invalidation::scoreboard_cache_key;
 
 fn live_operational_value<T>(archived: bool, value: T) -> Option<T> {
     (!archived).then_some(value)
@@ -176,36 +168,9 @@ fn live_operational_value<T>(archived: bool, value: T) -> Option<T> {
 /// Remove every A&D board representation after a destructive, visibility, or
 /// configuration mutation. Routine round/submit invalidations intentionally
 /// remove only the five-second fresh key so SWR can bridge an expensive rebuild.
-pub(crate) async fn hard_invalidate_ad_scoreboard(st: &SharedState, game_id: i32) {
-    // A board fill fences publication with Games.xmin. Most scoring inputs live
-    // in child tables, so advance that revision before eviction: an older
-    // detached fill can no longer republish stale data after this returns.
-    if let Err(error) = sqlx::query(r#"UPDATE "Games" SET id = id WHERE id = $1"#)
-        .bind(game_id)
-        .execute(st.pg())
-        .await
-    {
-        tracing::warn!(game = game_id, %error, "A&D scoreboard revision barrier failed");
-    }
-    hard_invalidate_ad_scoreboard_cache(st.cache.as_ref(), game_id).await;
-    crate::controllers::game::invalidate_combined_scoreboard(st, game_id).await;
-}
+pub(crate) use crate::services::scoreboard_invalidation::hard_invalidate_ad_scoreboard;
 
-async fn hard_invalidate_ad_scoreboard_cache(
-    cache: &dyn crate::services::cache::Cache,
-    game_id: i32,
-) {
-    let live = scoreboard_cache_key(game_id, true);
-    let frozen = scoreboard_cache_key(game_id, false);
-    let live_stale = stale_scoreboard_key(&live);
-    let frozen_stale = stale_scoreboard_key(&frozen);
-    tokio::join!(
-        cache.remove(&live),
-        cache.remove(&live_stale),
-        cache.remove(&frozen),
-        cache.remove(&frozen_stale),
-    );
-}
+pub(crate) use crate::services::scoreboard_invalidation::hard_invalidate_ad_scoreboard_cache;
 
 fn revision_disposition(
     expected: &crate::services::ad::scoring::AdScoreboardRevision,

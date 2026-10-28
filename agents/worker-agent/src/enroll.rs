@@ -396,7 +396,7 @@ async fn persist_identity(
 }
 
 #[cfg(unix)]
-async fn sync_parent_directory(path: &Path) -> Result<(), std::io::Error> {
+pub(crate) async fn sync_parent_directory(path: &Path) -> Result<(), std::io::Error> {
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("enrollment state path has no parent"))?;
@@ -404,7 +404,7 @@ async fn sync_parent_directory(path: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(not(unix))]
-async fn sync_parent_directory(_path: &Path) -> Result<(), std::io::Error> {
+pub(crate) async fn sync_parent_directory(_path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
@@ -501,7 +501,7 @@ fn relative_file(path: &Path) -> PathBuf {
         .unwrap_or_else(|| path.to_owned())
 }
 
-async fn write_new_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
+pub(crate) async fn write_new_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
     let mut options = tokio::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

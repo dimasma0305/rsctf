@@ -21,6 +21,8 @@ use delivery::reconcile_with_sender;
 pub(crate) use link_activation::lock_generation as lock_link_generation;
 pub use preparation::{try_prepare, MailPreparationPermit};
 
+pub(crate) const REGISTRATION_LOCK_ID: i64 = 0x5253_4354_4652_4547; // "RSCTFREG"
+
 const MAIL_ADMISSION_LOCK_ID: i64 = 0x5253_4354_464d_4149; // "RSCTFMAI"
 const MAX_CONCURRENT_PREPARATIONS: usize = 16;
 const PREPARATION_LEASE_SECONDS: i64 = 30;

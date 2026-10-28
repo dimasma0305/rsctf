@@ -899,3 +899,5 @@ fn normalize_ip_addr(ip: IpAddr) -> IpAddr {
         IpAddr::V4(v4) => IpAddr::V4(v4),
     }
 }
+
+pub(crate) mod report_cache;

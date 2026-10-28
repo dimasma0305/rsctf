@@ -12,6 +12,7 @@ pub mod hubs;
 pub mod middlewares;
 pub mod migrations;
 pub mod models;
+pub mod runtime_workers;
 pub mod server;
 pub mod services;
 pub mod storage;

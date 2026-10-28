@@ -22,6 +22,14 @@ pub struct ServiceSnapshotBlob {
     pub expires_at_utc: Option<DateTime<Utc>>,
 }
 
+/// Exact runtime and event window observed before exporting the filesystem.
+#[derive(Clone, Copy)]
+pub struct ServiceSnapshotSource<'a> {
+    pub team_service_id: i32,
+    pub container_id: &'a str,
+    pub end_time_utc: DateTime<Utc>,
+}
+
 const SELECT_SNAPSHOT_SQL: &str = r#"
     SELECT snapshot.id, snapshot.team_service_id,
            file.hash, file.name, file.file_size,
@@ -50,7 +58,11 @@ const SELECT_AVAILABLE_SNAPSHOT_SQL: &str = r#"
            snapshot.expires_at_utc
       FROM "AdServiceSnapshots" snapshot
       JOIN "Files" file ON file.id = snapshot.local_file_id
+      JOIN "AdTeamServices" service ON service.id = snapshot.team_service_id
+      JOIN "Games" game ON game.id = service.game_id
      WHERE snapshot.team_service_id = $1
+       AND snapshot.captured_at_utc >= game.end_time_utc
+       AND (service.container_id IS NULL OR service.container_id = snapshot.source_container_id)
        AND (snapshot.expires_at_utc IS NULL
             OR snapshot.expires_at_utc > clock_timestamp())
        AND file.reference_count > 0
@@ -67,41 +79,47 @@ async fn select_snapshot(
         .map_err(database_error)
 }
 
-/// Store one immutable snapshot and acquire exactly one `Files` reference.
+/// Store the current final snapshot and acquire exactly one `Files` reference.
 ///
 /// `None` means the configured retention deadline elapsed before capture. The
 /// per-service advisory lock makes concurrent maintenance/API capture attempts
-/// converge on the first committed blob without acquiring duplicate references.
+/// converge on the first committed blob for this runtime/event window without
+/// acquiring duplicate references. A stale snapshot is replaced only after the
+/// new bytes are staged and its source is revalidated under domain row locks.
 pub async fn store_service_snapshot(
     pool: &PgPool,
     storage: &dyn BlobStorage,
-    team_service_id: i32,
-    source_container_id: &str,
+    source: ServiceSnapshotSource<'_>,
     expires_at_utc: Option<DateTime<Utc>>,
     name: &str,
     bytes: &[u8],
 ) -> AppResult<Option<ServiceSnapshotBlob>> {
+    let ServiceSnapshotSource {
+        team_service_id,
+        container_id: source_container_id,
+        end_time_utc: expected_end_time_utc,
+    } = source;
     if expires_at_utc.is_some_and(|expires| expires <= Utc::now()) {
         return Ok(None);
     }
     let source_exists: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
-               SELECT 1 FROM "AdTeamServices"
-                WHERE id = $1 AND container_id = $2
+               SELECT 1 FROM "AdTeamServices" service
+               JOIN "Games" game ON game.id = service.game_id
+                WHERE service.id = $1 AND service.container_id = $2
+                  AND game.end_time_utc = $3 AND game.end_time_utc <= clock_timestamp()
            )"#,
     )
     .bind(team_service_id)
     .bind(source_container_id)
+    .bind(expected_end_time_utc)
     .fetch_one(pool)
     .await
     .map_err(database_error)?;
     if !source_exists {
         return Err(AppError::conflict(
-            "A&D service backend changed before snapshot publication",
+            "A&D service backend or event window changed before snapshot publication",
         ));
-    }
-    if let Some(existing) = load_service_snapshot(pool, team_service_id).await? {
-        return Ok(Some(existing));
     }
     let staged = super::stage_blob(
         pool,
@@ -117,6 +135,7 @@ pub async fn store_service_snapshot(
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
+    let mut replaced_hash = None;
     let operation: AppResult<Option<ServiceSnapshotBlob>> = async {
         crate::utils::single_flight::acquire_transaction_advisory_lock(
             &mut transaction,
@@ -125,32 +144,83 @@ pub async fn store_service_snapshot(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
+        // Match the event editor's parent-before-child lock order. Storage I/O
+        // has already completed; these locks cover only publication/commit.
+        let game_id =
+            sqlx::query_scalar::<_, i32>(r#"SELECT game_id FROM "AdTeamServices" WHERE id = $1"#)
+                .bind(team_service_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(database_error)?
+                .ok_or_else(|| {
+                    AppError::conflict("A&D service was removed before snapshot publication")
+                })?;
+        let event_matches = sqlx::query_scalar::<_, bool>(
+            r#"SELECT end_time_utc = $2 AND end_time_utc <= clock_timestamp()
+                 FROM "Games" WHERE id = $1 FOR SHARE"#,
+        )
+        .bind(game_id)
+        .bind(expected_end_time_utc)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .unwrap_or(false);
         let source_exists = sqlx::query_scalar::<_, bool>(
-            r#"SELECT EXISTS(
-                   SELECT 1 FROM "AdTeamServices"
-                    WHERE id = $1 AND container_id = $2
-               )"#,
+            r#"SELECT TRUE FROM "AdTeamServices"
+                WHERE id = $1 AND container_id = $2 AND game_id = $3 FOR SHARE"#,
         )
         .bind(team_service_id)
         .bind(source_container_id)
-        .fetch_one(&mut *transaction)
+        .bind(game_id)
+        .fetch_optional(&mut *transaction)
         .await
-        .map_err(database_error)?;
-        if !source_exists {
+        .map_err(database_error)?
+        .unwrap_or(false);
+        if !event_matches || !source_exists {
             return Err(AppError::conflict(
-                "A&D service backend changed before snapshot publication",
+                "A&D service backend or event window changed before snapshot publication",
             ));
         }
 
+        // Retention also locks hash -> snapshot/file. Fence both old and new
+        // hashes in canonical order before taking any snapshot/file row lock.
+        let old_hash = sqlx::query_scalar::<_, String>(
+            r#"SELECT file.hash FROM "AdServiceSnapshots" snapshot
+                 JOIN "Files" file ON file.id = snapshot.local_file_id
+                WHERE snapshot.team_service_id = $1"#,
+        )
+        .bind(team_service_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        super::lock_direct_hashes_locked(
+            &mut transaction,
+            old_hash
+                .as_deref()
+                .into_iter()
+                .chain(std::iter::once(expected_hash.as_str())),
+        )
+        .await?;
         let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut *transaction)
             .await
             .map_err(database_error)?;
         if let Some(existing) = select_snapshot(&mut transaction, team_service_id).await? {
-            return Ok(existing
-                .expires_at_utc
-                .is_none_or(|expires| expires > now)
-                .then_some(existing));
+            if existing.source_container_id == source_container_id
+                && existing.captured_at_utc >= expected_end_time_utc
+                && existing.expires_at_utc.is_none_or(|expires| expires > now)
+            {
+                return Ok(Some(existing));
+            }
+            if expires_at_utc.is_some_and(|expires| expires <= now) {
+                return Ok(None);
+            }
+            sqlx::query(r#"DELETE FROM "AdServiceSnapshots" WHERE id = $1"#)
+                .bind(existing.id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?;
+            replaced_hash = Some(existing.hash);
         }
         if expires_at_utc.is_some_and(|expires| expires <= now) {
             return Ok(None);
@@ -162,15 +232,17 @@ pub async fn store_service_snapshot(
                     (team_service_id, local_file_id, source_container_id,
                      captured_at_utc, expires_at_utc)
                VALUES ($1, $2, $3, clock_timestamp(), $4)
+               ON CONFLICT (team_service_id) DO NOTHING
             RETURNING id"#,
         )
         .bind(team_service_id)
         .bind(file_id)
         .bind(source_container_id)
         .bind(expires_at_utc)
-        .fetch_one(&mut *transaction)
+        .fetch_optional(&mut *transaction)
         .await
-        .map_err(database_error)?;
+        .map_err(database_error)?
+        .ok_or_else(|| AppError::conflict("A&D snapshot publication owner changed"))?;
         let snapshot = sqlx::query_as::<_, ServiceSnapshotBlob>(&format!(
             "{SELECT_SNAPSHOT_SQL} AND snapshot.id = $2"
         ))
@@ -187,7 +259,9 @@ pub async fn store_service_snapshot(
         Ok(snapshot) => snapshot,
         Err(error) => {
             let _ = transaction.rollback().await;
-            if let Err(cleanup_error) = purge_if_unreferenced(pool, storage, &expected_hash).await {
+            if let Err(cleanup_error) =
+                super::discard_unpublished_stage(pool, storage, &staged).await
+            {
                 tracing::warn!(
                     %cleanup_error,
                     hash = %expected_hash,
@@ -198,7 +272,7 @@ pub async fn store_service_snapshot(
         }
     };
     if let Err(error) = transaction.commit().await.map_err(database_error) {
-        if let Err(cleanup_error) = purge_if_unreferenced(pool, storage, &expected_hash).await {
+        if let Err(cleanup_error) = super::discard_unpublished_stage(pool, storage, &staged).await {
             tracing::warn!(
                 %cleanup_error,
                 hash = %expected_hash,
@@ -206,6 +280,16 @@ pub async fn store_service_snapshot(
             );
         }
         return Err(error);
+    }
+    // A concurrent capture may have won publication. Discard only our unused
+    // stage; a committed/uncertain published receipt is never released here.
+    if let Err(error) = super::discard_unpublished_stage(pool, storage, &staged).await {
+        tracing::warn!(%error, hash = %expected_hash, "unused A&D snapshot stage cleanup deferred");
+    }
+    if let Some(hash) = replaced_hash.filter(|hash| hash != &expected_hash) {
+        if let Err(error) = purge_if_unreferenced(pool, storage, &hash).await {
+            tracing::warn!(%error, %hash, "replaced A&D snapshot blob purge deferred");
+        }
     }
     Ok(snapshot)
 }
@@ -232,7 +316,11 @@ pub async fn available_service_snapshots(
         r#"SELECT snapshot.team_service_id
              FROM "AdServiceSnapshots" snapshot
              JOIN "Files" file ON file.id = snapshot.local_file_id
+             JOIN "AdTeamServices" service ON service.id = snapshot.team_service_id
+             JOIN "Games" game ON game.id = service.game_id
             WHERE snapshot.team_service_id = ANY($1)
+              AND snapshot.captured_at_utc >= game.end_time_utc
+              AND (service.container_id IS NULL OR service.container_id = snapshot.source_container_id)
               AND (snapshot.expires_at_utc IS NULL
                    OR snapshot.expires_at_utc > clock_timestamp())
               AND file.reference_count > 0"#,
@@ -295,163 +383,4 @@ pub async fn purge_expired_service_snapshots(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::str::FromStr;
-
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-    use uuid::Uuid;
-
-    use super::*;
-    use crate::storage::LocalBlobStorage;
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn final_snapshot_is_idempotent_downloadable_and_expired_exactly_once() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let admin = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .unwrap();
-        let schema = format!("ad_snapshots_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-            .execute(&admin)
-            .await
-            .unwrap();
-        let options = PgConnectOptions::from_str(&database_url)
-            .unwrap()
-            .options([("search_path", schema.as_str())]);
-        let pool = PgPoolOptions::new()
-            .max_connections(3)
-            .connect_with(options)
-            .await
-            .unwrap();
-        sqlx::raw_sql(
-            r#"
-            CREATE TABLE "Files" (
-                id SERIAL PRIMARY KEY,
-                hash TEXT NOT NULL UNIQUE,
-                upload_time_utc TIMESTAMPTZ NOT NULL,
-                file_size BIGINT NOT NULL,
-                name TEXT NOT NULL,
-                reference_count BIGINT NOT NULL
-            );
-            CREATE TABLE "AdTeamServices" (
-                id INTEGER PRIMARY KEY,
-                container_id TEXT
-            );
-            CREATE TABLE "AdServiceSnapshots" (
-                id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-                team_service_id INTEGER NOT NULL UNIQUE,
-                local_file_id INTEGER NOT NULL REFERENCES "Files"(id),
-                source_container_id TEXT NOT NULL,
-                captured_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-                expires_at_utc TIMESTAMPTZ,
-                CHECK (expires_at_utc IS NULL OR expires_at_utc > captured_at_utc)
-            );
-            CREATE FUNCTION rsctf_release_ad_service_snapshot_file()
-            RETURNS TRIGGER LANGUAGE plpgsql AS $$
-            BEGIN
-                UPDATE "Files"
-                   SET reference_count = GREATEST(reference_count - 1, 0)
-                 WHERE id = OLD.local_file_id;
-                RETURN OLD;
-            END $$;
-            CREATE TRIGGER trg_ad_service_snapshot_release
-            AFTER DELETE ON "AdServiceSnapshots"
-            FOR EACH ROW
-            EXECUTE FUNCTION rsctf_release_ad_service_snapshot_file();
-            CREATE TABLE "Attachments" (id INTEGER PRIMARY KEY, local_file_id INTEGER);
-            CREATE TABLE "Participations" (id INTEGER PRIMARY KEY, writeup_id INTEGER);
-            CREATE TABLE "AspNetUsers" (id INTEGER PRIMARY KEY, avatar_hash TEXT);
-            CREATE TABLE "Teams" (id INTEGER PRIMARY KEY, avatar_hash TEXT);
-            CREATE TABLE "Games" (id INTEGER PRIMARY KEY, poster_hash TEXT);
-            CREATE TABLE "Configs" (config_key TEXT PRIMARY KEY, value TEXT);
-            CREATE TABLE "GameChallenges" (
-                id INTEGER PRIMARY KEY, original_archive_blob_path TEXT
-            );
-            INSERT INTO "AdTeamServices" VALUES (7, 'runtime-7');
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
-
-        let root =
-            std::env::temp_dir().join(format!("rsctf-ad-snapshot-{}", Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&root).unwrap();
-        let storage = LocalBlobStorage::new(&root);
-        let bytes = b"final service filesystem";
-        let expires = Utc::now() + chrono::Duration::days(7);
-        let first = store_service_snapshot(
-            &pool,
-            &storage,
-            7,
-            "runtime-7",
-            Some(expires),
-            "service-7.tar",
-            bytes,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let second = store_service_snapshot(
-            &pool,
-            &storage,
-            7,
-            "runtime-7",
-            Some(expires),
-            "service-7.tar",
-            bytes,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(first.id, second.id);
-        assert_eq!(storage.load(&first.hash).await.unwrap(), bytes);
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(r#"SELECT reference_count FROM "Files" WHERE hash = $1"#,)
-                .bind(&first.hash)
-                .fetch_one(&pool)
-                .await
-                .unwrap(),
-            1
-        );
-
-        sqlx::query(
-            r#"UPDATE "AdServiceSnapshots"
-                  SET captured_at_utc = now() - interval '2 days',
-                      expires_at_utc = now() - interval '1 day'
-                WHERE id = $1"#,
-        )
-        .bind(first.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            purge_expired_service_snapshots(&pool, &storage, 16)
-                .await
-                .unwrap(),
-            1
-        );
-        assert!(load_service_snapshot(&pool, 7).await.unwrap().is_none());
-        assert!(!storage.exists(&first.hash).await);
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Files""#)
-                .fetch_one(&pool)
-                .await
-                .unwrap(),
-            0
-        );
-
-        pool.close().await;
-        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-            .execute(&admin)
-            .await
-            .unwrap();
-        drop(storage);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
+mod tests;

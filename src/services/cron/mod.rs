@@ -34,6 +34,8 @@ use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::AppResult;
 use chrono::Utc;
 
+mod backend_cleanup;
+pub(crate) use backend_cleanup::ensure_extension_safe;
 mod backend_reaper;
 mod delivery_health;
 mod image_cleanup;
@@ -101,20 +103,12 @@ pub fn start_maintenance(
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let maintenance = tokio::spawn(maintenance_supervisor(state.clone(), shutdown.clone()));
-        let image_cleanup = tokio::spawn(image_cleanup::supervise(state, shutdown));
-        tokio::join!(
-            await_supervisor("maintenance", maintenance),
-            await_supervisor("Docker image cleanup", image_cleanup),
-        );
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn(maintenance_supervisor(state.clone(), shutdown.clone()));
+        tasks.spawn(image_cleanup::supervise(state.clone(), shutdown.clone()));
+        tasks.spawn(backend_cleanup::supervise(state, shutdown.clone()));
+        crate::services::supervision::join_required_workers(tasks, shutdown, "maintenance").await;
     })
-}
-
-async fn await_supervisor(label: &'static str, task: tokio::task::JoinHandle<()>) {
-    match task.await {
-        Ok(()) => tracing::info!(supervisor = label, "cron: supervisor stopped"),
-        Err(error) => tracing::error!(supervisor = label, %error, "cron: supervisor task failed"),
-    }
 }
 
 async fn maintenance_supervisor(
@@ -286,6 +280,12 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: deferred blob purge failed: {e}"),
     }
 
+    match state.storage.purge_abandoned_uploads().await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: removed abandoned file uploads"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "cron: file upload cleanup failed"),
+    }
+
     match crate::services::settings_branding::purge_expired(state.pg(), state.storage.as_ref(), 128)
         .await
     {
@@ -294,13 +294,13 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: settings branding retention sweep failed: {e}"),
     }
 
-    match crate::controllers::edit::recover_bulk_delete_jobs(state).await {
+    match crate::services::bulk_challenges::recover_delete_jobs(state).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: resumed bounded bulk challenge operation(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: bulk challenge deletion recovery failed: {e}"),
     }
 
-    match crate::controllers::team::recover_pending_invite_rotations(state, 8).await {
+    match crate::services::team_invites::recover_pending_invite_rotations(state, 8).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: reconciled pending invite rotation(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: invite rotation recovery failed: {e}"),
@@ -312,25 +312,25 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: admin mutation retention sweep failed: {e}"),
     }
 
-    match crate::controllers::edit::process_configuration_effects(state).await {
+    match crate::services::configuration_effects::process_configuration_effects(state).await {
         Ok(n) if n > 0 => tracing::debug!(n, "cron: applied game configuration effect(s)"),
         Ok(_) => {}
         Err(error) => tracing::warn!(%error, "cron: game configuration effects failed"),
     }
 
-    match crate::controllers::team::process_profile_invalidations(state).await {
+    match crate::services::team_effects::process_profile_invalidations(state).await {
         Ok(n) if n > 0 => tracing::debug!(n, "cron: applied team profile invalidation(s)"),
         Ok(_) => {}
         Err(error) => tracing::warn!(%error, "cron: team profile invalidations failed"),
     }
 
-    match crate::controllers::game::sweep_container_operations(state, 128).await {
+    match crate::services::player_containers::operations::sweep(state, 128).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: purged terminal player container operation(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: player container operation sweep failed: {e}"),
     }
 
-    match crate::controllers::exercise::sweep_container_operations(state, 128).await {
+    match crate::services::exercise_containers::operations::sweep(state, 128).await {
         Ok(n) if n > 0 => {
             tracing::info!(n, "cron: reconciled/purged exercise container operation(s)")
         }
@@ -366,13 +366,7 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: ended KotH crown-cycle recovery failed: {e}"),
     }
 
-    match backend_reaper::reap_ended_backends(state).await {
-        Ok(n) if n > 0 => tracing::info!("cron: reaped {n} ended-game A&D backend(s)"),
-        Ok(_) => {}
-        Err(e) => tracing::warn!("cron: ended-game A&D teardown failed: {e}"),
-    }
-
-    match crate::controllers::edit::recover_accepted_provisioning(state).await {
+    match crate::services::ad::provision_recovery::recover_accepted_provisioning(state).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: recovered accepted-participation resources"),
         Ok(_) => {}
         Err(error) => tracing::warn!(%error, "cron: accepted-participation recovery failed"),
@@ -774,7 +768,8 @@ async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
             continue;
         }
         completed += 1;
-        crate::controllers::game::ad::hard_invalidate_ad_scoreboard(state, game_id).await;
+        crate::services::scoreboard_invalidation::hard_invalidate_ad_scoreboard(state, game_id)
+            .await;
         state
             .cache
             .remove(&format!("_KothScoreBoard_{game_id}"))
@@ -827,19 +822,4 @@ async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
 /// invalidation for exceptional corrections.
 async fn refresh_recent_games_cache(state: &SharedState) {
     state.cache.remove("_RecentGames").await;
-}
-
-#[cfg(test)]
-mod supervision_tests {
-    #[test]
-    fn image_cleanup_cannot_cancel_event_critical_maintenance() {
-        let source = include_str!("mod.rs");
-        let (production, _) = source
-            .rsplit_once("\n#[cfg(test)]\nmod supervision_tests")
-            .expect("supervision tests remain separate from production code");
-        assert!(production.contains("tokio::spawn(maintenance_supervisor("));
-        assert!(production.contains("tokio::spawn(image_cleanup::supervise("));
-        assert!(production.contains("tokio::join!("));
-        assert!(!production.contains("scheduled_cleanup(state)"));
-    }
 }

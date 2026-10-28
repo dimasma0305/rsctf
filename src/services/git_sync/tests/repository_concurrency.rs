@@ -230,7 +230,7 @@ pub(super) async fn assert_queued_pushback_remote_head(
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let first_state = state.clone();
     let mut first = tokio::spawn(async move {
-        crate::controllers::edit::commit_latest_to_checkout_for_test(
+        crate::services::repository_push::commit_latest_to_checkout_for_test(
             &first_state,
             game_id,
             challenge_id,
@@ -239,14 +239,17 @@ pub(super) async fn assert_queued_pushback_remote_head(
         .await
     });
     started_rx.await.unwrap();
-    sqlx::query(r#"UPDATE "GameChallenges" SET title = 'queued latest' WHERE id = $1"#)
-        .bind(challenge_id)
-        .execute(state.pg())
-        .await
-        .unwrap();
+    sqlx::query(
+        r#"UPDATE "GameChallenges" SET title = 'queued latest', score_curve = $2 WHERE id = $1"#,
+    )
+    .bind(challenge_id)
+    .bind(ScoreCurve::Logarithmic as i16)
+    .execute(state.pg())
+    .await
+    .unwrap();
     let second_state = state.clone();
     let mut second = tokio::spawn(async move {
-        crate::controllers::edit::commit_latest_to_checkout_for_test(
+        crate::services::repository_push::commit_latest_to_checkout_for_test(
             &second_state,
             game_id,
             challenge_id,
@@ -279,6 +282,8 @@ pub(super) async fn assert_queued_pushback_remote_head(
     .await;
     assert!(head.contains("name: queued latest"));
     assert!(!head.contains("name: queued stale"));
+    let parsed: ChallengeYaml = serde_norway::from_str(&head).unwrap();
+    assert_eq!(parsed.score_curve, Some(ScoreCurve::Logarithmic));
     assert_eq!(
         sqlx::query_scalar::<_, String>(r#"SELECT title FROM "GameChallenges" WHERE id = $1"#,)
             .bind(challenge_id)
@@ -514,10 +519,10 @@ pub(super) async fn assert_binding_update_and_delete_fences(
         .unwrap();
     let update_state = state.clone();
     let mut update = tokio::spawn(async move {
-        crate::controllers::admin::update_repo_binding_record(
+        crate::services::repository_bindings::update_repo_binding_record(
             &update_state,
             binding_id,
-            crate::controllers::admin::RepoBindingUpdateModel {
+            crate::services::repository_bindings::RepoBindingUpdateModel {
                 r#ref: Some("release/latest".to_string()),
                 interval_seconds: Some(60),
                 status: Some("Paused".to_string()),
@@ -577,7 +582,8 @@ pub(super) async fn assert_binding_update_and_delete_fences(
         .unwrap();
     let delete_state = state.clone();
     let mut delete = tokio::spawn(async move {
-        crate::controllers::admin::delete_repo_binding_record(&delete_state, binding_id).await
+        crate::services::repository_bindings::delete_repo_binding_record(&delete_state, binding_id)
+            .await
     });
     assert!(
         tokio::time::timeout(Duration::from_millis(150), &mut delete)
@@ -615,7 +621,7 @@ pub(super) async fn assert_binding_update_and_delete_fences(
         .await
         .unwrap();
     assert!(
-        !crate::controllers::admin::delete_repo_binding_record(state, binding_id)
+        !crate::services::repository_bindings::delete_repo_binding_record(state, binding_id)
             .await
             .unwrap()
     );

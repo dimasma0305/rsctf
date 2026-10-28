@@ -2,38 +2,32 @@
 use super::*;
 use axum::http::HeaderMap;
 
-mod eligibility;
 use crate::services::live_roster::LiveParticipationIdentity;
+use crate::services::player_containers::eligibility;
 use crate::utils::enums::NetworkMode;
 mod deletion;
 use deletion::{delete_expected_team_container_locked, DeleteContainerOutcome};
 mod extension;
+use crate::services::player_containers::image_repair;
+use crate::services::player_containers::publication;
 use eligibility::{
-    authorize_on_demand_build, ineligible_container_start_error, load_eligible_shared_challenge,
+    authorize_on_demand_build, ineligible_container_start_error,
     player_container_request_is_eligible, player_request_is_eligible_now, ContainerRequestMode,
 };
 use extension::extend_expected_team_container_locked;
-mod image_repair;
 pub(crate) use image_repair::{prepare_queued_image, repair_missing_legacy_image};
-mod publication;
-pub(crate) use publication::refresh_shared_container_lease_locked;
 use publication::{
-    publish_team_container_locked, revoke_published_shared_container,
-    revoke_published_team_container, TeamPublication,
+    publish_team_container_locked, revoke_published_team_container, TeamPublication,
 };
 mod operations;
 mod policy;
-pub(crate) use operations::sweep as sweep_container_operations;
+use crate::services::player_containers::reaping;
+use crate::services::player_containers::shared;
+use crate::services::player_containers::workload_fence;
 use policy::{allows_practice_container, container_op_too_frequent};
-mod reaping;
 pub(crate) use reaping::destroy_managed_container_row;
-mod shared;
 pub(crate) use shared::get_or_create_shared_container_locked;
-mod workload_fence;
-use workload_fence::{
-    ensure_publication_definition_current, load_playable_definition_snapshot,
-    load_shared_definition_snapshot,
-};
+use workload_fence::{ensure_publication_definition_current, load_playable_definition_snapshot};
 
 /// Immutable identity precondition for a player container lifecycle mutation.
 #[derive(Debug, Deserialize)]
@@ -997,3 +991,7 @@ mod delete_tests;
 #[cfg(test)]
 #[path = "containers/reaping_tests.rs"]
 mod reaping_tests;
+
+#[cfg(test)]
+#[path = "containers/image_repair_start_tests.rs"]
+mod image_repair_start_tests;

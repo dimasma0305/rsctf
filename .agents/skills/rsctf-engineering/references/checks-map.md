@@ -5,7 +5,37 @@ Read [verification-release.md](verification-release.md) for completion rules,
 [fast-development.md](fast-development.md) for worktree/build batching.
 Commands below run from the repository root unless stated otherwise.
 
+The real OAuth cookie regression uses Chromium, a disposable PostgreSQL schema,
+and a local provider. Set RSCTF_TEST_DATABASE_URL to a disposable database and
+CHROME_BIN if Chromium is not on PATH, then run:
+
+```sh
+scripts/bounded-cargo.sh test --lib discord_browser_accepts_session_and_removes_only_state_cookie -- --ignored --test-threads=1
+```
+
+It follows real cross-site redirects and checks the next authenticated profile
+request. It does not emulate a deployed TLS reverse proxy; retain that smoke test
+in the release gate. CI coverage discovers and runs this ignored database test.
+
 ## Discover the smallest meaningful check
+
+For shutdown during external work, run the
+[control-job shutdown harness](../../../../tests/load/control-job-shutdown.mjs).
+It uses the real control process and Docker builds/resets, with graceful and forced
+exit cases. Rollout cases use durable worker state with injected observations;
+they do not replace native-worker acceptance. The [load README](../../../../tests/load/README.md)
+documents required isolation and the explicitly injected crash-recovery lease expiry.
+The focused Rust regression for a partially completed drain is in
+[startup_tests.rs](../../../../src/startup_tests.rs):
+`scripts/bounded-cargo.sh test --bin rsctf drain_deadline_joins_completed_tasks_once_and_cancels_remaining_work`.
+
+For backup consistency, use the
+[disposable restore drill](../../../../tests/load/restore-drill.mjs) and its
+[fixture](../../../../tests/load/restore-drill/seed.sql). The load README documents
+its acknowledgement, PostgreSQL container and tested-binary requirements.
+It restores local files and all database rows, checks score/session/downloads,
+and rejects missing or corrupt objects. Its S3 variant restores referenced contents
+under a fresh prefix; multi-host and object-version-history recovery remain separate.
 
 | Changed boundary | Locate / run first | Broader verification |
 | --- | --- | --- |
@@ -15,6 +45,7 @@ Commands below run from the repository root unless stated otherwise.
 | Teams, cache retirement, canceled reads | [web/src/utils/PersistentCache.test.ts](../../../../web/src/utils/PersistentCache.test.ts), identity/cache utility tests; [tests/visual/team-access.mjs](../../../../tests/visual/team-access.mjs) | Strict frontend gate and backend membership tests |
 | Layout/admin workflows/localization | [tests/visual/design-ux.mjs](../../../../tests/visual/design-ux.mjs), [tests/visual/admin-operations.mjs](../../../../tests/visual/admin-operations.mjs), [tests/visual/event-readiness.mjs](../../../../tests/visual/event-readiness.mjs) | Relevant page audit at desktop/320px, keyboard, Axe and translations |
 | Scoreboard/pages/freeze | [src/controllers/game/scoreboard_page_tests.rs](../../../../src/controllers/game/scoreboard_page_tests.rs), wire/visibility tests; [tests/visual/scoreboard-page.mjs](../../../../tests/visual/scoreboard-page.mjs) | [tests/load/scoreboard-page.mjs](../../../../tests/load/scoreboard-page.mjs), canonical/full/page integrity |
+| Repository YAML score curves | [score_curve_regression.rs](../../../../src/services/git_sync/tests/score_curve_regression.rs), [push-back round trips](../../../../src/services/git_sync/push_back.rs); filter `score_curve` | Real PostgreSQL `repository_update_preserves_challenge_solves_and_refreshes_content -- --ignored`: creation, omission, explicit reset, grading lock and queued Git push-back |
 | A&D/KotH correctness | Tests under controllers/services `ad/`, `koth/`; [tools/ad-scoring-sim/README.md](../../../../tools/ad-scoring-sim/README.md) | [tests/load/managed-koth.md](../../../../tests/load/managed-koth.md), [tests/load/arena-read.mjs](../../../../tests/load/arena-read.mjs), real runtime lifecycle |
 | Docker retry/first start | [src/services/container/real_docker_tests.rs](../../../../src/services/container/real_docker_tests.rs), [src/services/image_preflight/](../../../../src/services/image_preflight/) | Same-run Docker retry/adoption and repaired-image CI regressions |
 | Trusted worker | Agent/protocol tests and Docker integration tests | [tests/load/worker-plane-local.mjs](../../../../tests/load/worker-plane-local.mjs), [tests/load/worker-plane.mjs](../../../../tests/load/worker-plane.mjs); Linux and Windows gates |

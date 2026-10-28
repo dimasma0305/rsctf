@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::app_state::SharedState;
-use crate::services::cache::Cache;
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::{AppError, AppResult};
 
@@ -23,9 +22,7 @@ static LIVE_HILL_SF: std::sync::LazyLock<
     crate::utils::single_flight::SingleFlight<Option<BTreeSet<i32>>>,
 > = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 
-fn live_hill_cache_key(game_id: i32) -> String {
-    format!("kothlivehills:{game_id}")
-}
+pub(crate) use crate::services::scoreboard_invalidation::live_hill_cache_key;
 
 fn decode_live_hills(bytes: &[u8]) -> Option<BTreeSet<i32>> {
     serde_json::from_slice(bytes).ok()
@@ -99,9 +96,8 @@ pub(super) async fn require_live_hill(
 /// Evict the writer replica and Redis after challenge edits. Existing remote
 /// L1 copies expire within one second; a pre-edit fill that races the eviction
 /// can repopulate L2 and extend that rare stale window to about two cache TTLs.
-pub(crate) async fn invalidate_live_hill_cache(cache: &dyn Cache, game_id: i32) {
-    cache.remove(&live_hill_cache_key(game_id)).await;
-}
+#[cfg(test)]
+use crate::services::scoreboard_invalidation::invalidate_live_hill_cache;
 
 #[cfg(test)]
 mod tests {

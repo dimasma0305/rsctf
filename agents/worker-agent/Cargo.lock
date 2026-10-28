@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "rsctf-worker-agent"
-version = "0.1.147"
+version = "0.1.148"
 dependencies = [
  "async-trait",
  "bollard",
@@ -1435,6 +1435,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+ "x509-parser",
  "yamux",
 ]
 

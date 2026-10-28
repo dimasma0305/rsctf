@@ -620,6 +620,46 @@ and proxied data use the separate address returned by the server, such as
 `workers.ctf.example.com:9443`. Allow outbound TCP from the worker to both
 addresses.
 
+### Automatic certificate renewal
+
+Updated servers advertise `certificateRenewal` in the control-session welcome.
+Updated agents check at connection and hourly, requesting renewal when at most
+29 days remain on their 90-day certificate. Servers accept renewal within 30
+days of expiry. Older servers omit the capability; older agents continue using
+their existing enrollment identity and require planned renewal by enrollment.
+Upgrade both components before relying on automatic renewal.
+
+Renewal uses the authenticated mTLS session and a locally signed CSR. The agent
+keeps its existing private key. This renews the certificate; use the disabled
+worker enrollment procedure above to replace a compromised key or change CA.
+The server stores one recovery response per worker, bound to the operation ID,
+CSR digest, and current certificate. An identical retry returns the identical
+certificate. Another worker, changed CSR, revoked identity, or stale session
+cannot recover that operation. Rotation ends the previous durable session;
+the next connection obtains a newer session epoch.
+
+For a lost reply, the old certificate can reconnect for up to seven days,
+capped by its original expiry. The mapping stops working immediately after a
+manual enrollment changes the current identity. Heartbeat lease extensions
+revalidate the connection's exact certificate, so an existing TLS connection
+cannot keep renewing its session after the overlap ends. The coalesced durable
+heartbeat interval bounds detection for an already-connected worker.
+
+The agent atomically publishes its protected pending operation before sending
+it, validates the returned worker identity, public key and validity period,
+then fsyncs and atomically replaces the certificate. It reconnects with the new
+certificate and retries an interrupted operation after restart. The private
+key is never rewritten. POSIX systems also fsync parent directories; Windows
+uses the existing platform durability helper. Keep clocks synchronized: the
+issuer allows five minutes before issuance, and a certificate that is not yet
+valid locally is retained as a pending retry without replacing the old file.
+An agent left offline beyond certificate expiry still needs enrollment recovery.
+
+Monitor the active-worker certificate expiry gauges in
+[monitoring](monitoring.md). Alert on a nonzero seven-day count and on an
+expired count, and check sample freshness. A healthy renewing fleet should not
+reach the seven-day alert threshold.
+
 `--accept-host-network-boundary` is mandatory for every production run. Keep
 the default 512 MiB writable-layer limit and 5 GiB free-space floor unless the
 event's capacity model calls for stricter values.
@@ -917,9 +957,9 @@ sessions and delayed commands cannot publish a route or delete a replacement.
   result so the next inventory pass probes it again. This is bounded TCP
   reachability for startup and recovery, not continuous or configurable
   application-level health monitoring.
-- Interactive container exec and automatic worker-certificate renewal are not
-  implemented. Re-enroll deliberately during a maintenance window when an
-  identity must be replaced.
+- Interactive container exec is not implemented. Certificate renewal is
+  negotiated automatically by updated agents and servers as described above;
+  key replacement still uses deliberate enrollment.
 - Every workload receives a dedicated Docker network. Linux marks it
   `internal`; Windows combines a private NAT network with a verified HCN
   deny-egress ACL and a resolver without external DNS forwarding. The agent

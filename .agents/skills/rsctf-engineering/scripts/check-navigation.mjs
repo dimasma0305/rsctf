@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Validate the skill's inline local Markdown links without building the app.
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -42,7 +42,7 @@ for (const file of documents) {
         const fromRoot = relative(repositoryRoot, target)
         if (!path || isAbsolute(path) || fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
           problems.push(`${location}: link must stay inside the checkout: ${destination}`)
-        } else if (!existsSync(target)) {
+        } else if (!existsSync(target) || (statSync(target).isDirectory() && readdirSync(target).length === 0)) {
           problems.push(`${location}: missing target: ${destination}`)
         } else if (file.endsWith('-map.md')) {
           mapTargets.add(fromRoot.split(sep).join('/').replace(/\/$/, ''))

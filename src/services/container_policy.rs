@@ -6,6 +6,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::utils::error::{AppError, AppResult};
 
+pub(crate) const DEFAULT_CONTAINER_PORT_MAPPING: &str = "PlatformProxy";
+
+pub(crate) fn normalized_container_port_mapping(value: Option<&str>) -> &'static str {
+    match value {
+        Some("Default") => "Default",
+        _ => DEFAULT_CONTAINER_PORT_MAPPING,
+    }
+}
+
+pub(crate) async fn container_port_mapping(st: &crate::app_state::SharedState) -> String {
+    // Preserve the established proxy fallback when configuration cannot be read.
+    let value = sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT value FROM "Configs" WHERE config_key = $1"#,
+    )
+    .bind("ContainerProvider:PortMappingType")
+    .fetch_optional(st.pg())
+    .await
+    .ok()
+    .flatten()
+    .flatten();
+    normalized_container_port_mapping(value.as_deref()).to_string()
+}
+
 const AUTO_DESTROY_KEY: &str = "ContainerPolicy:AutoDestroyOnLimitReached";
 const MAX_EXERCISE_KEY: &str = "ContainerPolicy:MaxExerciseContainerCountPerUser";
 const DEFAULT_LIFETIME_KEY: &str = "ContainerPolicy:DefaultLifetime";

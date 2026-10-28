@@ -1,0 +1,102 @@
+{
+  "date": "2026-10-27T14:20:01.654Z",
+  "sourceRevision": "5013d417fceebb1a5599068d28adbd634c85ca29",
+  "binarySha256": "f958027b4fcf5aa6a5763c244673e5a2e49ce7df4f40aa27f56b606034e11339",
+  "kernel": "6.17.0-1022-azure",
+  "profile": "privileged",
+  "backend": "none",
+  "vpnEnabled": false,
+  "scope": "Process startup, HTTP readiness, SIGTERM, network-owner exclusion and session-loss recovery. No live VPN routes or worker workloads.",
+  "observations": [
+    {
+      "role": "all",
+      "event": "ready",
+      "milliseconds": 396.0871490000004
+    },
+    {
+      "role": "all",
+      "event": "sigterm-drained",
+      "milliseconds": 5017.356554999999
+    },
+    {
+      "role": "control",
+      "event": "ready",
+      "milliseconds": 331.4092490000003
+    },
+    {
+      "role": "control",
+      "event": "sigterm-drained",
+      "milliseconds": 5012.200642000001
+    },
+    {
+      "role": "engine",
+      "event": "ready",
+      "milliseconds": 294.4706300000016
+    },
+    {
+      "role": "network",
+      "event": "ready",
+      "milliseconds": 409.47615999999834
+    },
+    {
+      "role": "web",
+      "event": "ready",
+      "milliseconds": 5155.531330999998
+    },
+    {
+      "role": "network",
+      "event": "duplicate-owner-rejected"
+    },
+    {
+      "role": "network",
+      "event": "lease-loss-exit",
+      "milliseconds": 775.6487749999978
+    },
+    {
+      "role": "network",
+      "event": "ready",
+      "milliseconds": 210.47058599999946
+    },
+    {
+      "role": "web",
+      "event": "ready",
+      "milliseconds": 6282.542735999999
+    },
+    {
+      "role": "network",
+      "event": "replacement-ready",
+      "milliseconds": 989.1836669999975
+    },
+    {
+      "role": "network",
+      "event": "expired-proof-exit",
+      "milliseconds": 7.507141000001866
+    },
+    {
+      "role": "network",
+      "event": "ready",
+      "milliseconds": 209.93480199999976
+    },
+    {
+      "role": "network",
+      "event": "replacement-after-pause-ready",
+      "milliseconds": 217.91200899999967
+    },
+    {
+      "role": "web",
+      "event": "sigterm-drained",
+      "milliseconds": 5012.591470000003
+    },
+    {
+      "role": "engine",
+      "event": "sigterm-drained",
+      "milliseconds": 5014.969687999997
+    },
+    {
+      "role": "network",
+      "event": "sigterm-drained",
+      "milliseconds": 5011.785871
+    }
+  ],
+  "passed": true
+}

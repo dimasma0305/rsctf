@@ -14,32 +14,13 @@ use crate::utils::enums::{
 };
 use sea_orm::SqlxPostgresConnector;
 use sea_orm_migration::MigratorTrait;
-use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
-    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-    let admin_options = crate::migrations::test_pg_connect_options(&database_url);
-    let admin_pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect_with(admin_options)
-        .await
-        .expect("connect test database");
-    let schema = format!("rsctf_repo_sync_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-        .execute(&admin_pool)
-        .await
-        .expect("create isolated schema");
-    let options = crate::migrations::test_pg_connect_options(&database_url)
-        .options([("search_path", schema.as_str())]);
-    let pool = PgPoolOptions::new()
-        .max_connections(8)
-        .connect_with(options)
-        .await
-        .expect("connect isolated pool");
+    let test_db = crate::utils::test_database::TestDatabase::new("repo_sync").await;
+    let pool = test_db.pool.clone();
     let database = SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
     crate::migrations::Migrator::up(&database, None)
         .await
@@ -136,6 +117,16 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .expect("initial import");
     assert!(first.created);
     let challenge_id = first.challenge_id;
+    super::score_curve_regression::assert_score_curve_sync(&state, game.id, &challenge_dir).await;
+    #[cfg(target_os = "linux")]
+    super::checker_publication::assert_preparation_publication_and_cancellation(
+        &state,
+        &root,
+        binding.id,
+        game.id,
+        challenge_id,
+    )
+    .await;
     assert_eq!(
         sqlx::query_scalar::<_, String>(
             r#"SELECT source_yaml_path FROM "GameChallenges" WHERE id = $1"#,
@@ -247,10 +238,12 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
                   disable_blood_bonus = TRUE,
                   original_score = 777,
                   min_score_rate = 0.4,
-                  difficulty = 9.0
+                  difficulty = 9.0,
+                  score_curve = $2
             WHERE id = $1"#,
     )
     .bind(challenge_id)
+    .bind(ScoreCurve::Linear as i16)
     .execute(state.pg())
     .await
     .expect("record challenge progress");
@@ -270,7 +263,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .expect("write replacement handout");
     tokio::fs::write(
         &manifest,
-        "name: Renamed\ndescription: after sync\ntype: StaticAttachment\ncategory: Misc\nprovide: handout.txt\nsubmissionLimit: 99\nminScoreRate: 0.1\ndifficulty: 2\nflags:\n  - flag{new}\n  - flag{new}\n",
+        "name: Renamed\ndescription: after sync\ntype: StaticAttachment\ncategory: Misc\nprovide: handout.txt\nsubmissionLimit: 99\nminScoreRate: 0.1\ndifficulty: 2\nscoreCurve: Logarithmic\nflags:\n  - flag{new}\n  - flag{new}\n",
     )
     .await
     .expect("write updated manifest");
@@ -356,6 +349,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     assert_eq!(row.original_score, 777);
     assert_eq!(row.min_score_rate, 0.4);
     assert_eq!(row.difficulty, 9.0);
+    assert_eq!(row.score_curve, ScoreCurve::Linear);
     assert_eq!(row.variant_mode as i16, 1);
     assert!(row.variant_generator_image.is_some());
     assert!(row.variant_generator_digest.is_some());
@@ -990,10 +984,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     )
     .await;
     drop(state);
-    pool.close().await;
+    test_db.close().await;
     let _ = tokio::fs::remove_dir_all(&root).await;
-    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-        .execute(&admin_pool)
-        .await
-        .expect("drop isolated schema");
 }

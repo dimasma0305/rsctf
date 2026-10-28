@@ -72,6 +72,7 @@ jobs:
 
       - name: Check formatting
         run: |
+          node scripts/check-architecture.mjs
           cargo fmt --all -- --check
           cargo fmt --manifest-path tests/load/retention-audit/Cargo.toml -- --check
 
@@ -85,7 +86,8 @@ jobs:
     name: Rust
     needs: plan
     if: needs.plan.outputs.server == 'true'
-    runs-on: ubuntu-latest
+    # Match the runtime integration runner's libc for shared executables.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
       postgres:
@@ -161,13 +163,15 @@ jobs:
 
       - name: Stage same-run integration binaries
         run: |
-          cargo test --lib --all-features --locked --no-run --message-format=json > "$RUNNER_TEMP/rsctf-test-artifacts.jsonl"
-          test_binary="$(jq -rs '[.[] | select(.reason == "compiler-artifact" and .target.name == "rsctf" and .profile.test == true and .executable != null)] | if length == 1 then .[0].executable else error("expected one rsctf library test binary") end' "$RUNNER_TEMP/rsctf-test-artifacts.jsonl")"
+          cargo test --all-targets --all-features --locked --no-run --message-format=json > "$RUNNER_TEMP/rsctf-test-artifacts.jsonl"
+          test_binary="$(jq -rs '[.[] | select(.reason == "compiler-artifact" and .target.name == "rsctf" and .target.kind == ["lib"] and .profile.test == true and .executable != null)] | if length == 1 then .[0].executable else error("expected one rsctf library test binary") end' "$RUNNER_TEMP/rsctf-test-artifacts.jsonl")"
           install -D -m 0755 "$test_binary" ci-artifacts/rsctf-tests
+          sandbox_binary="$(jq -rs '[.[] | select(.reason == "compiler-artifact" and .target.name == "checker_sandbox" and .profile.test == true and .executable != null)] | if length == 1 then .[0].executable else error("expected one checker sandbox test binary") end' "$RUNNER_TEMP/rsctf-test-artifacts.jsonl")"
+          install -m 0755 "$sandbox_binary" ci-artifacts/checker-sandbox-tests
           install -m 0755 target/debug/rsctf ci-artifacts/rsctf
           # Keep symbols for backtraces, but do not transfer gigabytes of DWARF
           # debug sections to jobs that only execute these already-tested files.
-          strip --strip-debug ci-artifacts/rsctf-tests ci-artifacts/rsctf
+          strip --strip-debug ci-artifacts/rsctf-tests ci-artifacts/checker-sandbox-tests ci-artifacts/rsctf
           printf '%s\n' "$GITHUB_SHA" > ci-artifacts/source-sha
 
       - name: Share tested binaries with isolated integration jobs
@@ -238,6 +242,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          submodules: recursive
 
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev
@@ -262,8 +267,42 @@ jobs:
         with:
           node-version: 22
 
+      - name: Verify browser for real OAuth cookie regression
+        run: node --input-type=module -e "import { resolveChromium } from './tests/visual/cdp.mjs'; resolveChromium()"
+
       - name: Run default coverage suite
         run: cargo llvm-cov --all-targets --all-features --locked --no-report
+
+      - name: Prepare real Docker snapshot recovery fixture
+        run: |
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends python3-venv
+          docker build --tag rsctf-coverage-smoke:ci \
+            examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
+          printf 'RSCTF_REAL_DOCKER_RETRY_IMAGE=%s\n' "$(docker image inspect rsctf-coverage-smoke:ci --format '{{.Id}}')" >> "$GITHUB_ENV"
+          printf 'RSCTF_DOCKER_PROXY_BIND=%s\n' "$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')" >> "$GITHUB_ENV"
+          printf 'RSCTF_DOCKER_SCOPE=ci-architecture-coverage\n' >> "$GITHUB_ENV"
+
+      - name: Prepare disposable S3 file-upload fixture
+        run: |
+          docker run --detach --rm --name rsctf-coverage-s3 --cpus 1 --memory 1g \
+            --publish 127.0.0.1:59000:9000 \
+            --env RUSTFS_ACCESS_KEY=architecture-test \
+            --env RUSTFS_SECRET_KEY=architecture-test-only-password \
+            --env RUSTFS_CONSOLE_ENABLE=false \
+            rustfs/rustfs@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b /data
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 1 \
+            --max-time 2 --retry-max-time 60 http://127.0.0.1:59000/health
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 1 \
+            --max-time 2 --retry-max-time 60 --request PUT \
+            --aws-sigv4 aws:amz:us-east-1:s3 --user architecture-test:architecture-test-only-password \
+            http://127.0.0.1:59000/rsctf-coverage
+          {
+            printf 'RSCTF_S3_ENDPOINT=http://127.0.0.1:59000\n'
+            printf 'RSCTF_S3_BUCKET=rsctf-coverage\n'
+            printf 'RSCTF_S3_REGION=us-east-1\n'
+            printf 'RSCTF_S3_ACCESS_KEY=architecture-test\n'
+            printf 'RSCTF_S3_SECRET_KEY=architecture-test-only-password\n'
+          } >> "$GITHUB_ENV"
 
       - name: Run database regressions and enforce coverage floor
         # Serial within each physical PostgreSQL/Redis pair. Separate schemas
@@ -592,6 +631,9 @@ jobs:
       - name: Lint frontend
         run: pnpm --dir web lint:check
 
+      - name: Check generated API contract
+        run: pnpm --dir web genapi:check
+
       - name: Run frontend tests
         env:
           # The standard public-repository Linux runner has four cores.
@@ -836,6 +878,153 @@ jobs:
             exit "$acceptance_status"
           fi
 
+  architecture-runtime:
+    name: Architecture runtime recovery
+    needs: [plan, rust]
+    if: needs.plan.outputs.server == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rsctf_architecture_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rsctf_architecture_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_architecture_test
+      RSCTF_TEST_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install runtime test dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev iptables python3-venv postgresql-client
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+
+      - name: Download same-run tested binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-server-${{ github.sha }}
+          path: ci-artifacts
+
+      - name: Verify binary source and install traversable launcher
+        run: |
+          test "$(cat ci-artifacts/source-sha)" = "$GITHUB_SHA"
+          chmod 0755 ci-artifacts/rsctf-tests ci-artifacts/checker-sandbox-tests
+          sudo install --owner=root --group=root --mode=0755 ci-artifacts/rsctf /usr/local/bin/rsctf-architecture
+
+      - name: Require real Landlock and seccomp confinement
+        run: |
+          sudo env RSCTF_SANDBOX_TEST_BINARY=/usr/local/bin/rsctf-architecture \
+            ./ci-artifacts/checker-sandbox-tests --test-threads=1 --nocapture
+
+      - name: Recover imports, checker publication and Docker snapshots
+        run: |
+          docker build --tag rsctf-architecture-smoke:ci \
+            examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
+          export RSCTF_REAL_DOCKER_RETRY_IMAGE="$(docker image inspect rsctf-architecture-smoke:ci --format '{{.Id}}')"
+          export RSCTF_DOCKER_PROXY_BIND="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+          export RSCTF_DOCKER_SCOPE=ci-architecture
+          filters=(
+            registered_import_roles_recover_committed_side_effects_and_replay_http_receipts
+            repository_update_preserves_challenge_solves_and_refreshes_content
+            real_cleanup_preserves_snapshot_and_runtime_across_export_capture_and_destroy_failures
+            real_redis_l1_fill_shares_payload_and_preserves_authoritative_operations
+            real_redis_interruption_bounds_staleness_and_fails_closed_for_credentials_and_fences
+            services::control_jobs::supervisor::pg_tests
+            exact_session_proof_detects_unlock_disconnect_and_preserves_graceful_drain
+            readiness_rechecks_ownership_and_shutdown_after_waiting_for_dependencies
+          )
+          for filter in "${filters[@]}"; do
+            # A renamed/missing regression must fail instead of passing zero tests.
+            ./ci-artifacts/rsctf-tests "$filter" --ignored --list | grep -Eq '^[1-9][0-9]* tests?, 0 benchmarks$'
+            ./ci-artifacts/rsctf-tests "$filter" --ignored --test-threads=1
+          done
+
+      - name: Restore disposable database, files and secrets
+        env:
+          ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture
+          RESTORE_PG_CONTAINER: ${{ job.services.postgres.id }}
+          RSCTF_RESTORE_DISPOSABLE: '1'
+          RESTORE_REPORT: ${{ runner.temp }}/architecture-runtime/restore-report.json
+        run: node tests/load/restore-drill.mjs
+
+      - name: Interrupt active builds, resets and durable rollouts
+        env:
+          ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture
+          SHUTDOWN_PG_CONTAINER: ${{ job.services.postgres.id }}
+          RSCTF_SHUTDOWN_DISPOSABLE: '1'
+          SHUTDOWN_BASE_IMAGE: postgres:18-alpine
+          SHUTDOWN_REPORT: ${{ runner.temp }}/architecture-runtime/control-job-shutdown.json
+        run: sudo --preserve-env "$(command -v node)" tests/load/control-job-shutdown.mjs
+
+      - name: Restore referenced S3 objects and database together
+        env:
+          ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture
+          RESTORE_PG_CONTAINER: ${{ job.services.postgres.id }}
+          RSCTF_RESTORE_DISPOSABLE: '1'
+          RESTORE_STORAGE_BACKEND: s3
+          RESTORE_REPORT: ${{ runner.temp }}/architecture-runtime/restore-s3-report.json
+          RSCTF_S3_ENDPOINT: http://127.0.0.1:59000
+          RSCTF_S3_BUCKET: rsctf-restore
+          RSCTF_S3_ACCESS_KEY: architecture-test
+          RSCTF_S3_SECRET_KEY: architecture-test-only-password
+        run: |
+          docker run --detach --rm --name rsctf-restore-s3 --cpus 1 --memory 1g \
+            --publish 127.0.0.1:59000:9000 \
+            --env RUSTFS_ACCESS_KEY=architecture-test \
+            --env RUSTFS_SECRET_KEY=architecture-test-only-password \
+            --env RUSTFS_CONSOLE_ENABLE=false \
+            rustfs/rustfs@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b /data
+          trap 'docker rm --force rsctf-restore-s3 >/dev/null' EXIT
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 1 \
+            --max-time 2 --retry-max-time 60 http://127.0.0.1:59000/health
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 1 \
+            --max-time 2 --retry-max-time 60 --request PUT \
+            --aws-sigv4 aws:amz:us-east-1:s3 --user architecture-test:architecture-test-only-password \
+            http://127.0.0.1:59000/rsctf-restore
+          node tests/load/restore-drill.mjs
+
+      - name: Exercise role startup, SIGTERM, exclusion and lease-loss recovery
+        env:
+          ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture
+          ARCHITECTURE_RUNTIME_RESULTS: ${{ runner.temp }}/architecture-runtime
+        run: sudo --preserve-env "$(command -v node)" tests/load/architecture-runtime.mjs
+
+      - name: Return runtime evidence to the artifact uploader
+        if: always()
+        run: |
+          if sudo test -d "$RUNNER_TEMP/architecture-runtime"; then
+            sudo chown --recursive "$(id -u):$(id -g)" "$RUNNER_TEMP/architecture-runtime"
+          fi
+
+      - name: Retain runtime evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: architecture-runtime-${{ github.sha }}
+          path: ${{ runner.temp }}/architecture-runtime/
+          if-no-files-found: error
+          retention-days: 7
+
   docs:
     name: Documentation
     needs: plan
@@ -845,7 +1034,7 @@ jobs:
   required:
     name: Required CI checks
     if: always()
-    needs: [plan, rust-lint, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, dependency-security, load-harness-contracts, cheat-acceptance, docs, repository-conventions]
+    needs: [plan, rust-lint, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, dependency-security, load-harness-contracts, cheat-acceptance, architecture-runtime, docs, repository-conventions]
     runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:

@@ -453,7 +453,8 @@ pub fn spawn_solver_scan(st: SharedState, upload_id: i64) {
                 .fetch_optional(st.pg())
                 .await
                 {
-                    crate::controllers::game::invalidate_cheat_report(&st, game_id).await;
+                    crate::services::anti_cheat::report_cache::invalidate_report(&st, game_id)
+                        .await;
                 }
             }
             Ok(false) => {}
@@ -477,7 +478,9 @@ pub fn spawn_writeup_scan(st: SharedState, writeup: WriteupScan) {
             }
         };
         match result {
-            Ok(true) => crate::controllers::game::invalidate_cheat_report(&st, game_id).await,
+            Ok(true) => {
+                crate::services::anti_cheat::report_cache::invalidate_report(&st, game_id).await
+            }
             Ok(false) => {}
             Err(error) => tracing::warn!(%error, participation_id, "writeup artifact scan failed"),
         }
@@ -533,6 +536,6 @@ pub async fn rescan_game(st: &SharedState, game_id: i32) -> AppResult<RescanSumm
             }
         }
     }
-    crate::controllers::game::invalidate_cheat_report(st, game_id).await;
+    crate::services::anti_cheat::report_cache::invalidate_report(st, game_id).await;
     Ok(summary)
 }

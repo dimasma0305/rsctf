@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 use crate::app_state::SharedState;
-use crate::services::cache::Cache;
 use crate::utils::error::{AppError, AppResult};
 
 const LIVE_LIFECYCLE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -54,9 +53,7 @@ static LIVE_LIFECYCLE_SF: std::sync::LazyLock<
     crate::utils::single_flight::SingleFlight<Option<CachedLiveLifecycle>>,
 > = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 
-fn live_lifecycle_cache_key(game_id: i32) -> String {
-    format!("kothlifecycle:{game_id}")
-}
+pub(crate) use crate::services::scoreboard_invalidation::live_lifecycle_cache_key;
 
 fn cached_views_for_round(
     cached: CachedLiveLifecycle,
@@ -76,9 +73,7 @@ fn decode_live_lifecycle(
 /// tiered cache clears the writer's L1 immediately; existing remote L1 copies
 /// expire within one second. A pre-transition fill that races the eviction can
 /// repopulate L2 and extend that rare stale window to about two cache TTLs.
-pub(crate) async fn invalidate_live_lifecycle_cache(cache: &dyn Cache, game_id: i32) {
-    cache.remove(&live_lifecycle_cache_key(game_id)).await;
-}
+pub(crate) use crate::services::scoreboard_invalidation::invalidate_live_lifecycle_cache;
 
 impl Default for KothLifecycleView {
     fn default() -> Self {

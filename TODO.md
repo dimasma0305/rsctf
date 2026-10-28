@@ -4,6 +4,505 @@ The approved UI/UX and backend rollout is tracked step by step in
 [IMPROVEMENTS.md](IMPROVEMENTS.md). Unchecked historical items below must be verified
 against the current implementation before being treated as confirmed gaps.
 
+## Architecture review and improvement backlog — 2026-10-27
+
+### Follow-up integration — 2026-10-28
+
+- [x] Integrate main through deb89691, preserving dependency updates, CI fixes and
+  the engineering navigation gate.
+- [x] Map the 22 additional architecture module owners and add a route/policy/test
+  index for OAuth, durable jobs and player container operations.
+- [x] Run the new Chromium + real OAuth exchange + PostgreSQL session regression.
+  It follows cross-site top-level redirects without API interception. This
+  loopback test does not replace a TLS reverse-proxy deployment smoke test.
+  Successful login retains the session and clears only state; an unbound callback
+  returns to login and the next profile request remains unauthorized. Local run:
+  1 passed in 2.91 seconds. Integrated library suite: 1,809 passed, 474 ignored;
+  load-harness suite: 525 passed, 3 skipped. These are correctness checks, not
+  performance benchmarks or a full integrated CI/release gate.
+- [ ] Add an automated coordinated database/files/object-storage restore drill,
+  including missing-object detection and measured recovery time.
+  - [x] Automate stopped-writer PostgreSQL/local-files/configuration restoration:
+    remove originals, restore all table rows, verify session/score/downloads, and
+    reject missing/corrupt blobs. Run the same tested binary in CI; guard against
+    non-loopback databases and unacknowledged destructive fixture creation.
+  - [x] Restore referenced S3 object contents under a fresh prefix after removing
+    originals; verify downloads through RSCTF's real S3 backend and reject missing
+    and corrupted objects. CI provisions a pinned disposable RustFS fixture.
+  - [ ] Verify object-version history and multi-host working storage restoration.
+- [ ] Complete the open ARCH-03/04/07/09/11/13 acceptance work below; integration
+  does not imply runtime delegation, capture offload or kernel recovery is done.
+- [ ] Pass the complete integrated CI gate and verify an immutable production
+  rollout. Current task environment has no deployment credentials or VPN.
+
+This section consolidates the initial architecture review and image request, the
+first improvement review, and the follow-up review of architectural flows. The
+reference is `main` at `bff5d1a31ae6f964d877fd1fc11cf8328e8e99de`, version
+`0.1.147`. Findings describe that source revision; live production topology was
+not inspected. Implementation and validation are in progress on
+`feat/architecture-backlog`; unchecked parent tasks still have outstanding gates.
+Performance benefits are
+hypotheses until measured with controlled before/after benchmarks.
+
+### Completed review and architecture reference
+
+- [x] Review the frontend, backend composition, authentication, competition domains,
+  realtime feeds, background jobs, database access, caches, storage, challenge
+  execution, network ownership, agents, and release workflows at component level.
+  This was a source review, not an exhaustive correctness or security audit.
+- [x] Produce the [architecture image](docs/public/diagrams/rsctf-architecture-v0.1.147.png)
+  and [editable Mermaid source](docs/public/diagrams/rsctf-architecture-v0.1.147.mmd).
+  Both retain the source revision and the advanced-role worker-wiring caveat.
+
+Implemented design to preserve when evaluating changes:
+
+- React 19/TypeScript with Mantine, routing, internationalization, and bounded,
+  viewer-scoped SWR memory caching. HTTP reads recover from missed live events.
+- One modular Rust/Axum/Tokio application composed through `AppState`. Controllers,
+  competition services, jobs, and hubs are modules within this application.
+- PostgreSQL is authoritative for business data, scores, rounds, durable operations,
+  worker desired state, and evidence. SeaORM and bound SQLx queries share one pool.
+- Bounded local caching, with Redis L2 when configured. Split roles also use Redis
+  for live-event fanout, distributed rate limits, and coordination. Live events are
+  best-effort notifications; durable state and cursor reads provide recovery.
+- Content-addressed local or S3 blob storage, plus working files for repositories,
+  checkers, captures, and snapshots. S3 alone does not remove the shared POSIX
+  filesystem requirement for split roles.
+- Selectable Docker, Kubernetes, trusted-worker, and no-runtime backends. Trusted
+  remote Docker workers currently execute Jeopardy workloads. Participant BYOC
+  agents have a separate trust boundary and use outbound WSS/yamux; trusted workers
+  use outbound mutual TLS. Player traffic is distinct from API/live-feed traffic.
+- A single active network owner holds process-local VPN, SSH, tunnel, and worker
+  session state. Runtime profiles are `all x1`, `web xN + control x1`, or
+  `web xN + engine xN + network x1`; the advanced profile replaces `control`.
+  `migrate` is a one-shot role. `development` is an API-focused preview role.
+- GitHub Actions checks and publishes server/BYOC images, native worker binaries,
+  and the Helm chart. No replacement of Rust/Axum, React, PostgreSQL, or Redis has
+  demonstrated a benefit in this review.
+
+### P1 — Correctness, recovery, and gameplay responsiveness
+
+- [x] **ARCH-01: Complete and centralize runtime worker ownership.**
+  Advanced `web + engine + network` deployments omit startup calls for challenge
+  imports, revision effects, repository pushes/scans, and mutation retention.
+  Queued imports can remain pending. Define a central worker/capability matrix
+  and ensure each supported topology has an eligible, supervised consumer.
+  Validation: enqueue and finish representative work under each topology, exercise
+  restart/reclaim behavior, and verify no duplicate side effects. Replace the
+  relevant source-string presence assertions with behavior/ownership tests.
+  Sources: [startup wiring](src/main.rs), [role capabilities](src/models/internal/configs.rs),
+  [startup tests](src/startup_tests.rs), [import queue](src/controllers/edit/test_container/import_jobs.rs).
+  - [x] Centralize worker registration and cover every supported role topology;
+    include the previously omitted advanced-role mail consumer.
+  - [x] Run PostgreSQL queued/expired build-batch consumption, shutdown, and restart
+    through registered consumers for all/control/engine/development roles (12 jobs).
+  - [x] Run registered import and repository consumers under all/control/engine/
+    development roles. Interrupt imports after artifact publication but before
+    terminal receipts, reclaim expired leases, and replay the authenticated HTTP
+    operation without duplicate challenges, flags, or file references. Real local
+    Git remotes verify push retries after a lost receipt produce no extra commit.
+
+- [x] **ARCH-02: Make database-pooling compatibility explicit.**
+  Network ownership, capture ownership, and other operations depend on PostgreSQL
+  session advisory locks. Transaction-pooled PgBouncer cannot preserve those
+  semantics, while deployment guidance currently recommends PgBouncer without
+  specifying this restriction. Use direct or session-preserving connections for
+  lock-owning operations; only introduce transaction pooling for separately
+  verified compatible paths. Document the topology and validate configuration
+  where reliable detection is possible.
+  Validation: prove exclusion, cancellation, unlock, and disconnect behavior using
+  direct/session-pooled connections; document or reject unsupported arrangements.
+  Sources: [network lease](src/services/ad/vpn/lease.rs),
+  [capture ownership](src/services/traffic/capture/owner.rs),
+  [shared locking](src/utils/single_flight.rs), [pool budget](docs/deploy/scaling.md).
+  - [x] Declare direct/session pooling and reject declared transaction/statement
+    pooling; correct all deployment recommendations. Remote pool configuration
+    still requires operator verification.
+  - [x] Run real exclusion, cancellation, unlock, and forced-disconnect regression
+    against PostgreSQL 18.4 directly and through session-mode PgBouncer 1.24.1.
+
+- [ ] **ARCH-03: Separate urgent gameplay jobs from slow builds.**
+  Builds, resets, rollouts, and other control jobs share two execution slots per
+  process. Two slow builds can delay a player service reset; a job has a 14-minute
+  execution budget. Introduce separate bounded lanes for gameplay recovery,
+  builds, and maintenance, with reserved recovery capacity and deployment-wide
+  resource limits. HTTP replica count should not implicitly determine the
+  installation's background-work budget. Preserve existing idempotency and leases.
+  Validation: hold two builds open while submitting resets and prove recovery
+  progresses; measure queue age, reset latency, runtime pressure, and fairness
+  across games and replicas, including sustained backlog.
+  Sources: [executor](src/services/control_jobs.rs),
+  [player reset admission](src/controllers/game/ad/scoreboard.rs).
+  - [x] Add deployment-wide gameplay/build/maintenance lanes and PostgreSQL
+    regressions proving two running builds leave reset capacity across replicas.
+  - [ ] Complete fixed-rate runtime benchmarks and sustained cross-game fairness tests.
+  - [x] Investigate the measured API/database overhead from idle worker polling:
+    the initial 100/s API comparison increased median p95 from 4.35 to 6.19 ms
+    and PostgreSQL CPU from 17.16% to 29.31% of one core; retain durability and
+    bounded recovery while reducing empty-queue transaction work. After the
+    correction, the repeated comparison measured p95 5.27→4.95 ms and app CPU
+    7.88→7.34%; PostgreSQL CPU remained 8.5% higher. The residual polling cost
+    is recorded explicitly; no database CPU saving is claimed.
+  - [x] Skip admission transactions when no requested job is queued or expired.
+    Four PostgreSQL lane regressions pass, including exact transaction-count
+    checks for empty, unrelated, live-lease and terminal rows, newly arriving
+    work, expired-lease reclaim and stale-owner rejection. The new six-sample
+    API comparison passed 18,004 requests, integrity checks and Redis recovery.
+
+- [ ] **ARCH-04: Supervise control-job execution and graceful shutdown.**
+  `control_jobs::kick()` launches detached tasks without the shutdown signal used
+  by other workers. They can keep claiming during drain; interrupted jobs may
+  remain leased for up to 15 minutes. Replace detached execution with a supervised
+  executor using `JoinSet` or Tokio's `TaskTracker`, integrated with the existing
+  shutdown signal. Stop claims, drain/cancel execution, then relinquish only leases
+  whose external work has stopped. Keep crash recovery fenced and idempotent.
+  Validation: SIGTERM during builds, resets, and rollouts; no new claims after
+  drain starts; bounded recovery after restart; no duplicate containers or stale
+  owner writes. Check panic and cancellation paths as well as clean completion.
+  Sources: [job tasks and leases](src/services/control_jobs.rs),
+  [process shutdown](src/main.rs).
+  - [x] Replace detached kicks with notifications to a supervised executor; fence
+    release of unstarted claims and preserve cancellation intent in PostgreSQL tests.
+  - [x] Exercise real control-role SIGTERM during Docker builds and A&D resets,
+    forced process death before a reset replacement checkpoint, and the actual
+    drain deadline. CI at `6fda8f8b` passes eight shutdown scenarios, including
+    durable rollouts with injected worker observations. Claims stop during drain;
+    reset recovery reuses the same Docker container and rollout recovery preserves
+    its generation. Crash cases retain leases and inject expiry after process death.
+  - [ ] Complete native-worker rollout/reconnection acceptance and recovery
+    measurements that include the production lease wait; injected worker readiness
+    and expiry do not establish those guarantees.
+  - [x] Reproduce and fix the partial-drain timeout panic: completed Tokio task
+    handles were polled twice after the timeout. Retain one pinned join future
+    through timeout/cancellation and verify remaining workers are dropped before
+    drain returns. The focused startup regression and the real development-process
+    rollout drain deadline pass. Rollout worker observations are injected; this
+    does not establish native-worker reconnection or full-topology acceptance.
+
+- [x] **ARCH-05: Bound and isolate end-of-event workload cleanup.**
+  The ended-backend reaper fetches every eligible A&D service and KotH target and
+  processes them sequentially. It runs before provisioning recovery in the same
+  maintenance chain. Move it to an independently supervised, bounded worker with
+  paginated claims, per-pass time/operation budgets, and per-item retry state.
+  Reuse the established image-cleanup scheduling pattern. Preserve final snapshots,
+  capture teardown acknowledgements, backend identity, and event-extension checks.
+  Validation: large ended events, slow/failing snapshots and destroys, restart,
+  and concurrent event extension; provisioning recovery must continue and cleanup
+  must eventually finish without losing retained data or leaking containers.
+  Sources: [ended-backend reaper](src/services/cron/backend_reaper.rs),
+  [maintenance ordering](src/services/cron/mod.rs),
+  [independent image cleanup](src/services/cron/image_cleanup.rs).
+  - [x] Isolate teardown, cap each pass, and persist per-item retry/lease state in
+    forward migration `m0360_backend_cleanup_claims`.
+  - [x] Test a 2,000-row cleanup backlog, concurrent claims, delayed retries,
+    restart fencing, future-event exclusion, and preservation of backend IDs.
+  - [x] Serialize event extension against cleanup admission using the event row lock;
+    retain cleanup ownership through failures and expired leases until recovery
+    finishes. PostgreSQL races cover both ordering outcomes, stale executors, and
+    restart after runtime removal. The HTTP regression covers anonymous/non-admin
+    denial, a 409 during cleanup, and exactly-once replay after recovery.
+  - [x] Validate snapshot freshness against the current runtime and event end,
+    including the final download authorization after storage reads. Preserve the
+    old owner until a replacement commits; PostgreSQL tests cover failed and
+    cancelled uploads, concurrent publication, and changes during slow storage.
+    Cancelled blocking compression retains its memory admission until it exits.
+  - [x] Run cleanup against Docker, PostgreSQL, local blob storage, and the capture
+    reconciler: injected export/destroy failures and a real missing-owner timeout
+    preserve the exact backend and snapshot, then a fresh claim completes teardown
+    with the final archive still readable. This is lifecycle correctness evidence,
+    not a throughput or latency improvement claim.
+
+### P2 — Boundaries, storage, contracts, and availability
+
+- [x] **ARCH-06: Move business operations out of HTTP controllers.**
+  Background services call controller functions for builds, rollouts,
+  reconciliation, repository work, and other domain operations. Extract cohesive
+  application/domain services called by both HTTP handlers and background workers.
+  Keep request parsing and HTTP response mapping in controllers, and keep
+  authorization and domain invariants enforceable at the application boundary.
+  Add dependency-direction checks that prevent new service-to-controller coupling.
+  Validation: preserve wire contracts, authorization failures, retry behavior,
+  scoring results, and background execution without constructing an HTTP request.
+  Sources: [job dispatch](src/services/control_jobs/execution.rs),
+  [repository scheduler](src/services/repo_binding_scheduler.rs),
+  [maintenance](src/services/cron/mod.rs).
+  - [x] Extract image builds, build jobs, workload rollouts, and shared challenge
+    mutation fences into application services; retain controller compatibility.
+  - [x] Add CI checks for module size/naming and a dependency ratchet, with a
+    negative regression. The legacy allowlist is now empty: all 29 tracked
+    service-to-controller dependency entries have been removed.
+  - [x] Extract reconciliation, repository scans/pushback, bulk challenge mutation,
+    lifecycle/teardown, exercise recovery, shared cache invalidation, and KotH
+    scoring/evidence/rollups. Controllers retain HTTP parsing and response mapping;
+    bulk mutation retains shared organizer authorization at its application boundary.
+  - [x] Pass 1,800 backend unit tests and 35 focused PostgreSQL regressions covering
+    deletion races, exact operation replay, scoring evidence, repository rescan and
+    pushback, and authorization. New regressions exercise bulk authorization through
+    both HTTP and direct service calls and preserve the player game-cache deletion
+    filter separately from the broader editor/recovery loader. This extraction
+    makes no independent runtime-performance claim; release remains pending.
+  - [x] Pass the all-target Rust check with zero warnings and the real Docker
+    first-start image-repair regression for both per-team and shared containers.
+    The runtime test uses the disposable host's private Docker bridge binding.
+
+- [ ] **ARCH-07: Delegate privileged runtime operations away from public web roles.**
+  Public API handlers currently perform container operations directly; the local
+  Docker backend consequently grants web replicas root-equivalent daemon access.
+  This is an acknowledged deployment tradeoff, not by itself a confirmed exploit.
+  Extend durable commands and reconciliation so HTTP roles authorize and enqueue
+  work while isolated runtime owners execute it. Address lifecycle delegation
+  before enabling currently unsupported split hybrid worker deployments.
+  Validation: web replicas operate without a Docker socket; create/reset/destroy
+  survive lost replies and executor restarts; authorization, ownership, capacity,
+  and stale-command fences hold across replicas. Measure added request latency.
+  Sources: [player container lifecycle](src/controllers/game/containers.rs),
+  [backend constraints](docs/deploy/scaling.md), [worker limitations](docs/deploy/workers.md).
+
+- [x] **ARCH-08: Shorten the checker publication critical section.**
+  Checker imports hold the global publication/GC database lock while preparing
+  environments and installing Python dependencies. Garbage collection also holds
+  that guard while scanning and deleting files. Prepare immutable artifacts in
+  isolated staging directories first, then briefly lock to validate, publish
+  atomically, and commit their identity. Bound GC scans and retain cross-process
+  execution/deletion protection; staging artifacts need explicit cleanup ownership.
+  Validation: a slow dependency installation must not block an unrelated checker
+  publication; race publication, execution, GC, cancellation, and crash recovery.
+  Measure lock hold/wait times and database-pool occupancy.
+  Sources: [import preparation](src/services/git_sync/mod.rs),
+  [checker preparation](src/services/git_sync/checker.rs),
+  [publication/GC guard](src/services/git_sync/checker_gc.rs).
+  - [x] Prepare repository checkers before publication locking and protect staging
+    with execution leases; scan incrementally and withdraw names before deleting
+    files outside the publication lock.
+  - [x] Run PostgreSQL GC regression preserving reachable and executing revisions.
+  - [x] Pause the real importer's Python child while holding publication ownership:
+    preparation consumes no database connection, a ready peer still publishes,
+    and GC preserves preparing/executing revisions. Concurrent definition changes
+    reject the old import snapshot; retry succeeds, and cancellation leaves staging
+    recoverable by GC. The full PostgreSQL repository regression passes.
+  - [x] Benchmark both critical-section orderings with real Python environments
+    and PostgreSQL: 72 fixed-arrival publications pass execution/readback. Median
+    publication p95 falls 9.26→2.05 seconds, lock-hold p95 1.93 seconds→2.51 ms,
+    and mean occupied connections 2.934→0.005. Concurrent CPU increases; this is
+    a component latency/pool-capacity improvement, not a CPU or HTTP claim.
+    Full distributions and limits are in the checker section of the load report.
+
+- [ ] **ARCH-09: Reduce shared-filesystem coupling incrementally.**
+  Publish suitable immutable checker/repository artifacts and completed captures
+  to object storage, with bounded local caches. Define which paths remain mutable
+  working state and which can be reconstructed. Preserve existing shared POSIX
+  rename/flock semantics until every dependent workflow has a tested replacement.
+  Retain content-addressed deduplication, reference-aware cleanup, and retention.
+  Validation: multi-host publication/execution, eviction, missing objects, interrupted
+  uploads, concurrent deletion, and backup/restore consistency. Compare disk usage,
+  duplicate bytes, filesystem/object-store I/O, and cold/warm latency; include object
+  request and transfer costs before choosing the design.
+  Sources: [blob storage](src/storage/mod.rs), [blob references](src/services/blob_refs.rs),
+  [shared storage requirements](docs/deploy/scaling.md).
+  - [x] Add bounded file publication through existing Local/object_store backends:
+    two uploads per process, 512 MiB limit, verified new publication, atomic local
+    rename/fsync, sequential S3 multipart parts, and duplicate-hash reuse.
+  - [x] Test changed files, upload/complete failures, cancellation, bounded
+    lock-aware local staging cleanup, and concurrent real S3 publication/readback.
+    Document S3 incomplete-multipart lifecycle cleanup after process death.
+  - [x] Benchmark both production APIs at a fixed rate: 288 uploads with exact
+    readback. Cold local RSS falls 132.23→5.75 MiB; duplicate S3 payload transfer
+    falls to zero. Cold S3 p95 rises 13.3% and request count rises 1→11, so retain
+    the buffered API for its existing callers. See the measured tradeoffs in
+    [the storage report](tests/load/REPORT.md#bounded-file-uploads--27-october-2026).
+  - [ ] Integrate completed-capture publication with durable references, bounded
+    cache eviction, downloads, inventory reconciliation, retention, and recovery.
+  - [ ] Complete multi-host artifact publication/execution and backup/restore tests.
+
+- [x] **ARCH-10: Restore a reproducible backend/frontend API contract pipeline.**
+  `web/package.json` generates a client from `/openapi/v1.json`, but the reviewed
+  Rust router does not expose that specification endpoint. Add Rust-derived OpenAPI
+  using `utoipa` or an equivalently verified approach, generate the TypeScript
+  contract, and make CI detect drift. Introduce coverage incrementally while
+  preserving established endpoints and manually extended client behavior.
+  Validation: schema coverage and regeneration checks plus real response-contract
+  tests for envelopes, enum representations, timestamps, nullability, errors, and
+  authentication. Generated types do not replace authorization tests.
+  Sources: [client generation](web/package.json), [client contract](web/src/Api.ts),
+  [router](src/server.rs).
+  - [x] Derive the initial durable-job routes and DTOs with Utoipa; serve and
+    export `/openapi/v1.json` without requiring a running application.
+  - [x] Generate a separate TypeScript contract and detect Rust/schema/TypeScript
+    drift in CI while retaining the legacy client's manual extensions.
+  - [x] Pass four contract tests, including real PostgreSQL route authorization
+    for anonymous users, managers of another event, owning managers, and admins;
+    verify raw bodies, string enums, milliseconds, nulls, and numeric errors.
+    Generation, regeneration comparison, and strict frontend type checking pass.
+    Coverage is incremental, not a claim that all existing routes are documented.
+
+- [ ] **ARCH-11: Define and test network-owner recovery targets.**
+  Live VPN, SSH, BYOC, proxy, and trusted-worker sessions belong to one active
+  process. Prioritize bounded restart/reconnect recovery, fencing, readiness,
+  route withdrawal, and operator-visible recovery state. Establish recovery-time
+  targets and measure them. Consider sharding only after connection or bandwidth
+  measurements justify it; live sockets cannot be recovered merely by storing
+  registry metadata in Redis.
+  Validation: owner restart, database lease loss, network partition, stale-session
+  reconnect, and rolling replacement; prevent simultaneous owners and stale routes.
+  Distinguish managed-game processing from games owned by the BYOC network role.
+  Sources: [network lease](src/services/ad/vpn/lease.rs),
+  [BYOC registry](src/services/byoc_tunnel/mod.rs), [worker sessions](src/services/worker/registry.rs).
+  - [x] Verify supervised exact-session ownership probes, monotonic proof expiry,
+    readiness withdrawal and five fixed-label recovery gauges locally. Real
+    PostgreSQL tests cover explicit unlock, disconnect, continued ownership
+    during drain and readiness requests waiting across release/shutdown.
+  - [x] Run the GitHub process-pause regression beyond proof expiry. On commit
+    `5013d417`, a twelve-second SIGSTOP retained the PostgreSQL ownership lock;
+    after SIGCONT the stale owner refused readiness and exited in 7.51 ms.
+    A fresh replacement became ready in 217.91 ms from resume. Session loss
+    separately produced exit in 775.65 ms and replacement readiness in 989.18 ms.
+    These single-run debug-binary measurements are not recovery-time guarantees.
+    [Retained report](tests/load/results/architecture-runtime-ci-5013d417.json).
+  - [ ] Complete kernel route fencing and external-session reconnection tests.
+    The CI process fixture disables VPN. Shared network namespaces and delayed
+    relative-timeout commands need separate live-traffic validation.
+
+- [x] **ARCH-12: Add worker-certificate expiry visibility and safe renewal.**
+  Worker certificates last 90 days and automatic renewal is absent. Add expiry
+  alerts and authenticated, recoverable certificate rotation with a bounded
+  transition policy. Preserve exact worker identity, revocation, and session fencing.
+  Validation: expiry, interrupted renewal, lost responses, clock skew, revoked
+  workers, replay attempts, and reconnect during certificate replacement; do not
+  require an unplanned manual re-enrollment to restore ordinary service.
+  Sources: [certificate issuance](src/services/worker_pki.rs),
+  [worker authority](src/services/worker/authority.rs), [agent client](agents/worker-agent/src/client/mod.rs).
+  - [x] Export fixed-label expired/7-day/30-day active-worker certificate gauges,
+    document alert thresholds, and test disabled-worker exclusion in PostgreSQL.
+  - [x] Implement negotiated renewal with one durable recovery response per
+    worker, exact CSR/operation replay, session fencing, and old-certificate
+    overlap capped at seven days and the original expiry. Migration `m0361`
+    registers the bounded recovery table.
+  - [x] Atomically persist the agent's pending request and replacement certificate;
+    preserve its private key, handle interrupted writes, reject wrong identities
+    and keys, and retain the old file when the clock cannot validate the new one.
+  - [x] Pass three PostgreSQL renewal regressions, including a real mTLS
+    reconnect/replay/revocation scenario; pass all 69 agent and 23 protocol tests.
+    Ordinary online renewal is automatic; offline-beyond-expiry and compromised-key
+    recovery still require enrollment. Release and production verification remain
+    part of the overall rollout gate below.
+
+- [ ] **ARCH-13: Expose actionable metrics across runtime roles.**
+  Export existing operational counters through a Prometheus-compatible interface;
+  evaluate `metrics` and `metrics-exporter-prometheus` while retaining the admin
+  JSON contract. Add bounded-label metrics for queue age, failed/retried jobs,
+  database-pool waits, checker delay, cache behavior, and reconnect duration.
+  Document aggregation by role/instance and alert thresholds. Never label metrics
+  with flags, credentials, user identities, or arbitrary cache keys.
+  Validation: counter/histogram semantics, restart behavior, exporter access,
+  multi-replica aggregation, and CPU/memory/cardinality under sustained load.
+  Sources: [existing metrics](src/services/observability.rs),
+  [admin metrics response](src/controllers/admin/realtime.rs).
+  - [x] Expose authenticated Prometheus output for existing counters/histograms,
+    job attempts/latency, transaction acquisition, and pool gauges; preserve JSON.
+  - [ ] Add durable backlog/retry and network-recovery visibility; complete access
+    and sustained exporter-load verification.
+  - [x] Count committed expired-lease claims by fixed job kind. PostgreSQL verifies
+    normal claims, busy polls, graceful requeue, and stale-owner completion do not
+    inflate recovery counts. Router tests cover absent/weak/wrong/correct Bearer
+    tokens, response headers, and zero database connections during scrapes.
+  - [x] Sustain 100 authenticated scrapes/s plus 10 health reads/s for 30 seconds:
+    p95 0.688 ms, 186 fixed series, 10,960 response bytes, 3.56% app CPU, no
+    dropped/failed requests or token leakage. Network recovery metrics remain open.
+  - [x] Add periodically sampled durable queue counts/age/expired leases and
+    active-worker certificate expiry gauges, with fixed labels and sample-freshness
+    visibility; queries are bounded by timeout and run outside the scrape path.
+
+### P3 — Benchmark before replacing
+
+- [x] **ARCH-14: Separate cache responsibilities and evaluate the response-cache implementation.**
+  The shared cache trait handles response acceleration, local secrets, one-time
+  credentials, and authoritative coordination/version operations. Give those
+  contracts explicit boundaries before replacing an implementation. The current
+  memory cache scans expiry and compacts eviction metadata under an exclusive
+  lock; a full working set with frequent insertions can stall unrelated readers.
+  Compare a sharded design and Moka for ordinary response caching. Moka is already
+  used for scoreboard snapshots. Preserve atomic credential consumption/CAS,
+  authorization freshness, TTL behavior, bounded memory, and outage semantics.
+  Validation: mixed reads/writes above cache capacity, expiry bursts, invalidation
+  races, single-flight behavior, and Redis interruption. Compare CPU at fixed load,
+  p95/p99 latency, hit rate, allocations, lock contention, and peak memory. Keep the
+  existing implementation if a candidate cannot demonstrate a safe improvement.
+  Sources: [cache contracts and implementation](src/services/cache.rs),
+  [capability cache fences](src/services/ad/koth_capability_cache.rs),
+  [existing Moka usage](src/controllers/game/scoreboard_page.rs).
+  - [x] Compare the current map, sharding, and Moka in an optimized fixed-arrival
+    component harness; select sharding for lower churn latency/CPU while retaining
+    the existing hard aggregate limits. Separate response and local-secret APIs
+    and key namespaces; authoritative credential/CAS paths retain their implementation.
+  - [x] Finish Redis interruption, invalidation, and whole-platform latency checks;
+    record the final measured source hashes and limits/tradeoffs in the report.
+  - [x] Record the final source/executable hashes and all 18 fixed-rate samples in
+    `tests/load/results/architecture-cache.json`, with tradeoffs in the load report.
+  - [x] Pass real Redis interruption/reconnect, bounded cross-replica staleness,
+    authoritative mutation failure, secret isolation and exactly-once consumption.
+    Twelve release API samples and exporter/outage checks are retained in
+    `tests/load/results/architecture-platform-initial.json` and
+    `architecture-platform.json`. After the idle-poll correction, median API
+    p95 is 4.95 versus 5.27 ms; residual database CPU cost is recorded under
+    ARCH-03. Cache component gains are not attributed to the whole platform.
+
+### Proposed slow-operation flow and completion evidence
+
+Local checkpoint (2026-10-27): `cargo test --lib` through the bounded wrapper
+passed 1,809 tests (473 environment-dependent tests ignored). A separate serial
+run passed all 463 selected database regressions using CI's existing exclusions,
+with real PostgreSQL, Redis, Docker, S3 and mTLS fixtures. Strict all-target,
+all-feature Clippy passed with zero warnings after the network readiness change.
+Snapshot-focused validation passed
+59 tests, including real Docker/capture recovery. Registered role import/push
+recovery, checker publication/GC races, and expired-lease metrics passed against
+disposable PostgreSQL. The architecture
+extraction additionally passed 35 focused real PostgreSQL regressions. The earlier
+PostgreSQL lane/shutdown tests (2), cleanup test (1), checker GC test (1), and
+session-lock regression against both direct PostgreSQL and PgBouncer (2 runs)
+also passed. New role/restart, durable-metrics, API-authorization, and real-Redis
+regressions passed separately. Frontend generation/drift checks, strict typing,
+lint, 812 tests, and the production build passed. The architecture checker and its
+negative regression passed. These are correctness checks; the separately recorded
+18-run cache component benchmark does not establish whole-platform performance
+or deployment completion.
+
+GitHub checkpoint (2026-10-27): the [complete workflow at `5013d417`](https://github.com/dimasma0305/rsctf/actions/runs/40518627351)
+passed all 17 jobs, including the required-check aggregate. It verified the
+all-target Rust build/tests, Clippy, 463 selected database regressions, frontend
+and Chromium checks, Linux/Windows workers, BYOC, security, Helm, Kubernetes
+callback isolation, anti-cheat acceptance and real privileged architecture
+recovery. Rust line coverage was 60.06%. [CI evidence](tests/load/results/architecture-ci-5013d417.json)
+retains the exact source revision and job identities. This resolves the local
+kernel's sandbox-testing limitation for those checks; live VPN/agent/runtime
+scenarios still listed above remain open. No release or production deployment
+has been performed for this branch.
+
+The intended flow for slow operations is: HTTP authorization → application service
+→ durable PostgreSQL job and operation ID → supervised executor eligible for that
+job → bounded gameplay/build/maintenance lane → runtime adapter. Clients receive an
+operation ID and recover status through the API. This flow applies to slow work;
+ordinary reads and short transactional mutations keep their direct request paths.
+
+Suggested order: ARCH-01–05 first; then ARCH-06 and ARCH-10, followed by runtime
+isolation, checker publication, storage, and network recovery. Certificate renewal
+and observability can proceed independently where their prerequisites permit.
+Evaluate ARCH-14 after baseline instrumentation is available.
+
+- [ ] Add regression coverage for each changed failure boundary using real
+  PostgreSQL/runtime/browser behavior where the behavior depends on it.
+- [ ] Run applicable fixed-arrival-rate before/after scenarios on the same host,
+  release configuration, dataset, and topology. Record latency distributions,
+  CPU/RAM, database/runtime pressure, queue delays, storage growth, and recovery
+  time. Check scores, duplicate side effects, authorization, and retained data.
+- [ ] Complete the repository's bounded build/check/test workflows for implemented
+  changes and record evidence; do not mark a hypothesis as a measured improvement.
+- [ ] Update the architecture image, Mermaid source, role matrix, deployment
+  guidance, and completion statuses to match each shipped design change.
+- [ ] For artifact-affecting implementations, follow immutable release/deployment
+  verification and record the live version/digest. The original TODO/diagram-only
+  update needed no application release; this implementation does require one.
+
 ## Docker runtime scalability
 
 The platform already applies per-container CPU, memory, PID, writable-layer, and

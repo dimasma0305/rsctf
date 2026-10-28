@@ -1,0 +1,1107 @@
+{
+  "date": "2026-10-27T10:26:31.811Z",
+  "sourceSha": "71062d4b31c38b3377dac06df5af3b3da83c60fe",
+  "kernel": "6.18.55",
+  "cpu": "AMD EPYC 9V74 80-Core Processor",
+  "s3Image": "sha256:cf1d7ba6108cd433dc8468d23b4361e644dc5424524481f5956bfd2dbc0f9b84",
+  "s3MemoryLimit": "1 GiB",
+  "s3CpuLimit": 1,
+  "binarySha256": "8daa312856d6f9b4826eba2789e8df4198b6a55034117edc19c134af9b8cbef0",
+  "sourceHashes": {
+    "src/storage/blob_storage.rs": "8e2e3fef18b674883588d680bdbce9c30e363f8cea0b4efc773819947d7b7d5b",
+    "src/storage/file_upload/tests.rs": "2f59787f66a6203399662a633bb0e6520964218bc7e7200bee574786f43d4fce",
+    "src/storage/file_upload.rs": "0da61f7bc33b82d060cf7fed61c9280731a2154ee44031fca87758dcd93195e0",
+    "src/storage/local_blob_storage/upload.rs": "1ca07616ac972bcd2fa2d6a536d9c63e873fa22564e94b0d99e8878134c810a8",
+    "src/storage/local_blob_storage/upload_cleanup.rs": "1f4cc49b42f67dc0cccea80a38d7442bc4ab127644ca8b1ebd6f79200db98878",
+    "src/storage/local_blob_storage.rs": "c79c9f55b1ab3315d60ca37364f4deb18fae4993053c324627809e2b575ee443",
+    "src/storage/mod.rs": "52dc141559be48273e801e2595e961d197b3c378ffd2414a3e1629d00334d829",
+    "src/storage/s3_blob_storage/upload/tests.rs": "0911cdd9d047853d0da457f862b07f8de85d5baac417b5450a3e5757bb2d2227",
+    "src/storage/s3_blob_storage/upload.rs": "2b98edcea9fde62456a10849438437abf206c816f1ccdec09207d0b554e090fd",
+    "src/storage/s3_blob_storage.rs": "8c9dc1318588e4fbd30eeb94df9f8aea32b8a1cb46fd2be1873a5d8ac7c77bf3",
+    "tests/load/storage-audit/Cargo.lock": "844b07f26cc8f2941912d8f0c71f22fe0a9b722602a935f95f5f0483bf48c254",
+    "tests/load/storage-audit/Cargo.toml": "5528c148898b58b3493fd05980fcaf2c4aba1fd66db4925b40ee11f41411da68",
+    "tests/load/storage-audit/src/main.rs": "9fcf813bf46d3f0db7034a29534ddc6734f8a12ebd7778003ab7aac9d9d6d1cb"
+  },
+  "profile": "release opt-level=3 lto=thin codegen-units=1",
+  "workers": 2,
+  "fixture": "Sparse files, unique 16-byte headers, otherwise zeros; uncompressed transfers. Size is recorded per sample.",
+  "notes": [
+    "Same production store implementations; error-only shim",
+    "Sparse source files; cold means absent destination key",
+    "Local candidate also fsyncs file/directories; buffered baseline does not",
+    "S3 request counts include expected cold HEAD 404s; client errors fail the run",
+    "CPU/RSS are client-process measurements; S3/proxy CPU and disk are excluded",
+    "RSS is process high-water, including fixture setup; timing/IO exclude setup and readback",
+    "Each uploaded object is fully streamed, hashed, and deleted after timing"
+  ],
+  "samples": [
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 26.159339893101674,
+      "elapsed_seconds": 6.001527586,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306465,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 84,
+        "wchar": 805306944,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 132.15234375,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 132.53597966666666,
+        "max_ms": 152.11280499999998,
+        "p50_ms": 131.089406,
+        "p90_ms": 142.63326600000002,
+        "p95_ms": 142.63326600000002,
+        "p99_ms": 152.11280499999998
+      },
+      "service": {
+        "avg_ms": 131.08536283333333,
+        "max_ms": 150.573808,
+        "p50_ms": 129.173382,
+        "p90_ms": 141.615728,
+        "p95_ms": 141.615728,
+        "p99_ms": 150.573808
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 32.50922210916342,
+      "elapsed_seconds": 6.000457327,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 1610612833,
+        "read_bytes": 0,
+        "syscr": 12316,
+        "syscw": 12519,
+        "wchar": 805357368,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 5.7421875,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 149.66136833333334,
+        "max_ms": 195.166722,
+        "p50_ms": 141.31948699999998,
+        "p90_ms": 178.128713,
+        "p95_ms": 178.128713,
+        "p99_ms": 195.166722
+      },
+      "service": {
+        "avg_ms": 148.60730458333333,
+        "max_ms": 194.41999099999998,
+        "p50_ms": 140.220562,
+        "p90_ms": 177.206419,
+        "p95_ms": 177.206419,
+        "p99_ms": 194.41999099999998
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 29.866703380894556,
+      "elapsed_seconds": 6.001117623,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 1610612833,
+        "read_bytes": 0,
+        "syscr": 12316,
+        "syscw": 12566,
+        "wchar": 805357744,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 5.74609375,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 135.30157616666665,
+        "max_ms": 146.291644,
+        "p50_ms": 135.70552899999998,
+        "p90_ms": 143.13689499999998,
+        "p95_ms": 143.13689499999998,
+        "p99_ms": 146.291644
+      },
+      "service": {
+        "avg_ms": 133.68558058333335,
+        "max_ms": 144.44209999999998,
+        "p50_ms": 134.288191,
+        "p90_ms": 141.454535,
+        "p95_ms": 141.454535,
+        "p99_ms": 144.44209999999998
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 26.16641911747261,
+      "elapsed_seconds": 6.000993078,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306465,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 84,
+        "wchar": 805306944,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 132.23046875,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 131.78679966666667,
+        "max_ms": 174.629994,
+        "p50_ms": 127.62076,
+        "p90_ms": 149.83344200000002,
+        "p95_ms": 149.83344200000002,
+        "p99_ms": 174.629994
+      },
+      "service": {
+        "avg_ms": 130.80860033333332,
+        "max_ms": 173.420526,
+        "p50_ms": 126.65801600000002,
+        "p90_ms": 149.004404,
+        "p95_ms": 149.004404,
+        "p99_ms": 173.420526
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 24.681574535798166,
+      "elapsed_seconds": 6.001322962,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306465,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 85,
+        "wchar": 805306952,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 132.234375,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 124.92012225,
+        "max_ms": 147.41439400000002,
+        "p50_ms": 124.06088999999999,
+        "p90_ms": 135.97306,
+        "p95_ms": 135.97306,
+        "p99_ms": 147.41439400000002
+      },
+      "service": {
+        "avg_ms": 123.51209549999999,
+        "max_ms": 145.90431,
+        "p50_ms": 122.862989,
+        "p90_ms": 134.728125,
+        "p95_ms": 134.728125,
+        "p99_ms": 145.90431
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 28.96271733500907,
+      "elapsed_seconds": 6.000224288,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 1610612833,
+        "read_bytes": 0,
+        "syscr": 12316,
+        "syscw": 12523,
+        "wchar": 805357400,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 5.765625,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 130.10072341666665,
+        "max_ms": 135.324316,
+        "p50_ms": 130.490684,
+        "p90_ms": 134.07387300000002,
+        "p95_ms": 134.07387300000002,
+        "p99_ms": 135.324316
+      },
+      "service": {
+        "avg_ms": 129.05775441666668,
+        "max_ms": 133.77793,
+        "p50_ms": 129.528134,
+        "p90_ms": 131.810389,
+        "p95_ms": 131.810389,
+        "p99_ms": 133.77793
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 14.424258676824433,
+      "elapsed_seconds": 6.001701851,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306482,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 48,
+        "wchar": 384,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 69.5390625,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 73.27463258333333,
+        "max_ms": 86.756182,
+        "p50_ms": 73.17575900000001,
+        "p90_ms": 82.075488,
+        "p95_ms": 82.075488,
+        "p99_ms": 86.756182
+      },
+      "service": {
+        "avg_ms": 71.92487991666668,
+        "max_ms": 85.24221,
+        "p50_ms": 71.82727299999999,
+        "p90_ms": 80.23576,
+        "p95_ms": 80.23576,
+        "p99_ms": 85.24221
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 8.697971557358738,
+      "elapsed_seconds": 6.001261289,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306482,
+        "read_bytes": 0,
+        "syscr": 6160,
+        "syscw": 61,
+        "wchar": 488,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 5.765625,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 44.81351033333333,
+        "max_ms": 49.904526,
+        "p50_ms": 43.352988,
+        "p90_ms": 49.786231,
+        "p95_ms": 49.786231,
+        "p99_ms": 49.904526
+      },
+      "service": {
+        "avg_ms": 43.34094025000001,
+        "max_ms": 48.643646,
+        "p50_ms": 41.655972999999996,
+        "p90_ms": 48.596742,
+        "p95_ms": 48.596742,
+        "p99_ms": 48.643646
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 8.53585597545559,
+      "elapsed_seconds": 6.001272766,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306482,
+        "read_bytes": 0,
+        "syscr": 6160,
+        "syscw": 58,
+        "wchar": 464,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 5.7734375,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 43.517623083333326,
+        "max_ms": 46.502689,
+        "p50_ms": 43.641854,
+        "p90_ms": 45.896127,
+        "p95_ms": 45.896127,
+        "p99_ms": 46.502689
+      },
+      "service": {
+        "avg_ms": 42.48343766666667,
+        "max_ms": 45.829919,
+        "p50_ms": 42.557485,
+        "p90_ms": 44.819967000000005,
+        "p95_ms": 44.819967000000005,
+        "p99_ms": 45.829919
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 14.70257246034475,
+      "elapsed_seconds": 6.001398751,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306482,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 44,
+        "wchar": 352,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 69.5390625,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 74.77931483333333,
+        "max_ms": 88.714819,
+        "p50_ms": 73.632164,
+        "p90_ms": 79.643908,
+        "p95_ms": 79.643908,
+        "p99_ms": 88.714819
+      },
+      "service": {
+        "avg_ms": 73.74110649999999,
+        "max_ms": 87.94976799999999,
+        "p50_ms": 72.43439599999999,
+        "p90_ms": 78.483374,
+        "p95_ms": 78.483374,
+        "p99_ms": 87.94976799999999
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 14.386985646794436,
+      "elapsed_seconds": 6.001375279,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306482,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 49,
+        "wchar": 392,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 69.15234375,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 73.30888008333332,
+        "max_ms": 81.608892,
+        "p50_ms": 72.91407699999999,
+        "p90_ms": 80.968616,
+        "p95_ms": 80.968616,
+        "p99_ms": 81.608892
+      },
+      "service": {
+        "avg_ms": 71.77498816666667,
+        "max_ms": 79.75266,
+        "p50_ms": 71.063974,
+        "p90_ms": 79.59524599999999,
+        "p95_ms": 79.59524599999999,
+        "p99_ms": 79.75266
+      },
+      "network": null
+    },
+    {
+      "backend": "local",
+      "bytes": 67108864,
+      "cpu_percent": 9.34363005537158,
+      "elapsed_seconds": 6.000719171,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306482,
+        "read_bytes": 0,
+        "syscr": 6160,
+        "syscw": 55,
+        "wchar": 440,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 5.7734375,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 47.53810733333333,
+        "max_ms": 72.711265,
+        "p50_ms": 47.745861,
+        "p90_ms": 50.991871,
+        "p95_ms": 50.991871,
+        "p99_ms": 72.711265
+      },
+      "service": {
+        "avg_ms": 46.65547683333333,
+        "max_ms": 71.877494,
+        "p50_ms": 46.942148,
+        "p90_ms": 49.84357,
+        "p95_ms": 49.84357,
+        "p99_ms": 71.877494
+      },
+      "network": null
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 35.03263129034149,
+      "elapsed_seconds": 6.000913784,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306467,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 1198,
+        "wchar": 805316368,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 134.7109375,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 459.12659575,
+        "max_ms": 474.093956,
+        "p50_ms": 462.156327,
+        "p90_ms": 473.899387,
+        "p95_ms": 473.899387,
+        "p99_ms": 474.093956
+      },
+      "service": {
+        "avg_ms": 458.31378391666664,
+        "max_ms": 473.381366,
+        "p50_ms": 461.42412,
+        "p90_ms": 473.321961,
+        "p95_ms": 473.321961,
+        "p99_ms": 473.381366
+      },
+      "network": {
+        "requests": {
+          "PUT": 12
+        },
+        "responses": {
+          "200": 12
+        },
+        "uploadBytes": 805306368,
+        "downloadBytes": 0,
+        "errorResponses": 0
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 32.36579598090268,
+      "elapsed_seconds": 6.000961636,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 1610612835,
+        "read_bytes": 0,
+        "syscr": 6556,
+        "syscw": 1107,
+        "wchar": 805416412,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 87.76171875,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 489.85634675000006,
+        "max_ms": 520.737084,
+        "p50_ms": 487.733584,
+        "p90_ms": 507.4995410000001,
+        "p95_ms": 507.4995410000001,
+        "p99_ms": 520.737084
+      },
+      "service": {
+        "avg_ms": 488.82703666666674,
+        "max_ms": 519.416613,
+        "p50_ms": 487.050066,
+        "p90_ms": 506.881689,
+        "p95_ms": 506.881689,
+        "p99_ms": 519.416613
+      },
+      "network": {
+        "requests": {
+          "HEAD": 12,
+          "POST:initiate": 12,
+          "PUT:part": 96,
+          "POST:multipart": 12
+        },
+        "responses": {
+          "200": 120,
+          "404": 12
+        },
+        "uploadBytes": 805315236,
+        "downloadBytes": 12156,
+        "errorResponses": 12
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 33.585113866558366,
+      "elapsed_seconds": 6.045371792,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 1610612835,
+        "read_bytes": 0,
+        "syscr": 6556,
+        "syscw": 1226,
+        "wchar": 805416356,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 84.484375,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 536.5169373333334,
+        "max_ms": 648.384678,
+        "p50_ms": 526.8873520000001,
+        "p90_ms": 629.742516,
+        "p95_ms": 629.742516,
+        "p99_ms": 648.384678
+      },
+      "service": {
+        "avg_ms": 534.4857241666666,
+        "max_ms": 647.2075739999999,
+        "p50_ms": 522.9476060000001,
+        "p90_ms": 628.088422,
+        "p95_ms": 628.088422,
+        "p99_ms": 647.2075739999999
+      },
+      "network": {
+        "requests": {
+          "HEAD": 12,
+          "POST:initiate": 12,
+          "PUT:part": 96,
+          "POST:multipart": 12
+        },
+        "responses": {
+          "200": 120,
+          "404": 12
+        },
+        "uploadBytes": 805315236,
+        "downloadBytes": 12156,
+        "errorResponses": 12
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 35.38045973069497,
+      "elapsed_seconds": 6.001072389,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306467,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 1314,
+        "wchar": 805316368,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 134.90625,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 458.11912299999995,
+        "max_ms": 494.234157,
+        "p50_ms": 453.58693700000003,
+        "p90_ms": 481.170206,
+        "p95_ms": 481.170206,
+        "p99_ms": 494.234157
+      },
+      "service": {
+        "avg_ms": 456.6118893333334,
+        "max_ms": 492.94362600000005,
+        "p50_ms": 452.195794,
+        "p90_ms": 480.14537,
+        "p95_ms": 480.14537,
+        "p99_ms": 492.94362600000005
+      },
+      "network": {
+        "requests": {
+          "PUT": 12
+        },
+        "responses": {
+          "200": 12
+        },
+        "uploadBytes": 805306368,
+        "downloadBytes": 0,
+        "errorResponses": 0
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 34.07462761144975,
+      "elapsed_seconds": 6.001224792,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306467,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 1255,
+        "wchar": 805316368,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 134.93359375,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 464.43487841666666,
+        "max_ms": 507.602074,
+        "p50_ms": 467.784762,
+        "p90_ms": 496.943068,
+        "p95_ms": 496.943068,
+        "p99_ms": 507.602074
+      },
+      "service": {
+        "avg_ms": 462.9098896666667,
+        "max_ms": 506.40143299999994,
+        "p50_ms": 466.773978,
+        "p90_ms": 493.98402699999997,
+        "p95_ms": 493.98402699999997,
+        "p99_ms": 506.40143299999994
+      },
+      "network": {
+        "requests": {
+          "PUT": 12
+        },
+        "responses": {
+          "200": 12
+        },
+        "uploadBytes": 805306368,
+        "downloadBytes": 0,
+        "errorResponses": 0
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 32.27882991599971,
+      "elapsed_seconds": 6.000425062,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 1610612835,
+        "read_bytes": 0,
+        "syscr": 6556,
+        "syscw": 959,
+        "wchar": 805416388,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 83.01953125,
+      "rate": 2,
+      "scenario": "cold",
+      "scheduled": {
+        "avg_ms": 510.1707196666666,
+        "max_ms": 564.018296,
+        "p50_ms": 507.31656999999996,
+        "p90_ms": 545.202691,
+        "p95_ms": 545.202691,
+        "p99_ms": 564.018296
+      },
+      "service": {
+        "avg_ms": 509.2624569166666,
+        "max_ms": 563.101772,
+        "p50_ms": 506.11636599999997,
+        "p90_ms": 544.1386070000001,
+        "p95_ms": 544.1386070000001,
+        "p99_ms": 563.101772
+      },
+      "network": {
+        "requests": {
+          "HEAD": 12,
+          "POST:initiate": 12,
+          "PUT:part": 96,
+          "POST:multipart": 12
+        },
+        "responses": {
+          "200": 120,
+          "404": 12
+        },
+        "uploadBytes": 805315236,
+        "downloadBytes": 12156,
+        "errorResponses": 12
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 34.02681568579067,
+      "elapsed_seconds": 6.001807571,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306480,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 536,
+        "wchar": 805316368,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 148.859375,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 426.3836395,
+        "max_ms": 448.757643,
+        "p50_ms": 423.60220599999997,
+        "p90_ms": 445.031127,
+        "p95_ms": 445.031127,
+        "p99_ms": 448.757643
+      },
+      "service": {
+        "avg_ms": 425.29535925000005,
+        "max_ms": 447.568554,
+        "p50_ms": 422.352864,
+        "p90_ms": 443.598042,
+        "p95_ms": 443.598042,
+        "p99_ms": 447.568554
+      },
+      "network": {
+        "requests": {
+          "PUT": 12
+        },
+        "responses": {
+          "200": 12
+        },
+        "uploadBytes": 805306368,
+        "downloadBytes": 0,
+        "errorResponses": 0
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 11.234576550837154,
+      "elapsed_seconds": 6.001231973,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306480,
+        "read_bytes": 0,
+        "syscr": 6160,
+        "syscw": 62,
+        "wchar": 7276,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 78.171875,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 60.280533666666656,
+        "max_ms": 98.992862,
+        "p50_ms": 54.691282,
+        "p90_ms": 77.897713,
+        "p95_ms": 77.897713,
+        "p99_ms": 98.992862
+      },
+      "service": {
+        "avg_ms": 58.661277250000005,
+        "max_ms": 97.23769999999999,
+        "p50_ms": 52.796675,
+        "p90_ms": 76.64953700000001,
+        "p95_ms": 76.64953700000001,
+        "p99_ms": 97.23769999999999
+      },
+      "network": {
+        "requests": {
+          "HEAD": 12
+        },
+        "responses": {
+          "200": 12
+        },
+        "uploadBytes": 0,
+        "downloadBytes": 0,
+        "errorResponses": 0
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 8.963624733815285,
+      "elapsed_seconds": 6.001266407,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306480,
+        "read_bytes": 0,
+        "syscr": 6160,
+        "syscw": 62,
+        "wchar": 7276,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 78.02734375,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 48.290708333333335,
+        "max_ms": 54.04569,
+        "p50_ms": 49.524328,
+        "p90_ms": 51.304409,
+        "p95_ms": 51.304409,
+        "p99_ms": 54.04569
+      },
+      "service": {
+        "avg_ms": 46.84681991666667,
+        "max_ms": 52.429888,
+        "p50_ms": 47.969512,
+        "p90_ms": 49.807226,
+        "p95_ms": 49.807226,
+        "p99_ms": 52.429888
+      },
+      "network": {
+        "requests": {
+          "HEAD": 12
+        },
+        "responses": {
+          "200": 12
+        },
+        "uploadBytes": 0,
+        "downloadBytes": 0,
+        "errorResponses": 0
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 34.91962802959669,
+      "elapsed_seconds": 6.000605156,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306480,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 667,
+        "wchar": 805316368,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 145.109375,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 447.1026461666667,
+        "max_ms": 508.421083,
+        "p50_ms": 435.852124,
+        "p90_ms": 488.592731,
+        "p95_ms": 488.592731,
+        "p99_ms": 508.421083
+      },
+      "service": {
+        "avg_ms": 445.46388499999995,
+        "max_ms": 508.04535799999996,
+        "p50_ms": 434.665549,
+        "p90_ms": 485.11359500000003,
+        "p95_ms": 485.11359500000003,
+        "p99_ms": 508.04535799999996
+      },
+      "network": {
+        "requests": {
+          "PUT": 12
+        },
+        "responses": {
+          "200": 12
+        },
+        "uploadBytes": 805306368,
+        "downloadBytes": 0,
+        "errorResponses": 0
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 32.62234770887612,
+      "elapsed_seconds": 6.000733048,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306480,
+        "read_bytes": 0,
+        "syscr": 28,
+        "syscw": 490,
+        "wchar": 805316368,
+        "write_bytes": 0
+      },
+      "mode": "buffered",
+      "operations": 12,
+      "peak_rss_mib": 147.03515625,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 421.8222329999999,
+        "max_ms": 443.320898,
+        "p50_ms": 422.968913,
+        "p90_ms": 433.266557,
+        "p95_ms": 433.266557,
+        "p99_ms": 443.320898
+      },
+      "service": {
+        "avg_ms": 420.9036111666667,
+        "max_ms": 442.131199,
+        "p50_ms": 422.171698,
+        "p90_ms": 432.53442399999994,
+        "p95_ms": 432.53442399999994,
+        "p99_ms": 442.131199
+      },
+      "network": {
+        "requests": {
+          "PUT": 12
+        },
+        "responses": {
+          "200": 12
+        },
+        "uploadBytes": 805306368,
+        "downloadBytes": 0,
+        "errorResponses": 0
+      }
+    },
+    {
+      "backend": "s3",
+      "bytes": 67108864,
+      "cpu_percent": 9.258209084556185,
+      "elapsed_seconds": 6.001743911,
+      "event": "result",
+      "integrity_errors": 0,
+      "io": {
+        "cancelled_write_bytes": 0,
+        "rchar": 805306480,
+        "read_bytes": 0,
+        "syscr": 6160,
+        "syscw": 61,
+        "wchar": 7268,
+        "write_bytes": 0
+      },
+      "mode": "file",
+      "operations": 12,
+      "peak_rss_mib": 86.015625,
+      "rate": 2,
+      "scenario": "warm",
+      "scheduled": {
+        "avg_ms": 49.77507566666667,
+        "max_ms": 80.40280800000001,
+        "p50_ms": 46.645882,
+        "p90_ms": 52.007394999999995,
+        "p95_ms": 52.007394999999995,
+        "p99_ms": 80.40280800000001
+      },
+      "service": {
+        "avg_ms": 48.20998391666668,
+        "max_ms": 78.61531500000001,
+        "p50_ms": 45.452749,
+        "p90_ms": 50.211051,
+        "p95_ms": 50.211051,
+        "p99_ms": 78.61531500000001
+      },
+      "network": {
+        "requests": {
+          "HEAD": 12
+        },
+        "responses": {
+          "200": 12
+        },
+        "uploadBytes": 0,
+        "downloadBytes": 0,
+        "errorResponses": 0
+      }
+    }
+  ]
+}

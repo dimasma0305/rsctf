@@ -32,8 +32,28 @@ pub trait BlobStorage: Send + Sync {
     async fn health(&self) -> AppResult<()> {
         Ok(())
     }
+    /// Reclaim a bounded batch of abandoned local file uploads. S3 multipart
+    /// crash recovery is owned by the bucket's incomplete-upload lifecycle rule.
+    async fn purge_abandoned_uploads(&self) -> AppResult<u64> {
+        Ok(0)
+    }
     /// Store `bytes` under its content hash; returns the blob metadata.
     async fn store(&self, name: &str, bytes: &[u8]) -> AppResult<StoredBlob>;
+    /// Store an already-open regular file without buffering its complete body.
+    /// Implementations hash the file, rewind it, then verify the uploaded bytes
+    /// again before new publication. A complete existing hash reuses the stored
+    /// snapshot without rereading the source. Callers retain its ownership fence
+    /// until its durable reference commits; this method does not create one.
+    async fn store_file(
+        &self,
+        _name: &str,
+        _file: tokio::fs::File,
+        _max_bytes: u64,
+    ) -> AppResult<StoredBlob> {
+        Err(crate::utils::error::AppError::unavailable(
+            "File uploads are not supported by this storage backend",
+        ))
+    }
     /// Read a blob back by hash.
     async fn load(&self, hash: &str) -> AppResult<Vec<u8>>;
     /// Read a blob only when its stored representation is within `max_bytes`.

@@ -61,7 +61,7 @@ async fn l2_fill_and_l1_hits_share_one_immutable_payload() {
     assert!(cached.iter().all(|byte| *byte == 0x5a));
     assert!(tiered.get_authoritative("response").await.is_none());
     assert_eq!(
-        tiered.get_local("response").await.unwrap().as_ptr(),
+        tiered.l1.get("response").await.unwrap().as_ptr(),
         cached.as_ptr()
     );
     tiered.remove("response").await;
@@ -105,7 +105,7 @@ async fn shared_fill_does_not_extend_zero_l1_ttl() {
     shared.set("short", b"value", None).await;
     let tiered = TieredCache::new(shared.clone(), Duration::ZERO);
     assert_eq!(tiered.get("short").await.unwrap().as_ref(), b"value");
-    assert!(tiered.get_local("short").await.is_none());
+    assert!(tiered.l1.get("short").await.is_none());
     shared.remove("short").await;
     assert!(tiered.get("short").await.is_none());
 }
@@ -128,12 +128,12 @@ async fn a_shared_l1_payload_cannot_satisfy_multiple_authoritative_consumers() {
         consumed += usize::from(consumer.await.unwrap().is_some());
     }
     assert_eq!(consumed, 1);
-    assert!(tiered.get_local("one-time").await.is_none());
+    assert!(tiered.l1.get("one-time").await.is_none());
     shared.set("compare", b"old", None).await;
     tiered.get("compare").await.unwrap();
     shared.set("compare", b"new", None).await;
     assert!(!tiered.compare_and_remove("compare", b"old").await);
-    assert!(tiered.get_local("compare").await.is_none());
+    assert!(tiered.l1.get("compare").await.is_none());
     assert_eq!(
         tiered.get_authoritative("compare").await.unwrap().as_ref(),
         b"new"
@@ -153,14 +153,14 @@ async fn real_redis_l1_fill_shares_payload_and_preserves_authoritative_operation
     let response = tiered.get(&key).await.unwrap();
     assert_eq!(
         response.as_ptr(),
-        tiered.get_local(&key).await.unwrap().as_ptr()
+        tiered.l1.get(&key).await.unwrap().as_ptr()
     );
     assert_eq!(tiered.backend_health().await, CacheBackendHealth::Ready);
     assert_eq!(
         tiered.get_and_remove(&key).await.unwrap().len(),
         response.len()
     );
-    assert!(tiered.get_local(&key).await.is_none());
+    assert!(tiered.l1.get(&key).await.is_none());
     assert!(tiered.get_authoritative(&key).await.is_none());
     assert_eq!(response.len(), 512 * 1024);
     assert!(response.iter().all(|byte| *byte == 0x5a));
@@ -292,4 +292,19 @@ async fn local_only_values_never_reach_the_shared_tier_or_another_replica() {
     );
     assert!(shared.get("bearer").await.is_none());
     assert!(second.get_local("bearer").await.is_none());
+    assert!(
+        first.get("bearer").await.is_none(),
+        "a secret is not a response entry"
+    );
+    first.set("bearer", b"public-response", None).await;
+    assert_eq!(
+        first.get_local("bearer").await.as_deref(),
+        Some(b"plaintext-secret".as_slice())
+    );
+    assert_eq!(
+        first.get("bearer").await.as_deref(),
+        Some(b"public-response".as_slice())
+    );
+    first.remove("bearer").await;
+    assert!(first.get_local("bearer").await.is_none());
 }

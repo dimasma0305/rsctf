@@ -4,6 +4,12 @@ use std::process::Command;
 
 use rsctf::services::ad_engine::sandbox::{LAUNCH_ARG, PREFLIGHT_ARG};
 
+fn server_binary() -> String {
+    // CI executes the same-run artifact on a separate integration runner.
+    std::env::var("RSCTF_SANDBOX_TEST_BINARY")
+        .unwrap_or_else(|_| env!("CARGO_BIN_EXE_rsctf").to_string())
+}
+
 struct Fixture {
     root: PathBuf,
 }
@@ -59,7 +65,7 @@ fn confinement_probe_rejects_an_unconfined_invocation() {
     let scratch = fixture.path("scratch");
     std::fs::create_dir(&scratch).expect("create scratch");
     let canary = make_canary(&fixture);
-    let binary = env!("CARGO_BIN_EXE_rsctf");
+    let binary = server_binary();
     let output = Command::new(binary)
         .arg(PREFLIGHT_ARG)
         .arg(nix::unistd::geteuid().as_raw().to_string())
@@ -94,7 +100,7 @@ fn real_launcher_installs_landlock_and_seccomp_before_probe_exec() {
     // Cargo may place the test binary below a mode-0700 home directory. Copy
     // it into the traversable fixture so ordinary DAC does not masquerade as
     // a Landlock failure after the launcher drops to the checker UID.
-    let source_binary = env!("CARGO_BIN_EXE_rsctf");
+    let source_binary = server_binary();
     let fixture_binary = fixture.path("rsctf");
     std::fs::copy(source_binary, &fixture_binary).expect("copy rsctf probe binary");
     std::fs::set_permissions(&fixture_binary, std::fs::Permissions::from_mode(0o755))

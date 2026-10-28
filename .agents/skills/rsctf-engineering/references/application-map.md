@@ -3,8 +3,8 @@
 Use this index to locate ownership before reading a large module or running a full
 suite. All source paths are relative to the current checkout. Start at
 `git rev-parse --show-toplevel`; inspect `git status --short` and the branch first.
-This map describes main at `93278eb8` when introduced. Source on the active branch
-is authoritative; maintain the map as owners move.
+This map includes the architecture integration work based on main `deb89691`.
+Source on the active branch is authoritative; maintain the map as owners move.
 
 See [navigation-effectiveness.md](navigation-effectiveness.md) for coverage,
 lookup measurements, reproduction and limitations.
@@ -34,7 +34,7 @@ from the router: browser `/games/:id` usually calls singular `/api/game/{id}`.
 | AI chat links and solver uploads | [web/src/pages/games/[id]/monitor/ai-chats.tsx](../../../../web/src/pages/games/%5Bid%5D/monitor/ai-chats.tsx), [web/src/components/SolverUploadSection.tsx](../../../../web/src/components/SolverUploadSection.tsx) | [src/controllers/game/ai_chats.rs](../../../../src/controllers/game/ai_chats.rs), [src/controllers/game/solver_uploads.rs](../../../../src/controllers/game/solver_uploads.rs), [src/services/ai_chat_links.rs](../../../../src/services/ai_chat_links.rs) |
 | Writeup upload, PDF viewing, grading | [web/src/components/WriteupSubmitModal.tsx](../../../../web/src/components/WriteupSubmitModal.tsx), [web/src/pages/admin/games/[id]/Writeups.tsx](../../../../web/src/pages/admin/games/%5Bid%5D/Writeups.tsx) | [src/controllers/game/writeup.rs](../../../../src/controllers/game/writeup.rs), [src/controllers/admin/writeup_grading.rs](../../../../src/controllers/admin/writeup_grading.rs) |
 | Event configuration, divisions, managers, notices, reviews | [event administration pages](../../../../web/src/pages/admin/games/%5Bid%5D/) | [src/controllers/edit/games/](../../../../src/controllers/edit/games/), [src/controllers/edit/divisions.rs](../../../../src/controllers/edit/divisions.rs), [src/controllers/edit/notices.rs](../../../../src/controllers/edit/notices.rs), [src/controllers/edit/reviews.rs](../../../../src/controllers/edit/reviews.rs) |
-| Challenge editing, flags, import/export, builds, preflight | [web/src/pages/admin/games/[id]/challenges/](../../../../web/src/pages/admin/games/%5Bid%5D/challenges/), [web/src/pages/admin/builds.tsx](../../../../web/src/pages/admin/builds.tsx) | [src/controllers/edit/challenges/](../../../../src/controllers/edit/challenges/), [src/controllers/edit/test_container/](../../../../src/controllers/edit/test_container/), [src/controllers/edit/builds/](../../../../src/controllers/edit/builds/), [src/controllers/edit/preflight.rs](../../../../src/controllers/edit/preflight.rs) |
+| Challenge editing, flags, import/export, builds, preflight | [web/src/pages/admin/games/[id]/challenges/](../../../../web/src/pages/admin/games/%5Bid%5D/challenges/), [web/src/pages/admin/builds.tsx](../../../../web/src/pages/admin/builds.tsx) | [src/controllers/edit/challenges/](../../../../src/controllers/edit/challenges/), [src/controllers/edit/test_container/](../../../../src/controllers/edit/test_container/), [src/services/challenge_builds/](../../../../src/services/challenge_builds/), [src/controllers/edit/preflight.rs](../../../../src/controllers/edit/preflight.rs) |
 | Repository bindings, scans, pushback, checker preparation | [web/src/pages/admin/repo-bindings.tsx](../../../../web/src/pages/admin/repo-bindings.tsx) | [src/controllers/admin/repo_bindings.rs](../../../../src/controllers/admin/repo_bindings.rs), [src/services/repo_binding_scheduler.rs](../../../../src/services/repo_binding_scheduler.rs), [src/services/git_sync/](../../../../src/services/git_sync/) |
 | Platform users, teams, imports, credential actions | [web/src/pages/admin/Users.tsx](../../../../web/src/pages/admin/Users.tsx), [web/src/pages/admin/Teams.tsx](../../../../web/src/pages/admin/Teams.tsx) | [src/controllers/admin/users.rs](../../../../src/controllers/admin/users.rs), [src/controllers/admin/teams.rs](../../../../src/controllers/admin/teams.rs), [src/controllers/admin/users_import_history.rs](../../../../src/controllers/admin/users_import_history.rs) |
 | Platform settings, login policy, branding, integrations | [web/src/pages/admin/Settings.tsx](../../../../web/src/pages/admin/Settings.tsx), [web/src/hooks/useConfig.ts](../../../../web/src/hooks/useConfig.ts) | [src/controllers/admin/settings.rs](../../../../src/controllers/admin/settings.rs), [src/services/oauth_config.rs](../../../../src/services/oauth_config.rs), [src/services/settings_branding.rs](../../../../src/services/settings_branding.rs) |
@@ -48,6 +48,10 @@ For every row, continue to [frontend-map.md](frontend-map.md),
 [checks-map.md](checks-map.md) for shared dependencies and verification.
 
 ## Start from a symptom
+
+For security-sensitive changes, use the initial
+[route → policy → regression index](security-boundaries.md). Its scope and missing
+end-to-end evidence are explicit.
 
 | Symptom | First trace | First useful check |
 | --- | --- | --- |
@@ -80,11 +84,11 @@ it cannot prove backend authorization, runtime connectivity, or durable recovery
 ## Current source versus planned work
 
 Read [TODO.md](../../../../TODO.md) and [IMPROVEMENTS.md](../../../../IMPROVEMENTS.md) for scope and evidence, then verify the
-implementation. The architecture backlog on `feat/architecture-backlog` has changes
-not merged into this map's baseline: service extraction, response-cache sharding,
-OpenAPI generation, certificate renewal, and additional worker/recovery wiring.
-Do not link to those files as if they exist on main or declare the parent tasks
-complete from a component test.
+implementation. This checkout includes service extraction, response-cache sharding,
+incremental OpenAPI generation, certificate renewal, and centralized worker wiring.
+Privileged web delegation, capture offload, full runtime shutdown/fairness testing,
+and kernel network recovery remain open. A component test does not complete those
+parent tasks. A branch implementation is not evidence of a production deployment.
 
 When changing structure, update this feature index, the relevant layer/check map,
 and any role/proxy documentation affected. Validate all skill links:

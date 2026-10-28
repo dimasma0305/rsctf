@@ -1,0 +1,77 @@
+{
+  "date": "2026-10-28T10:34:49.009Z",
+  "role": "control",
+  "kernel": "7.0.0-1017-azure",
+  "sourceRevision": "0dddcc8a0e7422afd84366543fbecbdb103822f6",
+  "sourceDirty": true,
+  "binarySourceRevision": "0dddcc8a0e7422afd84366543fbecbdb103822f6",
+  "binarySha256": "1eb071d01c059c8862e03f6d76eb9e05fd51d09b75a60db63f1e93d58106130a",
+  "harnessSha256": "c76f181249aa7c5a7027a5ef604806c61dc4ea96ca85403798c05381dbcdba40",
+  "rolloutFixtureSha256": "f4be083f7936762ae33e9edbb200374ee5a261d60a2ad5ccb50b0ef6d40752c0",
+  "seedSha256": "b1ff81ea5747e2730dc84fadf8f151569f46e67bd9c0b4723031454d94719cf1",
+  "scope": "Real Docker archive builds and A&D resets; durable rollout with injected worker observations. SIGTERM and forced process death. Crash recovery injects lease expiry after death; no production recovery-time claim. VPN disabled; no native worker reconnect.",
+  "observations": [
+    {
+      "kind": "ChallengeBuild",
+      "scenario": "graceful-sigterm",
+      "drainMs": 5123.022911,
+      "totalWithRestartMs": 10774.545268,
+      "noClaimsDuringDrain": true
+    },
+    {
+      "kind": "ChallengeBuild",
+      "scenario": "sigterm-then-crash",
+      "interruptedAfterMs": 1258.3568269999996,
+      "recoveryAfterInjectedExpiryMs": 1192.265077,
+      "productionLeaseSeconds": 900,
+      "noClaimsDuringDrain": true
+    },
+    {
+      "kind": "AdReset",
+      "scenario": "graceful-sigterm",
+      "drainMs": 5118.37443,
+      "totalWithRestartMs": 10781.0367,
+      "noClaimsDuringDrain": true
+    },
+    {
+      "kind": "AdReset",
+      "scenario": "sigterm-then-crash",
+      "interruptedAfterMs": 1265.8503649999984,
+      "recoveryAfterInjectedExpiryMs": 526.2121340000012,
+      "productionLeaseSeconds": 900,
+      "noClaimsDuringDrain": true
+    },
+    {
+      "kind": "AdReset",
+      "scenario": "sigterm-drain-deadline",
+      "interruptedAfterMs": 35065.433554,
+      "recoveryAfterInjectedExpiryMs": 518.4189719999995,
+      "productionLeaseSeconds": 900,
+      "noClaimsDuringDrain": true
+    },
+    {
+      "kind": "WorkloadRollout",
+      "scenario": "graceful-sigterm",
+      "drainMs": 5118.484954,
+      "totalWithRestartMs": 10829.442435000004,
+      "noClaimsDuringDrain": true
+    },
+    {
+      "kind": "WorkloadRollout",
+      "scenario": "sigterm-then-crash",
+      "interruptedAfterMs": 1256.3218800000031,
+      "recoveryAfterInjectedExpiryMs": 504.7101379999949,
+      "productionLeaseSeconds": 900,
+      "noClaimsDuringDrain": true
+    },
+    {
+      "kind": "WorkloadRollout",
+      "scenario": "sigterm-drain-deadline",
+      "interruptedAfterMs": 35060.062548,
+      "recoveryAfterInjectedExpiryMs": 508.38191999998526,
+      "productionLeaseSeconds": 900,
+      "noClaimsDuringDrain": true
+    }
+  ],
+  "passed": true
+}

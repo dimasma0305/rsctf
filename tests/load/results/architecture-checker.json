@@ -1,0 +1,953 @@
+{
+  "date": "2026-10-27T11:42:40.546Z",
+  "sourceSha": "b4ba65c70286248d13cb4fb296fd5a13085dc99a",
+  "hashes": {
+    "src/services/git_sync/checker.rs": "b5d264e94eac0a7722f88de9f8fd9e1afd26182bca13d0eb62cc1632fca9cde3",
+    "src/services/git_sync/checker_gc.rs": "9e29c7643e56b616d972e121d6ec4b587db4dd8a2169f2b24cea24ad75ea047a",
+    "src/services/git_sync/checker_gc_scan.rs": "8f8a32011d466315e4086ac6dff73c71f7969d33d51778ce95b33a2daaa85d51",
+    "src/utils/single_flight.rs": "0a1a347413474966364eb39c56762a4814b43646529e512d767ed111c53e7e21",
+    "src/utils/database.rs": "d8efcb500378d5c09bab91cf3aadc1e31992576dcbce492f37fa659259a1e44e",
+    "src/utils/archive.rs": "7dc9f3d2003b506ecb19a468c8ab714b7eda4df35010ac8b702e117cc6e51d2f",
+    "tests/load/checker-audit/src/main.rs": "88790b5a32f6c827691d6c8cd7e9eb94ab1d0bb16db580f74b25a8a88502a50f",
+    "tests/load/checker-audit/src/support.rs": "f17871eefb378040f47dbc9306191add3d4fef5165b0172c08376a22225b8279",
+    "tests/load/checker-audit/Cargo.toml": "8327e5b7153e89ca7132920eb9bbbbed04e83a811d4c88aa576d6940445aa968",
+    "tests/load/checker-audit/Cargo.lock": "1f6246291fcbb88211e10ff41416267d6d09d5ccf62cd31a8973971e9bc7fc78",
+    "tests/load/checker-audit.mjs": "6d55caca35743dcc6ebeebc4522bab70a63226a79bc0491dec8e576f253d4ec5"
+  },
+  "binarySha256": "5da9e07a53567c8ab0e4aa6f449cd0a9a42ae22ec470c524cced88f1021cf109",
+  "cpu": "AMD EPYC 9V74 80-Core Processor",
+  "affinity": "0,1",
+  "kernel": "6.18.55",
+  "python": "Python 3.13.5",
+  "postgresImage": "sha256:bd1890816ae0b8ad4644f05728570d4be774e1f1490d7232f5084b52ea335183",
+  "poolSize": 4,
+  "concurrentPreparations": 4,
+  "fixture": "16 KiB file plus run.py; real Python venv with bundled pip, no external requirements",
+  "scope": "production preparation/publication/locks; before acquires the guard before preparation; excludes HTTP, full import mutation, dependency downloads, and app metric atomics",
+  "samples": [
+    {
+      "admission_wait": {
+        "avg_ms": 412.2280600000001,
+        "max_ms": 2241.6262030000003,
+        "p50_ms": 1.852597,
+        "p90_ms": 1529.6049200000002,
+        "p95_ms": 1529.6049200000002,
+        "p99_ms": 2241.6262030000003
+      },
+      "arrival_latency": {
+        "avg_ms": 5178.2493487500005,
+        "max_ms": 8626.296677999999,
+        "p50_ms": 5513.601438000001,
+        "p90_ms": 7990.756064,
+        "p95_ms": 7990.756064,
+        "p99_ms": 8626.296677999999
+      },
+      "cpu_percent_including_children": 100.2123867315744,
+      "elapsed_seconds": 19.63691879,
+      "integrity_errors": 0,
+      "largest_child_rss_mib": 66.97265625,
+      "lock_hold": {
+        "avg_ms": 1634.8918550833334,
+        "max_ms": 1751.779896,
+        "p50_ms": 1630.67014,
+        "p90_ms": 1710.675274,
+        "p95_ms": 1710.675274,
+        "p99_ms": 1751.779896
+      },
+      "lock_wait": {
+        "avg_ms": 3131.129011333333,
+        "max_ms": 4958.503813,
+        "p50_ms": 3884.753316,
+        "p90_ms": 4947.219588,
+        "p95_ms": 4947.219588,
+        "p99_ms": 4958.503813
+      },
+      "mode": "before",
+      "operations": 12,
+      "parent_peak_rss_mib": 4.3515625,
+      "pool_occupied_avg": 2.910896130346232,
+      "pool_occupied_max": 4,
+      "pool_samples": 1964,
+      "preparation": {
+        "avg_ms": 1632.9043439999998,
+        "max_ms": 1748.259164,
+        "p50_ms": 1629.131575,
+        "p90_ms": 1708.9005510000002,
+        "p95_ms": 1708.9005510000002,
+        "p99_ms": 1748.259164
+      },
+      "rate": 1,
+      "databaseSamples": [
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "1.46%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.2MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.8MB / 5.88MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.08%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.4MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.8MB / 5.88MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.20%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.9MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.8MB / 5.88MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.13%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.8MB / 5.88MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.08%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.8MB / 5.88MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.01%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.8MB / 5.88MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.01%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.8MB / 5.88MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.06%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.8MB / 5.88MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.05%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.8MB / 5.88MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.00%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.7MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.8MB / 5.89MB",
+          "PIDs": "14"
+        }
+      ]
+    },
+    {
+      "admission_wait": {
+        "avg_ms": 1.2719694166666666,
+        "max_ms": 1.647437,
+        "p50_ms": 1.273573,
+        "p90_ms": 1.601658,
+        "p95_ms": 1.601658,
+        "p99_ms": 1.647437
+      },
+      "arrival_latency": {
+        "avg_ms": 1653.3995798333335,
+        "max_ms": 1717.288121,
+        "p50_ms": 1658.8644530000001,
+        "p90_ms": 1703.9623239999999,
+        "p95_ms": 1703.9623239999999,
+        "p99_ms": 1717.288121
+      },
+      "cpu_percent_including_children": 156.34068711458767,
+      "elapsed_seconds": 12.709749053,
+      "integrity_errors": 0,
+      "largest_child_rss_mib": 66.96875,
+      "lock_hold": {
+        "avg_ms": 1.48685475,
+        "max_ms": 2.636211,
+        "p50_ms": 1.309029,
+        "p90_ms": 2.148678,
+        "p95_ms": 2.148678,
+        "p99_ms": 2.636211
+      },
+      "lock_wait": {
+        "avg_ms": 0.8864296666666668,
+        "max_ms": 1.495506,
+        "p50_ms": 0.778177,
+        "p90_ms": 1.3297910000000002,
+        "p95_ms": 1.3297910000000002,
+        "p99_ms": 1.495506
+      },
+      "mode": "after",
+      "operations": 12,
+      "parent_peak_rss_mib": 4.4140625,
+      "pool_occupied_avg": 0.0015735641227380016,
+      "pool_occupied_max": 1,
+      "pool_samples": 1271,
+      "preparation": {
+        "avg_ms": 1649.7539453333331,
+        "max_ms": 1712.051244,
+        "p50_ms": 1655.321141,
+        "p90_ms": 1700.537135,
+        "p95_ms": 1700.537135,
+        "p99_ms": 1712.051244
+      },
+      "rate": 1,
+      "databaseSamples": [
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.00%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.3MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.89MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.15%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.89MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.15%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.9MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.9MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.07%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.9MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.9MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.06%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.9MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.9MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 673MB",
+          "CPUPerc": "0.07%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.9MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.9MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "1.25%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.93%",
+          "MemUsage": "168.2MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.9MB",
+          "PIDs": "9"
+        }
+      ]
+    },
+    {
+      "admission_wait": {
+        "avg_ms": 1.5238517500000002,
+        "max_ms": 3.2349900000000003,
+        "p50_ms": 1.486022,
+        "p90_ms": 1.887626,
+        "p95_ms": 1.887626,
+        "p99_ms": 3.2349900000000003
+      },
+      "arrival_latency": {
+        "avg_ms": 1861.1372985,
+        "max_ms": 2064.0670600000003,
+        "p50_ms": 1853.3341939999998,
+        "p90_ms": 2049.8296410000003,
+        "p95_ms": 2049.8296410000003,
+        "p99_ms": 2064.0670600000003
+      },
+      "cpu_percent_including_children": 174.85405354702084,
+      "elapsed_seconds": 12.70048509,
+      "integrity_errors": 0,
+      "largest_child_rss_mib": 66.96484375,
+      "lock_hold": {
+        "avg_ms": 2.07994375,
+        "max_ms": 5.68223,
+        "p50_ms": 1.466237,
+        "p90_ms": 3.632872,
+        "p95_ms": 3.632872,
+        "p99_ms": 5.68223
+      },
+      "lock_wait": {
+        "avg_ms": 1.562083,
+        "max_ms": 5.35189,
+        "p50_ms": 0.728312,
+        "p90_ms": 4.603651,
+        "p95_ms": 4.603651,
+        "p99_ms": 5.35189
+      },
+      "mode": "after",
+      "operations": 12,
+      "parent_peak_rss_mib": 4.42578125,
+      "pool_occupied_avg": 0.004724409448818898,
+      "pool_occupied_max": 1,
+      "pool_samples": 1270,
+      "preparation": {
+        "avg_ms": 1855.9711210833332,
+        "max_ms": 2060.482613,
+        "p50_ms": 1850.428696,
+        "p90_ms": 2044.445157,
+        "p95_ms": 2044.445157,
+        "p99_ms": 2060.482613
+      },
+      "rate": 1,
+      "databaseSamples": [
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.00%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.3MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.91MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.16%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.7MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.91MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "1.37%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.6MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.91MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.06%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.5MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.91MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.09%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.5MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.91MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.04%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.5MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.91MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "1.31%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.93%",
+          "MemUsage": "167.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.92MB",
+          "PIDs": "9"
+        }
+      ]
+    },
+    {
+      "admission_wait": {
+        "avg_ms": 488.111297,
+        "max_ms": 2789.487856,
+        "p50_ms": 1.31489,
+        "p90_ms": 1864.2876579999997,
+        "p95_ms": 1864.2876579999997,
+        "p99_ms": 2789.487856
+      },
+      "arrival_latency": {
+        "avg_ms": 5639.299507416667,
+        "max_ms": 10045.564928,
+        "p50_ms": 5839.494014,
+        "p90_ms": 9263.575481,
+        "p95_ms": 9263.575481,
+        "p99_ms": 10045.564928
+      },
+      "cpu_percent_including_children": 100.68864085643325,
+      "elapsed_seconds": 21.058065557,
+      "integrity_errors": 0,
+      "largest_child_rss_mib": 66.97265625,
+      "lock_hold": {
+        "avg_ms": 1753.4426222499999,
+        "max_ms": 1936.2200710000002,
+        "p50_ms": 1781.668992,
+        "p90_ms": 1931.7719339999999,
+        "p95_ms": 1931.7719339999999,
+        "p99_ms": 1936.2200710000002
+      },
+      "lock_wait": {
+        "avg_ms": 3397.7451124999993,
+        "max_ms": 5592.0223829999995,
+        "p50_ms": 3989.000419,
+        "p90_ms": 5583.2039780000005,
+        "p95_ms": 5583.2039780000005,
+        "p99_ms": 5592.0223829999995
+      },
+      "mode": "before",
+      "operations": 12,
+      "parent_peak_rss_mib": 4.734375,
+      "pool_occupied_avg": 2.9335232668566,
+      "pool_occupied_max": 4,
+      "pool_samples": 2106,
+      "preparation": {
+        "avg_ms": 1751.2933626666666,
+        "max_ms": 1934.3218709999999,
+        "p50_ms": 1780.211248,
+        "p90_ms": 1929.9680769999998,
+        "p95_ms": 1929.9680769999998,
+        "p99_ms": 1934.3218709999999
+      },
+      "rate": 1,
+      "databaseSamples": [
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.07%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.4MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.92MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.19%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.5MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.92MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.15%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.4MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.93MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.11%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.5MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.93MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.16%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.7MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.93MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.47%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.93MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.11%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.93MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.08%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.93MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.15%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.93MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 681MB",
+          "CPUPerc": "0.15%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.93MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "1.75%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.93%",
+          "MemUsage": "167.7MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.93MB",
+          "PIDs": "9"
+        }
+      ]
+    },
+    {
+      "admission_wait": {
+        "avg_ms": 853.5044060833334,
+        "max_ms": 3718.005466,
+        "p50_ms": 1.645381,
+        "p90_ms": 2739.76773,
+        "p95_ms": 2739.76773,
+        "p99_ms": 3718.005466
+      },
+      "arrival_latency": {
+        "avg_ms": 6526.9693744999995,
+        "max_ms": 11177.126486000001,
+        "p50_ms": 6729.637344000001,
+        "p90_ms": 10306.399086000001,
+        "p95_ms": 10306.399086000001,
+        "p99_ms": 11177.126486000001
+      },
+      "cpu_percent_including_children": 100.5261167135967,
+      "elapsed_seconds": 22.188278757,
+      "integrity_errors": 0,
+      "largest_child_rss_mib": 66.97265625,
+      "lock_hold": {
+        "avg_ms": 1847.5461602500002,
+        "max_ms": 2025.139442,
+        "p50_ms": 1856.2311089999998,
+        "p90_ms": 1983.2803399999998,
+        "p95_ms": 1983.2803399999998,
+        "p99_ms": 2025.139442
+      },
+      "lock_wait": {
+        "avg_ms": 3825.9183279166664,
+        "max_ms": 5865.343613,
+        "p50_ms": 4998.136286,
+        "p90_ms": 5715.949718,
+        "p95_ms": 5715.949718,
+        "p99_ms": 5865.343613
+      },
+      "mode": "before",
+      "operations": 12,
+      "parent_peak_rss_mib": 4.80859375,
+      "pool_occupied_avg": 3.0689499774673275,
+      "pool_occupied_max": 4,
+      "pool_samples": 2219,
+      "preparation": {
+        "avg_ms": 1845.3839290833332,
+        "max_ms": 2022.693033,
+        "p50_ms": 1853.741951,
+        "p90_ms": 1981.0525619999999,
+        "p95_ms": 1981.0525619999999,
+        "p99_ms": 2022.693033
+      },
+      "rate": 1,
+      "databaseSamples": [
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.15%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.8MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.94MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.19%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.9MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.94MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.15%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "177MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.94MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.10%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "177.3MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.94MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.18%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.99%",
+          "MemUsage": "177.4MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.94MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.17%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.99%",
+          "MemUsage": "177.6MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.94MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.16%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.99%",
+          "MemUsage": "177.4MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.94MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.76%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.99%",
+          "MemUsage": "177.5MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.95MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.19%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "177.3MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.95MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.14%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.99%",
+          "MemUsage": "177.4MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.95MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.08%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.99%",
+          "MemUsage": "177.5MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.95MB",
+          "PIDs": "14"
+        }
+      ]
+    },
+    {
+      "admission_wait": {
+        "avg_ms": 0.9006093333333335,
+        "max_ms": 1.4073740000000001,
+        "p50_ms": 0.828353,
+        "p90_ms": 1.316569,
+        "p95_ms": 1.316569,
+        "p99_ms": 1.4073740000000001
+      },
+      "arrival_latency": {
+        "avg_ms": 3001.5343198333326,
+        "max_ms": 4330.823484,
+        "p50_ms": 2960.749141,
+        "p90_ms": 3885.159293,
+        "p95_ms": 3885.159293,
+        "p99_ms": 4330.823484
+      },
+      "cpu_percent_including_children": 186.76666681925514,
+      "elapsed_seconds": 13.985114927,
+      "integrity_errors": 0,
+      "largest_child_rss_mib": 66.97265625,
+      "lock_hold": {
+        "avg_ms": 1.7109041666666664,
+        "max_ms": 2.85776,
+        "p50_ms": 1.439597,
+        "p90_ms": 2.506129,
+        "p95_ms": 2.506129,
+        "p99_ms": 2.85776
+      },
+      "lock_wait": {
+        "avg_ms": 1.40364675,
+        "max_ms": 4.313637,
+        "p50_ms": 1.010798,
+        "p90_ms": 2.680732,
+        "p95_ms": 2.680732,
+        "p99_ms": 4.313637
+      },
+      "mode": "after",
+      "operations": 12,
+      "parent_peak_rss_mib": 4.80859375,
+      "pool_occupied_avg": 0.005003573981415297,
+      "pool_occupied_max": 1,
+      "pool_samples": 1399,
+      "preparation": {
+        "avg_ms": 2997.5188048333334,
+        "max_ms": 4327.784068999999,
+        "p50_ms": 2957.07519,
+        "p90_ms": 3881.639072,
+        "p95_ms": 3881.639072,
+        "p99_ms": 4327.784068999999
+      },
+      "rate": 1,
+      "databaseSamples": [
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.16%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.5MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.95MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.30%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.6MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.96MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.30%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "177MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.96MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "1.44%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.7MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.96MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.16%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.9MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.96MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.08%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "176.9MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.96MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.26%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.98%",
+          "MemUsage": "177.1MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.96MB",
+          "PIDs": "14"
+        },
+        {
+          "BlockIO": "147MB / 682MB",
+          "CPUPerc": "0.10%",
+          "Container": "rsctf-architecture-pg",
+          "ID": "49e3ea053898",
+          "MemPerc": "0.93%",
+          "MemUsage": "168.1MiB / 17.59GiB",
+          "Name": "rsctf-architecture-pg",
+          "NetIO": "15.9MB / 5.96MB",
+          "PIDs": "9"
+        }
+      ]
+    }
+  ]
+}

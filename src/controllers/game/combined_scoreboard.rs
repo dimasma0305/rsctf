@@ -167,13 +167,7 @@ struct RankableItem {
     division_eligible: bool,
 }
 
-fn combined_cache_key(game_id: i32, is_monitor: bool) -> String {
-    if is_monitor {
-        format!("_CombinedScoreBoardByChallenge_{game_id}")
-    } else {
-        format!("_CombinedScoreBoardByChallengeFrozen_{game_id}")
-    }
-}
+pub(crate) use crate::services::scoreboard_invalidation::combined_cache_key;
 
 /// Do not let this derived cache add another full five seconds on top of an
 /// already-aged component snapshot. A one-second floor retains single-flight
@@ -188,11 +182,7 @@ fn combined_cache_ttl(generated_at: DateTime<Utc>, now: DateTime<Utc>) -> std::t
         .max(COMBINED_SCOREBOARD_MIN_CACHE_TTL)
 }
 
-pub(crate) async fn invalidate_combined_scoreboard(st: &SharedState, game_id: i32) {
-    let live = combined_cache_key(game_id, true);
-    let frozen = combined_cache_key(game_id, false);
-    tokio::join!(st.cache.remove(&live), st.cache.remove(&frozen),);
-}
+pub(crate) use crate::services::scoreboard_invalidation::invalidate_combined_scoreboard;
 
 fn normalized_ratio_units(earned: i64, attainable: i64) -> i64 {
     if attainable <= 0 || earned <= 0 {

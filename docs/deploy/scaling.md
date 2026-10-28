@@ -69,7 +69,7 @@ image pre-pull and smoke-start preflight remain the default startup preparation.
 | `all` | Exactly 1 | API, React client, hubs, maintenance, all A&D/KotH rounds, VPN/BYOC/SSH, packet capture, and migrations |
 | `web` | 1 or more | Public API, React client, and hubs; no round or deployment-maintenance ownership |
 | `control` | Exactly 1 | Stateful BYOC/container-exec API, maintenance, all round processing, VPN/BYOC/SSH, packet capture; no migrations |
-| `engine` | 1 or more | Health endpoints, maintenance election, and managed-container A&D/KotH rounds |
+| `engine` | 1 or more | Health/metrics endpoints, durable jobs, maintenance, and managed-container A&D/KotH rounds |
 | `network` | Exactly 1 | Stateful BYOC/container-exec API, VPN/BYOC/SSH, packet capture, and rounds for games containing BYOC services |
 | `migrate` | One-shot | Apply PostgreSQL migrations and exit |
 
@@ -78,6 +78,32 @@ it with `engine` plus `network`; never run `control` alongside those roles.
 PostgreSQL locks, unique constraints, and durable round leases allow engine
 workers to be active-active. The network role remains singleton because
 WireGuard, firewall rules, SSH listeners, and live yamux tunnels are process-local.
+
+The composition-root worker registry (`src/runtime_workers.rs`) assigns challenge
+imports, revision effects, repository pushes/scans, mutation retention, mail
+delivery, and control jobs to `all`, `control`, `engine`, and `development`.
+Neither `web` nor `network` consumes those queues. PostgreSQL claims coordinate
+multiple eligible engine replicas; process-local wakeups are hints, backed by
+polling. The advanced topology therefore has consumers for the same durable
+work as the simple split deployment.
+
+Control jobs have deployment-wide admission limits: two gameplay jobs
+(`AdReset`, `AdReconcile`), two build jobs, and one maintenance job
+(`VariantGeneration`, `SecurityDerivation`). Adding web or engine replicas does
+not raise those limits. Within a lane, games without running work take priority,
+then the oldest queued job runs. Supervised workers stop claiming on shutdown.
+An unstarted claim can be returned immediately; an interrupted external operation
+retains its lease until the existing 15-minute crash-recovery window expires.
+
+Ended A&D/KotH workloads have a separate cleanup supervisor. A pass claims at most
+16 individual rows and has a 270-second budget, with a 240-second per-item budget.
+Failed items back off independently, up to 15 minutes. A timed-out item's
+10-minute lease is retained because an external operation may still be finishing.
+Final snapshots and capture teardown fences remain prerequisites for destruction;
+backend identities survive failures. This worker does not block the maintenance
+chain's accepted-participation recovery.
+
+See [monitoring](monitoring.md) for authenticated metrics on every serving role.
 
 Scheduler ownership is per game, not per service. If any A&D service in a game
 is BYOC/self-hosted, the network role owns that whole game's rounds; engine
@@ -159,6 +185,24 @@ the object count, and keep the local backup through the rollback window. Startup
 and `/healthz` verify access to the selected backend using a small
 `.rsctf-health` object; that proves credentials and reachability, not that a
 manual historical copy was complete.
+
+File-based blob publication is limited to two concurrent uploads per process and
+512 MiB per file. It hashes and verifies the source twice before new publication;
+local copies use 128 KiB buffers, and S3 uploads send one 8 MiB multipart chunk
+at a time through `object_store`. A complete existing hash reuses that stored
+snapshot after the first hash pass, avoiding another read and write.
+Callers must keep their durable reference fence until
+publication commits; uploading a file alone does not create a database reference.
+
+Local file uploads stage under `<blob-root>/.uploads` on the **same filesystem**
+as the sharded blobs. Maintenance scans at most 256 entries per pass and removes
+only upload UUIDs older than one hour whose cross-process file lock is free.
+S3 operators must configure an `AbortIncompleteMultipartUpload` bucket lifecycle
+rule (for example, after one day) for the configured blob prefix. Normal errors
+and cancellation attempt an abort, but a terminated process or a lost initiate
+reply cannot guarantee it. Do not apply object-expiration rules to referenced
+blobs: reference-aware RSCTF retention owns their deletion. These upload primitives
+do not yet offload captures or remove the shared-filesystem requirement.
 
 Large static challenge downloads can bypass application bandwidth only when
 the operator explicitly sets `RSCTF_ASSET_SIGNED_URL_TTL_SECS=30..3600` with
@@ -281,8 +325,9 @@ for a safe retry of the same command; it never runs `up` on failure.
 That two-web default budgets `2×27 + 38 = 92` application connections against
 the bundled PostgreSQL limit of 100. It preserves a small stop-the-world
 migration and administration reserve, but it does not leave room for a surge
-web replica: `3×27 + 38 = 119`. Put PgBouncer in front of PostgreSQL or provide
-a separately reviewed connection budget first.
+web replica: `3×27 + 38 = 119`. Review and increase PostgreSQL's connection
+budget before adding that replica. Session-mode PgBouncer alone does not reduce
+the number of simultaneously active application sessions.
 
 For a shared Docker challenge backend, include both overrides so web API replicas
 and the control owner reach the same daemon:
@@ -303,8 +348,9 @@ narrow checker capability set and also uses `NET_ADMIN` for WireGuard plus
 capabilities. The web replicas retain Docker access
 because their API routes may create or destroy player containers.
 
-Scale only the public web service. The five-web example assumes PgBouncer or an
-external PostgreSQL connection budget sized with the formula below:
+Scale only the public web service. The five-web example requires a PostgreSQL
+connection budget sized with the formula below. Any PgBouncer must preserve
+sessions (`pool_mode=session`, `RSCTF_DB_POOL_MODE=session`):
 
 ```bash
 docker compose up -d --scale rsctf=5
@@ -550,8 +596,9 @@ when that exact acknowledgement belongs to the current non-draining lease.
 
 The network owner refreshes a kernel `ipset` every three seconds. The set of
 capture-required endpoints persists, while each live acknowledgement has a
-15-second kernel timeout. A stopped userspace watchdog therefore cannot keep a
-route open: the live member expires in the kernel. Graceful shutdown marks the
+15-second kernel timeout, measured from the command's application in the kernel.
+When refreshes stop, the existing live member expires without another userspace
+decision. Graceful shutdown marks the
 owner draining and waits for the resulting network generation before stopping
 capture threads or releasing ownership. A replacement starts with a new epoch,
 fences stale acknowledgements, starts every desired capture, and only then
@@ -565,19 +612,26 @@ lease could still refresh a 15-second kernel member. The required worker then
 exits and releases its advisory session so process supervision can replace it;
 there is no unbounded drain state that can retain capture ownership.
 Forced cancellation also aborts the detached heartbeat and signals every pcap
-thread. If the surrounding network namespace somehow survives until supervisor
-shutdown, the old lease plus final kernel member has a 27-second worst case;
-the implementation's 28-second safety window includes one second of margin.
+thread. The 28-second window covers the old 12-second lease plus its final
+15-second live member, with one second of margin, when refresh commands complete
+within their execution budget. It is not an absolute deadline tied to the
+original ownership proof: an arbitrarily paused command can apply a relative
+timeout late. That failure mode still needs an independently enforced kernel
+fence and live traffic regression coverage.
 
-For a complete `all`/`control`/`network` container or Pod crash, the WireGuard
-socket and its isolated network namespace disappear with that workload. On a
-bare-host service where the kernel namespace survives the process, the
-installed rules remain fail-closed after the last live-set member times out (at
-most 15 seconds after its final refresh). PostgreSQL expiry plus the
-three-second watchdog provides an additional database-policy cutoff while the
-network owner is alive. These guarantees cover the managed VPN and internal
-A&D service network; directly publishing challenge-container ports outside
-that boundary bypasses rsctf policy and is unsupported for mandatory capture.
+Deleting the complete isolated network namespace removes its WireGuard device
+and firewall state. Exiting the RSCTF process alone does not establish that the
+namespace was deleted: a container runtime, Pod sandbox, sidecar sharing the
+namespace, or a host-network deployment can retain it. The Compose event sensor
+explicitly shares the owner's network namespace. Existing capture-required live
+members expire 15 seconds after their final applied refresh; this mechanism
+does not fence every VPN route. PostgreSQL expiry and the watchdog provide an
+additional policy cutoff while the network owner is running. Test namespace
+teardown, paused refresh commands, and replacement traffic on the actual
+deployment before assigning a route-recovery bound. The process recovery CI job
+has VPN disabled and cannot establish that bound. Directly published challenge
+ports outside the managed VPN/internal A&D network bypass this policy and are
+unsupported for mandatory capture.
 
 PostgreSQL generations are the acknowledgement boundary; notifications only
 reduce wake-up latency. The owner polls pending generations every five seconds
@@ -636,8 +690,15 @@ VPN network callback owner at 36 can open 176 connections. Leave capacity for
 migration, administration, PostgreSQL workers, and failure overlap during rolling updates.
 Include every temporary `maxSurge` web/engine Pod in that rollout ceiling, not
 only the steady-state replica count.
-Use PgBouncer or smaller role-specific pools before increasing PostgreSQL's
-limit blindly.
+Use smaller role-specific pools before increasing PostgreSQL's limit blindly.
+PgBouncer is supported only with `pool_mode=session`: RSCTF retains session
+advisory locks for network/capture ownership and multi-stage operations. Set
+`RSCTF_DB_POOL_MODE=session` when using it, or `direct` (the default) for direct
+PostgreSQL connections. Declared `transaction` and `statement` modes fail startup.
+This declaration cannot inspect a remote pooler's actual configuration; operators
+must verify it. Session pooling retains an assigned backend for each connected
+client and therefore does not eliminate the deployment's concurrent connection
+budget. Transaction pooling requires separating all session-owning paths first.
 
 Pool validation accounts for connections retained across nested operations. Let
 `R=RSCTF_REPO_SCAN_CONCURRENCY` and
@@ -668,6 +729,16 @@ HTTP/WebSocket connections receive up to 20 seconds to drain. Remaining worker
 work is aborted and recovered from its durable PostgreSQL lease by another owner.
 `/livez` remains a process-only probe. Readiness responses include `x-rsctf-role` and
 `x-rsctf-capabilities` headers for routing diagnostics.
+
+Network-capable roles additionally require fresh proof that their dedicated
+PostgreSQL session owns the exact network advisory lock. The monitor checks
+every three seconds with a two-second query budget; proof expires after ten
+seconds measured from query start. A late response cannot revive expired proof.
+The monitor remains supervised and active throughout ordinary worker drain,
+then stops when the ownership session is explicitly released. Unexpected
+monitor exit or loss of proof terminates the process; readiness also rejects an
+expired owner without waiting for the monitor task to run. These process bounds
+do not establish kernel route withdrawal or external-agent reconnection bounds.
 
 Each long-running split process registers a unique PostgreSQL heartbeat every
 five seconds with its exact build/protocol fingerprint. Presence expires after

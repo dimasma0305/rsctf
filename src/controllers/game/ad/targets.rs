@@ -254,25 +254,10 @@ fn exclude_caller(model: &mut AdTargetsModel, caller_id: i32) {
     }
 }
 
-fn live_hill_snapshot_cache_key(game_id: i32) -> String {
-    format!("adlivehills:{game_id}")
-}
+pub(crate) use crate::services::scoreboard_invalidation::live_hill_snapshot_cache_key;
 
-/// Evict the shared endpoint projection after a hill ownership or lifecycle
-/// transition. The one-second TTL remains a bounded cross-replica backstop for
-/// a missed invalidation or a cache fill racing a transition.
-pub(crate) async fn invalidate_live_hill_snapshot(st: &SharedState, game_id: i32) {
-    invalidate_live_hill_snapshot_cache(st.cache.as_ref(), game_id).await;
-    crate::controllers::game::koth::invalidate_live_lifecycle_cache(st.cache.as_ref(), game_id)
-        .await;
-}
-
-async fn invalidate_live_hill_snapshot_cache(
-    cache: &dyn crate::services::cache::Cache,
-    game_id: i32,
-) {
-    cache.remove(&live_hill_snapshot_cache_key(game_id)).await;
-}
+#[cfg(test)]
+use crate::services::scoreboard_invalidation::invalidate_live_hill_snapshot_cache;
 
 /// Load every hill identity for a game once per second, shared across all
 /// teams. The previous implementation ran this query, including its indexed

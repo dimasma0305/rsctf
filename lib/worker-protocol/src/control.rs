@@ -117,6 +117,9 @@ pub struct ServerWelcome {
     pub heartbeat_interval_ms: u64,
     pub lease_timeout_ms: u64,
     pub limits: SessionLimits,
+    /// Older servers omit this. Agents only request renewal after negotiation.
+    #[serde(default)]
+    pub certificate_renewal: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -160,6 +163,8 @@ impl ControlEnvelope {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "body", rename_all = "camelCase")]
 pub enum ControlMessage {
+    RenewCertificate(RenewCertificate),
+    CertificateRenewed(CertificateRenewed),
     Heartbeat(Heartbeat),
     InventoryRequest(InventoryRequest),
     EnsureWorkload(EnsureWorkload),
@@ -169,6 +174,20 @@ pub enum ControlMessage {
     CommandResult(CommandResult),
     InventoryPage(InventoryPage),
     WorkloadStatus(WorkloadStatus),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenewCertificate {
+    pub operation_id: Uuid,
+    pub csr_pem: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertificateRenewed {
+    pub operation_id: Uuid,
+    pub certificate_pem: String,
 }
 
 impl ControlMessage {
@@ -363,6 +382,49 @@ pub struct InventoryPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_welcome_does_not_enable_renewal_without_negotiation() {
+        let legacy = serde_json::json!({
+            "protocolRevision": 1,
+            "session": {"sessionId": Uuid::new_v4(), "sessionEpoch": 4},
+            "heartbeatIntervalMs": 10000, "leaseTimeoutMs": 30000,
+            "limits": {"maxControlFrameBytes": 262144, "maxInFlightCommands": 8,
+                "maxDataLanes": 4, "maxStreamsPerLane": 32}
+        });
+        let mut welcome: ServerWelcome = serde_json::from_value(legacy).unwrap();
+        assert!(!welcome.certificate_renewal);
+        welcome.certificate_renewal = true;
+        let encoded = serde_json::to_value(&welcome).unwrap();
+        assert_eq!(encoded["certificateRenewal"], true);
+        assert_eq!(
+            serde_json::from_value::<ServerWelcome>(encoded).unwrap(),
+            welcome
+        );
+    }
+
+    #[test]
+    fn certificate_renewal_messages_roundtrip_with_operation_identity() {
+        let operation_id = Uuid::new_v4();
+        for body in [
+            ControlMessage::RenewCertificate(RenewCertificate {
+                operation_id,
+                csr_pem: "CSR".into(),
+            }),
+            ControlMessage::CertificateRenewed(CertificateRenewed {
+                operation_id,
+                certificate_pem: "certificate".into(),
+            }),
+        ] {
+            let envelope = ControlEnvelope::new(5, body);
+            let value = serde_json::to_value(&envelope).unwrap();
+            assert_eq!(value["body"]["operationId"], operation_id.to_string());
+            assert_eq!(
+                serde_json::from_value::<ControlEnvelope>(value).unwrap(),
+                envelope
+            );
+        }
+    }
 
     #[test]
     fn extracts_workload_fence() {

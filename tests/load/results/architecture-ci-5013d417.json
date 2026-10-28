@@ -1,0 +1,139 @@
+{
+  "runId": 40518627351,
+  "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351",
+  "sourceRevision": "5013d417fceebb1a5599068d28adbd634c85ca29",
+  "conclusion": "success",
+  "evidenceSource": "GitHub Actions job API, Rust/coverage/runtime/acceptance job logs, and runtime artifact",
+  "libraryTests": {
+    "passed": 1809,
+    "failed": 0,
+    "ignoredInDefaultSuite": 473
+  },
+  "selectedDatabaseRegressions": {
+    "passed": 463,
+    "failed": 0,
+    "exclusionSource": "scripts/coverage/partition.mjs at sourceRevision; unchanged environment-only exclusions"
+  },
+  "rustCoverage": {
+    "regionsPercent": 57.12,
+    "functionsPercent": 52.29,
+    "linesPercent": 60.06
+  },
+  "privilegedRuntime": {
+    "passed": true,
+    "confinementTests": 2,
+    "selectedRecoveryTests": 11,
+    "report": "architecture-runtime-ci-5013d417.json",
+    "artifactId": 12740926657,
+    "artifactSha256": "5706fa8eb87775a95019380950f3089c681dcaa4c1773db569ee3c23195ba307"
+  },
+  "jobs": [
+    {
+      "id": 122239082209,
+      "name": "Select affected checks",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239082209"
+    },
+    {
+      "id": 122239082673,
+      "name": "Load harness contracts",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239082673"
+    },
+    {
+      "id": 122239082720,
+      "name": "Repository conventions",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239082720"
+    },
+    {
+      "id": 122239381076,
+      "name": "Worker plane (Linux)",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239381076"
+    },
+    {
+      "id": 122239381108,
+      "name": "Rust coverage and database regressions",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239381108"
+    },
+    {
+      "id": 122239381129,
+      "name": "React client",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239381129"
+    },
+    {
+      "id": 122239381152,
+      "name": "Rust",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239381152"
+    },
+    {
+      "id": 122239381267,
+      "name": "Helm chart",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239381267"
+    },
+    {
+      "id": 122239381305,
+      "name": "Dependency security",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239381305"
+    },
+    {
+      "id": 122239381332,
+      "name": "Worker compatibility (Windows)",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239381332"
+    },
+    {
+      "id": 122239381471,
+      "name": "Rust formatting and Clippy",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239381471"
+    },
+    {
+      "id": 122239381483,
+      "name": "BYOC agent",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239381483"
+    },
+    {
+      "id": 122239382098,
+      "name": "Documentation / Build and validate documentation",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122239382098"
+    },
+    {
+      "id": 122243133214,
+      "name": "Isolated anti-cheat acceptance",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122243133214"
+    },
+    {
+      "id": 122243133280,
+      "name": "Architecture runtime recovery",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122243133280"
+    },
+    {
+      "id": 122243133326,
+      "name": "Kubernetes KotH callback isolation",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122243133326"
+    },
+    {
+      "id": 122246966366,
+      "name": "Required CI checks",
+      "conclusion": "success",
+      "url": "https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122246966366"
+    }
+  ],
+  "limitations": [
+    "Debug-binary correctness/recovery run; not a fixed-rate performance comparison.",
+    "Process harness uses backend=none and VPN disabled; live route fencing, agent reconnection and interrupted runtime workloads remain separate gates.",
+    "Successful CI does not establish completion of all architecture TODOs or production deployment."
+  ]
+}

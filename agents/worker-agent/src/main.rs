@@ -4,6 +4,7 @@ mod config;
 mod enroll;
 mod installation;
 mod readiness;
+mod renewal;
 mod runtime;
 mod security;
 mod tls;

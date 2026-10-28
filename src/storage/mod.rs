@@ -1,4 +1,5 @@
 pub mod blob_storage;
+mod file_upload;
 pub mod local_blob_storage;
 pub mod s3_blob_storage;
 

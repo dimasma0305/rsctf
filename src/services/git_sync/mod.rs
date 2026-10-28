@@ -65,7 +65,7 @@ use sea_orm::{
 
 mod checker;
 use checker::{
-    checker_dest_dir, checker_source_dir, cleanup_unpublished_checker, prepare_checker_venv,
+    checker_dest_dir, checker_source_dir, cleanup_unpublished_checker, stage_checker_venv,
     validate_checker_source,
 };
 mod checker_gc;
@@ -353,6 +353,11 @@ pub(super) async fn import_manifest_inner(
     let scoring = resolve_challenge_scoring(&model)?;
     let min_score_rate = scoring.min_score_rate;
     let difficulty = scoring.difficulty;
+    let score_curve = model.score_curve.unwrap_or_else(|| {
+        existing
+            .as_ref()
+            .map_or(ScoreCurve::Standard, |challenge| challenge.score_curve)
+    });
     let submission_limit = scoring.submission_limit;
 
     // Author is folded into the content body ("Author: **X**\n\n...") exactly as
@@ -644,6 +649,14 @@ pub(super) async fn import_manifest_inner(
     // copied or while its venv is still under construction. Pending-review
     // imports remain inert and deliberately execute no checker preparation.
     let checker_prepared = if let Some((dest, src_dir)) = checker_prep.as_ref() {
+        let prepared = match stage_checker_venv(dest, src_dir).await {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                discard_archive(st, &archive_intent).await;
+                discard_attachment(st, &attachment_intent).await;
+                return Err(error);
+            }
+        };
         let guard = match acquire_checker_artifact_guard(st).await {
             Ok(guard) => guard,
             Err(error) => {
@@ -652,7 +665,7 @@ pub(super) async fn import_manifest_inner(
                 return Err(error);
             }
         };
-        if let Err(error) = prepare_checker_venv(dest, src_dir).await {
+        if let Err(error) = prepared.publish().await {
             if let Err(release_error) = guard.release().await {
                 tracing::warn!(%release_error, "checker publication guard release failed");
             }
@@ -788,7 +801,7 @@ pub(super) async fn import_manifest_inner(
         original_score: crate::utils::scoring::DEFAULT_JEOPARDY_ORIGINAL_SCORE,
         min_score_rate,
         difficulty,
-        score_curve: ScoreCurve::Standard,
+        score_curve,
         flag_template: flag_template.as_deref(),
         static_flags: &requested_static_flags,
     };
@@ -823,7 +836,7 @@ pub(super) async fn import_manifest_inner(
             am.original_score = Set(crate::utils::scoring::DEFAULT_JEOPARDY_ORIGINAL_SCORE);
             am.min_score_rate = Set(min_score_rate);
             am.difficulty = Set(difficulty);
-            am.score_curve = Set(ScoreCurve::Standard);
+            am.score_curve = Set(score_curve);
             if !preserve_live_runtime {
                 am.flag_template = Set(flag_template.clone());
             }

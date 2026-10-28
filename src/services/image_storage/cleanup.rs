@@ -166,7 +166,8 @@ impl ReferenceSnapshot {
             .into_iter()
             .flatten()
             {
-                let canonical = crate::controllers::edit::canonical_image_reference(Some(image));
+                let canonical =
+                    crate::services::challenge_builds::canonical_image_reference(Some(image));
                 snapshot
                     .by_canonical_ref
                     .entry(canonical)
@@ -255,7 +256,8 @@ where
 
 fn reference_matches(reference: Option<&str>, canonical_ref: &str) -> bool {
     reference.is_some_and(|reference| {
-        crate::controllers::edit::canonical_image_reference(Some(reference)) == canonical_ref
+        crate::services::challenge_builds::canonical_image_reference(Some(reference))
+            == canonical_ref
     })
 }
 
@@ -482,7 +484,8 @@ async fn renew_claim_for_removal(
     let Some(token) = candidate.cleanup_claim_token else {
         return Ok(false);
     };
-    let lock_key = crate::controllers::edit::image_build_lock_key(Some(&candidate.canonical_ref));
+    let lock_key =
+        crate::services::challenge_builds::image_build_lock_key(Some(&candidate.canonical_ref));
     let mut lock = crate::utils::single_flight::PgAdvisoryLock::acquire_build(st.pg(), &lock_key)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -514,7 +517,8 @@ async fn commit_removed_identity(
     let Some(token) = candidate.cleanup_claim_token else {
         return Ok(false);
     };
-    let lock_key = crate::controllers::edit::image_build_lock_key(Some(&candidate.canonical_ref));
+    let lock_key =
+        crate::services::challenge_builds::image_build_lock_key(Some(&candidate.canonical_ref));
     let mut lock = crate::utils::single_flight::PgAdvisoryLock::acquire_build(st.pg(), &lock_key)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -655,7 +659,7 @@ async fn evict_candidate(
     }
     let owns_tag = inspected.repo_tags.as_ref().is_some_and(|tags| {
         tags.iter().any(|tag| {
-            crate::controllers::edit::canonical_image_reference(Some(tag))
+            crate::services::challenge_builds::canonical_image_reference(Some(tag))
                 == candidate.canonical_ref
         })
     });

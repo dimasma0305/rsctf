@@ -178,24 +178,7 @@ fn byoc_agent_state_response(
     response
 }
 
-/// Deterministic per-`(participation, challenge)` BYOC token, hex-encoded.
-/// `domain` domain-separates the agent/image tokens (mirrors RSCTF's
-/// `AdTokenUtils.ByocAgentToken` / `ByocImageToken` prefixes).
-pub(crate) fn byoc_token(
-    domain: &str,
-    game_secret: &str,
-    team_secret: &str,
-    participation_id: i32,
-    challenge_id: i32,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(domain.as_bytes());
-    hasher.update(game_secret.as_bytes());
-    hasher.update(team_secret.as_bytes());
-    hasher.update(participation_id.to_le_bytes());
-    hasher.update(challenge_id.to_le_bytes());
-    hex::encode(hasher.finalize())
-}
+pub(crate) use crate::services::byoc_tunnel::byoc_token;
 
 /// A filesystem-safe, unique-per-challenge slug from title + id, so a team doing
 /// several BYOC challenges gets distinct download filenames — RSCTF `Slugify`.

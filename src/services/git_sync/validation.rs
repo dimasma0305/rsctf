@@ -843,6 +843,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repository_validation_recognizes_score_curve_and_rejects_bad_names() {
+        let root = test_root("score-curve");
+        write(&root.join(".gzevent"), "title: Scoring fixture\n");
+        let path = root.join("challenge.yml");
+        for (key, value, valid) in [
+            ("scoreCurve", "Standard", true),
+            ("scoreCurve", "Linear", true),
+            ("scoreCurve", "Logarithmic", true),
+            ("ScoreCurve", "Linear", true),
+            ("scoreCurve", "Unsupported", false),
+        ] {
+            write(
+                &path,
+                &format!(
+                "name: Curve\ntype: StaticAttachment\nflags: ['flag{{test}}']\n{key}: {value}\n"
+            ),
+            );
+            let report = validate_repository(&root).await;
+            assert_eq!(report.is_valid(), valid, "{:#?}", report.diagnostics);
+        }
+        cleanup(&root);
+    }
+
+    #[tokio::test]
     async fn reports_unknown_fields_and_invalid_scoring_together() {
         let root = test_root("invalid-fields");
         write(

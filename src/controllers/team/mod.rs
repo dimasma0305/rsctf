@@ -40,10 +40,8 @@ use account_lifecycle::create_team_rows;
 use account_lifecycle::ensure_player_team_creation_allowed;
 pub(crate) use account_lifecycle::{create_team_rows_in, transfer_captain_locked};
 pub use avatar::avatar;
-pub(crate) use invite::recover_pending_invite_rotations;
 pub use invite::{invite_code, update_invite_token};
 pub use models::*;
-pub(crate) use profile::process_profile_invalidations;
 use reads::{load_team_selector, load_user_team_infos};
 pub(crate) use revocation::{
     acquire_profile_mutation, acquire_roster_mutation, cleanup_deleted_team_avatar,
@@ -764,25 +762,7 @@ pub(crate) async fn flush_scoreboard_for_team(st: &SharedState, team_id: i32) ->
     Ok(())
 }
 
-pub(crate) async fn flush_scoreboards_for_games(st: &SharedState, game_ids: &[i32]) {
-    for &game_id in game_ids {
-        for key in [
-            format!("_ScoreBoard_{game_id}"),
-            format!("_ScoreBoardFrozen_{game_id}"),
-            format!("_ScoreBoardWireV2_{game_id}"),
-            format!("_ScoreBoardWireV2Frozen_{game_id}"),
-            format!("_KothScoreBoard_{game_id}"),
-            format!("_KothScoreBoardFrozen_{game_id}"),
-            format!("_KothScoreBoardWireV2_{game_id}"),
-            format!("_KothScoreBoardWireV2Frozen_{game_id}"),
-            format!("_KothTimeline_{game_id}"),
-            format!("_KothTimelineFrozen_{game_id}"),
-        ] {
-            st.cache.remove(&key).await;
-        }
-        crate::controllers::game::ad::hard_invalidate_ad_scoreboard(st, game_id).await;
-    }
-}
+pub(crate) use crate::services::scoreboard_invalidation::flush_scoreboards_for_games;
 
 /// Fail-closed teardown of every live container the team owns. Durable service,
 /// instance, and container identities are cleared only after the exact backend

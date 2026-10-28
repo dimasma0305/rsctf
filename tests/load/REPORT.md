@@ -1,5 +1,340 @@
 # RSCTF load-test report
 
+## Shutdown correctness — 28 October 2026
+
+A real `SIGTERM` during a rollout that outlived the drain budget exposed a panic:
+the timeout dropped the join future, then shutdown polled completed Tokio handles
+again. The [before report](results/control-job-shutdown-before.json) records exit
+101 using the earlier server binary (`4aee2914…`). Keeping one pinned join future
+through cancellation fixes the double poll. The [after report](results/control-job-shutdown-rollout.json)
+uses committed source `10db7448`, records exact server/harness/fixture hashes and
+passes graceful shutdown, SIGKILL recovery and the real drain deadline. The latter
+exits cleanly in 35.09 seconds (five seconds of HTTP deregistration plus the
+30-second worker budget). No new job is claimed during drain, and restart preserves
+the workload generation and terminal receipt.
+
+These are development-role control-flow tests with real PostgreSQL and injected
+worker observations, not native-worker or VPN acceptance. Crash recovery retains
+the live lease, then injects expiry only after the old process exits; the recorded
+recovery time excludes the production 15-minute lease. This is a correctness fix,
+not a throughput improvement. Production-role Docker shutdown checks run separately
+in CI with Landlock/seccomp enabled.
+
+The [complete CI run](https://github.com/dimasma0305/rsctf/actions/runs/40670463254)
+passed on PR head `6fda8f8b` (tested merge `0dddcc8a`). Its
+[control-role report](results/control-job-shutdown-ci.json) passes all eight
+scenarios: two builds, three resets and three durable rollouts. Graceful drains
+take 5.12 seconds; the reset and rollout deadline cases exit cleanly at 35.06
+seconds. Reset recovery retains the exact Docker replacement; rollout recovery
+does not advance generation again. The five interrupted cases recover 0.50–1.19
+seconds after **injected** expiry, not after the initial signal. These are single
+correctness-run observations, not an availability target. The report records a
+dirty CI workspace; its harness and fixture hashes match the committed files,
+and the workflow separately verifies the source revision of the same-run server
+artifact before executing it. No production deployment is represented.
+
+## Disposable restore drills — 28 October 2026
+
+The [local](results/architecture-restore-local.json) and
+[S3](results/architecture-restore-s3.json) drills use harness revision
+`16e8e28c` and the debug server built from `4908ab90`; no runtime source changed
+between those revisions. Each report records exact source, fixture, adapter and
+binary hashes. Both restored all rows in 191 tables after deleting the source
+database, retained the account session and nonzero score, and downloaded two
+referenced objects. Missing/corrupted objects and an incorrectly signed session
+were rejected. The S3 run restored current object contents into a fresh RustFS
+prefix; the local run restored sharded files. Both restored mutable working files.
+
+| Fixture | Database dump | Backup observed | Restore through readiness and HTTP smoke |
+| --- | --- | --- | --- |
+| Local blobs | 852,204 bytes | 298 ms | 2,657 ms |
+| S3 blobs | 852,207 bytes | 324 ms | 2,861 ms |
+
+These are single-run correctness timings for a tiny stopped-writer fixture, not
+production recovery targets or before/after performance gains. They exclude
+initial writer drain, offsite transfer and final process teardown. Multi-host
+working storage, object-version history and active container recovery remain open.
+
+## Architecture API after idle-poll correction — 27 October 2026
+
+The [second complete comparison](results/architecture-platform.json) uses baseline
+`bff5d1a31ae6f964d877fd1fc11cf8328e8e99de` and candidate
+`5ebecd70eb844b4ee23e4a81eab987f2788e5344`, with the same 100/s workload,
+cloned fixture, CPU affinity, process role and alternating three-repetition design
+described below. Empty control-job polls now check availability before opening
+the serialized admission transaction; real claims retain all capacity and lease
+checks. PostgreSQL regressions verify zero admission transactions for unavailable
+work and correct arrival, reclaim and stale-owner behavior.
+
+| Median across three repetitions | Baseline | Corrected candidate |
+| --- | ---: | ---: |
+| HTTP p95 | 5.27 ms | 4.95 ms |
+| HTTP p99 | 44.90 ms | 37.79 ms |
+| Mean app CPU (% of one core) | 7.88 | 7.34 |
+| Peak app RSS | 125.48 MiB | 119.04 MiB |
+| Mean PostgreSQL CPU (% of one core) | 17.56 | 19.05 |
+
+All **18,004 requests** completed with zero drops, 5xx, contract violations or
+integrity errors. Median p95 fell **6.2%** and app CPU **6.9%** in this comparison;
+PostgreSQL CPU remained **8.5% higher**, so this is not a database CPU saving.
+Candidate p95 values were 4.85/4.95/4.96 ms versus baseline 5.03/5.27/7.04 ms.
+These short samples show the earlier API regression is absent in this workload;
+host variability and the small absolute difference limit broader speedup claims.
+Do not compare absolute timings across the two separately timed experiments or
+attribute the entire change to the cache implementation.
+
+New per-database counters, sampled outside the load window, retain commits,
+rollbacks, cache/block accesses and row activity. Median commits were 11,495 versus
+11,832; PostgreSQL counts standalone reads as transactions too. Neither side
+reported rollbacks, deadlocks, physical block reads or temporary bytes. Additional
+registered workers still perform durable polling. Exporter p95 was 0.861 ms at
+100 scrapes/s plus 10 health reads/s; 186 series and 10,960 bytes remained bounded.
+The Redis stop/start and all 15 expected malformed-request responses passed again.
+This remains a development-role API measurement, excluding VPN and runtime workloads.
+
+The [required architecture CI job](https://github.com/dimasma0305/rsctf/actions/runs/40510648051/job/122219523709)
+passed real Landlock/seccomp, Docker snapshot recovery and role process lifecycle
+checks on the same source revision. Its [retained report](results/architecture-runtime-ci.json)
+records 4.79 seconds from terminated ownership session to process exit and 5.00
+seconds to replacement readiness; SIGTERM drain was approximately 5.01 seconds.
+The fixture disables VPN and uses no runtime backend, so this does not establish
+live route fencing or worker-workload recovery. The complete CI run failed on
+two stale database test fixtures. Both were reproduced and corrected, then
+included in a passing local suite of 463 database regressions. The subsequent
+complete CI run at `5013d417` passed, as recorded below. The architecture backlog
+and release/deployment gates remain open.
+
+## Network-owner process recovery on GitHub CI — 27 October 2026
+
+The [architecture runtime job](https://github.com/dimasma0305/rsctf/actions/runs/40518627351/job/122243133280)
+passed on Ubuntu 24.04, kernel `6.17.0-1022-azure`, at source
+`5013d417fceebb1a5599068d28adbd634c85ca29`. The debug server and tests came from
+the same run's successful Rust build. Real Landlock/seccomp confinement, eleven
+selected PostgreSQL/Redis/Docker recovery tests, and the process harness passed.
+The [unaltered runtime report](results/architecture-runtime-ci-5013d417.json)
+records server SHA-256
+`f958027b4fcf5aa6a5763c244673e5a2e49ce7df4f40aa27f56b606034e11339`.
+
+All 17 jobs in the full workflow passed, including its required-check aggregate:
+Rust build/tests, strict Clippy, 463 selected database regressions, frontend and
+Chromium checks, Linux/Windows workers, BYOC, security, documentation, Helm,
+Kubernetes callback isolation, and anti-cheat acceptance. The library suite
+passed 1,809 tests; the default suite's 473 ignored tests are tracked separately
+from the selected environment-backed tests. Combined Rust line coverage was
+60.06%. [Machine-readable CI evidence](results/architecture-ci-5013d417.json)
+records job identities, scope, counts, and the runtime artifact digest.
+
+| Fault or lifecycle event | Observed result |
+| --- | --- |
+| Duplicate network owner | Rejected before readiness |
+| Exact ownership session terminated | Owner exited in 775.65 ms; replacement ready in 989.18 ms from termination |
+| Owner paused for twelve seconds, with advisory lock retained | On resume, readiness refused; stale owner exited in 7.51 ms |
+| Replacement following expired proof | Ready in 217.91 ms from old-owner resume |
+| SIGTERM for all/control/web/engine/network | Readiness withdrawn before HTTP closed; clean drain in 5.01–5.02 seconds |
+
+The pause test verifies that a still-connected PostgreSQL session cannot revive
+expired process-local proof. Measurements are single correctness runs on debug
+binaries, not a controlled performance comparison or a production recovery SLO.
+The fixture uses `backend=none` and disables VPN; live kernel-route withdrawal,
+external agent reconnection, and interrupted runtime workloads remain separate
+validation tasks. In particular, process exit does not imply destruction of a
+network namespace retained by a Pod sandbox or sidecar.
+
+## Initial architecture API and exporter — 27 October 2026
+
+The [initial complete run](results/architecture-platform-initial.json) compares separately built
+release executables from `bff5d1a31ae6f964d877fd1fc11cf8328e8e99de` and
+`44fdef0f95f58f3607ea3b054949fa700657d32e`. Three alternating repetitions per
+revision offer 100 authenticated scoreboard-page requests/second for 30 seconds,
+using the same cloned PostgreSQL fixture: 500 teams, 20 challenges and 10,000
+solves. Both processes use two CPU affinities, two Tokio threads and a 50-slot
+database pool. The managed host has a four-core cgroup budget shared with the
+load generator and PostgreSQL. There is no application memory limit in this
+host-process profile. Hashes identify both binaries, the harness and service images.
+
+| Median across three repetitions | Baseline | Architecture candidate |
+| --- | ---: | ---: |
+| HTTP p95 | 4.35 ms | 6.19 ms |
+| HTTP p99 | 30.75 ms | 62.55 ms |
+| Mean app CPU (% of one core) | 6.94 | 7.30 |
+| Peak app RSS | 124.04 MiB | 127.69 MiB |
+| Mean PostgreSQL CPU (% of one core) | 17.16 | 29.31 |
+
+All **18,005 requests** completed without dropped iterations, 5xx responses or
+contract violations. Before/after integrity checks verified every scoreboard
+page against the full board, the CTFtime export and unique first solves. This
+does **not** demonstrate an API performance improvement: p95 increased 42.5%
+(1.85 ms), app CPU increased 5.1%, and PostgreSQL CPU increased 70.8%. The
+candidate also starts the newly registered durable workers in the development
+role. Idle queue polling is a follow-up target; these measurements do not isolate
+which change caused the increase. The component cache/checker gains below must
+not be advertised as a whole-platform latency gain.
+
+The supported development role was necessary because the local kernel returns
+`ENOSYS` for Landlock. These are real HTTP/database/cache measurements but do not
+exercise production engine, VPN or worker topology. GitHub's required architecture
+runtime gate separately checks privileged startup and recovery. A 500/s pilot
+dropped 3,599 iterations under load-generator pressure and is not a valid held-rate
+comparison; all reportable samples use 100/s. An earlier six-sample run also showed
+higher candidate p95, but its final outage phase exposed Docker's reassignment of
+an automatically published Redis port. The fixture now keeps that port fixed.
+
+The candidate's authenticated exporter sustained **100 scrapes/s plus 10 health
+checks/s** for 30 seconds: metrics p95 **0.688 ms**, 10,960 response bytes, 186 fixed
+series, 3.56% mean app CPU and 57.05 MiB peak RSS. Missing/wrong credentials were
+rejected; every authorized response had `no-store`, finite unique series, no
+token leakage and all eight recovery counters. No requests failed or dropped.
+These are absolute costs, not a before/after exporter speedup.
+
+Stopping and restarting the fixture's Redis kept liveness available, withdrew
+readiness, and restored readiness. All 15 malformed registration requests during
+the outage returned their expected 400 response. Separately, the real-Redis TCP
+interruption regression passed in 10.62 seconds: response staleness expires,
+authoritative reads/CAS/checked writes fail closed, local secrets remain local,
+and 32 consumers across two caches consume exactly one credential after recovery.
+
+
+## Checker publication — 27 October 2026
+
+The [raw checker samples](results/architecture-checker.json) compare the previous
+lock ordering (lock, prepare, publish, commit) with preparation before locking.
+Both modes compile the same production checker preparation, execution-flock,
+publication guard, and cancellation-safe PostgreSQL transaction code. Each run
+offers 12 imports at one scheduled import/second, with four concurrent importers,
+a four-connection pool, and process/child affinity restricted to two CPUs. Three
+alternating repetitions produce **72 verified publications**. Every published
+Python environment executes its checker and its 16 KiB source fixture matches.
+
+| Measurement (median of three runs) | Previous ordering | Prepare before locking |
+| --- | ---: | ---: |
+| Arrival-to-publication p95 | 9,263.58 ms | 2,049.83 ms |
+| Arrival-to-publication p99 | 10,045.57 ms | 2,064.07 ms |
+| Publication lock wait p95 | 5,583.20 ms | 2.68 ms |
+| Publication lock hold p95 | 1,931.77 ms | 2.51 ms |
+| Mean occupied pool connections | 2.934 | 0.005 |
+| Peak occupied pool connections | 4 | 1 |
+| CPU including Python children (% of one core) | 100.53 | 174.85 |
+| Parent peak RSS | 4.73 MiB | 4.43 MiB |
+
+Publication p95 fell **77.9%**, and lock hold time fell **99.9%**. The previous
+ordering accumulated a queue and took a median 21.06 seconds to drain a
+12-second offered-load window; the new ordering took 12.71 seconds. It uses more
+CPU concurrently: environment preparation is no longer serialized by PostgreSQL.
+This is a latency/pool-occupancy improvement, not a CPU saving. The largest child
+RSS was about 66.97 MiB in both modes; that measure is not the aggregate memory
+of concurrent Python children. PostgreSQL samples peaked at 1.75% CPU before and
+1.44% after, with 167.7–177.6 MiB sampled memory. They do not establish a database
+CPU improvement.
+
+The fixture creates a real Python 3.13.5 venv with bundled pip, but installs no
+external requirements. It excludes HTTP, repository parsing, the complete import
+mutation, and the application's transaction metric atomics. The before case
+reproduces the previous critical-section ordering; it is not a full v0.1.147
+server binary. Twelve observations per run are too few for production tail
+estimates, and after-run p95 varied from 1.70 to 3.89 seconds. Complete distributions,
+source/binary hashes, CPU affinity, PostgreSQL image, and raw resource samples are
+retained. The Node runner holds the shared build lock during measurements.
+
+## Bounded file uploads — 27 October 2026
+
+The [raw storage samples](results/architecture-storage.json) compare the existing
+buffered `store` API with the production `store_file` implementation using the
+same optimized executable. Each Local/S3, cold/warm, buffered/file combination
+runs three times in alternating order: 12 unique 64 MiB files, two scheduled
+uploads/second, two Tokio workers, and six seconds per sample. All **288 uploads**
+completed and passed full streamed SHA-256 readback; no S3 5xx responses occurred.
+Cold file uploads issue one expected HEAD 404 per missing object. The runner
+holds the shared build lock and recreates its own disposable S3 service between
+samples to prevent deferred object-store garbage from filling the test disk.
+
+| Backend / scenario / API | Service p95 (ms) | Service p99 (ms) | CPU (% one core) | Process peak RSS (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Local / cold / buffered | 141.62 | 150.57 | 26.16 | 132.23 |
+| Local / cold / file | 141.45 | 144.44 | 29.87 | 5.75 |
+| Local / warm / buffered | 79.60 | 85.24 | 14.42 | 69.54 |
+| Local / warm / file | 48.60 | 48.64 | 8.70 | 5.77 |
+| S3 / cold / buffered | 480.15 | 492.94 | 35.03 | 134.91 |
+| S3 / cold / file | 544.14 | 563.10 | 32.37 | 84.48 |
+| S3 / warm / buffered | 443.60 | 447.57 | 34.03 | 147.04 |
+| S3 / warm / file | 50.21 | 78.62 | 9.26 | 78.17 |
+
+Values are medians of three runs, with only 12 observations per run; they are
+not confidence intervals or platform tail-latency estimates. Cold local peak
+RSS fell 95.7%, while p95 was approximately unchanged and CPU increased 14.2%. The file API
+also fsyncs the completed file and both directories, which the buffered API does
+not. Warm local p95 and CPU fell 38.9% and 39.7% respectively. Local publication
+writes one logical copy per hash through an atomic rename; a duplicate upload
+does not rewrite it.
+
+Cold S3 p95 increased **13.3%**. For each 64 MiB object, the file API performs
+HEAD, multipart initiation, eight sequential part PUTs, and completion: **11
+requests versus one PUT**. Both transfer the same 64 MiB payload; multipart also
+sends about 739 bytes of completion XML per object. Its median cold RSS fell
+37.4%, while CPU fell 7.6%. Warm S3 uses one HEAD and sends
+**zero payload bytes**, saving 768 MiB per 12-upload sample. Warm p95 fell 88.7%
+and CPU 72.8%. RSS includes warm-up and allocator high-water effects; concurrent
+requests and allocator retention affect the peak, so this is not a worst-case
+capacity estimate.
+
+The source fixture contains a unique 16-byte header and otherwise sparse zeros;
+S3 transfers are uncompressed. This isolates buffering and publication costs,
+not physical capture-disk throughput. Cold local file uploads read 1,536 MiB
+logically per sample versus 768 MiB for the buffered API because new publication
+requires two hash passes. Both warm paths read 768 MiB. Linux reported zero
+physical `read_bytes`/`write_bytes` on this workspace, so those counters cannot
+support a physical I/O or disk-throughput claim. Client CPU/RSS exclude the Node
+counting proxy and S3 service. S3 ran with a one-core/1 GiB cap using immutable
+image `sha256:cf1d7ba6108cd433dc8468d23b4361e644dc5424524481f5956bfd2dbc0f9b84`.
+
+The selected file API bounds admission to two uploads, caps files at 512 MiB,
+uses 128 KiB local buffers or sequential 8 MiB S3 parts, and verifies newly
+uploaded bytes before publication. Existing small buffered callers remain on
+their current API. Mutation, failed-part/completion, cancellation, local crash
+cleanup, concurrent S3 publication, and range-read regressions pass. Full backend
+unit verification passed 1,803 tests. **Capture offloading, durable reference
+integration, multi-host execution, and platform HTTP measurements remain separate
+ARCH-09 gates; this primitive alone does not reduce retained capture disk usage.**
+
+## Architecture response cache — 27 October 2026
+
+This is an optimized component comparison of the existing memory cache, the
+production sharded L1, and Moka 0.12.16. The
+[raw samples and source/executable hashes](results/architecture-cache.json)
+identify the measured candidate, whose base commit is `3bae6972`. Each mode ran
+three times in rotated order on the same host, at 40,000 scheduled operations/s
+for six seconds: 80% reads, 20% writes, 16,384 keys, 1 KiB values, four Tokio
+workers, and a 4,096-entry response budget. The build uses opt-level 3, fat LTO,
+and one codegen unit. Each run completed 240,000 operations and validated every hit.
+
+| Scenario / implementation | Service p95 (µs) | Service p99 (µs) | CPU (% one core) | Hit rate | Process peak RSS (MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Churn / existing map | 38.04 | 96.00 | 22.05 | 24.98% | 12.21 |
+| Churn / sharded L1 | 3.40 | 5.13 | 10.13 | 24.99% | 12.46 |
+| Churn / Moka | 4.59 | 36.05 | 16.70 | 24.98% | 18.28 |
+| 100 ms expiry / existing map | 2.21 | 12.66 | 10.05 | 4.95% | 18.84 |
+| 100 ms expiry / sharded L1 | 2.02 | 5.25 | 10.26 | 4.94% | 16.81 |
+| 100 ms expiry / Moka | 3.17 | 28.93 | 14.03 | 4.93% | 13.53 |
+
+Values are medians of three runs, not statistical confidence intervals. Sharding
+reduced churn service p99 by 94.7% and CPU by 54.1%. Expiry p99 improved by 58.5%;
+expiry CPU was approximately unchanged/slightly higher. Moka did not win the
+latency comparison, and asynchronous eviction does not preserve the current hard
+entry/byte limits or one-time credential semantics by itself.
+
+The selected implementation uses separate response/local-secret APIs and
+namespaces over one bounded sharded budget. Authoritative reads, CAS and one-time
+consumption still use the existing L2 implementation. Per-shard limits can reject
+L1 retention of values larger than 2 MiB or evict skewed keys sooner. See
+[the cache contract](../../docs/deploy/cache-boundaries.md).
+
+These are **not HTTP, Redis, or platform-wide speedup measurements**. Scheduled
+latency includes Tokio timer/scheduling delay (roughly 2 ms at p99 here); the
+service latency improvement does not imply that much improvement in a request.
+RSS includes benchmark sample buffers and allocator effects. Allocation counts
+and lock-wait time were not instrumented. The shared build lock excludes this
+repository's compilation, but cannot eliminate all noise on the shared host.
+Whole-platform load, outage, and release verification remain separate gates.
+
 > Storage status (16 July 2026): the user-authorized PostgreSQL 18 reset removed
 > the previously retained event rows. Historical sections below describe the
 > database state at the time of each run; those games are no longer visible in

@@ -1,0 +1,87 @@
+{
+  "date": "2026-10-27T13:36:27.990Z",
+  "sourceRevision": "5ebecd70eb844b4ee23e4a81eab987f2788e5344",
+  "binarySha256": "44c9e78ba8dadc65b87cd3682f37dc626d748b5ae4eb031c47a8af4821e7f36f",
+  "kernel": "7.0.0-1017-azure",
+  "profile": "privileged",
+  "backend": "none",
+  "vpnEnabled": false,
+  "scope": "Process startup, HTTP readiness, SIGTERM, network-owner exclusion and session-loss recovery. No live VPN routes or worker workloads.",
+  "observations": [
+    {
+      "role": "all",
+      "event": "ready",
+      "milliseconds": 366.3419090000002
+    },
+    {
+      "role": "all",
+      "event": "sigterm-drained",
+      "milliseconds": 5015.033068999999
+    },
+    {
+      "role": "control",
+      "event": "ready",
+      "milliseconds": 331.26242100000036
+    },
+    {
+      "role": "control",
+      "event": "sigterm-drained",
+      "milliseconds": 5013.4739389999995
+    },
+    {
+      "role": "engine",
+      "event": "ready",
+      "milliseconds": 239.42576100000042
+    },
+    {
+      "role": "network",
+      "event": "ready",
+      "milliseconds": 352.3300500000005
+    },
+    {
+      "role": "web",
+      "event": "ready",
+      "milliseconds": 5128.170585999998
+    },
+    {
+      "role": "network",
+      "event": "duplicate-owner-rejected"
+    },
+    {
+      "role": "network",
+      "event": "lease-loss-exit",
+      "milliseconds": 4792.198139
+    },
+    {
+      "role": "network",
+      "event": "ready",
+      "milliseconds": 209.0237960000013
+    },
+    {
+      "role": "web",
+      "event": "ready",
+      "milliseconds": 10266.956202
+    },
+    {
+      "role": "network",
+      "event": "replacement-ready",
+      "milliseconds": 5004.480725000001
+    },
+    {
+      "role": "web",
+      "event": "sigterm-drained",
+      "milliseconds": 5009.496374000002
+    },
+    {
+      "role": "engine",
+      "event": "sigterm-drained",
+      "milliseconds": 5015.201817000001
+    },
+    {
+      "role": "network",
+      "event": "sigterm-drained",
+      "milliseconds": 5012.210993000001
+    }
+  ],
+  "passed": true
+}

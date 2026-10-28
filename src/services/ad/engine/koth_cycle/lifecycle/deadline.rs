@@ -4,6 +4,9 @@ use serde_json::{json, Value};
 
 use crate::app_state::SharedState;
 use crate::services::container::ContainerBackendKind;
+use crate::services::scoreboard_invalidation::{
+    invalidate_combined_scoreboard, invalidate_live_hill_snapshot,
+};
 use crate::utils::error::{AppError, AppResult};
 
 use super::super::CrownPhase;
@@ -16,14 +19,8 @@ use access::persist_deadline_access_revocation;
 pub(super) use target::clear_destroyed_deadline_target;
 use target::persist_deadline_target_deactivation;
 
-struct CompletedCleanup<'a> {
-    cycle_id: i64,
-    game_id: i32,
-    challenge_id: i32,
-    reset_attempt: i32,
-    round_number: i32,
-    container_ids: &'a [String],
-}
+mod completed;
+use completed::{persist_completed_cleanup, CompletedCleanup};
 
 #[derive(Debug)]
 struct CleanupRuntimeState {
@@ -275,7 +272,7 @@ async fn deactivate_deadline_endpoints(
     invalidated_games.sort_unstable();
     invalidated_games.dedup();
     for invalidated_game in invalidated_games {
-        crate::controllers::game::ad::invalidate_live_hill_snapshot(st, invalidated_game).await;
+        invalidate_live_hill_snapshot(st, invalidated_game).await;
     }
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await
 }
@@ -284,58 +281,6 @@ async fn destroy_deadline_runtimes(st: &SharedState, container_ids: &[String]) -
     for container_id in container_ids {
         crate::services::traffic::destroy_container_after_capture_fence(st, container_id).await?;
     }
-    Ok(())
-}
-
-async fn persist_completed_cleanup(
-    connection: &mut sqlx::PgConnection,
-    cleanup: CompletedCleanup<'_>,
-) -> AppResult<()> {
-    persist_deadline_access_revocation(connection, cleanup.game_id, cleanup.challenge_id).await?;
-    clear_destroyed_deadline_target(
-        connection,
-        cleanup.game_id,
-        cleanup.challenge_id,
-        cleanup.container_ids,
-    )
-    .await?;
-    sqlx::query(
-        r#"WITH removed AS (
-             DELETE FROM "Containers" WHERE container_id = ANY($2) RETURNING id
-           )
-           UPDATE "GameChallenges"
-              SET shared_container_id = NULL
-            WHERE id = $1 AND shared_container_id IN (SELECT id FROM removed)"#,
-    )
-    .bind(cleanup.challenge_id)
-    .bind(cleanup.container_ids)
-    .execute(&mut *connection)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let receipt = json!({
-        "reason": "eventDeadline",
-        "endedRound": cleanup.round_number,
-        "destroyedContainerIds": cleanup.container_ids,
-    });
-    sqlx::query(
-        r#"WITH cleared_error AS (
-             UPDATE "KothCrownCycles"
-                SET last_error = NULL, updated_at = clock_timestamp()
-              WHERE id = $1 AND phase = 'Completed' AND last_error IS NOT NULL
-           )
-           INSERT INTO "KothCycleAuditReceipts"
-             (cycle_id, phase, attempt, receipt, filesystem_diff)
-           SELECT id, 'DeadlineCleanup', $3, $2, NULL
-             FROM "KothCrownCycles"
-            WHERE id = $1 AND phase = 'Completed'
-           ON CONFLICT (cycle_id, phase, attempt) DO NOTHING"#,
-    )
-    .bind(cleanup.cycle_id)
-    .bind(receipt)
-    .bind(cleanup.reset_attempt)
-    .execute(connection)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(())
 }
 
@@ -479,7 +424,7 @@ pub(super) async fn cleanup_completed_cycle(
     ] {
         st.cache.remove(&key).await;
     }
-    crate::controllers::game::invalidate_combined_scoreboard(st, cycle.game_id).await;
+    invalidate_combined_scoreboard(st, cycle.game_id).await;
     Ok(())
 }
 
@@ -623,7 +568,7 @@ pub(super) async fn terminate_interrupted_cycle(
     ] {
         st.cache.remove(&key).await;
     }
-    crate::controllers::game::invalidate_combined_scoreboard(st, cycle.game_id).await;
+    invalidate_combined_scoreboard(st, cycle.game_id).await;
     Ok(())
 }
 

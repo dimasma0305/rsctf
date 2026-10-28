@@ -20,13 +20,7 @@ pub(crate) fn operation_id(headers: &HeaderMap) -> AppResult<Uuid> {
     Uuid::parse_str(raw).map_err(|_| AppError::bad_request("Idempotency-Key must be a UUID"))
 }
 
-pub(crate) fn fingerprint(value: &impl serde::Serialize) -> AppResult<String> {
-    let bytes = serde_json::to_vec(value)
-        .map_err(|error| AppError::internal(format!("control-job fingerprint failed: {error}")))?;
-    let encoded = String::from_utf8(bytes)
-        .map_err(|_| AppError::internal("control-job input was not UTF-8 JSON"))?;
-    Ok(crate::utils::codec::sha256_str(&encoded))
-}
+pub(crate) use crate::services::control_jobs::fingerprint;
 
 async fn authorize_job(
     st: &SharedState,
@@ -38,6 +32,17 @@ async fn authorize_job(
     Ok(job)
 }
 
+#[utoipa::path(
+    get, path = "/api/edit/jobs/{jobId}", tag = "ControlJobs",
+    params(("jobId" = Uuid, Path, description = "Durable job ID")),
+    responses(
+        (status = 200, description = "Raw control job model", body = ControlJobModel),
+        (status = 401, description = "Authentication required", body = crate::utils::error::ErrorBody),
+        (status = 403, description = "Event manager or administrator required", body = crate::utils::error::ErrorBody),
+        (status = 404, description = "Job not found", body = crate::utils::error::ErrorBody)
+    ),
+    security(("session" = []), ("bearer" = []))
+)]
 pub async fn get_control_job(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -52,6 +57,17 @@ pub async fn get_control_job(
     Ok(RequestResponse::ok(job))
 }
 
+#[utoipa::path(
+    get, path = "/api/edit/jobs/operations/{operationId}", tag = "ControlJobs",
+    params(("operationId" = Uuid, Path, description = "Original idempotency operation ID")),
+    responses(
+        (status = 200, description = "Raw control job model", body = ControlJobModel),
+        (status = 401, description = "Authentication required", body = crate::utils::error::ErrorBody),
+        (status = 403, description = "Event manager or administrator required", body = crate::utils::error::ErrorBody),
+        (status = 404, description = "Operation not found", body = crate::utils::error::ErrorBody)
+    ),
+    security(("session" = []), ("bearer" = []))
+)]
 pub async fn get_control_job_by_operation(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -66,6 +82,18 @@ pub async fn get_control_job_by_operation(
     Ok(RequestResponse::ok(job))
 }
 
+#[utoipa::path(
+    post, path = "/api/edit/jobs/{jobId}", tag = "ControlJobs",
+    params(("jobId" = Uuid, Path, description = "Durable job ID")),
+    responses(
+        (status = 200, description = "Raw job with cancellation intent", body = ControlJobModel),
+        (status = 409, description = "Cancellation not supported for this running operation", body = crate::utils::error::ErrorBody),
+        (status = 401, description = "Authentication required", body = crate::utils::error::ErrorBody),
+        (status = 403, description = "Event manager or administrator required", body = crate::utils::error::ErrorBody),
+        (status = 404, description = "Job not found", body = crate::utils::error::ErrorBody)
+    ),
+    security(("session" = []), ("bearer" = []))
+)]
 pub async fn cancel_control_job(
     State(st): State<SharedState>,
     user: CurrentUser,

@@ -13,4 +13,6 @@ pub(crate) mod redis;
 pub mod scoring;
 pub mod shared;
 pub mod single_flight;
+#[cfg(test)]
+pub(crate) mod test_database;
 pub mod upload;

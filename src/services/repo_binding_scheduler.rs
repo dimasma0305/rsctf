@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
-use crate::controllers::admin::{RepoBindingScanExecution, RepoBindingScanResultModel};
+use crate::services::repository_bindings::{RepoBindingScanExecution, RepoBindingScanResultModel};
 use crate::utils::error::{AppError, AppResult};
 
 const SCAN_BATCH: i64 = 4;
@@ -374,7 +374,8 @@ async fn run_claimed_to_completion(
                 }
             };
         let scan =
-            crate::controllers::admin::execute_repo_binding_scan(&st, &claim, checkout).await;
+            crate::services::repository_bindings::execute_repo_binding_scan(&st, &claim, checkout)
+                .await;
         let result = match scan {
             Ok(execution) => {
                 if !finish_success(st.pg(), &claim, &execution).await? {

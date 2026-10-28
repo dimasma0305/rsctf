@@ -3,12 +3,108 @@
 Behaviour-mimicking load against a running rsctf stack — to find architecture/
 implementation flaws and capacity limits under real concurrency (not just peak req/s).
 
+## Architecture runtime gate
+
+`control-job-shutdown.mjs` starts the real production control role and interrupts
+active Docker archive builds and A&D resets. It checks readiness withdrawal,
+no new claims during drain, graceful completion, and recovery after SIGKILL with
+the same operation identity and Docker replacement. It requires root, supported
+checker confinement, Docker, Python, loopback disposable PostgreSQL and Redis:
+
+```sh
+RSCTF_SHUTDOWN_DISPOSABLE=1 \
+SHUTDOWN_PG_CONTAINER=rsctf-architecture-pg \
+RSCTF_TEST_DATABASE_URL="$DISPOSABLE_POSTGRES_URL" \
+RSCTF_TEST_REDIS_URL="$DISPOSABLE_REDIS_URL" \
+ARCHITECTURE_RUNTIME_BINARY="$TESTED_RSCTF_BINARY" \
+SHUTDOWN_REPORT=/tmp/rsctf-shutdown-report.json \
+node tests/load/control-job-shutdown.mjs
+```
+
+The harness creates and removes its own database, internal bridge, build tags,
+operation-labelled containers and their Docker-generated anonymous volumes.
+It never stops an existing application.
+Crash cases assert the live lease is retained, then inject expiry **after the old
+process is confirmed dead**. Recovery measurements exclude the production
+15-minute lease wait. A reset and a rollout also exhaust the real process drain
+deadline while work remains blocked, then recover after injected expiry.
+The rollout cases use real PostgreSQL desired-state changes and inject worker
+readiness observations; they do not exercise native worker execution/reconnection.
+`SHUTDOWN_SCENARIO=rollout SHUTDOWN_ROLE=development` runs only these control-flow
+cases on a host without checker confinement. CI always uses the production control
+role, with confinement enabled. VPN traffic needs separate tests.
+
+The same job runs a destructive **disposable-fixture-only** restore drill. It
+creates random databases inside the selected PostgreSQL container; it never backs
+up or drops an existing application database. Use a matching tested server binary,
+a loopback PostgreSQL URL for that container, and explicit acknowledgement:
+
+```sh
+RSCTF_RESTORE_DISPOSABLE=1 \
+RESTORE_PG_CONTAINER=rsctf-architecture-pg \
+RSCTF_TEST_DATABASE_URL="$DISPOSABLE_POSTGRES_URL" \
+ARCHITECTURE_RUNTIME_BINARY="$TESTED_RSCTF_BINARY" \
+RESTORE_REPORT=/tmp/rsctf-restore-report.json \
+node tests/load/restore-drill.mjs
+```
+
+It verifies all public table rows, restored account authentication, a nonzero
+score, poster/writeup bytes, and mutable working files. Missing/corrupted blobs
+and an incorrectly signed session must be rejected. The report contains source,
+harness, fixture and binary hashes plus observed backup/restore durations; those
+tiny-fixture measurements are not production recovery guarantees. The current
+scope is stopped writers, not multi-host storage or active
+containers. PostgreSQL client tools run inside the selected container so
+`pg_dump` matches the database major version.
+
+Set `RESTORE_STORAGE_BACKEND=s3` with the usual `RSCTF_S3_ENDPOINT`,
+`RSCTF_S3_BUCKET`, `RSCTF_S3_ACCESS_KEY` and `RSCTF_S3_SECRET_KEY` for the S3
+variant. It accepts only a loopback HTTP test endpoint, writes only random owned
+prefixes in an existing disposable bucket, and cleans those objects afterward.
+CI provisions a pinned RustFS fixture. The drill restores current referenced object
+contents under a fresh prefix; object-version history is outside this test.
+
+The required `architecture-runtime` CI job uses the server and test executables
+from the same run's Rust job, verifies the source revision, and executes the real
+checker launcher as root on Ubuntu 24.04. Missing Landlock/seccomp support fails
+the gate; it does not turn the probe into a skip. Native binaries are built on
+the same Ubuntu version to preserve libc compatibility.
+
+It runs the PostgreSQL import/repository recovery, checker publication/GC,
+Docker snapshot teardown, Redis authoritative-operation, and control-job lane
+regressions. `architecture-runtime.mjs` then starts real `all`, `control`, and
+cooperating `engine`/`network`/`web` processes. These roles start sequentially
+because the process fixture shares one network namespace. Deployed containers
+have separate namespaces; this fixture does not validate concurrent checker
+workloads sharing one namespace. It checks authenticated metrics,
+exact `healthz=ok`, readiness withdrawal during SIGTERM, clean exit, duplicate
+network-owner rejection, and recovery after terminating the exact PostgreSQL
+advisory-lock session. It also pauses the replacement with `SIGSTOP` for twelve
+seconds while its PostgreSQL session still holds the lock. On `SIGCONT`, expired
+ownership proof must prevent readiness and terminate that process; a fresh
+replacement must become ready. Logs and a JSON report retain timing and binary/source
+identity for seven days. These are correctness and recovery measurements on
+debug binaries, not performance comparisons.
+
+For a local run, set `ARCHITECTURE_RUNTIME_BINARY` to an absolute executable,
+`RSCTF_TEST_DATABASE_URL` to a fresh loopback database named
+`rsctf_architecture_test`, and `RSCTF_TEST_REDIS_URL` to disposable loopback Redis,
+then run `sudo --preserve-env node tests/load/architecture-runtime.mjs`.
+It migrates that database and uses a temporary storage directory; the caller owns
+database disposal. `ARCHITECTURE_RUNTIME_RESULTS` selects the evidence directory.
+Local kernels without Landlock may explicitly select
+`ARCHITECTURE_RUNTIME_PROFILE=development` for the API startup/drain check only;
+CI rejects that profile. The runtime fixture uses `CONTAINER_BACKEND=none` with
+VPN disabled. Its successful process recovery must not be reported as live VPN
+route fencing, worker-workload recovery, or a production recovery-time guarantee.
+
 **Everything is JavaScript.** k6 scripts (`k6/`) generate the HTTP load; Node
 orchestrators (`*.mjs`) discover state, spin up/tear down BYOC tunnels, and run the k6
 scenarios. Run via npm:
 
 ```sh
 cd tests/load
+      npm run cache-audit    # fixed-rate release component comparison; build instructions below
       npm run admin-lifecycle # destructive, disposable-stack admin acceptance
       npm run admin-dashboard # disposable 100k-submission fixed-rate dashboard read gate
       npm run edit-lifecycle  # destructive, disposable-stack organizer acceptance
@@ -42,6 +138,27 @@ N=120 npm run worst-case    # mass BYOC reconnect storm (restarts rsctf)
 FLEET=10 npm run worker      # trusted worker create/proxy/destroy + lease gate
 FLEET=5  npm run worker-local # isolated current-tree rsctf + native Linux agent
 ```
+
+### Response-cache component comparison
+
+Build through the bounded wrapper, then run the current map, production response
+shards, and Moka in rotated order, three times each. Each six-second run schedules
+40,000 operations/s, 80% reads/20% writes, against 16,384 keys with 1 KiB values.
+The churn TTL is 60 seconds; the expiry-burst TTL is 100 milliseconds. The runner
+holds the shared build lock while measuring. It checks every hit's payload and
+that the complete fixed schedule executed.
+
+```sh
+scripts/bounded-cargo.sh build --release --manifest-path tests/load/cache-audit/Cargo.toml
+SUMMARY_JSON=/tmp/rsctf-cache-audit.json node tests/load/cache-audit.mjs
+```
+
+Run these commands from the repository root. `CACHE_AUDIT_RATE` and
+`CACHE_AUDIT_SECONDS` change the workload for additional scenarios; keep them equal
+across compared runs. Results retain source/binary hashes, CPU, process peak RSS,
+hit rate, and full service/scheduled latency distributions. RSS includes the
+benchmark's sample buffers. This harness does not exercise HTTP, Redis or Docker;
+use the existing HTTP/outage scenarios for those integration gates.
 
 The managed TargetReporter gate is documented in
 [managed-koth.md](./managed-koth.md). It is the isolated acceptance path for a
@@ -1476,6 +1593,124 @@ and the live ownership assertion are in
 [`REPORT.md`](REPORT.md#production-admin-instance-ownership-rollout--24-july-2026).
 
 ### Optimization ledger
+
+#### Architecture HTTP/exporter comparison — 27 October 2026
+
+`architecture-platform.mjs` owns disposable databases, Redis and temporary
+application processes. It acquires the shared build/benchmark lock, migrates each
+revision, clones one fixture for identical inputs, alternates three samples per
+revision, and checks authenticated metrics and a real Redis stop/start. Use Linux,
+Docker, k6 2.0.0 and separately saved optimized binaries from the exact revisions
+in [the report](REPORT.md#architecture-api-after-idle-poll-correction--27-october-2026).
+Build each through `scripts/bounded-cargo.sh build --release --locked --bin rsctf`;
+copy its executable before building the other worktree. Clear the local protocol
+package's release artifacts through the wrapper when switching worktrees so
+Cargo cannot reuse the other checkout's same-version protocol library.
+
+Build the disposable runtime tools image with the host's combined CA bundle:
+
+```sh
+docker build --secret id=system_ca,src=/etc/ssl/certs/ca-certificates.crt \
+  -t rsctf-architecture-runtime:local tests/load/architecture-runtime
+ARCHITECTURE_BASELINE_BINARY=/absolute/baseline-rsctf \
+ARCHITECTURE_CANDIDATE_BINARY=/absolute/candidate-rsctf \
+ARCHITECTURE_CANDIDATE_REVISION=5ebecd70eb844b4ee23e4a81eab987f2788e5344 \
+PG_CONTAINER=rsctf-architecture-pg \
+ARCHITECTURE_DOCKER_NETWORK=rsctf-architecture-test \
+ARCHITECTURE_DATABASE_PASSWORD="$ARCHITECTURE_TEST_PASSWORD" \
+ARCHITECTURE_ROLE=development node tests/load/architecture-platform.mjs
+```
+
+The existing disposable PostgreSQL must be reachable as `architecture-pg:5432`
+on that network and as `127.0.0.1:55432` from the host; dedicated override variables
+in the runner support another alias/host port. It refuses a PostgreSQL container
+without the `rsctf-architecture-` prefix and writes its owned files under
+`/workspace`. The runtime image and Redis 7 Alpine image must already be available.
+Development is an explicit API-only measurement scope; the default `all` profile
+requires working checker confinement and uses an isolated privileged network
+namespace. Neither profile is a VPN or external-worker acceptance test.
+
+After correcting empty control-job polling, median HTTP p95 was 4.95 ms versus
+5.27 ms and mean app CPU 7.34% versus 7.88% at 100 requests/s. PostgreSQL CPU
+remained 8.5% higher; this is not a database CPU saving. The complete six-run JSON,
+integrity evidence, exporter and outage samples are in `results/architecture-platform.json`.
+The earlier regression remains in `results/architecture-platform-initial.json`.
+Exporter p95 was 0.861 ms at 100 scrapes/s with 186 bounded series. The separate `metrics-scrape`
+npm command accepts a loopback `TARGET`, selected `METRICS_APP_PID`, disposable
+`PG_CONTAINER`, strong `RSCTF_METRICS_TOKEN` and `SUMMARY_JSON`.
+
+#### Checker publication lock comparison — 27 October 2026
+
+Build and run the real preparation/publication component comparison against a
+disposable PostgreSQL service:
+
+```sh
+scripts/bounded-cargo.sh build --release --locked \
+  --manifest-path tests/load/checker-audit/Cargo.toml
+RSCTF_TEST_DATABASE_URL=postgres://postgres:fixture@127.0.0.1:55432/fixture \
+CHECKER_AUDIT_PG_CONTAINER=your-disposable-postgres \
+  node tests/load/checker-audit.mjs
+```
+
+The runner requires Linux, `taskset`, Docker inspection access, and `/usr/bin/python3`
+with venv/pip support. It creates isolated schemas and `rsctf-checker-audit-*`
+temporary directories, then removes its own fixtures after successful samples.
+Failed clients can leave those owned fixtures for diagnosis. It neither starts nor
+stops the supplied database container. The default is 12 imports at one scheduled
+import/second, four admitted importers, four pooled connections, and three
+alternating repetitions on two CPUs. `CHECKER_AUDIT_OPERATIONS` and
+`CHECKER_AUDIT_RATE` can change the identical offered load for both modes.
+
+[The measured comparison](REPORT.md#checker-publication--27-october-2026) passed
+72 checker executions and source readbacks. Median publication p95 fell from
+9.26 to 2.05 seconds, and lock hold p95 from 1.93 seconds to 2.51 milliseconds.
+Concurrent CPU use increased from 1.01 to 1.75 cores; this change frees database
+connections and lowers queueing rather than reducing Python preparation work.
+The raw result includes full latency distributions, pool occupancy, parent/child
+CPU and memory, PostgreSQL samples, and source/executable hashes. This is a
+component benchmark without HTTP or external dependency downloads.
+
+#### Bounded file upload comparison — 27 October 2026
+
+`storage-audit.mjs` compiles and exercises the production Local/S3 implementations
+through their buffered and file-based APIs. Build and run from the repository root:
+
+```sh
+scripts/bounded-cargo.sh build --release --locked \
+  --manifest-path tests/load/storage-audit/Cargo.toml
+SUMMARY_JSON=tests/load/results/architecture-storage.json \
+  node tests/load/storage-audit.mjs
+```
+
+The runner requires a locally cached `rustfs/rustfs:latest` image (override with
+`STORAGE_AUDIT_S3_IMAGE`), records its immutable image ID, and creates a fresh
+loopback-only disposable S3 container per sample. It removes that container and
+its anonymous data volume afterward; it does not use production credentials or
+buckets. Allow at least 3 GiB free disk for the default 64 MiB fixture. A failed
+client can leave its uniquely named `rsctf-storage-audit-*` temporary directory;
+the runner still removes its own S3 service. No other containers are removed.
+
+Each scenario runs three times in alternating order at two scheduled uploads/s
+for six seconds. Files have unique 16-byte headers and otherwise sparse zeros;
+transfers are uncompressed. Cold means an absent destination hash, and warm
+means an already-published hash. The fixture measures bounded buffering, hashing,
+publication, and deduplication costs, rather than real capture-disk throughput.
+Every result is fully streamed, hashed, and deleted after the measurement window.
+The runner records complete latency distributions, client CPU/RSS and Linux I/O
+counters, S3 request counts and transferred bytes, and source/executable hashes.
+It holds the shared build lock during measurements. Source size, arrival rate,
+and operation count can be changed with `STORAGE_AUDIT_MIB`, `STORAGE_AUDIT_RATE`,
+and `STORAGE_AUDIT_OPERATIONS`; compare both APIs under identical settings.
+
+The local file API also fsyncs its file and directories, unlike the buffered
+baseline. S3/proxy resource usage and durable database references are outside
+this component comparison; platform HTTP and capture-offload tests remain separate.
+The [measured comparison](REPORT.md#bounded-file-uploads--27-october-2026)
+passed 288 uploads with exact readback. Cold local RSS fell from 132.23 to
+5.75 MiB; duplicate S3 uploads sent no payload and their median p95 fell from
+443.60 to 50.21 ms. Cold S3 p95 increased from 480.15 to 544.14 ms and requires
+11 requests per object instead of one. This is a memory/deduplication tradeoff,
+not a general upload-throughput improvement.
 
 #### Client cache memory and expired-record catch-up — 26 October 2026
 

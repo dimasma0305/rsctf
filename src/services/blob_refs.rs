@@ -28,7 +28,7 @@ pub(crate) mod test_support;
 mod writeups;
 pub use ad_snapshots::{
     available_service_snapshots, load_service_snapshot, purge_expired_service_snapshots,
-    store_service_snapshot, ServiceSnapshotBlob,
+    store_service_snapshot, ServiceSnapshotBlob, ServiceSnapshotSource,
 };
 pub(crate) use attachments::delete_attachment_locked;
 pub use attachments::{

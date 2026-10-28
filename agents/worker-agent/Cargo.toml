@@ -2,7 +2,7 @@
 
 [package]
 name = "rsctf-worker-agent"
-version = "0.1.147"
+version = "0.1.148"
 edition = "2021"
 license = "MIT"
 description = "Trusted Docker worker for RSCTF"
@@ -38,6 +38,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 yamux = "0.14"
+x509-parser = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Com", "Win32_System_HostComputeNetwork"] }

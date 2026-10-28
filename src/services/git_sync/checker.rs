@@ -217,7 +217,37 @@ pub(super) async fn validate_checker_source(src_dir: &Path) -> AppResult<()> {
 /// but every installed distribution must be available as a binary wheel. This
 /// prevents source-distribution setup.py/PEP 517 build hooks from running before
 /// the run-path sandbox applies.
-pub(super) async fn prepare_checker_venv(dest: &str, src_dir: &std::path::Path) -> AppResult<()> {
+pub(super) struct PreparedChecker {
+    staging: PathBuf,
+    destination: PathBuf,
+    // GC recognizes staging directories too. Keep an execution lease throughout
+    // preparation/publication; cancellation drops it and GC owns crash cleanup.
+    _lease: super::checker_gc::CheckerExecutionLease,
+}
+
+impl PreparedChecker {
+    pub(super) async fn publish(&self) -> AppResult<()> {
+        if tokio::fs::try_exists(&self.destination)
+            .await
+            .map_err(|error| AppError::internal(format!("checker destination stat: {error}")))?
+        {
+            return Err(AppError::internal(
+                "checker revision already exists and is immutable",
+            ));
+        }
+        tokio::fs::rename(&self.staging, &self.destination)
+            .await
+            .map_err(|error| AppError::internal(format!("checker atomic publish: {error}")))?;
+        Ok(())
+    }
+}
+
+pub(super) async fn prepare_checker_venv(dest: &str, src_dir: &Path) -> AppResult<()> {
+    let prepared = stage_checker_venv(dest, src_dir).await?;
+    prepared.publish().await
+}
+
+pub(super) async fn stage_checker_venv(dest: &str, src_dir: &Path) -> AppResult<PreparedChecker> {
     let requirements = read_checker_requirements(src_dir).await?;
     let dest = std::path::Path::new(dest);
     let parent = dest
@@ -249,34 +279,19 @@ pub(super) async fn prepare_checker_venv(dest: &str, src_dir: &std::path::Path) 
         .await
         .map_err(|e| AppError::internal(format!("checker staging mkdir: {e}")))?;
 
+    let lease = super::checker_gc::acquire_checker_execution_lease(&staging)
+        .map_err(|error| AppError::internal(format!("checker staging lease: {error}")))?;
+
     let result = prepare_staging(&staging, src_dir, &requirements).await;
     if let Err(error) = result {
         remove_staging(&staging).await;
         return Err(error);
     }
-    match tokio::fs::try_exists(dest).await {
-        Ok(false) => {}
-        Ok(true) => {
-            remove_staging(&staging).await;
-            return Err(AppError::internal(
-                "checker revision already exists and is immutable",
-            ));
-        }
-        Err(error) => {
-            remove_staging(&staging).await;
-            return Err(AppError::internal(format!(
-                "checker destination stat: {error}"
-            )));
-        }
-    }
-    if let Err(error) = tokio::fs::rename(&staging, dest).await {
-        remove_staging(&staging).await;
-        return Err(AppError::internal(format!(
-            "checker atomic publish: {error}"
-        )));
-    }
-    tracing::info!(dest = %dest.display(), "git_sync: published sandboxed checker revision");
-    Ok(())
+    Ok(PreparedChecker {
+        staging,
+        destination: dest.to_path_buf(),
+        _lease: lease,
+    })
 }
 
 /// Materialize the reviewed `checker/` tree from a durable challenge archive,
@@ -595,7 +610,8 @@ async fn prepare_staging(staging: &Path, src_dir: &Path, requirements: &[String]
         tokio::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(false)
             .open(&execution_lock)
             .await
             .map_err(|error| AppError::internal(format!("checker lock create: {error}")))?;

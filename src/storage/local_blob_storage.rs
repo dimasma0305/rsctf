@@ -13,6 +13,9 @@ use crate::storage::blob_storage::{BlobByteStream, BlobStorage, StoredBlob};
 use crate::utils::codec::sha256_hex;
 use crate::utils::error::{AppError, AppResult};
 
+mod upload;
+mod upload_cleanup;
+
 /// A regular-file download should not become one HTTP body frame per 4 KiB
 /// filesystem block. 128 KiB cuts frame/read scheduling by 32x while keeping
 /// the per-active-download memory budget modest under event-scale concurrency.
@@ -20,11 +23,15 @@ const DOWNLOAD_STREAM_BUFFER_BYTES: usize = 128 * 1024;
 
 pub struct LocalBlobStorage {
     root: PathBuf,
+    upload_scan: tokio::sync::Mutex<Option<std::fs::ReadDir>>,
 }
 
 impl LocalBlobStorage {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            upload_scan: tokio::sync::Mutex::new(None),
+        }
     }
 
     /// Resolve the on-disk path for a content hash. Only a well-formed hash
@@ -41,6 +48,9 @@ impl LocalBlobStorage {
 
 #[async_trait]
 impl BlobStorage for LocalBlobStorage {
+    async fn purge_abandoned_uploads(&self) -> AppResult<u64> {
+        upload_cleanup::purge(self).await
+    }
     async fn health(&self) -> AppResult<()> {
         tokio::fs::create_dir_all(&self.root)
             .await
@@ -85,6 +95,15 @@ impl BlobStorage for LocalBlobStorage {
             size: bytes.len() as i64,
             name: name.to_string(),
         })
+    }
+
+    async fn store_file(
+        &self,
+        name: &str,
+        file: tokio::fs::File,
+        max_bytes: u64,
+    ) -> AppResult<StoredBlob> {
+        upload::store_file(self, name, file, max_bytes).await
     }
 
     async fn load(&self, hash: &str) -> AppResult<Vec<u8>> {
@@ -165,7 +184,7 @@ impl BlobStorage for LocalBlobStorage {
                     return Err(AppError::internal(format!(
                         "delete local blob {}: {error}",
                         path.display()
-                    )))
+                    )));
                 }
             }
         }

@@ -242,27 +242,57 @@ fn accepts_new_request(lifecycle: RuntimeReadiness, role: RuntimeRole, path: &st
 /// failure uses 503 with a terse dependency label suitable for operators.
 pub async fn readiness(State(st): State<SharedState>) -> Response {
     let lifecycle = st.readiness.lifecycle();
-    let mut response = if lifecycle == RuntimeReadiness::Ready {
-        let status = st
-            .readiness
-            .check(st.pg(), st.cache.as_ref(), st.storage.as_ref())
-            .await;
-        let dependencies = dependency_response(status);
-        if dependencies.status() == StatusCode::OK {
-            let capture = capture_response(&st.readiness);
-            if capture.status() == StatusCode::OK {
-                topology_response(&st.topology)
+    let ownership = network_ownership_response(
+        st.config.runtime_role,
+        crate::services::ad_vpn::owns_instance_lease(),
+    );
+    let mut response =
+        if lifecycle == RuntimeReadiness::Ready && ownership.status() != StatusCode::OK {
+            ownership
+        } else if lifecycle == RuntimeReadiness::Ready {
+            let status = st
+                .readiness
+                .check(st.pg(), st.cache.as_ref(), st.storage.as_ref())
+                .await;
+            let dependencies = dependency_response(status);
+            if dependencies.status() == StatusCode::OK {
+                let capture = capture_response(&st.readiness);
+                if capture.status() == StatusCode::OK {
+                    topology_response(&st.topology)
+                } else {
+                    capture
+                }
             } else {
-                capture
+                dependencies
             }
         } else {
-            dependencies
-        }
-    } else {
-        lifecycle_response(lifecycle)
-    };
+            lifecycle_response(lifecycle)
+        };
+    // Dependency I/O may yield while shutdown begins or ownership expires. A
+    // prior successful snapshot must not admit this replica after that wait.
+    let current_lifecycle = st.readiness.lifecycle();
+    if current_lifecycle != RuntimeReadiness::Ready {
+        response = lifecycle_response(current_lifecycle);
+    } else if response.status() == StatusCode::OK {
+        response = network_ownership_response(
+            st.config.runtime_role,
+            crate::services::ad_vpn::owns_instance_lease(),
+        );
+    }
     add_role_headers(&mut response, st.config.runtime_role);
     response
+}
+
+fn network_ownership_response(role: RuntimeRole, owns_lease: bool) -> Response {
+    if role.capabilities().network && !owns_lease {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "network ownership unavailable",
+        )
+            .into_response()
+    } else {
+        (StatusCode::OK, "ok").into_response()
+    }
 }
 
 fn capture_response(readiness: &ReadinessProbe) -> Response {
@@ -322,6 +352,85 @@ fn add_role_headers(response: &mut Response, role: RuntimeRole) {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+
+    #[test]
+    fn network_owner_readiness_requires_fresh_ownership_proof() {
+        for role in [RuntimeRole::All, RuntimeRole::Control, RuntimeRole::Network] {
+            assert_eq!(
+                network_ownership_response(role, false).status(),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert_eq!(
+                network_ownership_response(role, true).status(),
+                StatusCode::OK
+            );
+        }
+        for role in [
+            RuntimeRole::Development,
+            RuntimeRole::Web,
+            RuntimeRole::Engine,
+            RuntimeRole::Migrate,
+        ] {
+            assert_eq!(
+                network_ownership_response(role, false).status(),
+                StatusCode::OK
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL; run database regressions serially"]
+    async fn readiness_rechecks_ownership_and_shutdown_after_waiting_for_dependencies() {
+        use crate::{app_state::AppState, models::internal::configs::AppConfig};
+        use std::sync::Arc;
+        let fixture = crate::utils::test_database::TestDatabase::new("health_ownership").await;
+        let root = std::env::temp_dir().join(format!("health-ownership-{}", uuid::Uuid::new_v4()));
+        let state = AppState::new(
+            sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(fixture.pool.clone()),
+            Arc::new(AppConfig::default()),
+            Arc::new(crate::services::cache::InMemoryCache::new()),
+            Arc::new(crate::storage::LocalBlobStorage::new(root.clone())),
+            crate::services::token::TokenService::new("health-proof-fixture-0123456789abcdef", 60),
+            Arc::new(crate::services::container::NoopContainerManager),
+        );
+        state.readiness.mark_ready();
+        for release_ownership in [true, false] {
+            crate::services::ad_vpn::acquire_instance_lease(&state.db)
+                .await
+                .unwrap();
+            let guard = state.readiness.cached.lock().await;
+            let pending = readiness(State(state.clone()));
+            tokio::pin!(pending);
+            assert!(futures::poll!(pending.as_mut()).is_pending());
+            if release_ownership {
+                crate::services::ad_vpn::release_instance_lease()
+                    .await
+                    .unwrap();
+            } else {
+                state.readiness.begin_shutdown();
+            }
+            drop(guard);
+            let response = pending.await;
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = to_bytes(response.into_body(), 64).await.unwrap();
+            assert_eq!(
+                body.as_ref(),
+                if release_ownership {
+                    b"network ownership unavailable".as_slice()
+                } else {
+                    b"shutting down".as_slice()
+                }
+            );
+            if !release_ownership {
+                crate::services::ad_vpn::release_instance_lease()
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(state);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+        fixture.close().await;
+    }
 
     #[tokio::test]
     async fn readiness_response_preserves_ok_contract() {

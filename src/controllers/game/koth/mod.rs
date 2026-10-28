@@ -31,14 +31,13 @@ use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::SharedState;
 use crate::controllers::game::ad::resolve_participation;
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::middlewares::rate_limiter::{limited, Policy};
-use crate::models::data::{game, game_challenge, koth_target};
+use crate::models::data::game;
 use crate::utils::enums::{
     ChallengeCategory, ChallengeReviewStatus, ChallengeType, ParticipationStatus,
 };
@@ -49,7 +48,6 @@ mod admin;
 mod api;
 mod api_contract;
 mod board;
-mod capture;
 mod eligibility;
 mod lifecycle;
 mod listing;
@@ -58,8 +56,7 @@ mod scoreboard;
 #[cfg(test)]
 #[path = "scoreboard_wire_tests.rs"]
 mod scoreboard_wire_tests;
-mod scoring;
-mod scoring_formula;
+use crate::services::ad::koth_scoring as scoring;
 #[cfg(test)]
 mod state_tests;
 mod timeline;
@@ -70,9 +67,6 @@ pub use api::{
     revoke_observer, rotate_observer, submit_observation,
 };
 use board::*;
-pub use capture::ensure_koth_hills;
-pub(crate) use capture::ensure_koth_hills_with_operation;
-pub(crate) use eligibility::invalidate_live_hill_cache;
 use eligibility::require_live_hill;
 pub(crate) use lifecycle::invalidate_live_lifecycle_cache;
 use lifecycle::load_lifecycle_map;
@@ -81,9 +75,7 @@ pub use listing::{koth_hills, KothHillListItem};
 pub use routes::{router, stateful_router, web_router};
 pub(crate) use scoreboard::build_koth_scoreboard_cached;
 pub use scoreboard::scoreboard;
-pub(crate) use scoring::{
-    invalidate_rollups_for_end_change, lock_epoch_rollups, refresh_epoch_rollups,
-};
+pub(crate) use scoring::{invalidate_rollups_for_end_change, lock_epoch_rollups};
 use scoring::{load_koth_scoring, KothScoringSnapshot};
 pub use timeline::{timeline, KothScoreTimelineModel, KothTeamTimeline, KothTimelinePoint};
 pub(crate) use tokens::load_latest_round_cached;

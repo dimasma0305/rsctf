@@ -1,7 +1,7 @@
 //! Final hosted A&D service snapshot capture and retention policy.
 
 use std::io::Write;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Duration, Utc};
@@ -15,9 +15,9 @@ pub(crate) const MAX_STORED_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
 pub(crate) const SNAPSHOT_CONTENT_TYPE: &str = "application/gzip";
 const SNAPSHOT_PIPELINE_ADMISSION_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 
-fn snapshot_pipeline_slots() -> &'static tokio::sync::Semaphore {
-    static SLOTS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
-    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(1))
+fn snapshot_pipeline_slots() -> Arc<tokio::sync::Semaphore> {
+    static SLOTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    Arc::clone(SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1))))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,10 +124,18 @@ fn compress_tar_with_limit(tar: &[u8], limit: usize) -> AppResult<Vec<u8>> {
 }
 
 /// Compress a raw Docker filesystem TAR away from Tokio's worker threads.
-async fn compress_tar(tar: Vec<u8>) -> AppResult<Vec<u8>> {
-    tokio::task::spawn_blocking(move || compress_tar_with_limit(&tar, MAX_STORED_SNAPSHOT_BYTES))
-        .await
-        .map_err(|error| AppError::internal(format!("snapshot compression task failed: {error}")))?
+async fn compress_tar(
+    tar: Vec<u8>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> AppResult<Vec<u8>> {
+    tokio::task::spawn_blocking(move || {
+        // Blocking compression outlives a cancelled async caller. Keep its
+        // admission until the raw buffer and compression workspace are gone.
+        let _permit = permit;
+        compress_tar_with_limit(&tar, MAX_STORED_SNAPSHOT_BYTES)
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("snapshot compression task failed: {error}")))?
 }
 
 /// Bound the complete raw-export + compression pipeline, not just Docker's
@@ -137,15 +145,15 @@ pub(crate) async fn export_archive(
     containers: &dyn crate::services::container::ContainerManager,
     container_id: &str,
 ) -> AppResult<Vec<u8>> {
-    let _permit = tokio::time::timeout(
+    let permit = tokio::time::timeout(
         SNAPSHOT_PIPELINE_ADMISSION_TIMEOUT,
-        snapshot_pipeline_slots().acquire(),
+        snapshot_pipeline_slots().acquire_owned(),
     )
     .await
     .map_err(|_| AppError::unavailable("snapshot export capacity is busy; retry shortly"))?
     .map_err(|_| AppError::unavailable("snapshot export service is shutting down"))?;
     let tar = containers.export(container_id).await?;
-    compress_tar(tar).await
+    compress_tar(tar, permit).await
 }
 
 fn permanent_size_failure(error: &AppError) -> bool {
@@ -164,13 +172,6 @@ pub(crate) async fn capture_final_service(
     team_service_id: i32,
     expected_container_id: &str,
 ) -> AppResult<FinalSnapshotStatus> {
-    if crate::services::blob_refs::load_service_snapshot(state.pg(), team_service_id)
-        .await?
-        .is_some()
-    {
-        return Ok(FinalSnapshotStatus::Available);
-    }
-
     let policy = sqlx::query_as::<_, SnapshotPolicy>(
         r#"SELECT service.participation_id, service.challenge_id,
                   service.container_id, challenge.ad_self_hosted,
@@ -211,6 +212,16 @@ pub(crate) async fn capture_final_service(
         ));
     }
 
+    if crate::services::blob_refs::load_service_snapshot(state.pg(), team_service_id)
+        .await?
+        .is_some_and(|snapshot| {
+            snapshot.source_container_id == expected_container_id
+                && snapshot.captured_at_utc >= policy.end_time_utc
+        })
+    {
+        return Ok(FinalSnapshotStatus::Available);
+    }
+
     let archive = match export_archive(state.containers.as_ref(), expected_container_id).await {
         Ok(archive) => archive,
         Err(error) if permanent_size_failure(&error) => {
@@ -228,8 +239,11 @@ pub(crate) async fn capture_final_service(
     let stored = crate::services::blob_refs::store_service_snapshot(
         state.pg(),
         state.storage.as_ref(),
-        team_service_id,
-        expected_container_id,
+        crate::services::blob_refs::ServiceSnapshotSource {
+            team_service_id,
+            container_id: expected_container_id,
+            end_time_utc: policy.end_time_utc,
+        },
         expires_at_utc,
         &name,
         &archive,
@@ -275,6 +289,43 @@ mod tests {
         assert!(!capture_supported(ContainerBackendKind::Kubernetes));
         assert!(!capture_supported(ContainerBackendKind::Worker));
         assert!(!capture_supported(ContainerBackendKind::None));
+    }
+
+    #[test]
+    fn cancelled_compression_retains_capacity_until_blocking_work_finishes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // Occupy the only blocking thread so compression is deterministically
+            // queued when its async owner is cancelled.
+            let (release, waiting) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                waiting.recv().unwrap();
+            });
+            ready.await.unwrap();
+            let slots = Arc::new(tokio::sync::Semaphore::new(1));
+            let permit = slots.clone().acquire_owned().await.unwrap();
+            {
+                let compression = compress_tar(vec![b'R'; 1024], permit);
+                tokio::pin!(compression);
+                assert!(futures::poll!(compression.as_mut()).is_pending());
+            }
+            assert!(
+                slots.try_acquire().is_err(),
+                "cancelled blocking work still owns its buffer"
+            );
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            let _recovered = tokio::time::timeout(StdDuration::from_secs(2), slots.acquire())
+                .await
+                .unwrap()
+                .unwrap();
+        });
     }
 
     #[test]
