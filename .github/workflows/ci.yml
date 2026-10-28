@@ -959,6 +959,14 @@ jobs:
             ./ci-artifacts/rsctf-tests "$filter" --ignored --test-threads=1
           done
 
+      - name: Restore disposable database, files and secrets
+        env:
+          ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture
+          RESTORE_PG_CONTAINER: ${{ job.services.postgres.id }}
+          RSCTF_RESTORE_DISPOSABLE: '1'
+          RESTORE_REPORT: ${{ runner.temp }}/architecture-runtime/restore-report.json
+        run: node tests/load/restore-drill.mjs
+
       - name: Exercise role startup, SIGTERM, exclusion and lease-loss recovery
         env:
           ARCHITECTURE_RUNTIME_BINARY: /usr/local/bin/rsctf-architecture

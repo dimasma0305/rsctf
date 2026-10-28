@@ -4,6 +4,13 @@ An rsctf backup is complete only when it contains PostgreSQL and the uploaded-fi
 
 ## Docker backup
 
+Stop application writers before taking **either** snapshot, and keep them stopped
+until both the database dump and file/object snapshot are complete. This includes
+web, control, engine and network roles, scheduled imports, and any external writer
+to the shared storage. Taking a live database dump first and stopping writes only
+for the later file copy can leave restored references pointing at deleted files.
+Keep PostgreSQL running to produce its logical dump.
+
 Create a PostgreSQL dump from the managed Compose stack:
 
 ```bash
@@ -14,7 +21,8 @@ docker compose exec -T db \
   > "../backups/rsctf-$(date -u +%Y%m%dT%H%M%SZ).dump"
 ```
 
-Back up the named file volume as well. A portable method is to stop writes briefly and archive the mounted volume with a temporary container; determine the actual volume name with:
+While writers remain stopped, archive the named file volume with a temporary
+container; determine the actual volume name with:
 
 ```bash
 docker volume ls --filter label=com.docker.compose.project=rsctf
@@ -39,6 +47,21 @@ A backup you have never restored is only a hope. On an isolated installation:
 3. Restore the same configuration secrets.
 4. Start the matching rsctf version.
 5. Verify accounts, one game, attachments, writeups, and a score.
+
+The disposable regression in `tests/load/restore-drill.mjs` automates this local
+storage path. It creates its own databases, migrates and seeds an event with an
+accepted solve and writeup, shuts down its writer, dumps PostgreSQL and copies
+files/configuration, removes the originals, and restores into a new database.
+It compares all public table rows, validates blob hashes and sizes, checks mutable
+working files, and exercises authenticated downloads and the scoreboard through
+the restored application. Missing/corrupt blobs and incorrectly signed sessions
+must fail. CI runs it against the same tested server artifact and retains timing
+and source/binary hashes.
+
+This test does not establish S3 or multi-host recovery guarantees. For S3, preserve
+the referenced object versions and shared mutable working storage together with
+the database snapshot; restoring only the POSIX volume is insufficient. Do not
+resume writes until restored references have been checked against object inventory.
 
 ## Extending an ended event
 

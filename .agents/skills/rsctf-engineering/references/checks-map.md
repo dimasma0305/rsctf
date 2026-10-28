@@ -19,6 +19,13 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 
 ## Discover the smallest meaningful check
 
+For backup consistency, use the
+[disposable restore drill](../../../../tests/load/restore-drill.mjs) and its
+[fixture](../../../../tests/load/restore-drill/seed.sql). The load README documents
+its acknowledgement, PostgreSQL container and tested-binary requirements.
+It restores local files and all database rows, checks score/session/downloads,
+and rejects missing or corrupt objects; S3/multi-host recovery is still separate.
+
 | Changed boundary | Locate / run first | Broader verification |
 | --- | --- | --- |
 | Rust logic or DTO | Owner's inline/sibling tests; filter by module/function | Warning-free build, default tests, all-feature Clippy |

@@ -5,6 +5,29 @@ implementation flaws and capacity limits under real concurrency (not just peak r
 
 ## Architecture runtime gate
 
+The same job runs a destructive **disposable-fixture-only** restore drill. It
+creates random databases inside the selected PostgreSQL container; it never backs
+up or drops an existing application database. Use a matching tested server binary,
+a loopback PostgreSQL URL for that container, and explicit acknowledgement:
+
+```sh
+RSCTF_RESTORE_DISPOSABLE=1 \
+RESTORE_PG_CONTAINER=rsctf-architecture-pg \
+RSCTF_TEST_DATABASE_URL="$DISPOSABLE_POSTGRES_URL" \
+ARCHITECTURE_RUNTIME_BINARY="$TESTED_RSCTF_BINARY" \
+RESTORE_REPORT=/tmp/rsctf-restore-report.json \
+node tests/load/restore-drill.mjs
+```
+
+It verifies all public table rows, restored account authentication, a nonzero
+score, poster/writeup bytes, and mutable working files. Missing/corrupted blobs
+and an incorrectly signed session must be rejected. The report contains source,
+harness, fixture and binary hashes plus observed backup/restore durations; those
+tiny-fixture measurements are not production recovery guarantees. The current
+scope is stopped writers and local storage, not S3, multi-host storage or active
+containers. PostgreSQL client tools run inside the selected container so
+`pg_dump` matches the database major version.
+
 The required `architecture-runtime` CI job uses the server and test executables
 from the same run's Rust job, verifies the source revision, and executes the real
 checker launcher as root on Ubuntu 24.04. Missing Landlock/seccomp support fails

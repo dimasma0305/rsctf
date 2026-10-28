@@ -31,10 +31,13 @@ test('navigation rejects stale links and unmapped domains/pages without dependin
       '[nested [id]](target%20with%20spaces.md)', '[external](https://example.invalid/missing)',
       '```sh\n[example](missing.md)\n```').join('\n')
   const run = () => spawnSync(process.execPath, [script], { cwd: tmpdir(), encoding: 'utf8' })
+  // Git leaves empty directories behind after a move but does not check them out.
+  mkdirSync(join(root, 'src/controllers/removed'))
   writeFileSync(map, good)
   assert.equal(run().status, 0)
   for (const [link, message] of [
     ['[missing](missing.md)', /missing target/],
+    ['[empty stale directory](../../../../src/controllers/removed/)', /missing target/],
     ['[outside](../../../../../outside.md)', /stay inside/],
     ['[absolute](/etc/passwd)', /stay inside/],
     ['[invalid](%ZZ.md)', /invalid destination/],
