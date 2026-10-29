@@ -18,6 +18,9 @@ cleanup() {
   if [[ "$result" != 0 ]]; then
     kubectl get pods -A -o wide || true
     kubectl get events -A --sort-by=.lastTimestamp | tail -80 || true
+    docker exec "${cluster}-control-plane" df -h /dev/shm || true
+    docker exec "${cluster}-control-plane" journalctl -u containerd \
+      --since '-15 minutes' --no-pager -n 600 || true
   fi
   kind delete cluster --name "$cluster" || true
   rm -r -- "$scratch"
@@ -46,6 +49,12 @@ docker exec "${cluster}-control-plane" sh -ec '
   test -S /run/dbus/system_bus_socket
   busctl --system list --no-pager
 '
+# QEMU's virtio-fs shared guest RAM lives in /dev/shm. Docker's default 64 MiB
+# mount makes guest memory faults fail with SIGBUS before the agent can start.
+# This changes only this disposable node's tmpfs ceiling, not host mounts, and
+# does not allocate 4 GiB eagerly.
+docker exec "${cluster}-control-plane" mount -o remount,size=4G /dev/shm
+docker exec "${cluster}-control-plane" df -h /dev/shm
 kubectl create namespace rsctf-profile-challenges
 curl --fail --silent --show-error --location \
   https://github.com/kata-containers/kata-containers/releases/download/4.3.1/kata-deploy-4.3.1.tgz \
