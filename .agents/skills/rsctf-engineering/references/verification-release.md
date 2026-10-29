@@ -15,12 +15,16 @@
 Before release, require:
 
 ```sh
+python3 scripts/check-release-versions.py
 cargo fmt --all -- --check
 cargo build --all-targets
 cargo test
 find src -name '*.rs' -print0 | xargs -0 wc -l | awk '$1>1000 && $2!="total"'
 cd web && pnpm check && pnpm lint:check && pnpm test && pnpm build
 ```
+
+Run the version check before building: the server, BYOC agent and worker agent
+manifests and lockfiles, plus chart `version` and `appVersion`, must agree.
 
 `cargo build` must finish with zero errors and zero warnings. Keep focused test output
 in the handoff, including expected environment-only skips or ignored tests.

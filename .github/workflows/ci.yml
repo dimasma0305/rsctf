@@ -1142,6 +1142,11 @@ jobs:
           node --test .agents/skills/rsctf-engineering/scripts/check-navigation.test.mjs
           node .agents/skills/rsctf-engineering/scripts/check-navigation.mjs
 
+      - name: Check coordinated release versions
+        run: |
+          python3 scripts/test-release-versions.py
+          python3 scripts/check-release-versions.py
+
       - name: Enforce Rust file size limit
         shell: bash
         run: |

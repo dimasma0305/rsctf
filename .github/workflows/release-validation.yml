@@ -56,49 +56,7 @@ jobs:
             fi
           fi
 
-          cargo_package_version() {
-            awk '
-              $0 == "[package]" { in_package = 1; next }
-              in_package && /^\[/ { exit }
-              in_package && /^version = "/ {
-                value = $0
-                sub(/^version = "/, "", value)
-                sub(/"$/, "", value)
-                print value
-                exit
-              }
-            ' "$1"
-          }
-
-          chart_value() {
-            local value
-            value="$(awk -v key="$1:" '$1 == key { print $2; exit }' charts/rsctf/Chart.yaml)"
-            value="${value#\"}"
-            value="${value%\"}"
-            value="${value#\'}"
-            value="${value%\'}"
-            printf '%s\n' "$value"
-          }
-
-          require_release_version() {
-            local component="$1"
-            local version="$2"
-            if [[ -z "$version" || "$version" != "$release_version" ]]; then
-              echo "::error::Publication version ${release_version} does not match ${component} version ${version:-unknown}."
-              exit 1
-            fi
-          }
-
-          require_release_version "rsctf" \
-            "$(cargo_package_version Cargo.toml)"
-          require_release_version "rsctf-byoc-agent" \
-            "$(cargo_package_version agents/byoc-agent/Cargo.toml)"
-          require_release_version "rsctf-worker-agent" \
-            "$(cargo_package_version agents/worker-agent/Cargo.toml)"
-          require_release_version "Helm chart" \
-            "$(chart_value version)"
-          require_release_version "Helm appVersion" \
-            "$(chart_value appVersion)"
+          python3 scripts/check-release-versions.py --release-version "$release_version"
 
       - name: Require a commit reachable from main
         if: github.ref_type == 'tag' || inputs.require_main
