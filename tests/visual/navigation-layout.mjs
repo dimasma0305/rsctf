@@ -73,7 +73,9 @@ const reports = [],
   pending = new Set(),
   retiredInterceptions = [];
 let negativeControl;
-let slow = false;
+let slow = false,
+  unavailable = false,
+  coldRecovery;
 const evaluate = async (expression) => {
   const r = await cdp.send("Runtime.evaluate", {
     expression,
@@ -136,6 +138,11 @@ try {
           : overview(url.pathname + url.search, request.method);
       if (path.startsWith("/hub"))
         response = { body: { error: "Read-only fixture" } };
+      if (
+        unavailable &&
+        ["/api/game/901", "/api/game/901/ad/scoreboard"].includes(path)
+      )
+        response = { status: 503, body: { title: "Temporary outage" } };
       if (response.status === 404) unknown.push(path);
       await cdp.send("Fetch.fulfillRequest", {
         requestId,
@@ -314,12 +321,42 @@ try {
       console.log(name, JSON.stringify({ cls, diagnostic, failures }));
     }
   }
+  // A cold-load outage must expose the arena's existing automatic-recovery
+  // notice, even when no event DTO can make the shared header ready yet.
+  slow = false;
+  unavailable = true;
+  await cdp.send("Page.navigate", { url: "about:blank" });
+  await cdp.send("Page.navigate", { url: server.origin + "/games/901/attack" });
+  const arenaHost = `document.querySelector('[data-arena-theme="globe"]')`;
+  await waitFor(
+    `${arenaHost}?.shadowRoot?.getElementById('connectionStatus')?.textContent === 'Waiting for data'`,
+  );
+  await waitFor(`getComputedStyle(${arenaHost}).visibility === 'visible'`);
+  assert.equal(
+    await evaluate(`getComputedStyle(${arenaHost}).visibility`),
+    "visible",
+    "cold arena outage must leave the recovery notice visible",
+  );
+  unavailable = false;
+  await evaluate(`window.dispatchEvent(new Event('online'))`);
+  await waitFor(
+    `${arenaHost}?.shadowRoot?.getElementById('connectionStatus')?.textContent === 'Connected' && getComputedStyle(document.querySelector('[data-event-workspace-header]')).visibility === 'visible'`,
+  );
+  coldRecovery = { noticeVisible: true, recovered: true };
+  console.log("PASS: cold arena outage stays visible and recovers");
 } finally {
   await Promise.allSettled([...pending]);
   writeFileSync(
     `${output}/report.json`,
     JSON.stringify(
-      { reports, negativeControl, errors, unknown, retiredInterceptions },
+      {
+        reports,
+        negativeControl,
+        errors,
+        unknown,
+        retiredInterceptions,
+        coldRecovery,
+      },
       null,
       2,
     ),

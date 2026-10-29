@@ -2944,7 +2944,7 @@ const Attack: FC = () => {
   const [game, setGame] = useState<DetailedGameInfoModel>()
   // Reuse the event read already populated by the scoreboard/challenge routes.
   // The arena's sequential scoreboard refresh must not reset the shared header.
-  const { game: workspaceGame } = useGame(Number(id))
+  const { game: workspaceGame, error: workspaceError } = useGame(Number(id))
   const currentGame = workspaceGame ?? (game?.id === Number(id) ? game : undefined)
   usePageTitle(currentGame?.title)
 
@@ -2972,7 +2972,7 @@ const Attack: FC = () => {
           aria-label="Live competition arena"
           data-arena-theme="globe"
           data-arena-scheme={scheme}
-          style={{ minWidth: 0, colorScheme: scheme, visibility: currentGame ? undefined : 'hidden' }}
+          style={{ minWidth: 0, colorScheme: scheme, visibility: currentGame || workspaceError ? undefined : 'hidden' }}
         />
       </Stack>
     </WithNavBar>

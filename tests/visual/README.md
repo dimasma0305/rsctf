@@ -19,6 +19,8 @@ page contents are allowed; delayed movement after painting is checked separately
 A real click that deliberately moves fixture content must fail the diagnostic
 while standard CLS remains zero, preventing a silent or unsupported observer from
 passing. Pure metric/window tests run in the normal frontend test suite.
+The suite also fails both initial arena reads, checks that the recovery notice
+remains visible without cached event data, and verifies automatic recovery.
 
 Screenshots and JSON entries/frames are saved under
 `visual-audit-output/navigation-layout/` and uploaded by CI on failure. Unknown
