@@ -684,6 +684,9 @@ jobs:
       - name: Check delayed reads and live round layout stability in Chromium
         run: node tests/visual/layout-stability.mjs
 
+      - name: Check navigation layout shifts under delayed loading
+        run: node tests/visual/navigation-layout.mjs
+
       - name: Retain account access browser diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -695,6 +698,7 @@ jobs:
             visual-audit-output/design-ux/
             visual-audit-output/runtime-profiles/
             visual-audit-output/layout-stability/
+            visual-audit-output/navigation-layout/
           if-no-files-found: ignore
           retention-days: 3
 

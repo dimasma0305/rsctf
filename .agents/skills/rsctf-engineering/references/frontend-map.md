@@ -48,6 +48,12 @@ disclosure with bounded expanded content. The first challenge read uses
 [ChallengePanelSkeleton.tsx](../../../../web/src/components/competition/ChallengePanelSkeleton.tsx).
 [layout-stability.mjs](../../../../tests/visual/layout-stability.mjs) delays reads,
 exercises actual polling, and measures toolbar positions from 320px to desktop.
+For jumps during route changes, run
+[navigation-layout.mjs](../../../../tests/visual/navigation-layout.mjs). It disables
+prefetch/cache, delays route assets and API responses, records browser layout-shift
+sources and every-frame shell/control positions, and checks Back/Forward. Its
+input-inclusive diagnostic catches shifts excluded by normal CLS after a click;
+a deliberate browser shift proves the detector is active.
 
 | Concern | Owning files/directories |
 | --- | --- |

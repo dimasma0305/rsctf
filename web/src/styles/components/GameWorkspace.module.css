@@ -80,6 +80,8 @@
   align-items: center;
   min-width: 0;
   gap: 1.25rem;
+  /* Reserve the two statistic lines before the participant read resolves. */
+  min-height: calc(1.8rem * var(--mantine-line-height));
 }
 .teamIdentity {
   display: flex;

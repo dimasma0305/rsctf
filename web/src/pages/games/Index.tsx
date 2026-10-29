@@ -134,37 +134,33 @@ const Games: FC = () => {
       <PageHeader
         title={t('interface.navigation.events')}
         actions={
-          games && (
-            <Text size="sm" c="dimmed">
-              {t('game.content.events_total', '{{count}} events', { count: games.total })}
-            </Text>
-          )
+          <Text size="sm" c="dimmed" aria-live="polite">
+            {games ? t('game.content.events_total', '{{count}} events', { count: games.total }) : '\u00a0'}
+          </Text>
         }
       />
 
       <Stack gap="md" className={classes.catalog} data-event-catalog>
         <Group justify="space-between" gap="sm" wrap="wrap">
-          {games && games.data.length > 0 && (
-            <nav
-              className={classes.lifecycleOverview}
-              aria-label={t('game.content.lifecycle.summary', 'Events by status on this page')}
-            >
-              {lifecycleSections
-                .filter((section) => section.events.length > 0)
-                .map((section) => (
-                  <Anchor
-                    key={section.status}
-                    href={`#lifecycle-${section.status}`}
-                    className={classes.lifecycleCount}
-                    data-status={section.status}
-                  >
-                    <span className={classes.lifecycleDot} aria-hidden="true" />
-                    <span>{section.title}</span>
-                    <strong>{section.events.length}</strong>
-                  </Anchor>
-                ))}
-            </nav>
-          )}
+          <nav
+            className={classes.lifecycleOverview}
+            aria-label={t('game.content.lifecycle.summary', 'Events by status on this page')}
+            aria-busy={!games && !gamesError}
+          >
+            {lifecycleSections.map((section) => (
+              <Anchor
+                key={section.status}
+                href={section.events.length ? `#lifecycle-${section.status}` : undefined}
+                aria-disabled={!section.events.length || undefined}
+                className={classes.lifecycleCount}
+                data-status={section.status}
+              >
+                <span className={classes.lifecycleDot} aria-hidden="true" />
+                <span>{section.title}</span>
+                <strong>{games ? section.events.length : '—'}</strong>
+              </Anchor>
+            ))}
+          </nav>
         </Group>
 
         <form
