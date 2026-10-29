@@ -16,6 +16,7 @@ struct InspectorDefinition {
     storage_limit: Option<i32>,
     expose_port: Option<i32>,
     workload_spec: Option<JsonValue>,
+    runtime_profile: Option<String>,
 }
 
 const LOAD_DEFINITION_SQL: &str = r#"SELECT challenge.id AS challenge_id,
@@ -27,7 +28,8 @@ const LOAD_DEFINITION_SQL: &str = r#"SELECT challenge.id AS challenge_id,
                   challenge.cpu_count,
                   challenge.storage_limit,
                   challenge.expose_port,
-                  challenge.workload_spec
+                  challenge.workload_spec,
+                  challenge.runtime_profile
              FROM "AdTeamServices" service
              JOIN "GameChallenges" challenge
                ON challenge.id = service.challenge_id
@@ -115,13 +117,18 @@ fn validate_definition(st: &SharedState, definition: &InspectorDefinition) -> Ap
             "Aggregate A&D workloads do not expose a single inspector target",
         ));
     }
-    if st.containers.backend_kind() != crate::services::container::ContainerBackendKind::Docker {
+    if st
+        .containers
+        .profile_backend_kind(definition.runtime_profile.as_deref())?
+        != crate::services::container::ContainerBackendKind::Docker
+    {
         return Err(AppError::bad_request(
             "Interactive inspector containers currently require the Docker control runtime",
         ));
     }
-    crate::services::challenge_images::runtime_image_from_build_fields(
+    crate::services::challenge_images::runtime_image_for_profile_fields(
         st,
+        definition.runtime_profile.as_deref(),
         definition.build_status,
         definition.build_image_digest.as_deref(),
     )
@@ -177,6 +184,7 @@ pub async fn ad_spawn_inspector(
         let info = st
             .containers
             .create(ContainerSpec {
+                runtime_profile: definition.runtime_profile.clone(),
                 game_kind: crate::services::container::game_kind_for_challenge(
                     ChallengeType::AttackDefense,
                 ),
@@ -350,6 +358,7 @@ mod tests {
                  storage_limit INTEGER,
                  expose_port INTEGER,
                  workload_spec JSONB,
+                 runtime_profile VARCHAR(40),
                  deletion_pending BOOLEAN NOT NULL,
                  is_enabled BOOLEAN NOT NULL,
                  review_status SMALLINT NOT NULL
@@ -372,7 +381,7 @@ mod tests {
                INSERT INTO "GameChallenges" VALUES
                  (4, 1, 5, FALSE, 2,
                   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-                  64, 1, 512, 8080, NULL, FALSE, TRUE, 0);
+                  64, 1, 512, 8080, NULL, NULL, FALSE, TRUE, 0);
                INSERT INTO "AdTeamServices" VALUES (5, 1, 4, 3);"#,
         )
         .execute(&pool)

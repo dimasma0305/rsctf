@@ -44,7 +44,7 @@ WITH source AS MATERIALIZED (
         released_hint_count, is_enabled,
         deadline_utc, submission_limit, accepted_count, submission_count,
         container_image, memory_limit, storage_limit, cpu_count, expose_port,
-        workload_spec, file_name, flag_template, review_status, review_note,
+        workload_spec, runtime_profile, file_name, flag_template, review_status, review_note,
         submitted_by_user_id, submitted_at_utc, reviewed_at_utc,
         original_archive_blob_path, build_context_subdir, build_status,
         build_image_digest, last_build_log, source_yaml_path, attachment_id,
@@ -62,7 +62,7 @@ WITH source AS MATERIALIZED (
            source."Type", source.hints, 0, FALSE, NULL, source.submission_limit,
            0, 0, source.container_image, source.memory_limit,
            source.storage_limit, source.cpu_count, source.expose_port,
-           source.workload_spec, source.file_name, source.flag_template, $3,
+           source.workload_spec, source.runtime_profile, source.file_name, source.flag_template, $3,
            NULL, NULL, NULL, NULL, NULL, NULL,
            CASE
              WHEN source.build_status = $8
@@ -601,6 +601,7 @@ mod clone_contract_tests {
               cpu_count INTEGER NULL,
               expose_port INTEGER NULL,
               workload_spec JSONB NULL,
+              runtime_profile VARCHAR(40) NULL,
               file_name TEXT NULL,
               flag_template TEXT NULL,
               review_status SMALLINT NOT NULL,
@@ -677,6 +678,7 @@ mod clone_contract_tests {
                'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
                'rsctf/failed:latest', '/checkers/failed', NULL, FALSE, FALSE, FALSE,
                1000, 0.25, 4, 0, FALSE, FALSE, FALSE, FALSE);
+            UPDATE "GameChallenges" SET runtime_profile = 'microvm' WHERE title = 'verified';
             INSERT INTO "KothApiObservers"
               (challenge_id, game_id, hmac_secret, secret_hint)
             SELECT id, game_id,
@@ -703,6 +705,10 @@ mod clone_contract_tests {
             .await
             .unwrap();
         assert_eq!(copied, (3, 0, 2));
+        let profile: Option<String> = sqlx::query_scalar(
+            r#"SELECT runtime_profile FROM "GameChallenges" WHERE game_id = 8 AND title = 'verified'"#,
+        ).fetch_one(&mut *transaction).await.unwrap();
+        assert_eq!(profile.as_deref(), Some("microvm"));
 
         let rows = sqlx::query_as::<
             _,

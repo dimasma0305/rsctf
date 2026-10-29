@@ -115,7 +115,8 @@ active account policy in the Admin UI and test it with a normal account.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `RSCTF_CONTAINER_BACKEND` | `auto` | `none`, `auto`, `docker`, or `kubernetes`; deployments should select explicitly |
+| `RSCTF_CONTAINER_BACKEND` | `docker` | `none`, `auto`, `docker`, `kubernetes`, or `worker`; deployment overlays may select a different backend explicitly |
+| `RSCTF_RUNTIME_PROFILES` | `[]` | Administrator-configured per-challenge Docker/Kubernetes/Kata profiles; see [runtime profiles](../deploy/runtime-profiles.md) |
 | `RSCTF_CONTAINER_MAX_MEMORY_MB` | `4096` | Global upper bound for one challenge container |
 | `RSCTF_CONTAINER_MAX_CPU_COUNT` | `8` | Global CPU-count upper bound for one challenge container |
 | `RSCTF_DOCKER_PUBLIC_ENTRY` | Unset | Hostname/IP advertised for Docker-published challenge ports |

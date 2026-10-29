@@ -317,6 +317,10 @@ trafficCapture:
 # the durable outbound worker plane; enable workerPlane only on its singleton
 # network owner release.
 containerBackend: none
+# Named per-challenge runtimes. IDs and isolation are permanent once registered;
+# set enabled: false to retire a profile while retaining cleanup ownership.
+# See docs/deploy/runtime-profiles.md for Docker/Kubernetes/Kata examples.
+runtimeProfiles: []
 
 # Platform selected by the legacy one-container API when a portable image can
 # run on more than one worker. Worker-local image references select their exact

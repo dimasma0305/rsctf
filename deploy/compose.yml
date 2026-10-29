@@ -170,6 +170,7 @@ services:
       RSCTF_PROVISIONING_CONCURRENCY: ${RSCTF_PROVISIONING_CONCURRENCY:-4}
       RSCTF_REPO_SCAN_CONCURRENCY: ${RSCTF_REPO_SCAN_CONCURRENCY:-1}
       RSCTF_CONTAINER_BACKEND: ${RSCTF_CONTAINER_BACKEND:-none}
+      RSCTF_RUNTIME_PROFILES: ${RSCTF_RUNTIME_PROFILES:-[]}
       # Stable installation identity for Docker-managed challenge workloads.
       # Empty falls back to a hash of the JWT secret; set it before rotating
       # that secret or when intentionally sharing one daemon across installs.

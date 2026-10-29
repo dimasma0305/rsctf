@@ -257,15 +257,18 @@ async fn async_main() -> anyhow::Result<()> {
     }
     let token = TokenService::new(&config.jwt_secret, config.jwt_ttl_secs);
 
-    // Resolve the backend once. VPN deployments must choose explicitly because
+    // Docker is the default. Discovery remains an explicit non-VPN opt-in;
     // silently falling back would make service routes disagree with placement.
     let backend_mode = std::env::var("RSCTF_CONTAINER_BACKEND")
-        .unwrap_or_else(|_| "auto".to_string())
+        .unwrap_or_else(|_| "docker".to_string())
         .trim()
         .to_ascii_lowercase();
-    if role == RuntimeRole::Development && backend_mode != "none" {
+    if role == RuntimeRole::Development
+        && (backend_mode != "none"
+            || !rsctf::services::container::profiles::config::from_env()?.is_empty())
+    {
         return Err(anyhow::anyhow!(
-            "RSCTF_ROLE=development requires RSCTF_CONTAINER_BACKEND=none"
+            "RSCTF_ROLE=development requires RSCTF_CONTAINER_BACKEND=none and no runtime profiles"
         ));
     }
     if rsctf::services::ad_vpn::enabled() && backend_mode == "auto" {
@@ -331,6 +334,12 @@ async fn async_main() -> anyhow::Result<()> {
             ));
         }
     };
+    let containers = rsctf::services::container::profiles::configure(
+        containers,
+        db.get_postgres_connection_pool().clone(),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     rsctf::services::ad_vpn::initialize_backend(containers.backend_kind())
         .map_err(|error| anyhow::anyhow!("A&D VPN backend configuration failed: {error}"))?;
     let mut network_lease_monitor = if capabilities.network {
@@ -389,15 +398,11 @@ async fn async_main() -> anyhow::Result<()> {
     // Run before the cron so the checker can join the network on its first tick.
     if capabilities.network {
         use rsctf::services::ad_vpn;
-        if state.containers.backend_kind()
-            == rsctf::services::container::ContainerBackendKind::Docker
-        {
-            state
-                .containers
-                .ensure_network(&ad_vpn::services_network(), &ad_vpn::services_cidr())
-                .await
-                .map_err(|e| anyhow::anyhow!("A&D services network isolation check failed: {e}"))?;
-        }
+        state
+            .containers
+            .ensure_network(&ad_vpn::services_network(), &ad_vpn::services_cidr())
+            .await
+            .map_err(|e| anyhow::anyhow!("A&D services network isolation check failed: {e}"))?;
         // If no capture owner holds its advisory session, invalidate any
         // crash-left durable health before this process builds its first VPN
         // policy. A genuinely independent live owner is left untouched.

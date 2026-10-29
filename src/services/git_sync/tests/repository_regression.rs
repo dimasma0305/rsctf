@@ -36,7 +36,13 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         Arc::new(InMemoryCache::new()),
         Arc::new(LocalBlobStorage::new(root.join("blobs"))),
         TokenService::new("0123456789abcdef0123456789abcdef", 60),
-        Arc::new(NoopContainerManager),
+        Arc::new(crate::services::container::profiles::ProfileRouter::new(
+            Arc::new(NoopContainerManager),
+            crate::services::container::profiles::config::parse(r#"[
+                {"id":"docker","name":"Docker","backend":"docker","isolation":"container"},
+                {"id":"microvm","name":"MicroVM","backend":"kubernetes","isolation":"microvm","runtimeClass":"kata"}
+            ]"#).unwrap().into_iter().map(|profile| (profile, Arc::new(NoopContainerManager) as Arc<dyn crate::services::container::ContainerManager>)).collect(),
+        ).unwrap()),
     );
     let binding = repo_binding::ActiveModel {
         repo_url: Set("https://github.com/example/challenges.git".to_string()),
@@ -118,6 +124,8 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     assert!(first.created);
     let challenge_id = first.challenge_id;
     super::score_curve_regression::assert_score_curve_sync(&state, game.id, &challenge_dir).await;
+    super::runtime_profile_regression::assert_runtime_profile_sync(&state, game.id, &challenge_dir)
+        .await;
     #[cfg(target_os = "linux")]
     super::checker_publication::assert_preparation_publication_and_cancellation(
         &state,

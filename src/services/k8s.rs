@@ -60,6 +60,7 @@ mod launch;
 mod metrics;
 mod network;
 mod orphans;
+mod profiles;
 mod readiness;
 #[cfg(test)]
 mod retry_tests;
@@ -162,6 +163,7 @@ pub struct KubernetesContainerManager {
     /// When `None`, [`create`](Self::create) falls back to the scheduled pod's
     /// `status.hostIP`.
     public_entry: Option<String>,
+    runtime_class: Option<String>,
 }
 
 impl KubernetesContainerManager {
@@ -193,6 +195,7 @@ impl KubernetesContainerManager {
             namespace,
             scope,
             public_entry,
+            runtime_class: None,
         }
     }
 
@@ -364,6 +367,7 @@ impl ContainerManager for KubernetesContainerManager {
 
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
         crate::services::container::validate_container_spec(&spec)?;
+        self.validate_runtime_class().await?;
         if !crate::services::challenge_images::is_repository_digest(&spec.image) {
             return Err(AppError::bad_request(
                 "Kubernetes challenge images must use a portable repository digest",
@@ -458,6 +462,7 @@ impl ContainerManager for KubernetesContainerManager {
             private_policy.as_ref(),
             ad_service_cidr.as_deref(),
         );
+        let launch_fingerprint = self.profile_fingerprint(launch_fingerprint);
 
         // Environment: caller-supplied vars plus the dynamic flag contract.
         let mut env: Vec<EnvVar> = spec
@@ -544,6 +549,7 @@ impl ContainerManager for KubernetesContainerManager {
                 ..Default::default()
             },
             spec: Some(PodSpec {
+                runtime_class_name: self.runtime_class.clone(),
                 containers: vec![container],
                 restart_policy: Some("Never".to_string()),
                 automount_service_account_token: Some(false),

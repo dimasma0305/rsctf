@@ -157,6 +157,15 @@ pub(crate) fn runtime_image_from_build_fields(
     build_status: i16,
     build_image_digest: Option<&str>,
 ) -> AppResult<String> {
+    runtime_image_for_profile_fields(st, None, build_status, build_image_digest)
+}
+
+pub(crate) fn runtime_image_for_profile_fields(
+    st: &SharedState,
+    profile: Option<&str>,
+    build_status: i16,
+    build_image_digest: Option<&str>,
+) -> AppResult<String> {
     if build_status != ChallengeBuildStatus::Success as i16 {
         return Err(AppError::bad_request(
             "The challenge image has not completed a successful immutable build/pull.",
@@ -171,7 +180,7 @@ pub(crate) fn runtime_image_from_build_fields(
         })?;
     validate_runtime_reference(
         reference,
-        st.containers.backend_kind(),
+        st.containers.profile_backend_kind(profile)?,
         st.config.runtime_role,
         shared_docker_daemon_acknowledged(),
     )
@@ -182,8 +191,19 @@ pub(crate) fn runtime_image(
     st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> AppResult<String> {
-    runtime_image_from_build_fields(
+    if challenge.runtime_profile.is_some() {
+        crate::services::container::profiles::policy::validate_selection(
+            st,
+            challenge.runtime_profile.as_deref(),
+            challenge.challenge_type,
+            challenge.ad_self_hosted,
+            challenge.workload_spec.is_some(),
+            challenge.enable_traffic_capture,
+        )?;
+    }
+    runtime_image_for_profile_fields(
         st,
+        challenge.runtime_profile.as_deref(),
         challenge.build_status as i16,
         challenge.build_image_digest.as_deref(),
     )

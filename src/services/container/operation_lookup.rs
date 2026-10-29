@@ -13,13 +13,29 @@ use crate::services::docker_admission::docker_admission;
 impl DockerContainerManager {
     /// Every container of this installation scope with its operation label.
     pub(super) async fn managed_inventory(&self) -> AppResult<Vec<ManagedRuntime>> {
+        self.inventory_for_capacity(false).await
+    }
+
+    pub(super) async fn capacity_inventory(&self) -> AppResult<Vec<ManagedRuntime>> {
+        self.inventory_for_capacity(true).await
+    }
+
+    async fn inventory_for_capacity(&self, all_profiles: bool) -> AppResult<Vec<ManagedRuntime>> {
         let docker = self.client()?;
+        let filters = if all_profiles && self.capacity_scopes.len() > 1 {
+            std::collections::HashMap::from([(
+                "label".to_string(),
+                vec![MANAGED_LABEL.to_string()],
+            )])
+        } else {
+            managed_container_filters(&self.scope)
+        };
         let rows = docker_admission()
             .read(
                 "list_containers",
                 docker.list_containers(Some(ListContainersOptions {
                     all: true,
-                    filters: managed_container_filters(&self.scope),
+                    filters,
                     ..Default::default()
                 })),
             )
@@ -29,6 +45,14 @@ impl DockerContainerManager {
             })?;
         Ok(rows
             .into_iter()
+            .filter(|row| {
+                !all_profiles
+                    || self.capacity_scopes.is_empty()
+                    || self
+                        .capacity_scopes
+                        .iter()
+                        .any(|scope| super::labels_match_scope(row.labels.as_ref(), scope))
+            })
             .filter_map(|row| {
                 let backend_id = row.id?;
                 let operation_id = row

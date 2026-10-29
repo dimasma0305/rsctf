@@ -173,9 +173,7 @@ pub(crate) async fn run_ad_reconcile_job(
         has_engine_challenge,
         ensure_vpn,
     );
-    if should_ensure_network(should_reconcile_vpn(need_vpn, has_managed_ad), true)
-        && st.containers.backend_kind() == crate::services::container::ContainerBackendKind::Docker
-    {
+    if should_ensure_network(should_reconcile_vpn(need_vpn, has_managed_ad), true) {
         st.containers
             .ensure_network(
                 &crate::services::ad_vpn::services_network(),
@@ -401,9 +399,7 @@ pub(crate) async fn ensure_ad_containers(
     // Create the isolated service network before peer/firewall reconciliation,
     // then retain the allocator-selected address so BYOC rows can never drift
     // from WireGuard cryptokey routing after a collision probe.
-    if should_ensure_network(reconcile_vpn, finalize_topology)
-        && st.containers.backend_kind() == crate::services::container::ContainerBackendKind::Docker
-    {
+    if should_ensure_network(reconcile_vpn, finalize_topology) {
         st.containers
             .ensure_network(
                 &crate::services::ad_vpn::services_network(),
@@ -579,6 +575,7 @@ pub(crate) async fn ensure_ad_containers(
                 c.ad_allow_egress,
                 flag,
             );
+            spec.runtime_profile = c.runtime_profile.clone();
             spec.operation_id = operation_id;
             let info = match st.containers.create(spec).await {
                 Ok(i) => i,

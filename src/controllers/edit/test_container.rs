@@ -181,7 +181,8 @@ pub async fn create_test_container(
         crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
     let is_proxy = crate::services::container::should_use_platform_proxy(
         game_kind,
-        st.containers.requires_proxy(),
+        st.containers
+            .profile_requires_proxy(challenge.runtime_profile.as_deref())?,
         platform_proxy,
         false,
     );
@@ -196,6 +197,7 @@ pub async fn create_test_container(
         None => {
             st.containers
                 .create(ContainerSpec {
+                    runtime_profile: challenge.runtime_profile.clone(),
                     game_kind,
                     image: legacy_image
                         .clone()

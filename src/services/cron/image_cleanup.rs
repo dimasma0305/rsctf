@@ -140,7 +140,11 @@ pub(super) async fn supervise(
             }
             _ = ticker.tick() => {}
         }
-        if state.containers.backend_kind() != ContainerBackendKind::Docker {
+        if state.containers.backend_kind() != ContainerBackendKind::Docker
+            && !state.containers.runtime_profiles().iter().any(|profile| {
+                profile.backend == crate::services::container::profiles::ProfileBackend::Docker
+            })
+        {
             continue;
         }
         let policy =

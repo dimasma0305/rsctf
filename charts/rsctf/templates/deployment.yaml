@@ -35,7 +35,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "rsctf.serviceAccountName" . }}
-      automountServiceAccountToken: {{ eq $localBackend "kubernetes" }}
+      automountServiceAccountToken: {{ include "rsctf.usesKubernetes" . }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         fsGroup: 10000

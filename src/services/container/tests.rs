@@ -151,6 +151,7 @@ fn inspected_container_state(status: ContainerStateStatusEnum) -> ContainerInspe
 
 pub(super) fn fingerprint_spec() -> ContainerSpec {
     ContainerSpec {
+        runtime_profile: None,
         game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
         image: format!("registry.example/hill@sha256:{}", "a".repeat(64)),
         memory_limit: 256,

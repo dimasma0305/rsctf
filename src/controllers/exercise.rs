@@ -559,6 +559,7 @@ async fn perform_create_container(
     let info = st
         .containers
         .create(ContainerSpec {
+            runtime_profile: None,
             game_kind,
             image: image.clone(),
             memory_limit: e.memory_limit.unwrap_or(64),

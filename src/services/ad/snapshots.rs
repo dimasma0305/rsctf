@@ -192,7 +192,11 @@ pub(crate) async fn capture_final_service(
 
     if policy.ad_self_hosted
         || !policy.ad_allow_snapshot_download
-        || !capture_supported(state.containers.backend_kind())
+        || !capture_supported(
+            state
+                .containers
+                .runtime_backend_kind(expected_container_id)?,
+        )
     {
         return Ok(FinalSnapshotStatus::NotRequired);
     }

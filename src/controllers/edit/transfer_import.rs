@@ -55,6 +55,14 @@ where
     // Reject invalid domain data before writing any immutable bytes. The same
     // checks remain in the transaction as the authoritative publication gate.
     for challenge in export_challenges {
+        crate::services::container::profiles::policy::validate_selection(
+            st,
+            challenge.runtime_profile.as_deref(),
+            challenge.challenge_type,
+            challenge.ad_self_hosted,
+            challenge.workload_spec.is_some(),
+            challenge.enable_traffic_capture,
+        )?;
         if let Some(storage_limit) = challenge.storage_limit {
             crate::services::container::validate_storage_limit_value(storage_limit)?;
         }
@@ -313,6 +321,7 @@ fn imported_challenge_model(
         cpu_count: Set(source.cpu_count),
         expose_port: Set(source.expose_port),
         workload_spec: Set(workload_spec),
+        runtime_profile: Set(source.runtime_profile.clone()),
         deadline_utc: Set(source.deadline_utc),
         enable_traffic_capture: Set(source.enable_traffic_capture),
         enable_shared_container: Set(source.challenge_type == ChallengeType::StaticContainer
@@ -496,10 +505,15 @@ mod tests {
         let challenge: ExportChallengeModel = serde_json::from_value(serde_json::json!({
             "type": "DynamicContainer",
             "networkMode": "Isolated",
+            "runtimeProfile": "microvm",
             "adCheckerImage": "/data/files/checkers/other-game/checker"
         }))
         .unwrap();
         let imported_challenge = imported_challenge_model(&challenge, 7, None, None);
+        assert_eq!(
+            imported_challenge.runtime_profile,
+            Set(Some("microvm".into()))
+        );
         assert_eq!(imported_challenge.ad_checker_image, Set(None));
         assert_eq!(
             imported_challenge.network_mode,

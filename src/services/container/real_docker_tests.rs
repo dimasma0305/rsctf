@@ -13,6 +13,7 @@ async fn retryable_flag_adopts_one_real_docker_workload() {
         .expect("RSCTF_REAL_DOCKER_RETRY_IMAGE requires a reachable Docker daemon");
     let operation_id = format!("test-retryable-flag:{}", uuid::Uuid::new_v4());
     let spec = |operation_id: &str| ContainerSpec {
+        runtime_profile: None,
         game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
         image: image.clone(),
         memory_limit: 64,

@@ -42,6 +42,7 @@ import { HintList } from '@Components/HintList'
 import { InstanceEntry } from '@Components/InstanceEntry'
 import { ChallengePreviewModal } from '@Components/admin/ChallengePreviewModal'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
+import { RuntimeProfileSelect } from '@Components/admin/RuntimeProfileSelect'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithChallengeEdit } from '@Components/admin/WithChallengeEdit'
 import { ScoreFunc } from '@Components/charts/ScoreFunc'
@@ -222,6 +223,8 @@ const GameChallengeEdit: FC = () => {
   useEffect(() => {
     if (challenge) {
       const info = { ...challenge }
+      delete info.runtimeProfiles
+      delete info.runtimeTransitionPending
       const configuredWorkload = challenge.workloadSpec ?? null
       const workloadEnabled = configuredWorkload !== null
       const workloadText = configuredWorkload ? formatWorkloadSpec(configuredWorkload) : ''
@@ -1128,6 +1131,31 @@ const GameChallengeEdit: FC = () => {
         )}
         {(type === ChallengeType.StaticContainer || type === ChallengeType.DynamicContainer || isAdEngine) && (
           <Grid columns={12}>
+            <Grid.Col span={12}>
+              <RuntimeProfileSelect
+                profiles={challenge?.runtimeProfiles ?? []}
+                value={challengeInfo.runtimeProfile ?? null}
+                disabled={disabled}
+                locked={
+                  workloadEditorEnabled ||
+                  !!challengeInfo.adSelfHosted ||
+                  (isAdEngine &&
+                    (game?.adScoringStartRound != null || game?.kothScoringStartRound != null))
+                }
+                replacementAllowed={!!challenge?.isEnabled || !!challenge?.runtimeTransitionPending}
+                pending={!!challenge?.runtimeTransitionPending}
+                onChange={(runtimeProfile) => setChallengeInfo((current) => ({ ...current, runtimeProfile }))}
+                onReplace={() =>
+                  onUpdate({
+                    ...challengeInfo,
+                    category: category as ChallengeCategory,
+                    minScoreRate: minRate / 100,
+                    networkMode: isAdEngine ? NetworkMode.Open : (challengeInfo.networkMode as NetworkMode),
+                    replaceRuntimeInstances: true,
+                  })
+                }
+              />
+            </Grid.Col>
             <Grid.Col span={{ base: 12, lg: 8 }}>
               <Group justify="space-between" align="flex-end" wrap="wrap">
                 <TextInput

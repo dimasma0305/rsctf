@@ -380,6 +380,7 @@ async fn a_contended_host_row_returns_the_retryable_response() {
 #[test]
 fn a_spec_reservation_uses_millicores_mebibytes_and_one_slot() {
     let spec = crate::services::container::ContainerSpec {
+        runtime_profile: None,
         game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
         image: "sha256:test".into(),
         memory_limit: 256,
@@ -402,6 +403,7 @@ fn a_spec_reservation_uses_millicores_mebibytes_and_one_slot() {
     assert_eq!(reservation.memory_bytes, 256 * 1024 * 1024);
     assert_eq!(reservation.slots, 1);
     let anonymous = Reservation::for_spec(&crate::services::container::ContainerSpec {
+        runtime_profile: None,
         operation_id: None,
         ..spec
     })

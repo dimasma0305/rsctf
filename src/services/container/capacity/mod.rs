@@ -194,13 +194,25 @@ impl ContainerManager for CapacityGatedDockerManager {
             }
         };
         if self.reconcile_due() {
-            match store::reconcile(&self.pool, &self.host_key, &inventory).await {
-                Ok(released) if released > 0 => {
-                    tracing::info!(released, "released stale local container reservations");
+            let global_inventory = if self.inner.capacity_scopes.len() > 1 {
+                self.inner.capacity_inventory().await
+            } else {
+                Ok(inventory.clone())
+            };
+            match global_inventory {
+                Ok(global_inventory) => {
+                    match store::reconcile(&self.pool, &self.host_key, &global_inventory).await {
+                        Ok(released) if released > 0 => {
+                            tracing::info!(released, "released stale local container reservations");
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, "local container reservation reconciliation failed");
+                        }
+                    }
                 }
-                Ok(_) => {}
                 Err(error) => {
-                    tracing::warn!(%error, "local container reservation reconciliation failed");
+                    tracing::warn!(%error, "global Docker inventory unavailable; retaining capacity reservations")
                 }
             }
         }

@@ -16,6 +16,8 @@ mod review;
 mod revision_effects;
 #[cfg(test)]
 mod revision_tests;
+#[cfg(test)]
+mod runtime_profile_tests;
 mod scoring;
 #[cfg(test)]
 mod scoring_lock_tests;
@@ -185,9 +187,13 @@ pub async fn get_challenge(
     } else {
         load_flags(&st, c_id).await?
     };
-    Ok(RequestResponse::ok(
-        ChallengeEditDetailModel::from_challenge(&st, &challenge, flags).await?,
-    ))
+    let mut detail = ChallengeEditDetailModel::from_challenge(&st, &challenge, flags).await?;
+    if !challenge.is_enabled && challenge.challenge_type.is_container() {
+        detail.runtime_transition_pending = sqlx::query_scalar(
+            r#"SELECT EXISTS(SELECT 1 FROM "ChallengeDefinitionTransitions" WHERE challenge_id = $1)"#,
+        ).bind(c_id).fetch_one(st.pg()).await.map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    Ok(RequestResponse::ok(detail))
 }
 
 /// `PUT /api/edit/games/{id}/challenges/{cId}`
@@ -315,6 +321,56 @@ pub async fn update_challenge(
     let projected_workload_present = workload_update
         .as_ref()
         .map_or(challenge.workload_spec.is_some(), Option::is_some);
+    let next_profile = model
+        .runtime_profile
+        .as_ref()
+        .unwrap_or(&challenge.runtime_profile);
+    let profile_changed = next_profile != &challenge.runtime_profile;
+    if profile_changed || model.replace_runtime_instances {
+        if !ch_type.is_container() || requested_ad_self_hosted {
+            return Err(AppError::bad_request(
+                "Runtime profiles apply only to platform-hosted container challenges",
+            ));
+        }
+        if ch_type.uses_ad_engine() && scoring_started {
+            return Err(AppError::bad_request("A&D/KotH runtime profiles are locked after official scoring starts; select the runtime before starting the competition"));
+        }
+    }
+    if requested_final_enabled || profile_changed || model.replace_runtime_instances {
+        crate::services::container::profiles::policy::validate_selection(
+            &st,
+            next_profile.as_deref(),
+            ch_type,
+            requested_ad_self_hosted,
+            projected_workload_present,
+            model
+                .enable_traffic_capture
+                .unwrap_or(challenge.enable_traffic_capture),
+        )?;
+    }
+    if profile_changed || model.replace_runtime_instances {
+        if model.replace_runtime_instances
+            && model
+                .container_image
+                .as_ref()
+                .is_some_and(|image| Some(image.as_str()) != challenge.container_image.as_deref())
+        {
+            return Err(AppError::bad_request(
+                "Save and build the new image successfully before replacing instances",
+            ));
+        }
+        let mut projected = challenge.clone();
+        projected.runtime_profile = next_profile.clone();
+        if let Some(workload) = &workload_update {
+            projected.workload_spec = workload.clone();
+        }
+        projected.enable_traffic_capture = model
+            .enable_traffic_capture
+            .unwrap_or(challenge.enable_traffic_capture);
+        // Validate portability before any destructive transition. Registry digests
+        // work across backends; daemon-local image IDs cannot move to Kubernetes.
+        crate::services::challenge_workloads::resolve_runtime(&st, &projected)?;
+    }
     let projected_image_present = model.container_image.as_deref().map_or_else(
         || {
             challenge
@@ -329,7 +385,8 @@ pub async fn update_challenge(
         && (projected_workload_present || projected_image_present);
     let requested_topology_flip = challenge.is_enabled
         && requested_final_enabled
-        && (was_shared_managed != requested_shared_managed
+        && (model.replace_runtime_instances
+            || was_shared_managed != requested_shared_managed
             || was_ad_self_hosted != requested_ad_self_hosted);
     let topology_transition = topology_transition::resolve(
         control.transaction_mut(),
@@ -351,6 +408,18 @@ pub async fn update_challenge(
     let resuming_topology_transition = topology_transition
         .as_ref()
         .is_some_and(|transition| transition.resuming);
+    // A failed teardown deliberately leaves the challenge disabled. Only the
+    // retained, byte-identical transition may resume that replacement.
+    if model.replace_runtime_instances && !challenge.is_enabled && !resuming_topology_transition {
+        return Err(AppError::bad_request(
+            "Enable the challenge before requesting instance replacement",
+        ));
+    }
+    if model.replace_runtime_instances && !final_enabled {
+        return Err(AppError::bad_request(
+            "Instance replacement requires the challenge to remain enabled",
+        ));
+    }
     let notice_was_enabled = if resuming_topology_transition {
         final_enabled
     } else {
@@ -492,6 +561,15 @@ pub async fn update_challenge(
             return Err(AppError::conflict(
                 "A&D/KotH scoring started while the topology transition was draining; the challenge remains disabled",
             ));
+        }
+        if model.replace_runtime_instances {
+            crate::utils::single_flight::acquire_transaction_advisory_lock(
+                reacquired_engine.transaction_mut(),
+                &format!("test-containers-game:{id}"),
+            )
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            lifecycle::destroy_test_container_locked(&st, c_id).await?;
         }
         crate::utils::single_flight::acquire_transaction_advisory_lock(
             reacquired_engine.transaction_mut(),

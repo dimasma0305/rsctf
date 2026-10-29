@@ -87,6 +87,8 @@ struct ChallengeYamlOut {
 /// side of the `container:` block).
 #[derive(Debug, Default, Serialize)]
 struct ContainerOut {
+    #[serde(rename = "runtimeProfile")]
+    runtime_profile: Option<String>,
     #[serde(rename = "containerImage", skip_serializing_if = "Option::is_none")]
     container_image: Option<String>,
     #[serde(rename = "memoryLimit", skip_serializing_if = "Option::is_none")]
@@ -133,6 +135,7 @@ struct AdOut {
 /// Repository push-back reads this shape with bound raw SQL on the transaction
 /// that owns the game + definition fences, avoiding nested pool acquisition.
 pub(crate) struct ChallengePushSnapshot {
+    pub(crate) runtime_profile: Option<String>,
     pub(crate) game_id: i32,
     pub(crate) title: String,
     pub(crate) content: String,
@@ -169,6 +172,7 @@ pub(crate) struct ChallengePushSnapshot {
 impl From<&game_challenge::Model> for ChallengePushSnapshot {
     fn from(challenge: &game_challenge::Model) -> Self {
         Self {
+            runtime_profile: challenge.runtime_profile.clone(),
             game_id: challenge.game_id,
             title: challenge.title.clone(),
             content: challenge.content.clone(),
@@ -301,6 +305,7 @@ fn serialize_challenge_inner(
 
     if ch.challenge_type.is_container() {
         out.container = Some(ContainerOut {
+            runtime_profile: ch.runtime_profile.clone(),
             container_image: ch
                 .container_image
                 .clone()
@@ -534,6 +539,7 @@ mod tests {
             cpu_count: None,
             expose_port: None,
             workload_spec: None,
+            runtime_profile: None,
             file_name: None,
             flag_template: None,
             review_status: ChallengeReviewStatus::Active,
@@ -664,6 +670,27 @@ mod tests {
             assert!(yaml.contains(&format!("scoreCurve: {curve:?}")));
             assert_eq!(parse(&yaml).score_curve, Some(curve));
         }
+    }
+
+    #[test]
+    fn runtime_profile_yaml_preserves_omission_and_explicit_default() {
+        let sparse = parse("container: {}\n");
+        assert_eq!(sparse.container.unwrap().runtime_profile, None);
+        let mut challenge = challenge(ChallengeType::DynamicContainer);
+        for selection in [None, Some("microvm".to_string())] {
+            challenge.runtime_profile = selection.clone();
+            let yaml = serialize_challenge(&challenge, &[]).unwrap();
+            assert_eq!(
+                parse(&yaml).container.unwrap().runtime_profile,
+                Some(selection)
+            );
+        }
+        assert!(
+            serde_norway::from_str::<super::super::manifest::ChallengeYaml>(
+                "container:\n  runtimeProfile: [docker]\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]

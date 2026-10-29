@@ -158,6 +158,14 @@ jobs:
           --deny-warnings
           examples/challenge-repository
 
+      - name: Test Docker runtime profile ownership and shared capacity
+        env:
+          RSCTF_DOCKER_SCOPE: ci-runtime-profiles
+          RSCTF_RUNTIME_PROFILE_TEST_IMAGE: docker.io/nginxinc/nginx-unprivileged@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e
+        run: |
+          docker pull "$RSCTF_RUNTIME_PROFILE_TEST_IMAGE"
+          cargo test --lib --all-features --locked real_docker_profiles -- --ignored --test-threads=1 --nocapture
+
       - name: Run tests
         run: cargo test --all-targets --all-features --locked
 
@@ -555,7 +563,7 @@ jobs:
     needs: [plan, rust]
     if: needs.plan.outputs.server == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -596,6 +604,24 @@ jobs:
         env:
           RSCTF_K8S_TEST_BINARY: ${{ github.workspace }}/ci-artifacts/rsctf-tests
         run: ./scripts/test-kubernetes-koth-callback.sh
+
+      - name: Install Helm for Kata runtime gate
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v3.16.4
+
+      - name: Enable runner virtualization devices
+        run: |
+          sudo modprobe kvm_intel || sudo modprobe kvm_amd
+          sudo modprobe vhost_vsock
+          sudo modprobe vhost_net
+          test -c /dev/kvm
+
+      - name: Prove all runtime switch directions and Kata guest isolation
+        env:
+          RSCTF_ALLOW_RUNTIME_PROFILE_CLUSTER_TEST: '1'
+          RSCTF_K8S_TEST_BINARY: ${{ github.workspace }}/ci-artifacts/rsctf-tests
+        run: bash scripts/test-runtime-profiles.sh
 
   web:
     name: React client
@@ -652,6 +678,9 @@ jobs:
       - name: Exercise responsive design, retries, and account actions in Chromium
         run: node tests/visual/design-ux.mjs
 
+      - name: Exercise runtime profile switching and live status badge in Chromium
+        run: node tests/visual/runtime-profiles.mjs
+
       - name: Retain account access browser diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -661,6 +690,7 @@ jobs:
             visual-audit-output/account-access/
             visual-audit-output/team-access/
             visual-audit-output/design-ux/
+            visual-audit-output/runtime-profiles/
           if-no-files-found: ignore
           retention-days: 3
 

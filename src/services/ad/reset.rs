@@ -245,6 +245,7 @@ pub async fn execute_job(
         challenge.ad_allow_egress,
         flag,
     );
+    spec.runtime_profile = challenge.runtime_profile.clone();
     spec.operation_id = Some(format!("ad-reset:{}", job.operation_id));
     let info = st.containers.create(spec).await?;
     let backend_id = info.id.clone();

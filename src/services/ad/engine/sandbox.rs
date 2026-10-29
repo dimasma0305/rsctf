@@ -16,9 +16,9 @@ use std::ffi::CString;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use ipnet::IpNet;
-
+mod networks;
 mod preflight;
+use networks::{checker_allowed_networks, checker_target_is_allowed};
 pub use preflight::{confinement_probe_main, preflight_checker_confinement, PREFLIGHT_ARG};
 
 /// Exit code the launcher uses when confinement can't be established — mapped to
@@ -470,27 +470,6 @@ pub fn setup_checker_egress() -> Result<(), String> {
     tracing::info!(uid_range = %uid, allowed_networks = ?allowed_networks,
         "checker egress firewall installed (one exact target per leased checker UID)");
     Ok(())
-}
-
-fn checker_allowed_networks() -> Result<Vec<IpNet>, String> {
-    crate::services::ad_vpn::validate_checker_service_routes()?;
-    let mut values = crate::services::ad_vpn::service_route_cidrs()?;
-    values.push(crate::services::ad_vpn::client_cidr());
-    values
-        .into_iter()
-        .map(|value| {
-            value
-                .parse::<IpNet>()
-                .map(|network| network.trunc())
-                .map_err(|error| format!("invalid checker target network {value:?}: {error}"))
-        })
-        .collect()
-}
-
-fn checker_target_is_allowed(target: std::net::IpAddr) -> Result<bool, String> {
-    Ok(checker_allowed_networks()?
-        .into_iter()
-        .any(|network| network.contains(&target)))
 }
 
 fn ipv6_is_available() -> bool {

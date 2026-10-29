@@ -43,7 +43,7 @@ pub(crate) async fn runtime_definition_snapshot_locked(
                     'id', 'game_id', 'title', 'content', 'category', 'hints',
                     'is_enabled', 'deadline_utc', 'accepted_count',
                     'submission_count', 'file_name', 'source_yaml_path',
-                    'attachment_id', 'shared_container_id'
+                    'attachment_id', 'shared_container_id', 'test_container_id'
                   ]::TEXT[]
              FROM "GameChallenges" challenge
             WHERE challenge.id = $1"#,

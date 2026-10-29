@@ -338,6 +338,7 @@ mod tests {
     #[test]
     fn previous_release_fingerprint_is_accepted_only_without_callback_ports() {
         let mut spec = ContainerSpec {
+            runtime_profile: None,
             game_kind: GameKind::Jeopardy,
             image: format!("registry.example/challenge@sha256:{}", "a".repeat(64)),
             memory_limit: 64,

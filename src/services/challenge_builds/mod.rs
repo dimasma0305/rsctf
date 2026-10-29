@@ -319,7 +319,13 @@ async fn run_challenge_build_with_intent(
         match repair_state {
             Ok(Some((status, Some(current_image), _)))
                 if status == ChallengeBuildStatus::Success as i16
-                    && st.containers.image_exists(current_image.trim()).await =>
+                    && st
+                        .containers
+                        .profile_image_exists(
+                            challenge.runtime_profile.as_deref(),
+                            current_image.trim(),
+                        )
+                        .await =>
             {
                 let outcome = BuildOutcome {
                     status: ChallengeBuildStatus::Success,
@@ -690,10 +696,23 @@ pub(crate) async fn build_challenge_image(
         };
     }
     let worker_runtime = crate::services::challenge_workloads::uses_worker_runtime(st, challenge);
+    let selected_backend = match st
+        .containers
+        .profile_backend_kind(challenge.runtime_profile.as_deref())
+    {
+        Ok(backend) => backend,
+        Err(error) => {
+            return BuildOutcome {
+                status: ChallengeBuildStatus::Failed,
+                log: Some(error.to_string()),
+                image_digest: None,
+            }
+        }
+    };
     if context_selector.is_some() {
         if let Some(reason) = archive_build_rejection(
             st.config.runtime_role,
-            st.containers.backend_kind(),
+            selected_backend,
             crate::services::challenge_images::shared_docker_daemon_acknowledged(),
             worker_runtime,
         ) {
@@ -727,7 +746,7 @@ pub(crate) async fn build_challenge_image(
         let backend = if worker_runtime {
             crate::services::container::ContainerBackendKind::Worker
         } else {
-            st.containers.backend_kind()
+            selected_backend
         };
         return match crate::services::challenge_images::validate_runtime_reference(
             &image,
@@ -757,7 +776,7 @@ pub(crate) async fn build_challenge_image(
         let backend = if worker_runtime {
             crate::services::container::ContainerBackendKind::Worker
         } else {
-            st.containers.backend_kind()
+            selected_backend
         };
         if let Err(error) = validate_local_image_adoption(
             &image,
@@ -869,8 +888,7 @@ pub(crate) async fn build_challenge_image(
         Some(bytes) => build_from_context(&docker, &image, bytes, context_selector).await,
         None => {
             let portable_required = worker_runtime
-                || st.containers.backend_kind()
-                    != crate::services::container::ContainerBackendKind::Docker
+                || selected_backend != crate::services::container::ContainerBackendKind::Docker
                 || (st.config.runtime_role != crate::models::internal::configs::RuntimeRole::All
                     && !crate::services::challenge_images::shared_docker_daemon_acknowledged());
             pull_image(&docker, &image, portable_required).await

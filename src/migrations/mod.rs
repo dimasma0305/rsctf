@@ -216,6 +216,7 @@ pub(crate) mod m0359_game_schedule_changes;
 pub(crate) mod m0360_backend_cleanup_claims;
 pub(crate) mod m0361_worker_certificate_rotation;
 pub(crate) mod m0362_pending_backend_cleanup;
+mod m0363_challenge_runtime_profiles;
 
 #[cfg(test)]
 pub(crate) use m0261_control_plane_jobs::UP_SQL as CONTROL_JOBS_SQL;
@@ -463,6 +464,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0360_backend_cleanup_claims::Migration),
             Box::new(m0361_worker_certificate_rotation::Migration),
             Box::new(m0362_pending_backend_cleanup::Migration),
+            Box::new(m0363_challenge_runtime_profiles::Migration),
         ]
     }
 }
@@ -607,10 +609,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 192);
+        assert_eq!(names.len(), 193);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 85..],
+            &names[names.len() - 86..],
             [
                 "m0108_koth_observer_rotation_operations",
                 "m0109_operator_console_latest_rows",
@@ -697,6 +699,7 @@ mod tests {
                 "m0360_backend_cleanup_claims",
                 "m0361_worker_certificate_rotation",
                 "m0362_pending_backend_cleanup",
+                "m0363_challenge_runtime_profiles",
             ]
         );
     }
