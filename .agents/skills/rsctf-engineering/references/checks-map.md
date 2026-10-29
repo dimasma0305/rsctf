@@ -155,6 +155,11 @@ must be read on their branch until merged; do not invent commands on main.
 | Helm publication | [.github/workflows/chart.yml](../../../../.github/workflows/chart.yml), [charts/rsctf/Chart.yaml](../../../../charts/rsctf/Chart.yaml) |
 | Managed KotH load / linker experiment | [.github/workflows/managed-koth-load.yml](../../../../.github/workflows/managed-koth-load.yml), [.github/workflows/linker-benchmark.yml](../../../../.github/workflows/linker-benchmark.yml) |
 
+Managed KotH participant setup uses [real login admission](../../../../tests/load/managed-koth-session.mjs)
+before direct-link and rotation checks. Its [session regressions](../../../../tests/load/test/managed-koth-session.test.mjs)
+cover failed logins and missing live-event identity evidence; a synthetic JWT alone
+does not satisfy an active event's admission boundary.
+
 Merging main does not automatically publish a server image. Read the publisher's
 manual/tag triggers and same-run quality/attestation requirements before release.
 Version-bearing files include root/BYOC/worker Cargo manifests and their lockfiles,
