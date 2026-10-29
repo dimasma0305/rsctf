@@ -36,6 +36,16 @@ nodes:
 YAML
 kind create cluster --name "$cluster" --config "$scratch/kind.yaml" \
   --image kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5 --wait 120s
+# kind's minimal node image has systemd but omits the system bus. Kata's Rust
+# runtime uses that bus to place the VM in its systemd cgroup. Install it inside
+# our disposable node; never mount the runner's host bus into the cluster.
+docker exec "${cluster}-control-plane" sh -ec '
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dbus
+  systemctl enable --now dbus.socket dbus.service
+  test -S /run/dbus/system_bus_socket
+  busctl --system list --no-pager
+'
 kubectl create namespace rsctf-profile-challenges
 curl --fail --silent --show-error --location \
   https://github.com/kata-containers/kata-containers/releases/download/4.3.1/kata-deploy-4.3.1.tgz \
