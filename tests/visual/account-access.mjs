@@ -441,34 +441,56 @@ try {
   await check(
     'confirmation-retains-real-email-without-putting-it-in-url',
     async () => {
-      await visit('/account/register?from=' + encoded, {
-        registerStatus: 'EmailConfirmationRequired'
+      // A history change can precede the lazy route's rendered content. Keep
+      // this navigation cold and delayed so assertions exercise that boundary.
+      await cdp.send('Network.enable')
+      await cdp.send('Network.setCacheDisabled', { cacheDisabled: true })
+      await cdp.send('Network.emulateNetworkConditions', {
+        offline: false,
+        latency: 300,
+        downloadThroughput: -1,
+        uploadThroughput: -1
       })
-      await registerFields()
-      await click('button[type=submit]')
-      await wait('location.pathname === "/account/pending"')
-      assert.equal(
-        await evaluate(
-          'document.body.innerText.includes("audit@example.invalid")'
-        ),
-        true
-      )
-      assert.equal(
-        await evaluate(
-          'location.href.includes("audit%40") || location.href.includes("audit@example")'
-        ),
-        false
-      )
-      assert.equal(
-        await evaluate('new URLSearchParams(location.search).get("from")'),
-        destination
-      )
-      await audit('pending-with-email')
-      const resend = await evaluate(
-        'new URL(document.querySelector("a[href^=\\"/account/register?resend=1\\"]").href).search'
-      )
-      assert.equal(new URLSearchParams(resend).get('resend'), '1')
-      assert.equal(new URLSearchParams(resend).get('from'), destination)
+      try {
+        await visit('/account/register?from=' + encoded, {
+          registerStatus: 'EmailConfirmationRequired'
+        })
+        await registerFields()
+        await click('button[type=submit]')
+        await wait(
+          'location.pathname === "/account/pending" && document.querySelector("a[href^=\\"/account/register?resend=1\\"]")'
+        )
+        assert.equal(
+          await evaluate(
+            'document.body.innerText.includes("audit@example.invalid")'
+          ),
+          true
+        )
+        assert.equal(
+          await evaluate(
+            'location.href.includes("audit%40") || location.href.includes("audit@example")'
+          ),
+          false
+        )
+        assert.equal(
+          await evaluate('new URLSearchParams(location.search).get("from")'),
+          destination
+        )
+        await audit('pending-with-email')
+        const resend = await evaluate(
+          'new URL(document.querySelector("a[href^=\\"/account/register?resend=1\\"]").href).search'
+        )
+        assert.equal(new URLSearchParams(resend).get('resend'), '1')
+        assert.equal(new URLSearchParams(resend).get('from'), destination)
+      } finally {
+        await cdp.send('Network.emulateNetworkConditions', {
+          offline: false,
+          latency: 0,
+          downloadThroughput: -1,
+          uploadThroughput: -1
+        })
+        await cdp.send('Network.setCacheDisabled', { cacheDisabled: false })
+      }
     }
   )
   await check(
