@@ -5,6 +5,11 @@
   width: 100%;
   container-type: inline-size;
 }
+.loadingRows {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

@@ -92,6 +92,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('[data-round-deadline]').textContent`),'Awaiting round update')
   assert.ok(await evaluate(`document.querySelector('[data-competition-status]').getBoundingClientRect().height < ${width>=1600?170:330}`),'collapsed notices keep the round toolbar bounded')
   const delivery = `[...document.querySelectorAll('[data-competition-notice]')].find(e => e.querySelector('summary')?.textContent.includes('flag deliveries'))`
+  await evaluate(`document.querySelector('[data-round-notices-toggle]').click()`)
   await evaluate(`${delivery}.querySelector('summary').focus()`)
   await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'})
   await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
@@ -106,7 +107,7 @@ try {
   await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
   await waitFor(`!document.querySelector('[role="dialog"]')`)
   await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
-  await evaluate(`${delivery}.querySelector('summary').click(); document.querySelector('[data-team-summary] button').scrollIntoView({block:'center',behavior:'instant'})`)
+  await evaluate(`document.querySelector('[data-round-notices-toggle]').click(); document.querySelector('[data-team-summary] button').scrollIntoView({block:'center',behavior:'instant'})`)
   await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
   await evaluate(`document.querySelector('[data-team-summary] button').click()`)
   await waitFor(`document.querySelector('input[type="password"]')`)
@@ -183,7 +184,7 @@ try {
   const rect = await evaluate(`(() => { const r=document.querySelector('[data-competition-status]').getBoundingClientRect();return {x:r.x+scrollX,y:r.y+scrollY,width:r.width,height:r.height,scale:1} })()`)
   const shot=await cdp.send('Page.captureScreenshot',{format:'png',clip:rect,captureBeyondViewport:true})
   writeFileSync(`${output}/${name}-${theme}-status-strip.png`,Buffer.from(shot.data,'base64'))
-  await evaluate(`${notice}.querySelector('summary').click()`)
+  await evaluate(`document.querySelector('[data-round-notices-toggle]').click(); ${notice}.querySelector('summary').click()`)
   await inspect(`${name}-${theme}-active-explanation`)
   await cdp.send('Page.navigate',{url:`${target}/games/901/scoreboard?fixtureTheme=${theme}`})
   const pagination = `document.querySelector('nav[aria-label="Scoreboard result pages"]')`
@@ -205,7 +206,7 @@ try {
  for(const phase of ['paused','warmup']) {
   Object.assign(state,phase==='paused'?{scoringPaused:true,scoringPausedAt:now,roundEndsAt:now+40000}:{currentRound:0,startRound:null,scoringPaused:false,roundEndsAt:null,flagDeliveryFailures:0})
   await cdp.send('Page.navigate',{url:`${target}/games/901/challenges`})
-  await waitFor(`document.querySelector('[data-competition-status]')?.innerText.includes('${phase==='paused'?'40s':'Warmup'}')`)
+  await waitFor(`document.querySelector('[data-competition-status]')?.textContent.includes('${phase==='paused'?'40s':'Warmup'}')`)
   await inspect(`compact-${phase}`)
  }
 } finally {
