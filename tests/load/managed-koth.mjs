@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import * as A from './applib.mjs';
+import { loginManagedPlayer } from './managed-koth-session.mjs';
 import {
   managedKothAbusePlan,
   managedKothHarnessConfig,
@@ -464,44 +465,19 @@ async function arenaPlay(target, token, score = 0) {
   });
 }
 
+async function loginCohortPlayer(participantIndex) {
+  requireCondition(participantIndex >= 0, 'player has no cohort identity');
+  return loginManagedPlayer({
+    gameId: current.gameId,
+    userId: current.cohort.userIds[participantIndex],
+    teamId: current.cohort.teamIds[participantIndex],
+    participationId: current.cohort.partIds[participantIndex],
+  }, { api: A.api, adminJwt: A.adminJwt, sql, mintJwt });
+}
+
 async function exerciseActivePlayerRotation(target, capability) {
   const participantIndex = current.cohort.partIds.indexOf(capability.pid);
-  requireCondition(participantIndex >= 0, 'rotation capability has no cohort identity');
-  const playerUserId = current.cohort.userIds[participantIndex];
-  const reset = await A.api(
-    'DELETE',
-    `/api/admin/users/${encodeURIComponent(playerUserId)}/password?operationId=${randomUUID()}`,
-    { jwt: A.adminJwt(), timeoutMs: 10_000 },
-  );
-  const password = unwrap(reset);
-  requireCondition(
-    reset.status === 200 && typeof password === 'string' && password.length >= 8,
-    `rotation player's password reset returned ${reset.status}`,
-  );
-  const userName = sql(
-    `SELECT user_name FROM "AspNetUsers" WHERE id='${playerUserId}'::uuid`,
-  );
-  const login = await A.api('POST', '/api/account/login', {
-    body: { userName, password },
-    timeoutMs: 10_000,
-  });
-  requireCondition(
-    login.status === 200,
-    `rotation player's scoped login returned ${login.status}: ${login.text?.slice(0, 200)}`,
-  );
-  const scopedObservations = Number(sql(
-    `SELECT count(*) FROM "IdentityObservations" ` +
-      `WHERE user_id='${playerUserId}'::uuid AND game_id=${current.gameId} ` +
-      `AND team_id=${current.cohort.teamIds[participantIndex]} ` +
-      `AND participation_id=${capability.pid} AND observed_at_utc>=(` +
-        `SELECT start_time_utc FROM "Games" WHERE id=${current.gameId}) ` +
-      `AND observed_at_utc<=clock_timestamp()`,
-  ));
-  requireCondition(
-    Number.isSafeInteger(scopedObservations) && scopedObservations > 0,
-    'rotation player login did not retain a live-event identity observation',
-  );
-  const playerJwt = mintJwt(playerUserId, undefined, 1);
+  const playerJwt = await loginCohortPlayer(participantIndex);
   const otherPid = current.cohort.partIds[(participantIndex + 1) % current.cohort.partIds.length];
   const before = capabilityState(capability.pid);
   const otherBefore = capabilityState(otherPid);
@@ -605,7 +581,8 @@ async function assertHiddenEvent(ordinaryJwt) {
     const anonymous = await A.api('GET', path);
     const ordinary = await A.api('GET', path, { jwt: ordinaryJwt });
     const admin = await A.api('GET', path, { jwt: A.adminJwt() });
-    requireCondition(anonymous.status === 200 && ordinary.status === 200, `${path} blocked the unlisted event direct link`);
+    requireCondition(anonymous.status === 200 && ordinary.status === 200,
+      `${path} direct link returned anonymous=${anonymous.status}, participant=${ordinary.status}`);
     requireCondition(admin.status === 200, `${path} is unavailable to the administrator`);
   }
   const operator = await A.api('GET', `/api/edit/games/${current.gameId}/ad/koth/state`, { jwt: A.adminJwt() });
@@ -1014,7 +991,7 @@ async function main() {
   await A.preflight();
 
   let target = await provision(reporterBaseUrl);
-  const ordinaryJwt = mintJwt(current.cohort.userIds[0], undefined, 1);
+  const ordinaryJwt = await loginCohortPlayer(0);
   await assertHiddenEvent(ordinaryJwt);
   const initialContext = await managedContext(ROSTER_SIZE);
   requireCondition(
