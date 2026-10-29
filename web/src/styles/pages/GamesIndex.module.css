@@ -55,16 +55,21 @@
     background-color 130ms ease;
 }
 
-.lifecycleCount:hover {
+.lifecycleCount:not([aria-disabled='true']):hover {
   color: var(--app-text-primary);
   text-decoration: underline;
   text-underline-offset: 0.25em;
+}
+.lifecycleCount[aria-disabled='true'] {
+  cursor: default;
 }
 
 .lifecycleCount strong {
   color: var(--app-text-primary);
   font-size: inherit;
   font-variant-numeric: tabular-nums;
+  min-width: 2ch;
+  text-align: end;
 }
 
 .lifecycleDot {

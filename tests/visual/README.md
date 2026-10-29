@@ -1,5 +1,31 @@
 # Full-page visual audit
 
+## Navigation layout shifts
+
+Run `scripts/bounded-frontend.sh exec node ../tests/visual/navigation-layout.mjs`
+after building the frontend. This self-contained, read-only fixture covers event
+discovery, landing, challenges, scoreboard, Back/Forward, and desktop admin routes
+at 320, 390, 1024, and 1600px. Cache/prefetch are disabled; navigation assets are
+delayed 800ms and API responses 1200ms. It captures every animation frame for four
+seconds, requires the destination to render, and records actual `layout-shift`
+entries with source nodes and old/new rectangles.
+
+The gate requires per-navigation CLS and an input-inclusive diagnostic session
+score <= 0.02, plus <= 1px movement for the shared shell and already-painted
+destination controls. Standard CLS excludes shifts within 500ms of user input;
+the diagnostic and geometry checks intentionally include them. These are fixture
+budgets, not a production Core Web Vitals score. Intentional differences between
+page contents are allowed; delayed movement after painting is checked separately.
+A real click that deliberately moves fixture content must fail the diagnostic
+while standard CLS remains zero, preventing a silent or unsupported observer from
+passing. Pure metric/window tests run in the normal frontend test suite.
+
+Screenshots and JSON entries/frames are saved under
+`visual-audit-output/navigation-layout/` and uploaded by CI on failure. Unknown
+fixture requests, missing destination data, runtime errors, Axe violations,
+shell disappearance and horizontal overflow fail
+the test. No application mutation or external API call is allowed.
+
 `layout-stability.mjs` serves the built frontend with isolated API fixtures. It
 delays challenge and round reads, then drives actual polling through deadline,
 flag-delivery failure, and recovery states at 320, 390, 768, and 1600px. The
