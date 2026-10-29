@@ -253,6 +253,8 @@ async fn real_docker_profiles_share_the_installation_owned_competitive_network()
 #[tokio::test]
 #[ignore = "requires Docker, Kubernetes, Kata/KVM and RSCTF_RUNTIME_PROFILE_TEST_IMAGE"]
 async fn real_runtime_profile_switch_matrix_proves_guest_isolation() {
+    // Standalone libtest processes do not execute the application's TLS setup.
+    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let image = std::env::var("RSCTF_RUNTIME_PROFILE_TEST_IMAGE")
         .expect("pinned nginx-unprivileged image required");
     let profiles = config::parse(r#"[
