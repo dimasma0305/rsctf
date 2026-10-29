@@ -11,6 +11,8 @@
     "check": "tsc --noEmit --strict --project tsconfig.app.json",
     "test": "node scripts/run-tests.mjs && node --test ../tests/visual/*.test.mjs",
     "visual:audit": "node ../tests/visual/audit.mjs",
+    "test:interactions": "playwright test",
+    "test:interactions:ui": "playwright test --ui",
     "visual:guide": "node ../tests/visual/guide-journey.mjs",
     "build": "pnpm check && vite build",
     "preview": "vite preview",
@@ -71,6 +73,7 @@
     "swr": "^2.5.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@trivago/prettier-plugin-sort-imports": "^6.0.2",
     "@types/chroma-js": "^3.1.2",
     "@types/katex": "^0.16.8",
@@ -79,6 +82,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "axe-core": "^4.14.0",
+    "dom-accessibility-api": "^0.7.1",
     "esbuild": "^0.28.2",
     "happy-dom": "^21.0.4",
     "oxlint": "^1.88.0",

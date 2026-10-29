@@ -41,6 +41,7 @@ export const jobComponents = {
   'worker-plane-windows': 'worker',
   web: 'web',
   'layout-scan': 'web',
+  'interaction-scan': 'web',
   docs: 'docs',
   'helm-chart': 'deployment',
   'dependency-security': 'security',
