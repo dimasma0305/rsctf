@@ -2,6 +2,7 @@
   min-width: 0;
 }
 .pinnedNotice {
+  min-height: 6.25rem;
   display: none;
   align-items: flex-start;
   gap: 0.65rem;
@@ -20,6 +21,8 @@
   min-height: 44px;
   align-items: center;
   overflow-wrap: anywhere;
+  max-height: 3.1rem;
+  overflow: hidden;
 }
 
 .dashboard {

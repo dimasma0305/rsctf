@@ -73,6 +73,7 @@ a:hover {
 }
 .shell {
   width: 100%;
+  container-type: inline-size;
 }
 .arena-actions,
 .topright {
@@ -102,8 +103,12 @@ a:hover {
 .countpill {
   color: var(--text);
 }
+#roundlessStatus {
+  min-width: 8rem;
+}
 .connection {
   color: var(--dimmer);
+  min-width: 8rem;
 }
 .connection::before {
   content: '';
@@ -1310,6 +1315,16 @@ a:hover {
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
   scroll-behavior: auto !important;
+}
+/* Choose the toolbar rows from available space, not the changing clock text. */
+@container (max-width: 1000px) {
+  .arena-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .arena-actions {
+    justify-content: space-between;
+  }
 }
 @media (max-width: 1100px) {
   .midrow {

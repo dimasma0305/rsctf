@@ -54,6 +54,12 @@ prefetch/cache, delays route assets and API responses, records browser layout-sh
 sources and every-frame shell/control positions, and checks Back/Forward. Its
 input-inclusive diagnostic catches shifts excluded by normal CLS after a click;
 a deliberate browser shift proves the detector is active.
+The arena shares the event content width and cached event DTO with the scoreboard.
+For cold loads and popup opening/closing across all discovered routes, run
+[full-layout-scan.mjs](../../../../tests/visual/full-layout-scan.mjs). Its report
+lists rendered popup families and contract-generated empty reads. Scrollbar
+compensation belongs in [App.css](../../../../web/src/styles/App.css): root gutter
+reservation must not be counted again by the modal scroll-lock library.
 
 | Concern | Owning files/directories |
 | --- | --- |

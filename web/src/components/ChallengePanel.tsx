@@ -407,6 +407,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
             classNames={{ root: classes.scrollArea }}
             viewportProps={{
               tabIndex: 0,
+              role: 'region',
               'aria-label': t('game.label.challenge_results', 'Challenge list'),
             }}
           >

@@ -1,4 +1,4 @@
-import { Button, Group, Modal, ModalProps, Stack, TextInput } from '@mantine/core'
+import { Button, Group, ModalProps, Stack, TextInput } from '@mantine/core'
 import { DateTimePicker } from '@mantine/dates'
 import { useInputState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
@@ -8,6 +8,7 @@ import dayjs from 'dayjs'
 import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
+import { AccessibleModal } from '@Components/AccessibleModal'
 import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { GameInfoModel } from '@Api'
@@ -84,7 +85,7 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
   }
 
   return (
-    <Modal
+    <AccessibleModal
       size="min(36rem, calc(100vw - 2rem))"
       title={t('admin.button.games.new')}
       {...modalProps}
@@ -145,6 +146,6 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
           </Button>
         </Group>
       </Stack>
-    </Modal>
+    </AccessibleModal>
   )
 }

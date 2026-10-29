@@ -102,7 +102,7 @@ export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode
       <LoadingOverlay visible={!game} overlayProps={DEFAULT_LOADING_OVERLAY} />
       <GameWorkspaceHeader gameId={numId} game={game} />
       {summary && <div className={classes.summary}>{summary}</div>}
-      <Stack gap="sm" miw={0} data-motion="page">
+      <Stack gap="sm" miw={0} data-motion="page" style={{ visibility: game ? undefined : 'hidden' }}>
         {children}
       </Stack>
     </Stack>

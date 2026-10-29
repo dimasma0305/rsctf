@@ -40,6 +40,7 @@ export const jobComponents = {
   'worker-plane-linux': 'worker',
   'worker-plane-windows': 'worker',
   web: 'web',
+  'layout-scan': 'web',
   docs: 'docs',
   'helm-chart': 'deployment',
   'dependency-security': 'security',

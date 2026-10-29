@@ -4,10 +4,10 @@
 
 Run `scripts/bounded-frontend.sh exec node ../tests/visual/navigation-layout.mjs`
 after building the frontend. This self-contained, read-only fixture covers event
-discovery, landing, challenges, scoreboard, Back/Forward, and desktop admin routes
-at 320, 390, 1024, and 1600px. Cache/prefetch are disabled; navigation assets are
+discovery, landing, challenges, scoreboard, live arena, Back/Forward, and desktop admin routes
+at 320, 390, 1024, 1600, 1920, and 3440px. Cache/prefetch are disabled; navigation assets are
 delayed 800ms and API responses 1200ms. It captures every animation frame for four
-seconds, requires the destination to render, and records actual `layout-shift`
+seconds (eight for arena navigation), requires the destination to render, and records actual `layout-shift`
 entries with source nodes and old/new rectangles.
 
 The gate requires per-navigation CLS and an input-inclusive diagnostic session
@@ -25,6 +25,27 @@ Screenshots and JSON entries/frames are saved under
 fixture requests, missing destination data, runtime errors, Axe violations,
 shell disappearance and horizontal overflow fail
 the test. No application mutation or external API call is allowed.
+
+`full-layout-scan.mjs` discovers every page route from `web/src/pages` and checks
+cold loading at 1920, 1440, 390, and 320px. It opens and closes each distinct
+rendered semantic popup trigger, page search, explicit profile/team/event
+creation dialogs, and the desktop scoreboard bonus tooltip. It measures background geometry throughout the interaction,
+popup geometry after the 300ms entrance animation, input-inclusive shifts,
+scroll retention, dialog scroll locking, focus restoration, and dialog Axe checks.
+Unknown API reads, attempted writes, error fallbacks, and unexpected redirects fail.
+
+Run `node tests/visual/full-layout-scan.mjs` after building. CI runs one viewport
+per required matrix job and retains screenshots, per-route JSON, and the inventory.
+`RSCTF_FULL_LAYOUT_VIEWPORTS`, `RSCTF_FULL_LAYOUT_ROUTE`, and
+`RSCTF_FULL_LAYOUT_OUTPUT` narrow diagnostic runs. `RSCTF_FULL_LAYOUT_POPUPS=0`
+is a loading-only diagnostic; its report explicitly marks popups as disabled.
+Populated fixtures cover common flows; other known GET endpoints use generated
+empty-state DTOs and are listed in `emptyReads`. This is route and representative
+surface coverage, not every permission, populated state, tooltip, or user journey.
+Retired Fetch interception handles are recorded separately: the browser can
+cancel a request before emitting a Network cancellation event. Other CDP errors
+fail, and commands time out if a renderer stops responding.
+Existing dedicated interaction and backend suites remain necessary.
 
 `layout-stability.mjs` serves the built frontend with isolated API fixtures. It
 delays challenge and round reads, then drives actual polling through deadline,

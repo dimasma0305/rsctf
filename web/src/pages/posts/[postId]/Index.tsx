@@ -51,7 +51,7 @@ const Post: FC = () => {
 
   return (
     <WithNavBar width="1120px" isLoading={!post} withFooter>
-      <article className={classes.article}>
+      <article className={classes.article} aria-busy={!post} style={{ visibility: post ? undefined : 'hidden' }}>
         <header ref={targetRef} className={classes.header}>
           <Text className={classes.eyebrow}>{t('post.content.news', 'News & updates')}</Text>
           <Title order={1} className={classes.title}>

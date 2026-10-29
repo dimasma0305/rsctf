@@ -227,7 +227,13 @@ const Register: FC = () => {
 
   if (configLoading || configError) {
     return (
-      <AccountView title={t('account.title.register')}>
+      <AccountView
+        title={t('account.title.register')}
+        description={t(
+          'account.content.register.description',
+          'Create an account and get ready for the next challenge.'
+        )}
+      >
         {configLoading ? (
           <Loader role="status" aria-label={t('common.content.loading', 'Loading')} />
         ) : (

@@ -18,7 +18,7 @@ import { Stack, useComputedColorScheme } from '@mantine/core'
 import { FC, useEffect, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 import { GameWorkspaceHeader } from '@Components/GameWorkspaceHeader'
-import { WithNavBar } from '@Components/WithNavbar'
+import { GAME_PAGE_CONTENT_WIDTH, WithNavBar } from '@Components/WithNavbar'
 import {
   ArenaHttpError,
   arenaLiveRoutes,
@@ -29,11 +29,12 @@ import {
 } from '@Utils/ArenaLive'
 import { eventVpnFetch } from '@Utils/EventVpnProof'
 import { epochProgress } from '@Utils/epochProgress'
+import { useGame } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import type { AdScoreboardModel, DetailedGameInfoModel } from '@Api'
 import workspace from '@Styles/GameWorkspace.module.css'
-import arenaEffects from './arenaEffects.css?inline'
 import { buildArenaCountries, CATEGORY_COLOR, isJeopardyCountry } from './arenaCountries'
+import arenaEffects from './arenaEffects.css?inline'
 import { createArenaGlobe } from './arenaGlobe'
 import { createArenaInspector } from './arenaInspector'
 import type { JeopCategory } from './arenaJeopardy'
@@ -72,6 +73,7 @@ const ARENA_BODY = `
         <div class="freezepill" id="freezeTag">❄ Frozen</div>
         <div class="countpill" id="countPill" role="timer" aria-label="Time until next tick">0:00</div>
         <div class="roundpill" id="roundPill">Tick 0</div>
+        <div class="roundpill" id="roundlessStatus" hidden>Live scores</div>
       </div>
     <div class="devbar" role="group" aria-label="Spectator controls">
       <button class="btn ghost" id="speedBtn" aria-pressed="false">Speed 1×</button>
@@ -610,8 +612,8 @@ function runArena(
     $('teamCount').textContent = String(TEAMS.length)
     $('serviceCount').textContent = String(SERVICES.length)
     $('hillCount').textContent = String(HILLS.length)
-    $('serviceCount').closest('.metric').hidden = SERVICES.length === 0
-    $('hillCount').closest('.metric').hidden = HILLS.length === 0
+    // Zero is useful information too. Removing these metrics after the first
+    // board read collapses an entire row on narrow screens.
   }
 
   // service status → colour. def=Ok(green) vuln=Mumble(amber) down=Offline(grey)
@@ -1735,6 +1737,7 @@ function runArena(
       : { round, startRound: adStartRound, epochTicks: adEpochTicks, endsAt: liveRoundEndsAt }
   }
   const setTickPill = () => {
+    $('roundlessStatus').hidden = preview || SERVICES.length > 0 || HILLS.length > 0
     const clock = activeEpochClock()
     const progress = epochProgress(clock.round, clock.startRound, clock.epochTicks)
     const rp = $('roundPill')
@@ -2939,7 +2942,10 @@ const Attack: FC = () => {
   const hostRef = useRef<HTMLDivElement>(null)
   const cleanupRef = useRef<null | (() => void)>(null)
   const [game, setGame] = useState<DetailedGameInfoModel>()
-  const currentGame = game?.id === Number(id) ? game : undefined
+  // Reuse the event read already populated by the scoreboard/challenge routes.
+  // The arena's sequential scoreboard refresh must not reset the shared header.
+  const { game: workspaceGame } = useGame(Number(id))
+  const currentGame = workspaceGame ?? (game?.id === Number(id) ? game : undefined)
   usePageTitle(currentGame?.title)
 
   useEffect(() => {
@@ -2957,7 +2963,7 @@ const Attack: FC = () => {
   }, [id, preview])
 
   return (
-    <WithNavBar competition width="1600px">
+    <WithNavBar competition width={GAME_PAGE_CONTENT_WIDTH}>
       <Stack className={workspace.competitionStack} gap="sm" style={{ containerType: 'inline-size' }}>
         <GameWorkspaceHeader gameId={Number(id)} game={currentGame} />
         <div
@@ -2966,7 +2972,7 @@ const Attack: FC = () => {
           aria-label="Live competition arena"
           data-arena-theme="globe"
           data-arena-scheme={scheme}
-          style={{ minWidth: 0, colorScheme: scheme }}
+          style={{ minWidth: 0, colorScheme: scheme, visibility: currentGame ? undefined : 'hidden' }}
         />
       </Stack>
     </WithNavBar>

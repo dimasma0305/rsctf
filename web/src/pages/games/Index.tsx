@@ -351,7 +351,7 @@ const Games: FC = () => {
         )}
       </Stack>
 
-      <GanttTimeLine items={recents} />
+      {(games || gamesError) && <GanttTimeLine items={recents} />}
     </WithNavBar>
   )
 }

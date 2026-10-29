@@ -56,7 +56,6 @@ const Scoreboard: FC = () => {
   const { game } = useGame(numId)
   const { finished, status } = useGameStatus(game)
 
-
   // Derive presence of each engine to pick the board(s) to show. The three boards
   // are independent: jeopardy uses ScoreboardTable, A&D uses the official epoch
   // AdScoreboardTable, and KotH uses its dedicated /Ad/Koth/Scoreboard board.
@@ -293,7 +292,9 @@ const Scoreboard: FC = () => {
 
   return (
     <WithNavBar width={GAME_PAGE_CONTENT_WIDTH} competition>
-      <WithGameTab summary={teamInfo && !teamInfoError ? <TeamRank teamState={teamState} compact /> : undefined}>
+      <WithGameTab
+        summary={game?.status === 'Accepted' && !teamInfoError ? <TeamRank teamState={teamState} compact /> : undefined}
+      >
         {isMobile ? (
           <Stack>
             {freezeBanner}

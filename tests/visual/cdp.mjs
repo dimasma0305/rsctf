@@ -5,6 +5,11 @@ import { join } from 'node:path'
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
+// Fetch handles expire when the browser retires a request, including AbortSignal
+// cancellations before Network emits loadingFailed. Keep all other CDP errors fatal.
+export const isRetiredInterception = (error) =>
+  /^Fetch\.(?:fulfillRequest|continueRequest): Invalid InterceptionId\.?$/.test(error?.message ?? '')
+
 function which(command) {
   try {
     return execFileSync('which', [command], { encoding: 'utf8' }).trim()
@@ -52,6 +57,7 @@ export class CdpClient {
       if (message.id) {
         const pending = this.pending.get(message.id)
         if (!pending) return
+        clearTimeout(pending.timeout)
         this.pending.delete(message.id)
         if (message.error) pending.reject(new Error(`${pending.method}: ${message.error.message}`))
         else pending.resolve(message.result)
@@ -67,16 +73,21 @@ export class CdpClient {
     this.listeners.set(method, listeners)
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = 60_000) {
     if (!this.socket) throw new Error('CDP client is not connected')
     const id = this.nextId++
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method })
+      const timeout = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error(`${method}: CDP timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      this.pending.set(id, { resolve, reject, method, timeout })
       this.socket.send(JSON.stringify({ id, method, params }))
     })
   }
 
   close() {
+    for (const pending of this.pending.values()) clearTimeout(pending.timeout)
     this.socket?.close()
   }
 }

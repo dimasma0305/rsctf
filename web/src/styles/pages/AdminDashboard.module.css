@@ -40,7 +40,7 @@
 }
 
 .emptyTrend {
-  min-height: 10rem;
+  min-height: 300px;
   justify-content: center;
   max-width: 48ch;
 }

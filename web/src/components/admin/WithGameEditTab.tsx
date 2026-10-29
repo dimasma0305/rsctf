@@ -113,18 +113,20 @@ export const WithGameEditTab: FC<GameEditTabProps> = ({
         </Stack>
         <Stack miw={0} pos="relative" className={classes.eventContent}>
           <LoadingOverlay visible={isLoading ?? false} overlayProps={DEFAULT_LOADING_OVERLAY} />
-          {head && (
-            <Group
-              wrap="wrap"
-              justify={contentPos ?? 'space-between'}
-              gap="sm"
-              className={classes.toolbar}
-              {...headProps}
-            >
-              {head}
-            </Group>
-          )}
-          {children}
+          <Stack gap="md" style={{ visibility: isLoading ? 'hidden' : undefined }} aria-busy={isLoading}>
+            {head && (
+              <Group
+                wrap="wrap"
+                justify={contentPos ?? 'space-between'}
+                gap="sm"
+                className={classes.toolbar}
+                {...headProps}
+              >
+                {head}
+              </Group>
+            )}
+            {children}
+          </Stack>
         </Stack>
       </div>
     </AdminPage>
