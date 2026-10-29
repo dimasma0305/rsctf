@@ -27,6 +27,8 @@ export function scanControls() {
   }
   const visit = (root, prefix = '') => {
     for (const e of root.querySelectorAll('*')) {
+      // Resource links can have an implicit "link" role, but are not UI controls.
+      if (e.closest('head') || e.matches('link,meta,script,style,template')) continue
       if (e.shadowRoot) visit(e.shadowRoot, `${prefix}${path(e)} >>> `)
       const role = getRole(e)
       const props = Object.keys(e).find((k) => k.startsWith('__reactProps$'))

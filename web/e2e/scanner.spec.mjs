@@ -20,6 +20,10 @@ test('scanner preserves hidden, disabled, custom, duplicate and shadow controls 
     <button aria-haspopup="menu">Open menu</button><a href="https://example.invalid">External</a>
     <input type="hidden" value="must-not-be-in-inventory"><div id="shadow"></div>`)
   await page.evaluate(() => {
+    const resource = document.createElement('link')
+    resource.rel = 'icon'
+    resource.href = 'data:,'
+    document.head.append(resource)
     window.clicks = 0
     document.addEventListener('click', () => window.clicks++)
     document.querySelector('#custom').__reactProps$fixture = { onClick: () => {} }
@@ -39,5 +43,6 @@ test('scanner preserves hidden, disabled, custom, duplicate and shadow controls 
   expect(controls.find((c) => c.name === 'External').safeOpen).toBe(false)
   expect(controls.find((c) => c.name === 'Shadow action').selector).toContain(' >>> ')
   expect(controls.some((c) => c.type === 'hidden')).toBe(false)
+  expect(controls.some((c) => c.tag === 'link' || c.selector.includes('head:'))).toBe(false)
   expect(await page.evaluate(() => window.clicks)).toBe(0)
 })
