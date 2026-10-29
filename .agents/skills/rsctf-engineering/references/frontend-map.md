@@ -41,6 +41,14 @@ route matching, follow Vite's configuration and React Router.
 
 ## Shared concerns
 
+Live round layout stability is owned by
+[CompetitionStatus.tsx](../../../../web/src/components/competition/CompetitionStatus.tsx)
+and its CSS module: reserve the epoch/tick cells and keep notices in one persistent
+disclosure with bounded expanded content. The first challenge read uses
+[ChallengePanelSkeleton.tsx](../../../../web/src/components/competition/ChallengePanelSkeleton.tsx).
+[layout-stability.mjs](../../../../tests/visual/layout-stability.mjs) delays reads,
+exercises actual polling, and measures toolbar positions from 320px to desktop.
+
 | Concern | Owning files/directories |
 | --- | --- |
 | API types, fetcher, generated/manual hooks | [web/src/Api.ts](../../../../web/src/Api.ts), [web/template/](../../../../web/template/), [web/package.json](../../../../web/package.json) |

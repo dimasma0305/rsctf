@@ -14,8 +14,8 @@
   padding: 0.75rem 1rem;
 }
 .metrics {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 7ch minmax(0, 14rem) 7ch 7ch;
   align-items: start;
   gap: 0.5rem 0;
   margin: 0;
@@ -36,6 +36,9 @@
   font-size: 0.6875rem;
   line-height: 1.4;
   color: var(--app-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .metrics dd {
   margin: 0;
@@ -43,6 +46,9 @@
   line-height: 1.5;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .metrics .deadline dd {
   font-size: 0.8125rem;
@@ -57,7 +63,23 @@
   padding: 0.125rem 0.75rem;
   border-top: 1px solid var(--app-border-subtle);
 }
-.messages > details + details {
+.messages > summary {
+  grid-template-columns: minmax(0, 1fr) auto;
+  height: 44px;
+}
+.noticeSummary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.noticeContent {
+  /* Opening details is intentional; subsequent polls must not resize it. */
+  height: 16rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.25rem;
+}
+.noticeContent > details + details {
   border-top: 1px solid var(--app-border-subtle);
 }
 @container (max-width: 40rem) {

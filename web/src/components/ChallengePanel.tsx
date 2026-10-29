@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Center, Divider, Group, ScrollArea, Skeleton, Stack, Text, Title } from '@mantine/core'
+import { Alert, Button, Center, Divider, Group, ScrollArea, Stack, Text, Title } from '@mantine/core'
 import { useElementSize, useLocalStorage } from '@mantine/hooks'
 import { mdiAlertCircleOutline, mdiCrown, mdiFlagOutline, mdiSwordCross, mdiVpn } from '@mdi/js'
 import { Icon } from '@mdi/react'
@@ -13,6 +13,7 @@ import { GameChallengeModal } from '@Components/GameChallengeModal'
 import { WriteupSubmitModal } from '@Components/WriteupSubmitModal'
 import { ChallengeGlobe, type GlobeNode } from '@Components/competition/ChallengeGlobe'
 import { ChallengeList } from '@Components/competition/ChallengeList'
+import { ChallengePanelSkeleton } from '@Components/competition/ChallengePanelSkeleton'
 import { ChallengeToolbar } from '@Components/competition/ChallengeToolbar'
 import {
   isAcceptedSolve,
@@ -347,48 +348,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     )
   }
 
-  // skeleton for loading
-  if (!challenges) {
-    return (
-      <div className={classes.panel}>
-        <Stack className={classes.filters}>
-          {Array(9)
-            .fill(null)
-            .map((_v, i) => (
-              <Group key={i} wrap="nowrap" p={10}>
-                <Skeleton height="1.5rem" width="1.5rem" />
-                <Skeleton height="1rem" />
-              </Group>
-            ))}
-        </Stack>
-        <div className={`${classes.challengeGrid} ${classes.skeletonGrid}`}>
-          {Array(13)
-            .fill(null)
-            .map((_v, i) => (
-              <Card key={i} shadow="sm">
-                <Stack gap="sm" pos="relative" style={{ zIndex: 99 }}>
-                  <Skeleton height="1.5rem" width="70%" mt={4} />
-                  <Divider />
-                  <Group wrap="nowrap" justify="space-between" align="start">
-                    <Center>
-                      <Skeleton height="1.5rem" width="5rem" />
-                    </Center>
-                    <Stack gap="xs">
-                      <Skeleton height="1rem" width="6rem" mt={5} />
-                      <Group justify="center" gap="md" h={20}>
-                        <Skeleton height="1.2rem" width="1.2rem" />
-                        <Skeleton height="1.2rem" width="1.2rem" />
-                        <Skeleton height="1.2rem" width="1.2rem" />
-                      </Group>
-                    </Stack>
-                  </Group>
-                </Stack>
-              </Card>
-            ))}
-        </div>
-      </div>
-    )
-  }
+  if (!challenges) return <ChallengePanelSkeleton view={view} />
 
   if (allChallenges.length === 0) {
     return (

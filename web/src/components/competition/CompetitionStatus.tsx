@@ -6,6 +6,7 @@ import { adRoundSecondsRemaining } from '@Utils/adState'
 import { epochProgress } from '@Utils/epochProgress'
 import type { AdStateModel } from '@Api'
 import { CompetitionNotice } from './CompetitionNotice'
+import noticeClasses from './CompetitionNotice.module.css'
 import classes from './CompetitionStatus.module.css'
 import { FlagDeliveryNotice } from './FlagDeliveryNotice'
 
@@ -77,6 +78,16 @@ export const CompetitionStatus = ({
         ]
       : []),
   ]
+  const deliveryFailed = !!(hasAd && state && state.currentRound > 0 && state.flagDeliveryFailures > 0)
+  const noticeCount = messages.length + Number(deliveryFailed)
+  const noticeSummary = !state
+    ? t('game.arena.round_loading', 'Loading round status')
+    : deliveryFailed
+      ? t('game.content.ad.delivery_notice.title', {
+          count: state.flagDeliveryFailures,
+          defaultValue: '{{count}} A&D flag deliveries failed across this event',
+        })
+      : (messages[0]?.title ?? t('game.arena.round_notices_none', 'No round notices'))
 
   return (
     <section
@@ -108,17 +119,15 @@ export const CompetitionStatus = ({
               </span>
             </dd>
           </div>
-          {epoch && (
+          {hasAd && (
             <>
               <div>
                 <dt>{t('game.arena.epoch', 'Epoch')}</dt>
-                <dd>{epoch.epoch}</dd>
+                <dd>{epoch?.epoch ?? '—'}</dd>
               </div>
               <div>
                 <dt>{t('game.arena.tick', 'Tick')}</dt>
-                <dd>
-                  {epoch.tick}/{epoch.totalTicks}
-                </dd>
+                <dd>{epoch ? `${epoch.tick}/${epoch.totalTicks}` : '—'}</dd>
               </div>
             </>
           )}
@@ -146,24 +155,39 @@ export const CompetitionStatus = ({
           )}
         </Group>
       </div>
-      <div role="status" aria-live="polite" aria-atomic="true">
-        {(messages.length > 0 || (hasAd && state && state.currentRound > 0 && state.flagDeliveryFailures > 0)) && (
-          <div className={classes.messages} data-round-messages>
-            {messages.map(({ title, description }) => (
-              <CompetitionNotice key={title} title={title}>
-                <p>{description}</p>
-              </CompetitionNotice>
-            ))}
-            {hasAd && state && (
-              <FlagDeliveryNotice
-                count={state.flagDeliveryFailures}
-                round={state.currentRound}
-                onToolkit={onAdToolkit}
-              />
-            )}
-          </div>
-        )}
-      </div>
+      <details className={`${noticeClasses.notice} ${classes.messages}`} data-round-messages>
+        <summary data-round-notices-toggle>
+          <span className={classes.noticeSummary} role="status" aria-live="polite" aria-atomic="true">
+            {noticeSummary}
+          </span>
+          <span className={noticeClasses.hint}>
+            {t('game.arena.notice_details', 'Details')}
+            {noticeCount > 1 ? ` (${noticeCount})` : ''}
+          </span>
+        </summary>
+        <div
+          className={classes.noticeContent}
+          role="region"
+          aria-label={t('game.arena.round_notices', { count: noticeCount, defaultValue: 'Round notices: {{count}}' })}
+          tabIndex={0}
+        >
+          {noticeCount === 0 && (
+            <p>
+              {state
+                ? t('game.arena.round_notices_none', 'No round notices')
+                : t('game.arena.round_loading', 'Loading round status')}
+            </p>
+          )}
+          {messages.map(({ title, description }) => (
+            <CompetitionNotice key={title} title={title}>
+              <p>{description}</p>
+            </CompetitionNotice>
+          ))}
+          {hasAd && state && (
+            <FlagDeliveryNotice count={state.flagDeliveryFailures} round={state.currentRound} onToolkit={onAdToolkit} />
+          )}
+        </div>
+      </details>
     </section>
   )
 }

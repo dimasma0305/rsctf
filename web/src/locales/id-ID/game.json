@@ -4,6 +4,9 @@
     "empty_description": "Riwayat skor akan ditampilkan di sini saat tersedia. Peringkat saat ini ada di bawah."
   },
   "arena": {
+    "round_loading": "Memuat status ronde",
+    "round_notices": "Pemberitahuan ronde: {{count}}",
+    "round_notices_none": "Tidak ada pemberitahuan ronde",
     "notice_details": "Detail",
     "warmup_help": "Ronde penilaian pertama belum dimulai. Gunakan toolkit untuk menyiapkan koneksi dan tunggu penyelenggara memulai acara.",
     "awaiting_round_help": "Batas waktu ronde terakhir telah lewat, tetapi ronde baru belum diterima. Halaman diperbarui otomatis. Jika terus terjadi, periksa koneksi dan minta penyelenggara memeriksa mesin ronde; waktu nol belum membuktikan ronde baru telah dimulai.",

@@ -681,6 +681,9 @@ jobs:
       - name: Exercise runtime profile switching and live status badge in Chromium
         run: node tests/visual/runtime-profiles.mjs
 
+      - name: Check delayed reads and live round layout stability in Chromium
+        run: node tests/visual/layout-stability.mjs
+
       - name: Retain account access browser diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -691,6 +694,7 @@ jobs:
             visual-audit-output/team-access/
             visual-audit-output/design-ux/
             visual-audit-output/runtime-profiles/
+            visual-audit-output/layout-stability/
           if-no-files-found: ignore
           retention-days: 3
 

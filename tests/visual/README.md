@@ -1,5 +1,13 @@
 # Full-page visual audit
 
+`layout-stability.mjs` serves the built frontend with isolated API fixtures. It
+delays challenge and round reads, then drives actual polling through deadline,
+flag-delivery failure, and recovery states at 320, 390, 768, and 1600px. The
+challenge toolbar, round strip, and toolkit controls must move no more than 1px.
+Expanded notices keep a bounded scroll region; keyboard and Axe checks cover it.
+Run `scripts/bounded-frontend.sh exec node ../tests/visual/layout-stability.mjs`.
+Evidence is saved in `visual-audit-output/layout-stability/`; no real API writes occur.
+
 For the arena's spherical coastline regression, run the independent SVG/ray oracle:
 
 ```sh

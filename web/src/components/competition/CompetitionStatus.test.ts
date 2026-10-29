@@ -77,7 +77,8 @@ test('round strip keeps paused, warmup, loading and KotH-only states honest', as
     roundEndsAt: null,
   })
   assert.match(warmup, /Warmup/)
-  assert.doesNotMatch(warmup, /Awaiting round update|<dt>Epoch/)
+  assert.doesNotMatch(warmup, /Awaiting round update/)
+  assert.match(warmup, /<dt>Epoch<\/dt><dd>—<\/dd>/)
   const koth = await render(state, false)
   assert.doesNotMatch(koth, /flag deliveries|A&amp;D Toolkit|<dt>Epoch/)
 })

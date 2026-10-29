@@ -4,6 +4,9 @@
     "empty_description": "Score history will appear here when it is available. Current standings are listed below."
   },
   "arena": {
+    "round_loading": "Loading round status",
+    "round_notices": "Round notices: {{count}}",
+    "round_notices_none": "No round notices",
     "notice_details": "Details",
     "warmup_help": "The first scoring round has not started. Use the toolkit to prepare your connection and wait for the organizer to start the event.",
     "awaiting_round_help": "The last reported round deadline has passed, but a newer round has not arrived. The page refreshes automatically. If this persists, check your connection and ask the organizer to inspect the round engine; a zero timer does not prove a new round has started.",
