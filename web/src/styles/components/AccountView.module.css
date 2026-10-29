@@ -109,7 +109,8 @@
   display: grid;
   min-width: 0;
   padding: clamp(1rem, 4vw, 4rem);
-  place-items: center;
+  justify-items: center;
+  align-items: start;
 }
 
 .steps {

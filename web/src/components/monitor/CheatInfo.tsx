@@ -682,7 +682,11 @@ const SmartSearch: FC<{
             style={{ width: '100%' }}
           />
         </Combobox.Target>
-        <Combobox.Dropdown hidden={matchingDefs.length === 0}>
+        <Combobox.Dropdown
+          hidden={matchingDefs.length === 0}
+          mah="min(20rem, calc(100dvh - 10rem))"
+          style={{ maxWidth: 'calc(100vw - 2rem)', overflowY: 'auto' }}
+        >
           <Combobox.Options>
             <Text
               size="xs"

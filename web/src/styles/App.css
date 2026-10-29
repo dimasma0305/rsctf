@@ -94,6 +94,20 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* The root gutter already keeps the scrollbar's space. RemoveScroll must still
+ * lock scrolling, but its extra body margin would compensate a second time. */
+@supports (scrollbar-gutter: stable) {
+  html body[data-scroll-locked] {
+    margin-right: 0 !important;
+    --removed-body-scroll-bar-size: 0px !important;
+  }
+}
+
+.mantine-DateTimePicker-day[data-outside]:not([data-disabled]) {
+  color: var(--app-text-muted);
+  opacity: 1;
+}
+
 #root {
   min-height: 100dvh;
   isolation: isolate;

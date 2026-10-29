@@ -38,7 +38,9 @@ const wait = async (expression) => {
 const visit = async (path, selector) => {
   await cdp.send('Page.navigate', { url: 'about:blank' })
   await cdp.send('Page.navigate', { url: target + path + '?runtime-check=' + Math.random() })
-  await wait(`document.querySelector(${JSON.stringify(selector)})`)
+  // Editors keep their controls mounted but hidden until the initial read is
+  // ready. Audit and interact with the surface a user can actually reach.
+  await wait(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); return element && element.getClientRects().length > 0 && getComputedStyle(element).visibility === 'visible'; })()`)
 }
 const key = async (key, code) => {
   for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', { type, key, windowsVirtualKeyCode: code })

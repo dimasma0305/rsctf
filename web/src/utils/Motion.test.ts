@@ -36,7 +36,7 @@ test('content entrances never hide cards, move page geometry or animate each res
   assert.match(navbar, /data-motion=\{competition \? undefined : 'page'\}/)
   const event = readFileSync('src/components/WithGameTab.tsx', 'utf8')
   assert.ok(event.indexOf('data-motion="page"') > event.indexOf('<GameWorkspaceHeader'))
-  assert.match(event, /data-motion="page">\s*\{children\}/)
+  assert.match(event, /data-motion="page"[^>]*>\s*\{children\}/)
   const verdict = readFileSync('src/components/ChallengeModal.tsx', 'utf8')
   assert.doesNotMatch(verdict, /if \((?:embedded|drawer) && !flagVerdict\)/)
   assert.equal((verdict.match(/opened=\{modalProps.opened && presentationMounted\}/g) ?? []).length, 2)

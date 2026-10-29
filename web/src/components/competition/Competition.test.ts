@@ -234,7 +234,7 @@ test('competition header groups event, team and navigation without an ended coun
   )
 })
 
-test('live arena shares event navigation without inheriting player access checks or adding reads', () => {
+test('live arena shares cached event navigation without inheriting player access checks', () => {
   const header = readFileSync('src/components/GameWorkspaceHeader.tsx', 'utf8')
   const arena = readFileSync('src/pages/games/[id]/Attack.tsx', 'utf8')
   assert.match(header, /path: 'scoreboard',[\s\S]*path: 'attack',[\s\S]*path: 'submit'/)
@@ -246,7 +246,9 @@ test('live arena shares event navigation without inheriting player access checks
   assert.match(arena, /runArena\(shadow, id, preview, setGame\)/)
   assert.match(arena, /!killed && game\?\.id === Number\(gameId\)/)
   assert.match(arena, /game\?\.id === Number\(id\) \? game : undefined/)
-  assert.doesNotMatch(arena, /<WithGameTab|useGameAccess\(|useGame\(|scoreboardLink|eventLink|<PageHeader/)
+  assert.match(arena, /useGame\(Number\(id\)\)/)
+  assert.match(arena, /width=\{GAME_PAGE_CONTENT_WIDTH\}/)
+  assert.doesNotMatch(arena, /<WithGameTab|useGameAccess\(|scoreboardLink|eventLink|<PageHeader/)
 })
 
 test('scoreboard category headings use semantic foreground on both surface schemes', () => {

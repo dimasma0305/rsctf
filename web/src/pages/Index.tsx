@@ -89,19 +89,17 @@ const Home: FC = () => {
           }
         />
 
-        {pinnedPost && (
-          <aside className={classes.pinnedNotice} data-home-pinned aria-label={t('interface.home.pinned')}>
-            <Icon path={mdiPinOutline} size={0.9} aria-hidden="true" />
-            <div>
-              <Text size="xs" fw={650} c="dimmed">
-                {t('interface.home.pinned')}
-              </Text>
-              <Anchor component={Link} to={`/posts/${pinnedPost.id}`} fw={650}>
-                {pinnedPost.title}
-              </Anchor>
-            </div>
-          </aside>
-        )}
+        <aside className={classes.pinnedNotice} data-home-pinned aria-label={t('common.tab.post')}>
+          <Icon path={mdiPinOutline} size={0.9} aria-hidden="true" />
+          <div>
+            <Text size="xs" fw={650} c="dimmed">
+              {pinnedPost ? t('interface.home.pinned') : t('common.tab.post')}
+            </Text>
+            <Anchor component={Link} to={pinnedPost ? `/posts/${pinnedPost.id}` : '/posts'} fw={650}>
+              {pinnedPost?.title ?? t('common.tab.post')}
+            </Anchor>
+          </div>
+        </aside>
 
         <div className={classes.dashboard}>
           <aside
@@ -111,20 +109,14 @@ const Home: FC = () => {
             aria-busy={(!showGames && !gamesError) || undefined}
           >
             {gamesHeading}
-            {(liveCount > 0 || upcomingCount > 0) && (
-              <Group gap="md" py="sm">
-                {liveCount > 0 && (
-                  <Text size="sm" c="dimmed">
-                    {t('interface.home.live_count', { count: liveCount })}
-                  </Text>
-                )}
-                {upcomingCount > 0 && (
-                  <Text size="sm" c="dimmed">
-                    {t('interface.home.upcoming_count', { count: upcomingCount })}
-                  </Text>
-                )}
-              </Group>
-            )}
+            <Group gap="md" py="sm">
+              <Text size="sm" c="dimmed">
+                {t('interface.home.live_count', { count: liveCount })}
+              </Text>
+              <Text size="sm" c="dimmed">
+                {t('interface.home.upcoming_count', { count: upcomingCount })}
+              </Text>
+            </Group>
             {gamesError && (
               <Alert
                 mt="sm"

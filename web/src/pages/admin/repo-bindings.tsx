@@ -351,21 +351,19 @@ const RepoBindings: FC = () => {
               </Button>
             </Group>
           </Group>
-          {bindings && (
-            <div className={classes.overview} aria-label={t('admin.operations.repo_overview')}>
-              {[
-                [t('admin.operations.repositories'), bindings.length],
-                [t('admin.operations.active'), bindings.filter((b) => b.status === 'Active').length],
-                [t('admin.operations.paused'), bindings.filter((b) => b.status === 'Paused').length],
-                [t('admin.operations.scanning'), bindings.filter((b) => b.currentActivity).length],
-              ].map(([label, count]) => (
-                <div key={label} className={classes.metric}>
-                  <Text className={classes.metricLabel}>{label}</Text>
-                  <Text className={classes.metricValue}>{count}</Text>
-                </div>
-              ))}
-            </div>
-          )}
+          <div className={classes.overview} aria-label={t('admin.operations.repo_overview')}>
+            {[
+              [t('admin.operations.repositories'), bindings?.length ?? '—'],
+              [t('admin.operations.active'), bindings?.filter((b) => b.status === 'Active').length ?? '—'],
+              [t('admin.operations.paused'), bindings?.filter((b) => b.status === 'Paused').length ?? '—'],
+              [t('admin.operations.scanning'), bindings?.filter((b) => b.currentActivity).length ?? '—'],
+            ].map(([label, count]) => (
+              <div key={label} className={classes.metric}>
+                <Text className={classes.metricLabel}>{label}</Text>
+                <Text className={classes.metricValue}>{count}</Text>
+              </div>
+            ))}
+          </div>
           <Title order={2} size="h4">
             {t('admin.operations.connected_repositories')}
           </Title>

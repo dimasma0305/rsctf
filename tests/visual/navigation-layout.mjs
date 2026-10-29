@@ -2,9 +2,13 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { launchBrowser } from "./cdp.mjs";
+import { launchBrowser, isRetiredInterception } from "./cdp.mjs";
 import { serveAccountBuild } from "./account-access-fixtures.mjs";
 import { createCompetitionFixture } from "./competition-fixtures.mjs";
+import {
+  createArenaFixture,
+  arenaBrowserSetup,
+} from "./attack-arena-fixtures.mjs";
 import { fixture as overview, guideSetup } from "./overview-pages-fixtures.mjs";
 import { repositoryRoot } from "./route-catalog.mjs";
 import {
@@ -35,6 +39,9 @@ const scoreboard = {
 };
 player.responses["/api/game/901/scoreboard"] = scoreboard;
 player.responses["/api/game/901/scoreboard/page"] = scoreboard;
+const arena = createArenaFixture("jeopardy");
+player.responses["/api/game/901/ad/scoreboard"] = arena.ad;
+player.responses["/api/game/901/ad/koth/scoreboard"] = arena.koth;
 player.responses["/api/team/selector"] = [
   { id: player.rank.id, name: player.rank.name, captain: true },
 ];
@@ -63,9 +70,12 @@ const { cdp, close } = await launchBrowser().catch(async (e) => {
 const reports = [],
   errors = [],
   unknown = [],
-  pending = new Set();
+  pending = new Set(),
+  retiredInterceptions = [];
 let negativeControl;
-let slow = false;
+let slow = false,
+  unavailable = false,
+  coldRecovery;
 const evaluate = async (expression) => {
   const r = await cdp.send("Runtime.evaluate", {
     expression,
@@ -99,7 +109,7 @@ try {
   );
   await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
     source: `if(location.origin===${JSON.stringify(server.origin)}) {
-    localStorage.clear(); ${guideSetup}
+    localStorage.clear(); ${guideSetup} ${arenaBrowserSetup}
     localStorage.setItem('language',JSON.stringify('en-US'));
     localStorage.setItem('challenge-explorer-view',JSON.stringify('list'));
     Object.defineProperty(navigator,'connection',{value:{saveData:true,effectiveType:'3g'},configurable:true});
@@ -128,6 +138,11 @@ try {
           : overview(url.pathname + url.search, request.method);
       if (path.startsWith("/hub"))
         response = { body: { error: "Read-only fixture" } };
+      if (
+        unavailable &&
+        ["/api/game/901", "/api/game/901/ad/scoreboard"].includes(path)
+      )
+        response = { status: 503, body: { title: "Temporary outage" } };
       if (response.status === 404) unknown.push(path);
       await cdp.send("Fetch.fulfillRequest", {
         requestId,
@@ -135,11 +150,24 @@ try {
         responseHeaders: [{ name: "Content-Type", value: "application/json" }],
         body: Buffer.from(JSON.stringify(response.body)).toString("base64"),
       });
-    })().catch((error) => errors.push(String(error)));
+    })().catch((error) => {
+      if (isRetiredInterception(error)) {
+        retiredInterceptions.push({
+          url: event.request.url,
+          networkId: event.networkId,
+        });
+        return;
+      }
+      errors.push(String(error));
+    });
     pending.add(task);
     task.finally(() => pending.delete(task));
   });
-  for (const width of [1600, 1024, 390, 320]) {
+  for (const width of (
+    process.env.RSCTF_NAV_LAYOUT_WIDTHS || "3440,1920,1600,1024,390,320"
+  )
+    .split(",")
+    .map(Number)) {
     slow = false;
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width,
@@ -205,6 +233,10 @@ try {
       ["/games/901/scoreboard", true],
       ["back", true],
       ["forward", true],
+      ["/games/901/attack", true],
+      ["back", true, "/games/901/scoreboard"],
+      ["forward", true, "/games/901/attack"],
+      ["/games/901/scoreboard", true],
       ["/games", false],
       ...(width >= 1024
         ? [
@@ -214,7 +246,7 @@ try {
           ]
         : []),
     ];
-    for (const [target, event] of journeys) {
+    for (const [target, event, historyDestination] of journeys) {
       const action =
         target === "back" || target === "forward"
           ? `history.${target}()`
@@ -222,17 +254,18 @@ try {
       if (!["back", "forward"].includes(target))
         await waitFor(`document.querySelector('a[href="${target}"]')`);
       const result = await evaluate(
-        `window.__layoutProbe.measure(() => { ${action} })`,
+        `window.__layoutProbe.measure(() => { ${action} }, ${target.endsWith("/attack") ? 8000 : 4000})`,
       );
       const cls = sessionScore(result.entries),
         diagnostic = sessionScore(result.entries, true);
       const failures = geometryFailures(result.frames, { event });
       const expected =
-        target === "back"
+        historyDestination ??
+        (target === "back"
           ? "/games/901/challenges"
           : target === "forward"
             ? "/games/901/scoreboard"
-            : target;
+            : target);
       if (
         !result.frames.some((frame) => frame.destination && frame.main) ||
         result.frames.at(-1).path !== expected
@@ -245,6 +278,7 @@ try {
         "/games/901": '[data-guide="event-briefing"]',
         "/games/901/challenges": "[data-challenge-list]",
         "/games/901/scoreboard": '[data-team-name="TCP1P"]',
+        "/games/901/attack": '[data-arena-theme="globe"]',
         "/admin/games": "tbody tr",
         "/admin/settings": "input",
         "/admin/users": "tbody tr",
@@ -267,7 +301,7 @@ try {
         `(async () => (await axe.run(document, {runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.map(v => ({id:v.id,targets:v.nodes.map(n=>n.target)})))()`,
       );
       if (violations.length) failures.push("accessibility violations");
-      const name = `${width}-${target.replaceAll("/", "_")}`;
+      const name = `${width}-${reports.length}-${target.replaceAll("/", "_")}`;
       reports.push({
         name,
         target,
@@ -287,11 +321,45 @@ try {
       console.log(name, JSON.stringify({ cls, diagnostic, failures }));
     }
   }
+  // A cold-load outage must expose the arena's existing automatic-recovery
+  // notice, even when no event DTO can make the shared header ready yet.
+  slow = false;
+  unavailable = true;
+  await cdp.send("Page.navigate", { url: "about:blank" });
+  await cdp.send("Page.navigate", { url: server.origin + "/games/901/attack" });
+  const arenaHost = `document.querySelector('[data-arena-theme="globe"]')`;
+  await waitFor(
+    `${arenaHost}?.shadowRoot?.getElementById('connectionStatus')?.textContent === 'Waiting for data'`,
+  );
+  await waitFor(`getComputedStyle(${arenaHost}).visibility === 'visible'`);
+  assert.equal(
+    await evaluate(`getComputedStyle(${arenaHost}).visibility`),
+    "visible",
+    "cold arena outage must leave the recovery notice visible",
+  );
+  unavailable = false;
+  await evaluate(`window.dispatchEvent(new Event('online'))`);
+  await waitFor(
+    `${arenaHost}?.shadowRoot?.getElementById('connectionStatus')?.textContent === 'Connected' && getComputedStyle(document.querySelector('[data-event-workspace-header]')).visibility === 'visible'`,
+  );
+  coldRecovery = { noticeVisible: true, recovered: true };
+  console.log("PASS: cold arena outage stays visible and recovers");
 } finally {
   await Promise.allSettled([...pending]);
   writeFileSync(
     `${output}/report.json`,
-    JSON.stringify({ reports, negativeControl, errors, unknown }, null, 2),
+    JSON.stringify(
+      {
+        reports,
+        negativeControl,
+        errors,
+        unknown,
+        retiredInterceptions,
+        coldRecovery,
+      },
+      null,
+      2,
+    ),
   );
   await close();
   await server.close();

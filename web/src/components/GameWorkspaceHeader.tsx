@@ -113,7 +113,12 @@ export const GameWorkspaceHeader: FC<{ gameId: number; game?: DetailedGameInfoMo
   )
 
   return (
-    <div className={classes.masthead} data-event-workspace-header>
+    <div
+      className={classes.masthead}
+      data-event-workspace-header
+      aria-busy={!game}
+      style={{ visibility: game ? undefined : 'hidden' }}
+    >
       <header className={classes.header}>
         <Stack gap={4} miw={0}>
           <Group gap="xs" className={classes.eventIdentity}>

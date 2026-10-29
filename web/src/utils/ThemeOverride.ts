@@ -34,9 +34,11 @@ import {
   createTheme,
   useMantineTheme,
 } from '@mantine/core'
+import { DateTimePicker } from '@mantine/dates'
 import { createStyles } from '@mantine/emotion'
 import { useLocalStorage, useMediaQuery } from '@mantine/hooks'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useConfig } from '@Hooks/useConfig'
 import tooltipClasses from '@Styles/Tooltip.module.css'
 import { DIALOG_TRANSITION, DRAWER_TRANSITION, POPOVER_TRANSITION } from './Motion'
@@ -395,6 +397,7 @@ export const useCustomColor = () => {
 }
 
 export const useCustomTheme = () => {
+  const { t } = useTranslation()
   const { config } = useConfig()
   const { customColor } = useCustomColor()
 
@@ -440,7 +443,23 @@ export const useCustomTheme = () => {
     }
   }, [customColor, config.customTheme])
 
-  return { theme }
+  const localizedTheme = useMemo(
+    () => ({
+      ...theme,
+      components: {
+        ...theme.components,
+        DateTimePicker: DateTimePicker.extend({
+          defaultProps: {
+            previousLabel: t('common.pagination.previous'),
+            nextLabel: t('common.pagination.next'),
+            submitButtonProps: { 'aria-label': t('common.button.confirm') },
+          },
+        }),
+      },
+    }),
+    [theme, t]
+  )
+  return { theme: localizedTheme }
 }
 
 export const useIsMobile = (limit?: number) => {
