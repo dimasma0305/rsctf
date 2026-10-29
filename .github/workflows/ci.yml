@@ -740,6 +740,43 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  interaction-scan:
+    name: Interaction map (${{ matrix.viewport }})
+    needs: plan
+    if: needs.plan.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        viewport: [desktop, compact]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.8.0
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm --dir web install --frozen-lockfile
+      - run: pnpm --dir web exec playwright install --with-deps chromium
+      - run: pnpm --dir web build
+      - name: Map every route and probe interactive surfaces
+        run: pnpm --dir web test:interactions --project=${{ matrix.viewport }}
+      - name: Retain interaction inventory, report and failure traces
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: interactions-${{ matrix.viewport }}-${{ github.sha }}
+          path: visual-audit-output/interactions/
+          if-no-files-found: error
+          retention-days: 7
+
   dependency-security:
     name: Dependency security
     needs: plan
@@ -1110,7 +1147,7 @@ jobs:
   required:
     name: Required CI checks
     if: always()
-    needs: [plan, rust-lint, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, layout-scan, dependency-security, load-harness-contracts, cheat-acceptance, architecture-runtime, docs, repository-conventions]
+    needs: [plan, rust-lint, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, layout-scan, interaction-scan, dependency-security, load-harness-contracts, cheat-acceptance, architecture-runtime, docs, repository-conventions]
     runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:

@@ -1,5 +1,8 @@
 // Serialized into the browser; observe visible controls and the page behind portals.
-export function installSurfaceProbe() {
+export function installSurfaceProbe(options = {}) {
+  const popupSelector =
+    options.popupSelector ||
+    '[role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"]';
   const visible = (e) =>
     e &&
     e.getClientRects().length &&
@@ -40,16 +43,26 @@ export function installSurfaceProbe() {
     );
     observer.observe({ type: "layout-shift" });
     const sample = () => {
-      const popup = [
-        ...document.querySelectorAll(
-          '[role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"]',
-        ),
-      ].find(visible);
+      const popup = [...document.querySelectorAll(popupSelector)].find(visible);
+      const style = popup && getComputedStyle(popup);
+      const milliseconds = (value) =>
+        value
+          .split(",")
+          .map((v) => parseFloat(v) * (v.trim().endsWith("ms") ? 1 : 1000));
+      const durations = style ? milliseconds(style.transitionDuration) : [0];
+      const delays = style ? milliseconds(style.transitionDelay) : [0];
       frames.push({
         time: performance.now() - start,
         path: location.pathname,
         background: selectors.map((s) => rect(document.querySelector(s))),
         popup: rect(popup),
+        popupAnimating:
+          popup
+            ?.getAnimations()
+            .some((animation) => animation.playState === "running") || false,
+        popupTransitionMs: Math.max(
+          ...durations.map((d, i) => d + delays[i % delays.length]),
+        ),
         close: rect(popup?.querySelector('button[aria-label="Close"]')),
         scroll: [
           scrollY,
@@ -76,7 +89,7 @@ export function installSurfaceProbe() {
 
 export function surfaceFailures(
   frames,
-  { popup = false, closing = false } = {},
+  { popup = false, closing = false, entranceFromFirstPaint = false } = {},
 ) {
   const failures = [];
   const before = frames[0];
@@ -98,7 +111,27 @@ export function surfaceFailures(
   }
   if (frames.some((f) => f.overflow)) failures.push("horizontal overflow");
   if (popup) {
-    const settled = frames.filter((f) => f.time >= 300 && f.popup);
+    const first = frames.find((f) => f.popup);
+    // Browser clicks can mount a drawer after the event. Allow only its declared
+    // entrance transition plus two frames, bounded to keep late movement observable.
+    const entranceEnd =
+      entranceFromFirstPaint && first
+        ? first.time + Math.min(first.popupTransitionMs || 0, 500) + 34
+        : 300;
+    const settledStart = frames.findIndex(
+      (f) =>
+        f.time >= entranceEnd &&
+        f.popup &&
+        (!entranceFromFirstPaint || !f.popupAnimating),
+    );
+    const settled =
+      settledStart < 0 ? [] : frames.slice(settledStart).filter((f) => f.popup);
+    if (
+      entranceFromFirstPaint &&
+      first &&
+      (!settled.length || settled[0].time - first.time > 750)
+    )
+      failures.push("popup entrance did not settle within 750ms");
     if (!settled.length) failures.push("popup did not open");
     else if (
       settled.some((f) =>

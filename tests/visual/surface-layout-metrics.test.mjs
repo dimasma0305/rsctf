@@ -24,6 +24,39 @@ test("popup entrance is allowed, background compensation is not", () => {
     "background anchor 0 moved",
   ]);
 });
+test("pointer probes allow declared delayed entrance but still reject later growth", () => {
+  const frames = [
+    frame(0),
+    { ...frame(110, { ...rect, x: 200 }), popupTransitionMs: 300 },
+    frame(320, { ...rect, x: 20 }),
+    frame(450, rect),
+    frame(900, rect),
+  ];
+  const options = { popup: true, entranceFromFirstPaint: true };
+  assert.deepEqual(surfaceFailures(frames, options), []);
+  frames.push(frame(1200, { ...rect, height: 250 }));
+  assert.deepEqual(surfaceFailures(frames, options), [
+    "popup resized or moved after entrance",
+  ]);
+});
+test("entrance waits for the actual CSS transition but later transitions remain observable", () => {
+  const frames = [
+    frame(0),
+    { ...frame(32, { ...rect, x: 300 }), popupTransitionMs: 250 },
+    { ...frame(320, { ...rect, x: 30 }), popupAnimating: true },
+    frame(380, rect),
+    frame(900, rect),
+  ];
+  const options = { popup: true, entranceFromFirstPaint: true };
+  assert.deepEqual(surfaceFailures(frames, options), []);
+  frames.push({
+    ...frame(1200, { ...rect, height: 250 }),
+    popupAnimating: true,
+  });
+  assert.deepEqual(surfaceFailures(frames, options), [
+    "popup resized or moved after entrance",
+  ]);
+});
 test("late popup growth, missing surfaces and lost scroll fail", () => {
   assert.deepEqual(
     surfaceFailures(

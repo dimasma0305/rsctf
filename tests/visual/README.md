@@ -442,6 +442,56 @@ Use `RSCTF_DESIGN_OUTPUT` for another diagnostics directory, or
 initial failure and layout regressions against an older production build.
 Fixtures never contact the real service or certify backend authorization.
 
+## Playwright route and interaction inventory
+
+The required `interaction-scan` CI jobs discover every route from `route-catalog.mjs`
+and run the production build at desktop and 320px. Existing four-viewport layout
+scans and navigation regressions remain required. This is a separate discovery
+and open/close layer, not a replacement for behavioral or mutation tests.
+
+```sh
+scripts/bounded-frontend.sh exec playwright install chromium
+scripts/bounded-frontend.sh build
+scripts/bounded-frontend.sh test:interactions
+# Interactive local debugging, or one route:
+scripts/bounded-frontend.sh test:interactions:ui
+scripts/bounded-frontend.sh test:interactions --project=compact --grep '/games/901/scoreboard'
+scripts/bounded-frontend.sh exec playwright show-report ../visual-audit-output/interactions/playwright
+```
+
+`CHROME_BIN` optionally selects an installed Chromium for local runs. CI installs
+the browser pinned by the Playwright lockfile. No real backend or credentials are
+used: requests outside the owned loopback origin are blocked, unknown fixture reads
+fail, and writes are rejected. WebSockets are local fixture stubs.
+
+Artifacts under `visual-audit-output/interactions/` include `inventory.md`,
+`inventory.json`, a searchable `inventory.html`, per-route JSON, the Playwright HTML report, and failure screenshots
+and traces. The CI summary links the counts to each route and viewport. Partial
+local `--grep` runs report their actual scanned route count; they are not full scans.
+
+The source inventory parses TSX with TypeScript, records candidate file/line/tag/event
+signals (including imperative `onclick`/`addEventListener` wiring), and follows
+imports/aliases from each route and the global App providers.
+Runtime discovery uses `dom-accessibility-api` for accessible names/roles and maps
+native controls, ARIA controls, custom click handlers, pointer targets, focusable
+elements and open shadow roots. Repeated controls are retained separately. Hidden
+and disabled controls stay in the inventory. Inputs' values and arbitrary HTML are
+not collected.
+
+Semantic popup/disclosure triggers receive real Playwright pointer clicks. Each
+opened state is scanned, its geometry checked when a popup exists, and its closing
+state asserted. A probe is marked exercised only when an expanded state was observed
+and closed. Nested items, forms, destructive actions, downloads and external links
+are inventoried with an explicit untested reason, not indiscriminately clicked.
+Add explicit fixture-backed scenarios when testing those behaviors.
+
+This does **not** promise every role, locale, feature flag, dataset, nested popup,
+canvas hit target, closed shadow tree, iframe or error state. Source candidates do
+not prove rendering; rendered controls do not prove behavior. Contract-generated
+empty fixture reads are included in reports so missing populated states are visible.
+New routes enter the suite automatically; failed/missing inventories, browser errors,
+unknown reads, writes, unexpected navigation or asserted popup/layout failures block CI.
+
 ## AI chat links
 
 `ai-chat-links.mjs` renders the solved-challenge AI chat section, the admin
