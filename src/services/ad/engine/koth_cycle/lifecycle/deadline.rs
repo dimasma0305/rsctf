@@ -172,8 +172,11 @@ async fn capture_deadline_snapshot(
         return Ok(());
     }
 
-    let (receipt, filesystem_diff) = match (container_id, st.containers.backend_kind()) {
-        (Some(container_id), ContainerBackendKind::Docker) => {
+    let backend = container_id
+        .map(|id| st.containers.runtime_backend_kind(id))
+        .transpose()?;
+    let (receipt, filesystem_diff) = match (container_id, backend) {
+        (Some(container_id), Some(ContainerBackendKind::Docker)) => {
             match st.containers.snapshot_changes(container_id).await {
                 Ok(changes) => {
                     let super::audit::BoundedFilesystemDiff { value, summary } =

@@ -82,6 +82,7 @@ pub(super) struct CycleRow {
 
 #[derive(Debug, FromRow)]
 pub(super) struct HillSpec {
+    pub(super) runtime_profile: Option<String>,
     pub(super) target_id: i32,
     pub(super) image: String,
     pub(super) memory_limit: i32,
@@ -190,6 +191,7 @@ pub(super) async fn load_hill_spec(st: &SharedState, cycle: &CycleRow) -> AppRes
     sqlx::query_as::<_, HillSpec>(
         r#"SELECT target.id AS target_id,
                   challenge.build_image_digest AS image,
+                  challenge.runtime_profile,
                   COALESCE(challenge.memory_limit, 64) AS memory_limit,
                   COALESCE(challenge.cpu_count, 1) AS cpu_count,
                   COALESCE(challenge.storage_limit, 512) AS storage_limit,

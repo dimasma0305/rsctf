@@ -67,13 +67,18 @@
 }
 
 .statusBadge {
-  display: inline-flex;
-  gap: 0.42rem;
   text-transform: none;
+}
+
+.statusBadge :global(.mantine-Badge-section) {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-end: 0.5rem;
 }
 
 .statusDot {
   display: inline-block;
+  flex: 0 0 auto;
   width: 0.47rem;
   height: 0.47rem;
   border-radius: 50%;
@@ -82,7 +87,6 @@
 
 .statusDot[data-status='ongoing'] {
   background: var(--mantine-color-green-6);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--mantine-color-green-6) 18%, transparent);
 }
 
 .statusDot[data-status='coming'] {

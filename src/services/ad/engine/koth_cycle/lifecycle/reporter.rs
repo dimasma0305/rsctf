@@ -7,10 +7,11 @@ use super::CycleRow;
 pub(super) async fn ensure(
     st: &SharedState,
     cycle: &CycleRow,
+    profile: Option<&str>,
 ) -> AppResult<Option<TargetReporterRuntime>> {
     let base_url = st.config.koth_reporter_base_url.as_deref();
     let backend_identity = if base_url.is_some() {
-        st.containers.managed_callback_routing_identity()?
+        st.containers.profile_callback_routing_identity(profile)?
     } else {
         None
     };
@@ -19,7 +20,7 @@ pub(super) async fn ensure(
         TargetReporterRoute {
             base_url,
             bind_addr: &st.config.bind_addr,
-            backend_kind: st.containers.backend_kind(),
+            backend_kind: st.containers.profile_backend_kind(profile)?,
             backend_identity: backend_identity.as_deref(),
         },
         cycle.id,

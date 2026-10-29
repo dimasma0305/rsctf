@@ -11,6 +11,49 @@ use super::*;
 
 type ResourceStore = Arc<Mutex<HashMap<String, serde_json::Value>>>;
 
+#[tokio::test]
+async fn microvm_launch_pins_runtime_class_and_never_falls_back_on_class_removal() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+    let (mut manager, resources) = mock_manager(ServiceFailure::None);
+    let class_path = "/apis/node.k8s.io/v1/runtimeclasses/kata";
+    resources.lock().unwrap().insert(
+        class_path.into(),
+        serde_json::json!({
+            "apiVersion":"node.k8s.io/v1", "kind":"RuntimeClass", "metadata":{"name":"kata"},
+            "handler":"kata-qemu", "overhead":{"podFixed":{"memory":"256Mi"}}
+        }),
+    );
+    let profile = crate::services::container::profiles::config::parse(
+        r#"[{"id":"microvm","name":"MicroVM","backend":"kubernetes","isolation":"microvm","runtimeClass":"kata"}]"#,
+    ).unwrap().remove(0);
+    manager = manager.with_profile(&profile).await.unwrap();
+    assert!(
+        manager.scope.len() <= 63,
+        "profile selectors must fit Kubernetes label values"
+    );
+    let created = manager.create(retry_spec(false)).await.unwrap();
+    let path = format!("/api/v1/namespaces/rsctf-challenges/pods/{}", created.id);
+    assert_eq!(
+        resources.lock().unwrap()[&path]["spec"]["runtimeClassName"],
+        "kata"
+    );
+    assert_eq!(
+        manager.create(retry_spec(false)).await.unwrap().id,
+        created.id
+    );
+    resources.lock().unwrap().remove(class_path);
+    let count = resources.lock().unwrap().len();
+    assert!(manager.create(retry_spec(false)).await.is_err());
+    assert_eq!(resources.lock().unwrap().len(), count);
+    // Clearing the class cannot adopt a pod created under VM isolation.
+    manager.runtime_class = None;
+    assert!(matches!(
+        manager.create(retry_spec(false)).await,
+        Err(AppError::Conflict(_))
+    ));
+    manager.destroy(&created.id).await.unwrap();
+}
+
 #[derive(Clone, Copy)]
 #[repr(u8)]
 enum ServiceFailure {
@@ -213,6 +256,7 @@ fn mock_manager(failure: ServiceFailure) -> (KubernetesContainerManager, Resourc
     });
     (
         KubernetesContainerManager {
+            runtime_class: None,
             client: Client::new(service, "rsctf-challenges"),
             namespace: "rsctf-challenges".to_string(),
             scope: orphans::workload_scope("rsctf-challenges", None),
@@ -224,6 +268,7 @@ fn mock_manager(failure: ServiceFailure) -> (KubernetesContainerManager, Resourc
 
 fn retry_spec(proxy_only: bool) -> ContainerSpec {
     ContainerSpec {
+        runtime_profile: None,
         game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
         image: format!("registry.example/challenge@sha256:{}", "a".repeat(64)),
         memory_limit: 256,
@@ -480,6 +525,7 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         .await
         .expect("connect to the disposable Kubernetes cluster");
     let spec = ContainerSpec {
+        runtime_profile: None,
         game_kind: rsctf_worker_protocol::GameKind::AttackDefense,
         image: IMAGE.to_string(),
         memory_limit: 64,
@@ -570,6 +616,7 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
     let quota_namespace = std::env::var("RSCTF_K8S_REJECTION_NAMESPACE")
         .expect("rejection namespace configured by the live script");
     let quota_manager = KubernetesContainerManager {
+        runtime_class: None,
         client: manager.client.clone(),
         scope: orphans::workload_scope(&quota_namespace, None),
         namespace: quota_namespace,

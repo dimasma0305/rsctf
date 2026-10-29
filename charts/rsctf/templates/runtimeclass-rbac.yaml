@@ -1,0 +1,32 @@
+{{- $classes := list -}}
+{{- range .Values.runtimeProfiles -}}
+  {{- if .runtimeClass -}}{{- $classes = append $classes .runtimeClass -}}{{- end -}}
+{{- end -}}
+{{- if and (ne .Values.runtimeRole "migrate") (not (empty $classes)) }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "rsctf.fullname" . }}-{{ .Release.Namespace }}-runtimeclasses
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    resourceNames: {{ $classes | uniq | toJson }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "rsctf.fullname" . }}-{{ .Release.Namespace }}-runtimeclasses
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "rsctf.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "rsctf.fullname" . }}-{{ .Release.Namespace }}-runtimeclasses
+{{- end }}

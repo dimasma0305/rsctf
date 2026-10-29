@@ -5,6 +5,7 @@ mod checker_publication;
 mod repository_concurrency;
 mod repository_identity_plan;
 mod repository_regression;
+mod runtime_profile_regression;
 mod score_curve_regression;
 mod variant_generator_regression;
 

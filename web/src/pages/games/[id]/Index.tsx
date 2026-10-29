@@ -306,8 +306,14 @@ const GameDetail: FC = () => {
                 {String(game?.id ?? numId).padStart(3, '0')}
               </Text>
               <Group gap="xs" mt="xs">
-                <Badge color={eventStatusColor} variant="light" size="lg" className={classes.statusBadge}>
-                  <span className={classes.statusDot} data-status={gameStatus} aria-hidden="true" />
+                <Badge
+                  color={eventStatusColor}
+                  variant="light"
+                  size="lg"
+                  className={classes.statusBadge}
+                  data-game-status={gameStatus}
+                  leftSection={<span className={classes.statusDot} data-status={gameStatus} aria-hidden="true" />}
+                >
                   {eventStatusLabel}
                 </Badge>
                 <Badge variant="outline">

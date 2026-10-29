@@ -28,6 +28,7 @@ fn challenge() -> game_challenge::Model {
         cpu_count: Some(1),
         expose_port: Some(80),
         workload_spec: None,
+        runtime_profile: None,
         file_name: None,
         flag_template: Some("TCP1P{[GUID]}".into()),
         review_status: ChallengeReviewStatus::Active,

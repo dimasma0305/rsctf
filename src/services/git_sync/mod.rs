@@ -487,6 +487,14 @@ pub(super) async fn import_manifest_inner(
     let ad_allow_self_reset = ad.and_then(|a| a.allow_self_reset).unwrap_or(true);
     let ad_ssh_requires_flag = ad.and_then(|a| a.ssh_requires_flag).unwrap_or(false);
     let ad_self_hosted = ad.and_then(|a| a.self_hosted).unwrap_or(false);
+    let runtime_profile = runtime::selected_profile(
+        st,
+        container,
+        existing.as_ref(),
+        challenge_type,
+        ad_self_hosted,
+        enable_traffic_capture,
+    )?;
     if declared_checker_image
         .as_deref()
         .is_some_and(|value| !value.contains("{{"))
@@ -590,6 +598,7 @@ pub(super) async fn import_manifest_inner(
                 st,
                 challenge,
                 &LiveRuntimeIntent {
+                    runtime_profile: runtime_profile.as_deref(),
                     container_image: container_image.as_deref(),
                     declared_container_image: declared_container_image.as_deref(),
                     memory_limit,
@@ -749,6 +758,7 @@ pub(super) async fn import_manifest_inner(
             am.build_context_subdir = Set(build_context_subdir);
         }
         am.memory_limit = Set(memory_limit);
+        am.runtime_profile = Set(runtime_profile);
         am.storage_limit = Set(storage_limit);
         am.cpu_count = Set(cpu_count);
         am.expose_port = Set(expose_port);

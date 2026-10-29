@@ -96,6 +96,7 @@ fn persistent_replacement_preserves_the_static_runtime_flag() {
         readiness_attempt: 0,
     };
     let hill = super::data::HillSpec {
+        runtime_profile: None,
         target_id: 5,
         image: cycle.expected_image.clone(),
         memory_limit: 512,
@@ -141,6 +142,7 @@ fn managed_reporter_replaces_a_pre_upgrade_create_orphan() {
         readiness_attempt: 0,
     };
     let hill = super::data::HillSpec {
+        runtime_profile: None,
         target_id: 5,
         image: cycle.expected_image.clone(),
         memory_limit: 512,

@@ -122,6 +122,10 @@ pub(super) async fn update(
         updated.workload_spec = value.clone();
         assign!("workload_spec", value);
     }
+    if let Some(value) = model.runtime_profile.as_ref() {
+        updated.runtime_profile = value.clone();
+        assign!("runtime_profile", value.clone());
+    }
     if let Some(value) = model.original_score {
         updated.original_score = value;
         assign!("original_score", value);

@@ -217,6 +217,7 @@ mod tests {
 
     fn no_ad_network_spec(game_kind: GameKind) -> ContainerSpec {
         ContainerSpec {
+            runtime_profile: None,
             game_kind,
             image: "sha256:test".into(),
             memory_limit: 64,

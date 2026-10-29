@@ -54,6 +54,7 @@ mod logging;
 mod naming;
 mod operation_lookup;
 mod policy;
+pub mod profiles;
 #[cfg(test)]
 mod real_docker_tests;
 #[cfg(test)]
@@ -171,6 +172,8 @@ fn labels_match_scope(labels: Option<&HashMap<String, String>>, scope: &str) -> 
 /// for dynamic-flag challenges.
 #[derive(Debug, Clone)]
 pub struct ContainerSpec {
+    /// Administrator-approved runtime profile; absent preserves deployment default.
+    pub runtime_profile: Option<String>,
     /// Competition semantics for routing. Network shape is not a safe proxy:
     /// admin tests and ended-game practice can omit the A&D services network.
     pub game_kind: GameKind,
@@ -238,6 +241,7 @@ impl ContainerSpec {
     ) -> Self {
         Self {
             game_kind: GameKind::AttackDefense,
+            runtime_profile: None,
             image,
             memory_limit: resources.memory_limit,
             cpu_count: resources.cpu_count,
@@ -293,6 +297,8 @@ pub struct DockerContainerManager {
     /// daemon. It prevents one deployment's orphan sweep or operation adoption
     /// from touching another deployment's workloads.
     scope: String,
+    /// All configured Docker scopes share one host capacity budget.
+    capacity_scopes: Vec<String>,
     /// Cached daemon capability used by both the create path and admin warning.
     storage_quota_enforced: std::sync::Arc<std::sync::OnceLock<bool>>,
     /// Live Docker client handle populated by [`Self::connect`].
@@ -313,9 +319,15 @@ impl DockerContainerManager {
             public_entry: std::env::var("RSCTF_DOCKER_PUBLIC_ENTRY").ok(),
             proxy_bind: docker::configured_proxy_bind()?,
             scope: docker_installation_scope(),
+            capacity_scopes: profiles::config::docker_scopes(&docker_installation_scope())?,
             storage_quota_enforced: Default::default(),
             docker: Some(docker),
         })
+    }
+
+    pub(crate) fn with_profile(mut self, profile: &profiles::RuntimeProfile) -> Self {
+        self.scope = profile.scope(&self.scope);
+        self
     }
 
     /// Borrow the live Docker handle.
@@ -519,8 +531,7 @@ impl ContainerManager for DockerContainerManager {
         // would permit cross-workload, private-network, and metadata access.
         let networking_config = if let Some(net) = spec.ad_network.as_ref() {
             let services_cidr = crate::services::ad_vpn::services_cidr();
-            self.ensure_bridge_network(net, Some(services_cidr.as_str()), true, false)
-                .await?;
+            self.ensure_network(net, services_cidr.as_str()).await?;
             Some(NetworkingConfig {
                 endpoints_config: HashMap::from([(net.clone(), EndpointSettings::default())]),
             })
@@ -728,7 +739,10 @@ impl ContainerManager for DockerContainerManager {
     }
 
     async fn ensure_network(&self, name: &str, subnet: &str) -> AppResult<()> {
-        self.ensure_bridge_network(name, Some(subnet), true, false)
+        let mut network_owner = self.clone();
+        network_owner.scope = docker_installation_scope();
+        network_owner
+            .ensure_bridge_network(name, Some(subnet), true, false)
             .await
     }
 

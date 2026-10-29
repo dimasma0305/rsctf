@@ -109,6 +109,7 @@ test('coverage keeps the established environment-only exclusions and complete in
     's3_round_trip',
     'stale_conditional_delete_cannot_destroy_a_real_replacement_runtime',
     'real_docker_large_file_and_fifo_are_bounded_without_exec',
+    'services::container::profiles::real_tests::',
     'live_daemon_response_is_streamed_and_decoded',
     'target_fk_deletes_scoped_tokens',
     'ownership_constraints_are_validated_cascades',
@@ -117,6 +118,8 @@ test('coverage keeps the established environment-only exclusions and complete in
     'postgres_two_operations_share_active_and_completed_generation',
     'postgres_coalesces_retries_and_recovers_one_expired_lease',
   ])
+  assert.match(workflow, /cargo test --lib --all-features --locked real_docker_profiles -- --ignored/)
+  assert.match(workflow, /run: bash scripts\/test-runtime-profiles\.sh/)
   assert.match(job, /cargo llvm-cov --all-targets --all-features --locked --no-report/)
   assert.match(job, /export CARGO_TARGET_DIR="\$GITHUB_WORKSPACE\/target\/llvm-cov-target"/)
   assert.match(job, /cargo llvm-cov show-env --export-prefix/)

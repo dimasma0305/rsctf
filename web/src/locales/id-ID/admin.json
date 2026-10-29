@@ -1,4 +1,16 @@
 {
+  "runtime_profile": {
+    "pending": "Pembaruan runtime terhenti dan perlu dilanjutkan. Pulihkan perubahan yang sama, lalu pilih Simpan dan ganti instance untuk mencoba kembali. Tantangan tetap nonaktif sampai pemulihan selesai.",
+    "label": "Profil runtime",
+    "default": "Bawaan deployment",
+    "description": "Pilih tempat dan cara instance tantangan baru dijalankan. Menyimpan pengaturan tidak memindahkan instance yang sedang berjalan.",
+    "unavailable": "tidak tersedia",
+    "missing": "Profil ini tidak tersedia atau telah dinonaktifkan. Pilih profil aktif untuk instance baru; instance yang sudah ada tetap dikelola runtime asalnya.",
+    "locked": "Runtime A&D/KotH tidak dapat diubah setelah penilaian resmi dimulai. Definisi worker multi-layanan dan BYOC menggunakan konfigurasi runtime tersendiri.",
+    "replace_title": "Ganti instance tantangan yang sedang berjalan?",
+    "replace_warning": "Perubahan akan disimpan dan semua instance tantangan ini dihentikan, termasuk instance pengujian. Berkas yang dapat ditulis dan perubahan peserta akan hilang. Layanan bersama dan pertahanan akan dibuat ulang; peserta Jeopardy memulai instance baru. Skor dan pengiriman flag tetap tersimpan.",
+    "replace_confirm": "Simpan dan ganti instance"
+  },
   "schedule": {
     "reopen_title": "Buka kembali kompetisi ini?",
     "change_title": "Ubah jadwal kompetisi?",

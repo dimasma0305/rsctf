@@ -319,6 +319,8 @@ pub struct ExportChallengeModel {
     #[serde(default)]
     pub workload_spec: Option<JsonValue>,
     #[serde(default)]
+    pub runtime_profile: Option<String>,
+    #[serde(default)]
     pub deadline_utc: Option<DateTime<Utc>>,
     #[serde(default)]
     pub submission_limit: i32,
@@ -404,6 +406,7 @@ impl ExportChallengeModel {
             cpu_count: c.cpu_count,
             expose_port: c.expose_port,
             workload_spec: c.workload_spec.clone(),
+            runtime_profile: c.runtime_profile.clone(),
             deadline_utc: c.deadline_utc,
             submission_limit: c.submission_limit,
             original_score: c.original_score,

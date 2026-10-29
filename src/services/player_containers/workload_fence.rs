@@ -110,6 +110,7 @@ pub(crate) async fn ensure_publication_definition_current(
                   AND ad_allow_egress = $14
                   AND network_mode IS NOT DISTINCT FROM $15
                   AND flag_template IS NOT DISTINCT FROM $16
+                  AND runtime_profile IS NOT DISTINCT FROM $17
            )"#,
     )
     .bind(challenge_id)
@@ -128,6 +129,7 @@ pub(crate) async fn ensure_publication_definition_current(
     .bind(snapshot.ad_allow_egress)
     .bind(snapshot.network_mode.map(|mode| mode as i16))
     .bind(snapshot.flag_template.as_deref())
+    .bind(snapshot.runtime_profile.as_deref())
     .fetch_one(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

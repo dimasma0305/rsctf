@@ -88,6 +88,34 @@ impl ContainerExecError {
 /// Pluggable lifecycle boundary shared by local and trusted-worker runtimes.
 #[async_trait]
 pub trait ContainerManager: Send + Sync {
+    fn runtime_profiles(&self) -> Vec<super::profiles::RuntimeProfile> {
+        Vec::new()
+    }
+
+    fn profile_backend_kind(&self, profile: Option<&str>) -> AppResult<ContainerBackendKind> {
+        if profile.is_some() {
+            return Err(AppError::bad_request("runtime profile is not configured"));
+        }
+        Ok(self.backend_kind())
+    }
+
+    fn runtime_backend_kind(&self, _id: &str) -> AppResult<ContainerBackendKind> {
+        Ok(self.backend_kind())
+    }
+
+    fn profile_requires_proxy(&self, profile: Option<&str>) -> AppResult<bool> {
+        self.profile_backend_kind(profile)?;
+        Ok(self.requires_proxy())
+    }
+
+    fn profile_callback_routing_identity(
+        &self,
+        profile: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        self.profile_backend_kind(profile)?;
+        self.managed_callback_routing_identity()
+    }
+
     fn backend_kind(&self) -> ContainerBackendKind {
         ContainerBackendKind::None
     }
@@ -112,6 +140,20 @@ pub trait ContainerManager: Send + Sync {
     /// limit. `None` means the backend cannot report the capability.
     async fn storage_quota_enforced(&self) -> Option<bool> {
         None
+    }
+
+    async fn profile_storage_quota_enforced(&self, profile: Option<&str>) -> Option<bool> {
+        self.profile_backend_kind(profile).ok()?;
+        self.storage_quota_enforced().await
+    }
+
+    async fn profile_image_exists(&self, profile: Option<&str>, image: &str) -> bool {
+        self.profile_backend_kind(profile).is_ok() && self.image_exists(image).await
+    }
+
+    async fn profile_pull_image(&self, profile: Option<&str>, image: &str) -> AppResult<()> {
+        self.profile_backend_kind(profile)?;
+        self.pull_image(image).await
     }
 
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo>;

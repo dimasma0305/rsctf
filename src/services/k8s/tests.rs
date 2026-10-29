@@ -357,6 +357,7 @@ async fn emit_managed_koth_callback_policy_for_live_test() {
         }
     });
     let manager = KubernetesContainerManager {
+        runtime_class: None,
         client: Client::new(service, "rsctf-challenges"),
         namespace: "rsctf-challenges".to_string(),
         scope: orphans::workload_scope("rsctf-challenges", Some("rsctf-system")),
@@ -365,6 +366,7 @@ async fn emit_managed_koth_callback_policy_for_live_test() {
     let create = tokio::spawn(async move {
         manager
             .create(ContainerSpec {
+                runtime_profile: None,
                 game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
                 image: format!("registry.example/hill@sha256:{}", "a".repeat(64)),
                 memory_limit: 256,
@@ -446,6 +448,7 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
 
     let image = format!("registry.example/hill@sha256:{}", "a".repeat(64));
     let spec = |operation_id: &str| ContainerSpec {
+        runtime_profile: None,
         game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
         image: image.clone(),
         memory_limit: 256,
@@ -578,6 +581,7 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
         }
     });
     let manager = KubernetesContainerManager {
+        runtime_class: None,
         client: Client::new(service, "rsctf-challenges"),
         namespace: "rsctf-challenges".to_string(),
         scope,

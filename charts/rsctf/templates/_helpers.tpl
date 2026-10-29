@@ -86,9 +86,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/* Exact rsctf Service identity allowed to receive managed KotH callbacks. */}}
+{{- define "rsctf.usesKubernetes" -}}
+{{- $enabled := eq (include "rsctf.localContainerBackend" . | trim) "kubernetes" -}}
+{{- range .Values.runtimeProfiles -}}
+  {{- if eq .backend "kubernetes" -}}{{- $enabled = true -}}{{- end -}}
+{{- end -}}
+{{- $enabled -}}
+{{- end }}
+
 {{- define "rsctf.kothReporterPodSelector" -}}
 {{- $localBackend := include "rsctf.localContainerBackend" . | trim -}}
-{{- if and (eq $localBackend "kubernetes") (not (empty .Values.config.kothReporterBaseUrl)) (has .Values.runtimeRole (list "all" "control" "engine" "network")) -}}
+{{- if and (eq (include "rsctf.usesKubernetes" .) "true") (not (empty .Values.config.kothReporterBaseUrl)) (has .Values.runtimeRole (list "all" "control" "engine" "network")) -}}
   {{- if not (empty .Values.kubernetes.kothReporterPodSelector) -}}
     {{- .Values.kubernetes.kothReporterPodSelector -}}
   {{- else if has .Values.runtimeRole (list "all" "control" "network") -}}
@@ -103,6 +111,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $localBackend := include "rsctf.localContainerBackend" . | trim -}}
 {{- $role := .Values.runtimeRole -}}
 {{- $splitRole := and (ne $role "all") (ne $role "migrate") -}}
+{{- $profileIds := dict -}}
+{{- range .Values.runtimeProfiles -}}
+  {{- if or (eq .id "default") (hasKey $profileIds .id) -}}{{- fail "runtimeProfiles require unique IDs other than default" -}}{{- end -}}
+  {{- $_ := set $profileIds .id true -}}
+  {{- if and (eq .backend "docker") (ne $localBackend "docker") -}}{{- fail "Docker profiles require a Docker local backend to mount the same managed daemon" -}}{{- end -}}
+  {{- if and (eq .isolation "microvm") (or (ne .backend "kubernetes") (empty .runtimeClass)) -}}{{- fail "MicroVM profiles require Kubernetes and an explicit Kata runtimeClass" -}}{{- end -}}
+  {{- if and (eq .isolation "container") (not (empty .runtimeClass)) -}}{{- fail "Container profiles must not specify runtimeClass" -}}{{- end -}}
+{{- end -}}
 {{- $reporterSelector := .Values.kubernetes.kothReporterPodSelector | trim -}}
 {{- if not (has $role (list "all" "web" "control" "engine" "network" "migrate")) -}}
 {{- fail "runtimeRole must be one of: all, web, control, engine, network, migrate" -}}
@@ -114,7 +130,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and (not (empty $reporterOrigin)) (regexMatch `:0/?$` $reporterOrigin) -}}
   {{- fail "config.kothReporterBaseUrl must use a callback port between 1 and 65535" -}}
 {{- end -}}
-{{- if and (eq $localBackend "kubernetes") (not (empty $reporterOrigin)) -}}
+{{- if and (eq (include "rsctf.usesKubernetes" .) "true") (not (empty $reporterOrigin)) -}}
   {{- $authority := regexReplaceAll "^https?://" $reporterOrigin "" -}}
   {{- $host := regexReplaceAll ":[0-9]+/?$" $authority "" | trimSuffix "/" -}}
   {{- $serviceSuffix := printf ".%s.svc" .Release.Namespace -}}
@@ -294,7 +310,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and (eq $backend "worker") (eq $localBackend "none") .Values.trafficCapture.enabled -}}
 {{- fail "a pure remote worker backend does not support control-host packet capture; set trafficCapture.enabled=false or use workerBackend.localBackend=docker with runtimeRole=all" -}}
 {{- end -}}
-{{- if and (eq $localBackend "kubernetes") (ne $role "migrate") -}}
+{{- if and (eq (include "rsctf.usesKubernetes" .) "true") (ne $role "migrate") -}}
   {{- $_ := required "kubernetes.adServiceCidr is required on every Kubernetes runtime role, even without VPN; set it to the cluster Service CIDR used by provisioning and checker isolation" .Values.kubernetes.adServiceCidr -}}
   {{- if not .Values.kubernetes.networkPolicyEnforced -}}
     {{- fail "kubernetes.networkPolicyEnforced=true is required after proving that the cluster CNI enforces NetworkPolicy for challenge Pods" -}}
@@ -304,7 +320,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   {{- end -}}
 {{- end -}}
 
-{{- if and (eq $localBackend "kubernetes") (eq (include "rsctf.challengeNamespace" .) .Release.Namespace) -}}
+{{- if and (eq (include "rsctf.usesKubernetes" .) "true") (eq (include "rsctf.challengeNamespace" .) .Release.Namespace) -}}
 {{- fail "kubernetes.challengeNamespace must differ from the Helm release namespace so challenge workloads stay isolated" -}}
 {{- end -}}
 

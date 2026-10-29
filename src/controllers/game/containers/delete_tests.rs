@@ -495,6 +495,7 @@ async fn stale_conditional_delete_cannot_destroy_a_real_replacement_runtime() {
     let manager = crate::services::container::from_env_required().unwrap();
     let operation = uuid::Uuid::new_v4();
     let spec = |suffix: &str| ContainerSpec {
+        runtime_profile: None,
         game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
         image: image.clone(),
         memory_limit: 64,

@@ -157,7 +157,8 @@ pub(crate) async fn get_or_create_shared_container_locked(
         crate::services::container_policy::container_port_mapping(st).await == "PlatformProxy";
     let is_proxy = crate::services::container::should_use_platform_proxy(
         game_kind,
-        st.containers.requires_proxy(),
+        st.containers
+            .profile_requires_proxy(challenge.runtime_profile.as_deref())?,
         platform_proxy,
         vpn_access_required,
     );
@@ -176,6 +177,7 @@ pub(crate) async fn get_or_create_shared_container_locked(
         None => {
             st.containers
                 .create(ContainerSpec {
+                    runtime_profile: challenge.runtime_profile.clone(),
                     game_kind,
                     image: legacy_image
                         .clone()

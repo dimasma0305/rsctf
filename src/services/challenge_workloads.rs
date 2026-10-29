@@ -65,7 +65,8 @@ pub fn validate_json_for_challenge(
 /// their local backend, so topology-wide worker support is not sufficient to
 /// decide image portability for those challenge kinds.
 pub(crate) fn uses_worker_runtime(st: &SharedState, challenge: &game_challenge::Model) -> bool {
-    uses_worker_runtime_for_type(st, challenge.challenge_type)
+    challenge.runtime_profile.is_none()
+        && uses_worker_runtime_for_type(st, challenge.challenge_type)
 }
 
 pub(crate) fn uses_worker_runtime_for_type(
@@ -115,6 +116,8 @@ struct LegacyRuntimeIdentity {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimePublicationFence<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_profile: Option<&'a str>,
     schema: u8,
     runtime_identity: &'a str,
     challenge_type: ChallengeType,
@@ -182,6 +185,7 @@ fn runtime_publication_fence(
     runtime_identity: &str,
 ) -> AppResult<String> {
     let value = RuntimePublicationFence {
+        runtime_profile: challenge.runtime_profile.as_deref(),
         schema: 1,
         runtime_identity,
         challenge_type: challenge.challenge_type,
@@ -204,12 +208,20 @@ fn runtime_publication_fence(
 
 /// Resolve the exact runtime definition once while the caller holds the
 /// challenge-definition fence. Aggregate identity remains the protocol hash;
-/// legacy identity covers every effective single-container launch field while
-/// retaining the exact immutable image separately for `ContainerSpec`.
+/// legacy identity covers the reusable workload definition. Placement affects
+/// the publication fence, so saving a profile preserves an already-running
+/// instance but rejects an in-flight launch taken from the old selection.
 pub fn resolve_runtime(
     st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> AppResult<ResolvedChallengeRuntime> {
+    st.containers
+        .profile_backend_kind(challenge.runtime_profile.as_deref())?;
+    if challenge.runtime_profile.is_some() && challenge.workload_spec.is_some() {
+        return Err(AppError::bad_request(
+            "runtime profiles do not support aggregate worker definitions",
+        ));
+    }
     if let Some(workload) = from_challenge(challenge)? {
         let identity = workload_identity(&workload)?;
         return Ok(ResolvedChallengeRuntime {
@@ -612,6 +624,7 @@ mod tests {
             cpu_count: Some(1),
             expose_port: Some(8080),
             workload_spec: None,
+            runtime_profile: None,
             file_name: None,
             flag_template: None,
             review_status: crate::utils::enums::ChallengeReviewStatus::Active,
@@ -830,6 +843,8 @@ mod tests {
             );
         }
     }
+
+    mod profiles;
 
     #[test]
     fn legacy_launch_image_is_separate_from_bookkeeping_identity() {

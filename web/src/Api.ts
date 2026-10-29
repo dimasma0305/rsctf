@@ -2150,7 +2150,19 @@ export interface WorkloadRolloutModel {
 }
 
 /** Challenge detailed information (Edit) */
+export interface RuntimeProfile {
+  enabled: boolean;
+  id: string;
+  name: string;
+  backend: 'docker' | 'kubernetes';
+  isolation: 'container' | 'microvm';
+  runtimeClass?: string;
+}
+
 export interface ChallengeEditDetailModel {
+  runtimeProfile?: string | null;
+  runtimeProfiles?: RuntimeProfile[];
+  runtimeTransitionPending?: boolean;
   /**
    * Challenge ID
    * @format int32
@@ -2563,6 +2575,8 @@ export interface ImageCleanupReport {
 
 /** Challenge update information (Edit) */
 export interface ChallengeUpdateModel {
+  runtimeProfile?: string | null;
+  replaceRuntimeInstances?: boolean;
   /** Stable opaque identity retained across retry of this exact edit. */
   operationId?: string;
   /** Revision observed by the editor; stale values are rejected. */

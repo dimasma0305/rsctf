@@ -10,6 +10,7 @@ use crate::utils::error::{AppError, AppResult};
 use super::package::{archived_context_fingerprint, context_fingerprint};
 
 pub(super) struct LiveRuntimeIntent<'a> {
+    pub runtime_profile: Option<&'a str>,
     pub container_image: Option<&'a str>,
     pub declared_container_image: Option<&'a str>,
     pub memory_limit: Option<i32>,
@@ -116,6 +117,7 @@ pub(super) async fn live_runtime_update_deferred(
         static_flag_policy_matches(st, challenge, intent.static_flags).await?;
     Ok(
         challenge.container_image.as_deref() != intent.container_image
+            || challenge.runtime_profile.as_deref() != intent.runtime_profile
             || challenge.memory_limit != intent.memory_limit
             || challenge.storage_limit != intent.storage_limit
             || challenge.cpu_count != intent.cpu_count
@@ -134,6 +136,29 @@ pub(super) async fn live_runtime_update_deferred(
             || !checker_matches
             || !flag_policy_matches,
     )
+}
+
+pub(super) fn selected_profile(
+    st: &SharedState,
+    container: Option<&super::manifest::ContainerSection>,
+    existing: Option<&game_challenge::Model>,
+    kind: ChallengeType,
+    byoc: bool,
+    capture: bool,
+) -> AppResult<Option<String>> {
+    let profile = container
+        .and_then(|c| c.runtime_profile.as_ref())
+        .cloned()
+        .unwrap_or_else(|| existing.and_then(|c| c.runtime_profile.clone()));
+    crate::services::container::profiles::policy::validate_selection(
+        st,
+        profile.as_deref(),
+        kind,
+        byoc,
+        existing.is_some_and(|c| c.workload_spec.is_some()),
+        capture,
+    )?;
+    Ok(profile)
 }
 
 #[cfg(test)]

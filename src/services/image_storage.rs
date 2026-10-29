@@ -252,7 +252,10 @@ pub(crate) async fn reserve_runtime_image(
                 1,
             ));
         }
-        let present = st.containers.image_exists(immutable_image).await;
+        let present = st
+            .containers
+            .profile_image_exists(challenge.runtime_profile.as_deref(), immutable_image)
+            .await;
         return Ok(if present {
             RuntimeImageReservation::Unmanaged
         } else {
@@ -260,11 +263,17 @@ pub(crate) async fn reserve_runtime_image(
         });
     }
     lock.release().await?;
-    Ok(if st.containers.image_exists(immutable_image).await {
-        RuntimeImageReservation::Ready
-    } else {
-        RuntimeImageReservation::Missing
-    })
+    Ok(
+        if st
+            .containers
+            .profile_image_exists(challenge.runtime_profile.as_deref(), immutable_image)
+            .await
+        {
+            RuntimeImageReservation::Ready
+        } else {
+            RuntimeImageReservation::Missing
+        },
+    )
 }
 
 #[cfg(test)]

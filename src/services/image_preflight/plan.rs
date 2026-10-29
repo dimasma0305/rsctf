@@ -200,7 +200,7 @@ fn legacy_spec(
 ) -> ContainerSpec {
     let limits = legacy_limits(challenge);
     let expose_port = challenge.expose_port.unwrap_or(80);
-    match challenge.challenge_type {
+    let mut spec = match challenge.challenge_type {
         ChallengeType::AttackDefense => ContainerSpec::ad_service(
             image,
             limits,
@@ -210,6 +210,7 @@ fn legacy_spec(
             PREFLIGHT_FLAG.to_string(),
         ),
         ChallengeType::KingOfTheHill => ContainerSpec {
+            runtime_profile: None,
             game_kind: GameKind::KingOfTheHill,
             image,
             memory_limit: limits.memory_limit,
@@ -229,6 +230,7 @@ fn legacy_spec(
         _ => {
             let network_mode = challenge.network_mode.unwrap_or(NetworkMode::Open);
             ContainerSpec {
+                runtime_profile: None,
                 game_kind: GameKind::Jeopardy,
                 image,
                 memory_limit: limits.memory_limit,
@@ -246,14 +248,28 @@ fn legacy_spec(
                 operation_id: None,
             }
         }
-    }
+    };
+    spec.runtime_profile = challenge.runtime_profile.clone();
+    spec
 }
 
 fn backend_for(st: &SharedState, challenge: &game_challenge::Model) -> Backend {
     if crate::services::challenge_workloads::uses_worker_runtime(st, challenge) {
         Backend::Worker
     } else {
-        Backend::Local(st.containers.backend_kind())
+        // resolve_runtime below reports missing profiles as a skipped target.
+        Backend::Local(
+            st.containers
+                .profile_backend_kind(challenge.runtime_profile.as_deref())
+                .unwrap_or(ContainerBackendKind::None),
+        )
+    }
+}
+
+fn placement_group_key(identity: String, profile: Option<&str>) -> String {
+    match profile {
+        Some(profile) => format!("profile:{profile}:{identity}"),
+        None => identity,
     }
 }
 
@@ -299,7 +315,10 @@ fn target_for(
                 let spec = legacy_spec(challenge, image.clone(), proxy_only);
                 PreflightTarget {
                     challenge_id: challenge.id,
-                    group_key: format!("image:{image}"),
+                    group_key: placement_group_key(
+                        runtime.identity,
+                        challenge.runtime_profile.as_deref(),
+                    ),
                     image: bounded_image(image),
                     backend,
                     per_instance: legacy_totals(legacy_limits(challenge)),
@@ -362,16 +381,20 @@ pub async fn plan(st: &SharedState, game_id: i32) -> AppResult<PreflightPlan> {
     let accepted = accepted_teams(st.pg(), game_id).await?;
     let platform_proxy =
         crate::services::container_policy::container_port_mapping(st).await == "PlatformProxy";
-    let proxy_only = crate::services::container::should_use_platform_proxy(
-        GameKind::Jeopardy,
-        st.containers.requires_proxy(),
-        platform_proxy,
-        false,
-    );
     let mut targets = challenges
         .iter()
         .filter(|challenge| participates(challenge))
-        .map(|challenge| target_for(st, challenge, accepted, proxy_only))
+        .map(|challenge| {
+            let proxy_only = crate::services::container::should_use_platform_proxy(
+                GameKind::Jeopardy,
+                st.containers
+                    .profile_requires_proxy(challenge.runtime_profile.as_deref())
+                    .unwrap_or(true),
+                platform_proxy,
+                false,
+            );
+            target_for(st, challenge, accepted, proxy_only)
+        })
         .collect::<Vec<_>>();
     targets.sort_by_key(|target| target.challenge_id);
     let available = if st.containers.supports_worker_workloads() {
@@ -396,6 +419,26 @@ pub async fn plan(st: &SharedState, game_id: i32) -> AppResult<PreflightPlan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identical_images_on_different_profiles_require_separate_preflight_results() {
+        let plans: Vec<_> = [None, Some("docker"), Some("kubernetes"), Some("microvm")]
+            .into_iter()
+            .map(|profile| {
+                let key = placement_group_key("same-workload".into(), profile);
+                let plan = vec![target(1, &key, false, false)];
+                (key, fingerprint(&plan).unwrap())
+            })
+            .collect();
+        let keys: std::collections::BTreeSet<_> = plans.iter().map(|p| &p.0).collect();
+        let fingerprints: std::collections::BTreeSet<_> = plans.iter().map(|p| &p.1).collect();
+        assert_eq!(keys.len(), 4, "each runtime must execute its own preflight");
+        assert_eq!(
+            fingerprints.len(),
+            4,
+            "changing placement must invalidate prior results"
+        );
+    }
 
     fn target(id: i32, key: &str, skipped: bool, worker: bool) -> PreflightTarget {
         PreflightTarget {

@@ -45,6 +45,27 @@ jwt=(
 
 helm lint charts/rsctf --strict "${jwt[@]}"
 
+profiles='[{"id":"docker","name":"Docker","backend":"docker","isolation":"container"},{"id":"kube","name":"Cluster","backend":"kubernetes","isolation":"container"},{"id":"vm","name":"MicroVM","backend":"kubernetes","isolation":"microvm","runtimeClass":"kata-qemu-runtime-rs"}]'
+profile_args=("${jwt[@]}" --set containerBackend=docker --set docker.socket.enabled=true
+  --set kubernetes.networkPolicyEnforced=true --set kubernetes.adServiceCidr=10.96.0.0/12)
+profile_rendered="$(helm template rsctf charts/rsctf "${profile_args[@]}" --set-json "runtimeProfiles=$profiles")"
+assert_contains "$profile_rendered" 'RSCTF_RUNTIME_PROFILES:' 'runtime profile catalog is not configured'
+assert_contains "$profile_rendered" 'automountServiceAccountToken: true' 'Kubernetes profiles need API credentials even with a Docker default'
+assert_contains "$profile_rendered" 'resourceNames: ["kata-qemu-runtime-rs"]' 'Kata RuntimeClass RBAC must be scoped to configured names'
+assert_contains "$profile_rendered" 'verbs: ["get"]' 'Kata RuntimeClass RBAC must remain read-only'
+for invalid_profiles in \
+  '[{"id":"vm","name":"VM","backend":"docker","isolation":"microvm"}]' \
+  '[{"id":"vm","name":"VM","backend":"kubernetes","isolation":"microvm"}]' \
+  '[{"id":"default","name":"Default","backend":"docker","isolation":"container"}]'; do
+  if helm template rsctf charts/rsctf "${profile_args[@]}" --set-json "runtimeProfiles=$invalid_profiles" >/dev/null 2>&1; then
+    fail 'invalid runtime profile passed chart validation'
+  fi
+done
+if helm template rsctf charts/rsctf "${profile_args[@]}" --set-json "runtimeProfiles=$profiles" \
+  --set kubernetes.networkPolicyEnforced=false >/dev/null 2>&1; then
+  fail 'Kubernetes profiles bypassed NetworkPolicy enforcement validation'
+fi
+
 identity_rendered="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --show-only templates/deployment.yaml \
   --show-only templates/secret.yaml)"

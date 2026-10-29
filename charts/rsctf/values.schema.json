@@ -366,6 +366,21 @@
       }
     },
     "containerBackend": {"type": "string", "enum": ["none", "kubernetes", "docker", "worker"]},
+    "runtimeProfiles": {
+      "type": "array", "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "name", "backend", "isolation"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9-]{1,40}$"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 80},
+          "backend": {"enum": ["docker", "kubernetes"]},
+          "isolation": {"enum": ["container", "microvm"]},
+          "runtimeClass": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"},
+          "enabled": {"type": "boolean"}
+        }
+      }
+    },
     "workerBackend": {
       "type": "object",
       "additionalProperties": false,

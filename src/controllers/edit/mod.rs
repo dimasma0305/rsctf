@@ -153,6 +153,12 @@ pub struct ChallengeUpdateModel {
     /// Missing preserves the current aggregate definition; JSON null clears it.
     #[serde(default, deserialize_with = "present_optional")]
     pub workload_spec: Option<Option<rsctf_worker_protocol::WorkloadSpec>>,
+    /// Missing preserves selection; null restores the deployment default.
+    #[serde(default, deserialize_with = "present_optional")]
+    pub runtime_profile: Option<Option<String>>,
+    /// Explicit destructive replacement, fenced by expectedRevision/operationId.
+    #[serde(default)]
+    pub replace_runtime_instances: bool,
     pub original_score: Option<i32>,
     pub min_score_rate: Option<f64>,
     pub difficulty: Option<f64>,
@@ -314,6 +320,9 @@ pub struct ChallengeEditDetailModel {
     pub cpu_count: Option<i32>,
     pub expose_port: Option<i32>,
     pub workload_spec: Option<JsonValue>,
+    pub runtime_profile: Option<String>,
+    pub runtime_profiles: Vec<crate::services::container::profiles::RuntimeProfile>,
+    pub runtime_transition_pending: bool,
     pub workload_identity: Option<String>,
     pub file_name: Option<String>,
     pub original_score: i32,
@@ -400,7 +409,10 @@ impl ChallengeEditDetailModel {
         let workload_identity = crate::services::challenge_workloads::from_challenge(c)?
             .map(|spec| crate::services::challenge_workloads::workload_identity(&spec))
             .transpose()?;
-        let storage_quota_enforced = st.containers.storage_quota_enforced().await;
+        let storage_quota_enforced = st
+            .containers
+            .profile_storage_quota_enforced(c.runtime_profile.as_deref())
+            .await;
         Ok(Self {
             id: c.id,
             revision: c.revision,
@@ -422,6 +434,9 @@ impl ChallengeEditDetailModel {
             cpu_count: c.cpu_count,
             expose_port: c.expose_port,
             workload_spec: c.workload_spec.clone(),
+            runtime_profile: c.runtime_profile.clone(),
+            runtime_profiles: st.containers.runtime_profiles(),
+            runtime_transition_pending: false,
             workload_identity,
             file_name: attach_name.or_else(|| c.file_name.clone()),
             original_score: c.original_score,

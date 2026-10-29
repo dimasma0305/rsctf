@@ -168,6 +168,7 @@ async fn real_cleanup_preserves_snapshot_and_runtime_across_export_capture_and_d
     .unwrap();
     let runtime = manager
         .create(ContainerSpec {
+            runtime_profile: None,
             game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
             image: image_digest,
             memory_limit: 64,

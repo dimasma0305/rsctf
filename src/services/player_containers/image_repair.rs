@@ -64,7 +64,11 @@ pub(crate) async fn prepare_queued_image(
                 let image = outcome.image_digest.as_deref();
                 let ready = outcome.status == ChallengeBuildStatus::Success
                     && match image {
-                        Some(image) => st.containers.image_exists(image).await,
+                        Some(image) => {
+                            st.containers
+                                .profile_image_exists(challenge.runtime_profile.as_deref(), image)
+                                .await
+                        }
                         None => false,
                     };
                 if ready {
@@ -107,7 +111,10 @@ pub(crate) async fn repair_missing_legacy_image(
     if !crate::services::challenge_images::is_local_image_id(immutable_image) {
         return Ok(false);
     }
-    let image_present = st.containers.image_exists(immutable_image).await;
+    let image_present = st
+        .containers
+        .profile_image_exists(challenge.runtime_profile.as_deref(), immutable_image)
+        .await;
     let archive_available = challenge
         .original_archive_blob_path
         .as_deref()
@@ -149,7 +156,14 @@ pub(crate) async fn repair_missing_legacy_image(
                         });
                         let repaired = if outcome.status == ChallengeBuildStatus::Success {
                             match repaired_image {
-                                Some(value) => st.containers.image_exists(value).await,
+                                Some(value) => {
+                                    st.containers
+                                        .profile_image_exists(
+                                            challenge.runtime_profile.as_deref(),
+                                            value,
+                                        )
+                                        .await
+                                }
                                 None => false,
                             }
                         } else {
@@ -227,7 +241,10 @@ pub(crate) async fn prepare_image_before_admission(
     let mut missing_local_image = None;
     if let Some(image) = legacy_image.as_deref() {
         if crate::services::challenge_images::is_local_image_id(image)
-            && !st.containers.image_exists(image).await
+            && !st
+                .containers
+                .profile_image_exists(challenge.runtime_profile.as_deref(), image)
+                .await
         {
             missing_local_image = Some(image);
         }

@@ -60,6 +60,8 @@ pub async fn rollout_workloads(
 /// use the same fence so switching between aggregate and legacy is ordered.
 pub(super) fn update_changes_runtime_definition(model: &super::ChallengeUpdateModel) -> bool {
     model.workload_spec.is_some()
+        || model.runtime_profile.is_some()
+        || model.replace_runtime_instances
         || model.is_enabled.is_some()
         || model.container_image.is_some()
         || model.memory_limit.is_some()
@@ -84,6 +86,8 @@ mod tests {
     fn runtime_update_predicate_covers_every_legacy_launch_field() {
         let fields = [
             "workloadSpec",
+            "runtimeProfile",
+            "replaceRuntimeInstances",
             "isEnabled",
             "containerImage",
             "memoryLimit",
@@ -108,6 +112,7 @@ mod tests {
             } else if matches!(
                 field,
                 "isEnabled"
+                    | "replaceRuntimeInstances"
                     | "enableTrafficCapture"
                     | "adAllowEgress"
                     | "adAllowSelfReset"

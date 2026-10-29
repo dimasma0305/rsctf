@@ -238,16 +238,23 @@ async fn run_group(
         error: None,
     };
     if !group.is_worker {
-        let pulled =
-            match tokio::time::timeout(PULL_DEADLINE, st.containers.pull_image(&group.image)).await
-            {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(bounded_error(error.to_string())),
-                Err(_) => Err(format!(
-                    "The pull exceeded {} seconds",
-                    PULL_DEADLINE.as_secs()
-                )),
-            };
+        let profile = match &group.launch {
+            Launch::Legacy(spec) => spec.runtime_profile.as_deref(),
+            Launch::Workload { .. } => None,
+        };
+        let pulled = match tokio::time::timeout(
+            PULL_DEADLINE,
+            st.containers.profile_pull_image(profile, &group.image),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(bounded_error(error.to_string())),
+            Err(_) => Err(format!(
+                "The pull exceeded {} seconds",
+                PULL_DEADLINE.as_secs()
+            )),
+        };
         match pulled {
             Ok(()) => outcome.pull = StepStatus::Succeeded,
             Err(error) => {
@@ -425,6 +432,7 @@ mod tests {
 
     fn spec(image: &str) -> ContainerSpec {
         ContainerSpec {
+            runtime_profile: None,
             game_kind: GameKind::Jeopardy,
             image: image.to_string(),
             memory_limit: 64,

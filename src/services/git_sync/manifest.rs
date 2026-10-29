@@ -116,6 +116,13 @@ pub struct ChallengeYaml {
 /// challenge; the image + ports also feed the A&D service container.
 #[derive(Debug, Default, Deserialize)]
 pub struct ContainerSection {
+    /// Omission preserves the current profile; null restores deployment default.
+    #[serde(
+        rename = "runtimeProfile",
+        default,
+        deserialize_with = "runtime_profile_value"
+    )]
+    pub runtime_profile: Option<Option<String>>,
     #[serde(rename = "containerImage")]
     pub container_image: Option<String>,
     #[serde(rename = "flagTemplate")]
@@ -150,4 +157,10 @@ pub struct AdSection {
     pub ssh_requires_flag: Option<bool>,
     #[serde(rename = "selfHosted")]
     pub self_hosted: Option<bool>,
+}
+
+fn runtime_profile_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
 }

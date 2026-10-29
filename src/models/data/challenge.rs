@@ -46,6 +46,8 @@ pub mod game_challenge {
         /// Optional worker-plane aggregate definition. Input is validated before
         /// persistence; JSONB keeps the protocol representation byte-compatible.
         pub workload_spec: Option<Json>,
+        #[serde(default)]
+        pub runtime_profile: Option<String>,
         pub file_name: Option<String>,
         pub flag_template: Option<String>,
         pub review_status: ChallengeReviewStatus,

@@ -5,6 +5,13 @@ Start with the feature row in [application-map.md](application-map.md). Read
 
 ## Routes and composition
 
+Challenge execution placement is edited by
+[RuntimeProfileSelect.tsx](../../../../web/src/components/admin/RuntimeProfileSelect.tsx).
+It consumes the administrator-owned catalog returned with challenge details;
+ordinary saves preserve running instances, while replacement has a destructive
+confirmation. [runtime-profiles.mjs](../../../../tests/visual/runtime-profiles.mjs)
+checks the real editor payload/locks and the event landing badge's icon spacing.
+
 [web/vite.config.mts](../../../../web/vite.config.mts) configures `vite-plugin-pages` for `web/src/pages/**/*.tsx`.
 [web/src/App.tsx](../../../../web/src/App.tsx) imports `~react-pages`, renders `useRoutes`, and composes the
 theme, notifications, dialogs, WSRX, guide, viewer identity and SWR providers.
