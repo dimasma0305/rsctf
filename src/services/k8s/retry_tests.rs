@@ -15,7 +15,6 @@ type ResourceStore = Arc<Mutex<HashMap<String, serde_json::Value>>>;
 async fn microvm_launch_pins_runtime_class_and_never_falls_back_on_class_removal() {
     let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let (mut manager, resources) = mock_manager(ServiceFailure::None);
-    manager.runtime_class = Some("kata".into());
     let class_path = "/apis/node.k8s.io/v1/runtimeclasses/kata";
     resources.lock().unwrap().insert(
         class_path.into(),
@@ -23,6 +22,14 @@ async fn microvm_launch_pins_runtime_class_and_never_falls_back_on_class_removal
             "apiVersion":"node.k8s.io/v1", "kind":"RuntimeClass", "metadata":{"name":"kata"},
             "handler":"kata-qemu", "overhead":{"podFixed":{"memory":"256Mi"}}
         }),
+    );
+    let profile = crate::services::container::profiles::config::parse(
+        r#"[{"id":"microvm","name":"MicroVM","backend":"kubernetes","isolation":"microvm","runtimeClass":"kata"}]"#,
+    ).unwrap().remove(0);
+    manager = manager.with_profile(&profile).await.unwrap();
+    assert!(
+        manager.scope.len() <= 63,
+        "profile selectors must fit Kubernetes label values"
     );
     let created = manager.create(retry_spec(false)).await.unwrap();
     let path = format!("/api/v1/namespaces/rsctf-challenges/pods/{}", created.id);

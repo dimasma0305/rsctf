@@ -75,7 +75,9 @@ impl RuntimeProfile {
     }
 
     pub(crate) fn scope(&self, base: &str) -> String {
-        crate::utils::codec::sha256_str(&format!("{base}\0{}\0{}", self.id, self.identity()))
+        // Shared by Docker and Kubernetes: label values must fit within 63 bytes.
+        crate::utils::codec::sha256_str(&format!("{base}\0{}\0{}", self.id, self.identity()))[..32]
+            .to_string()
     }
 }
 
