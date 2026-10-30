@@ -22,7 +22,8 @@ without it fail closed.
 ::: warning Existing database
 “First account” means the first account in the connected PostgreSQL database,
 not the first registration after a container restart or reinstall. If you
-deliberately wipe the database, rotate the setup token before exposing it again.
+deliberately wipe the database, Docker generates a new setup code. Rotate any
+manually supplied setup token before exposing the fresh database.
 :::
 
 ## 2. Review the public identity
