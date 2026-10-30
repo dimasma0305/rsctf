@@ -14,7 +14,8 @@ export const teamInviteFromInput = (input: string, origin: string): string => {
   } catch {
     /* A plain code is also accepted. */
   }
-  return value
+  // Normalize a complete pasted code, but keep spaces while a name is being typed.
+  return isValidTeamInviteCode(value) ? value : input
 }
 
 export const isTeamInviteDestination = (path: string): boolean => {

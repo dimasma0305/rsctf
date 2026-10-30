@@ -4,6 +4,12 @@ import { isValidTeamInviteCode, teamInviteFromInput, isTeamInviteDestination } f
 
 const token = '0123456789abcdef0123456789abcdef'
 
+test('typing a team name preserves spaces until its invitation code is complete', () => {
+  assert.equal(teamInviteFromInput('Pixel ', 'https://ctf.test'), 'Pixel ')
+  const code = `Pixel Pirates:7:${token}`
+  assert.equal(teamInviteFromInput(` ${code} `, 'https://ctf.test'), code)
+})
+
 test('team invite readiness matches the format accepted by the join action', () => {
   assert.equal(isValidTeamInviteCode(`rookies:7:${token}`), true)
   assert.equal(isValidTeamInviteCode(`red:blue:42:${token}`), true)
