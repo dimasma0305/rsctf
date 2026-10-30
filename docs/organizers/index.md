@@ -1,5 +1,16 @@
 # Run your first event
 
+For a quick start, open **Admin → Games → Create sample game**. The sample
+contains a small text challenge with a known answer. **Getting started** guides
+you through trying its answer, enabling it, checking readiness, and copying
+the game link. New games start tomorrow by default and are unlisted (people
+with the link can still open them).
+
+For your own challenge, the default form asks for a title, instructions,
+answer, and points. **Advanced options** contains challenge types and categories.
+The answer check verifies the saved answer without awarding points; still test
+the player journey below before opening a real competition.
+
 This tutorial builds a small Jeopardy event first. It gives you a complete, testable path before you add A&D, KotH, repository sync, or complex infrastructure.
 
 ## Before creating the game

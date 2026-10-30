@@ -28,6 +28,10 @@ target/
 /docs/.vitepress/dist
 /deploy/.env
 /deploy/backups
+/backups
+/.releases
+/.rsctf-maintenance.lock
+/.rsctf-update.json
 /tests/load/.lifecycle-state.json
 /tests/load/.lifecycle-state.json.tmp
 /tests/load/.lifecycle-state-*.json

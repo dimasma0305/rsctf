@@ -296,11 +296,13 @@ jobs:
             "$bundle_root/deploy/postgres/init/"
           install -m 0755 \
             scripts/install.sh \
+            scripts/manage.py \
             scripts/compose-maintenance-cutover.sh \
             scripts/kubernetes-maintenance-cutover.sh \
             scripts/docker-proxy-firewall.sh \
             "$bundle_root/scripts/"
           install -m 0644 LICENSE.txt NOTICE "$bundle_root/"
+          install -m 0755 rsctf "$bundle_root/rsctf"
           printf 'RSCTF_RELEASE_VERSION=%s\nRSCTF_RELEASE_IMAGE=%s\n' \
             "$GITHUB_REF_NAME" "$PINNED_IMAGE" \
             > "$bundle_root/deploy/release.env"

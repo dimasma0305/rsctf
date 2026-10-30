@@ -1,64 +1,49 @@
 # RSCTF
 
-Run your own Capture-the-Flag (CTF) competition. Create challenges, invite players,
-and follow their scores.
+**Turn puzzles into a game. Play with friends. Watch your team climb the scoreboard.**
 
-## Install
+Pick a challenge, find its secret answer (a *flag*), and earn points.
 
-Use a Linux machine with [Docker Engine and Docker Compose](https://docs.docker.com/engine/install/) installed.
+![Pick a puzzle from the Flag Quest challenge board](docs/public/screenshots/play.webp)
 
-Run this command in a terminal:
+## Start here
+
+On a Linux machine, paste this into a terminal. The installer helps you set up Docker too.
 
 ```bash
 curl --proto '=https' -fsSL https://github.com/dimasma0305/rsctf/releases/latest/download/install.sh | bash
 ```
 
-1. Press **Enter** to try it locally. For a public website, choose **Public server** and enter your domain.
-2. Open the setup link printed by the installer.
-3. Paste the displayed code into **Setup token** and create your administrator account.
+1. Press **Enter** to try it on your computer, or choose **Public server** to share it online.
+2. Open the link and paste the setup code shown by the installer.
+3. Create your admin account. You're ready!
 
-Docker creates the setup code automatically. The installer shows it for you;
-you can also find it in the Docker logs while setup is unfinished.
+[Installation help](docs/getting-started/install-wizard.md) · [Verify the installer](docs/reference/installer.md#verify-the-installer-before-execution)
 
-See the [installation guide](docs/getting-started/install-wizard.md) for help.
-The command downloads the installer over HTTPS; [verification before execution](docs/reference/installer.md#verify-the-installer-before-execution) is also available.
+## Make your first game
 
-## Run your first game
+Open **Admin → Games → Create sample game**. Follow three small steps:
 
-1. Open **Admin → Games** and create a game with a future start time.
-2. Add a challenge and its answer (the flag), test it, and enable it.
-3. Share the game link with your players.
+![Getting started: add a challenge, try it, and share your game](docs/public/screenshots/getting-started.webp)
 
-Follow the [first-event guide](docs/organizers/index.md) to test and publish it.
+**Have your own puzzle?** Give it a name, write a question, and choose the answer.
 
-<p align="center">
-  <img src="web/public/static/guide/games.webp" alt="RSCTF showing games that players can join" width="960">
-</p>
+![The simple challenge form with a name, question, answer, and points](docs/public/screenshots/create-challenge.webp)
 
-## What you can run
+## Play together
 
-- **Jeopardy:** players solve challenges and submit flags for points.
-- **Attack & Defense:** teams protect their services and attack other teams.
-- **King of the Hill:** teams compete to control a shared target.
+Share your game link. Invite friends to a team. Solve puzzles and cheer each other on.
 
-RSCTF includes accounts, teams, scoreboards, event management, and optional
-cheat review, AI chat disclosures, and solver uploads.
+![Four sample teams climbing the live scoreboard](docs/public/screenshots/scoreboard.webp)
 
-## Help
+*Real RSCTF screens with sample data.* [Player guide](docs/players/accounts-and-teams.md) · [Run an event](docs/organizers/index.md)
 
-- [Player guide](docs/players/accounts-and-teams.md)
-- [Organizer guide](docs/organizers/index.md)
-- [Advanced deployment](deploy/README.md), including containers, workers, and VPN
-- [Backups and updates](docs/deploy/operations.md)
-- [All documentation](docs/index.md)
+## Keep it running
 
-## Contributing
+From your installed `rsctf` folder: **`./rsctf update`** updates the app; **`./rsctf backup`** saves a backup.
 
-To change RSCTF itself, see [CONTRIBUTE.md](CONTRIBUTE.md) for development setup,
-source builds, tests, repository layout, and publishing.
+[Daily backups & restore](docs/deploy/operations.md) · [Advanced game modes & deployment](deploy/README.md) · [All guides](docs/index.md)
 
-## License
+Want to build or contribute? See [CONTRIBUTE.md](CONTRIBUTE.md).
 
-RSCTF is free and open-source software under the [MIT License](LICENSE.txt).
-See the [licensing guide](LICENSING.md) and [NOTICE](NOTICE) for details,
-including the vendored [CreepJS MIT license](web/src/lib/creepjs/LICENSE).
+Free and open source. [MIT License](LICENSE.txt) · [Licensing](LICENSING.md) · [NOTICE](NOTICE)

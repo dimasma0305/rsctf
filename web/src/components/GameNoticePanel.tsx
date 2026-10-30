@@ -211,6 +211,7 @@ export const GameNoticePanel: FC<{ compact?: boolean }> = ({ compact = false }) 
             mah={compact ? '12rem' : undefined}
             viewportProps={{
               tabIndex: 0,
+              role: 'region',
               'aria-label': t('game.label.notices', 'Game notices'),
             }}
           >

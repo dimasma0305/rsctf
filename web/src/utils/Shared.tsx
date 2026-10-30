@@ -54,6 +54,7 @@ import {
   SubmissionType,
   TaskStatus,
 } from '@Api'
+import { httpErrorHelp } from './HttpError'
 
 export const useChallengeTypeLabelMap = () => {
   const { t } = useTranslation()
@@ -645,14 +646,17 @@ export const tryGetErrorMsg = (err: any, t: (key: string) => string): string => 
     return typeof err === 'string' ? err : null
   }
 
-  return (
+  const message =
     tryGetErrorString(err) ||
-    tryGetErrorString(err.title) ||
-    tryGetErrorString(err.response?.data?.title) ||
-    tryGetErrorString(err.message) ||
-    tryGetErrorString(err.cause) ||
+    tryGetErrorString(err?.title) ||
+    tryGetErrorString(err?.response?.data?.title) ||
+    tryGetErrorString(err?.message) ||
+    tryGetErrorString(err?.cause) ||
     t('common.error.unknown')
-  )
+  const help = httpErrorHelp(err)
+  if (!help) return message
+  const translated = t(help.key)
+  return `${message} ${translated === help.key ? help.fallback : translated}`
 }
 
 export const tryGetClientError = (err: any, t: (key: string) => string): ClientError => {
@@ -665,7 +669,6 @@ export const showErrorMsg = (err: any, t: (key: string) => string) => {
     return
   }
 
-  console.warn(err)
   const clientError = tryGetClientError(err, t)
   showErrorNotification(clientError.title, clientError.message)
 }

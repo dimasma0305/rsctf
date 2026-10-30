@@ -31,6 +31,7 @@ import { ScoreboardItemModal } from '@Components/ScoreboardItemModal'
 import { ScoreboardPagination } from '@Components/ScoreboardPagination'
 import { ScrollingText } from '@Components/ScrollingText'
 import { useLanguage } from '@Utils/I18n'
+import type { ScoreboardPaging } from '@Utils/ScoreboardPage'
 import {
   BloodBonus,
   BloodsTypes,
@@ -40,7 +41,6 @@ import {
   PartialIconProps,
 } from '@Utils/Shared'
 import { filterJeopardyChallenges } from '@Utils/scoreboard'
-import type { ScoreboardPaging } from '@Utils/ScoreboardPage'
 import { useGame } from '@Hooks/useGame'
 import { useScoreboardSelection } from '@Hooks/useScoreboardSelection'
 import { ChallengeInfo, ChallengeCategory, ScoreboardItem, ScoreboardModel, SubmissionType } from '@Api'
@@ -282,7 +282,6 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
   const { page: activePage, setPage, keyword, setKeyword } = paging
   const [bloodBonus, setBloodBonus] = useState(BloodBonus.default)
 
-
   // A&D / KotH challenges live on their own boards — keep them out of the jeopardy
   // columns (the shared payload includes them so the challenge list still works).
   const jeopardyChallenges = useMemo(() => filterJeopardyChallenges(scoreboard?.challenges), [scoreboard?.challenges])
@@ -335,7 +334,10 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
       })
     })
     const timer = setTimeout(() => setHighlightedTeam(null), 2500)
-    return () => { cancelAnimationFrame(frame); clearTimeout(timer) }
+    return () => {
+      cancelAnimationFrame(frame)
+      clearTimeout(timer)
+    }
   }, [highlightedTeam, scoreboard?.items])
 
   const { t } = useTranslation()
@@ -418,7 +420,10 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
         </Grid>
         {!!error && (
           <Alert color="red" role="alert">
-            {t('game.content.scoreboard.refresh_error', 'The scoreboard could not be refreshed. Previous results are shown.')}
+            {t(
+              'game.content.scoreboard.refresh_error',
+              'The scoreboard could not be refreshed. Previous results are shown.'
+            )}
           </Alert>
         )}
         <Box className={classes.legend}>
@@ -441,11 +446,22 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
           </Stack>
         </Box>
         <Box pos="relative" aria-busy={paging.pending}>
-          <LoadingOverlay visible={paging.pending} loaderProps={{ role: 'status', 'aria-label': t('common.content.loading', 'Loading') }} />
+          <LoadingOverlay
+            visible={paging.pending}
+            loaderProps={{ role: 'status', 'aria-label': t('common.content.loading', 'Loading') }}
+          />
           <Table.ScrollContainer
             minWidth="100%"
-            tabIndex={0}
-            aria-label={t('game.label.score_table.scroll_region', 'Scrollable team rankings and challenge scores')}
+            scrollAreaProps={{
+              viewportProps: {
+                tabIndex: 0,
+                role: 'region',
+                'aria-label': t(
+                  'game.label.score_table.scroll_region',
+                  'Scrollable team rankings and challenge scores'
+                ),
+              },
+            }}
           >
             <Table
               className={classes.table}

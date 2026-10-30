@@ -96,6 +96,13 @@ reconnection must be tested separately from process exit.
 
 ## Deployment entry points
 
+- [Simple maintenance commands](../../../../scripts/manage.py), exposed through
+  [the launcher](../../../../rsctf), support basic local-storage installs. Update
+  verifies a new bundle, captures a consistent backup and invokes the established
+  cutover. Restore uses a fresh Compose project and preserves file ownership.
+  [Maintenance regressions](../../../../scripts/test-manage.py) include an opt-in
+  real Docker/PostgreSQL restore drill (`RSCTF_MANAGE_DOCKER_TEST=1`).
+
 - [First-run Docker setup](../../../../src/services/bootstrap_admin.rs) generates
   a persistent token for an empty database and shows it in startup logs until setup completes.
   Registration consumes its stored token in the first administrator's transaction.

@@ -250,6 +250,7 @@ export function ChallengeToolbar(props: {
         <Group gap="xs" wrap="wrap" className={classes.resultCount}>
           <Switch
             checked={props.hideSolved}
+            aria-label={t('game.arena.unsolved', 'Unsolved')}
             onChange={(event) => props.onHideSolved(event.currentTarget.checked)}
             label={t('game.arena.unsolved', 'Unsolved')}
             className={classes.unsolvedSwitch}

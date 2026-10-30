@@ -2375,6 +2375,9 @@ export interface FlagPageModel {
 
 /** Basic challenge information (Edit) */
 export interface ChallengeInfoModel {
+  /** Optional simple-editor fields saved atomically on creation. */
+  content?: string;
+  initialFlag?: string;
   /**
    * Challenge ID
    * @format int32

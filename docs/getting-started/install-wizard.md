@@ -4,7 +4,12 @@ The wizard is the easiest way to install rsctf. It asks only the questions that 
 
 ## 1. Prepare your server and run the installer
 
-Use a Linux host with Docker Engine and Compose v2.
+Use a Linux host. If Docker is missing, the installer offers to run Docker's
+official installer with administrator access. You can also install
+[Docker Engine and Compose v2](https://docs.docker.com/engine/install/) yourself.
+If your user cannot access Docker afterward, follow the printed Docker
+post-install link and rerun the same command. Existing Docker installations
+are never replaced automatically.
 Rust, Node.js, Git, and a source checkout are not needed. Before setup begins,
 the installer checks Docker and Compose and explains how to fix missing prerequisites.
 
