@@ -558,19 +558,30 @@ try {
       await wait('document.querySelector("#main-content input[type=email]")')
     }
   )
-  await check(
-    'bootstrap-stays-available-when-public-registration-is-closed',
-    async () => {
+  for (const [viewport, width, height] of [
+    ['desktop', 1440, 1100],
+    ['tablet', 768, 1024],
+    ['mobile', 390, 844],
+    ['compact', 320, 568]
+  ]) {
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile: width <= 390
+    })
+    await check(viewport + '-bootstrap-setup-guidance-with-closed-registration', async () => {
       await visit('/account/register?bootstrap=1', {
         config: { allowRegister: false, allowPasswordRegistration: false }
       })
       await wait('document.querySelector("input[autocomplete=off]")')
       assert.equal(
-        await evaluate('document.body.innerText.includes("Setup token")'),
+        await evaluate('document.body.innerText.includes("first-start Docker logs")'),
         true
       )
-    }
-  )
+      await audit(viewport + '-bootstrap-setup-guidance')
+    })
+  }
   await check(
     'fingerprint-policy-still-disables-external-sign-in',
     async () => {

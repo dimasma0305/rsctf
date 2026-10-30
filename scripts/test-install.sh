@@ -59,7 +59,9 @@ make_fixture() {
 
 run_installer() {
   local fixture=$1 target=$2 output=$3
+  local invocation=("$BOOTSTRAP")
   shift 3
+  if [[ ${RSCTF_TEST_PIPELINE:-0} -eq 1 ]]; then invocation=(-s --); fi
   : > "$TEMP_DIRECTORY/curl.log"
   : > "$TEMP_DIRECTORY/gh.log"
   env \
@@ -68,13 +70,13 @@ run_installer() {
     RSCTF_INSTALLER_FIXTURE="$fixture" \
     RSCTF_TEST_CURL_LOG="$TEMP_DIRECTORY/curl.log" \
     RSCTF_TEST_GH_LOG="$TEMP_DIRECTORY/gh.log" \
-    bash "$BOOTSTRAP" \
+    bash "${invocation[@]}" \
       --install-dir "$target" \
       --mode local \
       --without-docker \
       --non-interactive \
       "$@" \
-      > "$output" 2>&1
+      < "$BOOTSTRAP" > "$output" 2>&1
 }
 
 readonly VALID_FIXTURE="$TEMP_DIRECTORY/valid-fixture"
@@ -104,9 +106,9 @@ env \
     > "$TEMP_DIRECTORY/local.out" 2>&1
 grep -qx "RSCTF_IMAGE=${PINNED_IMAGE}" "$local_checkout/deploy/.env"
 test ! -s "$TEMP_DIRECTORY/local-curl.log"
-local_token="$(sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' "$local_checkout/deploy/.env")"
-test "${#local_token}" -eq 64
-! grep -Fq -- "$local_token" "$TEMP_DIRECTORY/local.out"
+grep -Fxq 'RSCTF_BOOTSTRAP_TOKEN=' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_BOOTSTRAP_AUTO=true' "$local_checkout/deploy/.env"
+! grep -Fq 'Setup token:' "$TEMP_DIRECTORY/local.out"
 local_identity_key="$(sed -n 's/^RSCTF_IDENTITY_HASH_KEY=//p' "$local_checkout/deploy/.env")"
 local_jwt="$(sed -n 's/^RSCTF_JWT_SECRET=//p' "$local_checkout/deploy/.env")"
 test "${#local_identity_key}" -eq 64
@@ -118,7 +120,7 @@ grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$local_checkout/deploy/.e
 grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_ALLOW_COMPETITION_HISTORY_PURGE=false' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$local_checkout/deploy/.env"
-grep -Fq 'The first-administrator setup token is stored only in' \
+grep -Fq 'Copy the setup token shown in the first-start Docker logs.' \
   "$TEMP_DIRECTORY/local.out"
 
 vpn_checkout="$TEMP_DIRECTORY/vpn-checkout"
@@ -236,9 +238,8 @@ run_installer "$VALID_FIXTURE" "$target" "$output" \
   --skip-attestation
 grep -qx "RSCTF_IMAGE=${PINNED_IMAGE}" "$target/deploy/.env"
 test "$(stat -c %a "$target/deploy/.env")" = 600
-token="$(sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' "$target/deploy/.env")"
-test "${#token}" -eq 64
-! grep -Fq -- "$token" "$output"
+grep -Fxq 'RSCTF_BOOTSTRAP_TOKEN=' "$target/deploy/.env"
+grep -Fq 'Setup token: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' "$output"
 identity_key="$(sed -n 's/^RSCTF_IDENTITY_HASH_KEY=//p' "$target/deploy/.env")"
 jwt="$(sed -n 's/^RSCTF_JWT_SECRET=//p' "$target/deploy/.env")"
 test "${#identity_key}" -eq 64
@@ -258,8 +259,8 @@ for helper in \
 done
 grep -Fq '../scripts/compose-maintenance-cutover.sh' "$target/deploy/README.md"
 ! grep -Fq 'docker compose pull && docker compose up -d' "$target/deploy/README.md"
-grep -Fq 'The first-administrator setup token is stored only in' "$output"
-grep -Fq "sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p'" "$output"
+grep -Fq 'Copy the setup token shown in the first-start Docker logs.' "$output"
+grep -Fq 'RSCTF FIRST-TIME SETUP' "$output"
 grep -Fq 'attestation verification was explicitly skipped' "$output"
 test "$(wc -l < "$TEMP_DIRECTORY/curl.log")" -eq 2
 grep -c -- "--proto =https .*--proto-redir =https .*--tlsv1.2 .*--max-time 300 .*--retry-max-time 300" \
@@ -287,6 +288,52 @@ run_installer "$VALID_FIXTURE" "$target" "$output"
 test -f "$target/deploy/compose.yml"
 test -f "$target/deploy/event-vpn/Corefile"
 grep -Fq 'releases/latest' "$TEMP_DIRECTORY/curl.log"
+
+# A pipe must resolve the verified release even from inside an unrelated checkout.
+mkdir -p "$TEMP_DIRECTORY/decoy/scripts" "$TEMP_DIRECTORY/decoy/deploy"
+printf 'do not use this checkout\n' > "$TEMP_DIRECTORY/decoy/deploy/compose.yml"
+(
+  cd "$TEMP_DIRECTORY/decoy/scripts"
+  RSCTF_TEST_PIPELINE=1 run_installer "$VALID_FIXTURE" \
+    "$TEMP_DIRECTORY/piped-rsctf" "$TEMP_DIRECTORY/piped.out" --ref v1.2.3
+)
+test -f "$TEMP_DIRECTORY/piped-rsctf/deploy/.env"
+test ! -e "$TEMP_DIRECTORY/decoy/deploy/.env"
+grep -Fq -- '--source-ref refs/tags/v1.2.3' "$TEMP_DIRECTORY/gh.log"
+
+# A download interrupted before the closing group must execute no installer code.
+if head -n 400 "$BOOTSTRAP" | bash -s -- --install-dir "$TEMP_DIRECTORY/truncated" \
+  > "$TEMP_DIRECTORY/truncated.out" 2>&1; then
+  printf 'installer accepted a truncated script on stdin\n' >&2
+  exit 1
+fi
+test ! -e "$TEMP_DIRECTORY/truncated"
+
+# Hosts without a suitable gh use a pinned, checksum-checked temporary verifier.
+gh_version=2.103.3
+case "$(uname -m)" in x86_64) gh_arch=amd64 ;; *) gh_arch=arm64 ;; esac
+gh_root="gh_${gh_version}_linux_${gh_arch}"
+gh_asset="${gh_root}.tar.gz"
+mkdir -p "$TEMP_DIRECTORY/gh-package/$gh_root/bin"
+install -m 0755 "$SHIM" "$TEMP_DIRECTORY/gh-package/$gh_root/bin/gh"
+tar -C "$TEMP_DIRECTORY/gh-package" -czf "$VALID_FIXTURE/$gh_asset" "$gh_root"
+(cd "$VALID_FIXTURE" && sha256sum "$gh_asset" > "gh_${gh_version}_checksums.txt")
+RSCTF_TEST_ENV_ARGS=(RSCTF_TEST_GH_VERIFY=1 "RSCTF_TEST_OLD_GH=$TEST_BIN/gh")
+run_installer "$VALID_FIXTURE" "$TEMP_DIRECTORY/automatic-verifier" \
+  "$TEMP_DIRECTORY/automatic-verifier.out" --ref v1.2.3
+grep -Fq 'Preparing a temporary release verifier' "$TEMP_DIRECTORY/automatic-verifier.out"
+grep -Fq "$gh_asset" "$TEMP_DIRECTORY/curl.log"
+grep -Fq -- '--source-ref refs/tags/v1.2.3' "$TEMP_DIRECTORY/gh.log"
+test ! -e "$TEMP_DIRECTORY/automatic-verifier/gh"
+cp -a "$VALID_FIXTURE" "$TEMP_DIRECTORY/bad-verifier"
+printf 'altered\n' > "$TEMP_DIRECTORY/bad-verifier/$gh_asset"
+if run_installer "$TEMP_DIRECTORY/bad-verifier" "$TEMP_DIRECTORY/bad-verifier-target" \
+  "$TEMP_DIRECTORY/bad-verifier.out" --ref v1.2.3; then
+  printf 'installer executed a verifier with the wrong checksum\n' >&2
+  exit 1
+fi
+grep -Fq 'Release verifier SHA-256 verification failed' "$TEMP_DIRECTORY/bad-verifier.out"
+test ! -e "$TEMP_DIRECTORY/bad-verifier-target"
 
 bad_target="$TEMP_DIRECTORY/bad-latest"
 RSCTF_TEST_ENV_ARGS=(RSCTF_TEST_GH_VERIFY=1 RSCTF_TEST_LATEST_TAG=main)

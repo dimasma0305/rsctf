@@ -125,7 +125,8 @@ services:
       RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS: ${RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS:-2}
       RSCTF_JWT_SECRET: ${RSCTF_JWT_SECRET:?Set RSCTF_JWT_SECRET in deploy/.env}
       RSCTF_IDENTITY_HASH_KEY: ${RSCTF_IDENTITY_HASH_KEY:?Set RSCTF_IDENTITY_HASH_KEY in deploy/.env}
-      RSCTF_BOOTSTRAP_TOKEN: ${RSCTF_BOOTSTRAP_TOKEN:?Set RSCTF_BOOTSTRAP_TOKEN in deploy/.env to a random 32-byte value}
+      RSCTF_BOOTSTRAP_TOKEN: ${RSCTF_BOOTSTRAP_TOKEN:-}
+      RSCTF_BOOTSTRAP_AUTO: ${RSCTF_BOOTSTRAP_AUTO:-true}
       # Independent event-security secrets. Empty keeps every new event toggle
       # fail-closed; configure stable random values before enabling one.
       RSCTF_EVENT_VPN_CREDENTIAL_KEY: ${RSCTF_EVENT_VPN_CREDENTIAL_KEY:-}

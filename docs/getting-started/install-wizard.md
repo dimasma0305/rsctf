@@ -2,14 +2,16 @@
 
 The wizard is the easiest way to install rsctf. It asks only the questions that change the deployment, generates secrets locally, validates the configuration, and waits for the application to become healthy.
 
-## 1. Run the remote installer
+## 1. Prepare your server and run the installer
 
-Follow the [verified release-installer procedure](../reference/installer) before
-executing the guided installer. The short form below assumes `install.sh` has
-already passed that artifact-attestation check:
+Use a Linux host with Docker Engine and Compose v2.
+Rust, Node.js, Git, and a source checkout are not needed. Before setup begins,
+the installer checks Docker and Compose and explains how to fix missing prerequisites.
+
+Run this in a terminal:
 
 ```bash
-bash ./install.sh --ref vX.Y.Z
+curl --proto '=https' -fsSL https://github.com/dimasma0305/rsctf/releases/latest/download/install.sh | bash
 ```
 
 The bootstrap accepts only a strict `vX.Y.Z` release (or resolves the latest
@@ -18,28 +20,33 @@ and GitHub artifact-attestation bundle, and verifies both by default. The
 archive pins the matching immutable GHCR server image digest. It does not
 clone the source repository or compile the application.
 
-Install a current GitHub CLI with `gh attestation verify` support first. For a
-repeatable event, keep the explicit `--ref vX.Y.Z` shown above.
+The installer uses Bash and reads wizard answers from your terminal, so the
+pipe remains reserved for the script. It waits for the complete script before
+performing any work. This entry point trusts HTTPS for the installer itself;
+the release bundle is independently verified. To verify the installer before
+execution too, use the [manual procedure](../reference/installer#verify-the-installer-before-execution).
+
+For a repeatable event, pin the release with `--ref`:
+
+```bash
+curl --proto '=https' -fsSL https://github.com/dimasma0305/rsctf/releases/latest/download/install.sh | bash -s -- --ref vX.Y.Z
+```
 
 The explicit `--skip-attestation` option is a warned checksum-only recovery or
 development escape hatch, not a production installation mode.
 
-Inspecting the verified local copy before execution is also encouraged:
+## 2. Choose local or public
 
-```bash
-less install.sh
-bash install.sh --ref vX.Y.Z
-```
+The first screen offers:
 
-## 2. Answer the wizard
+- **Try locally**: accept the default and open `http://localhost:8080` on the installation host.
+- **Public server**: enter your domain; the included Caddy proxy configures HTTPS.
+- **Advanced setup**: select an existing reverse proxy, a custom local port,
+  dynamic Docker challenges, or an A&D WireGuard VPN. You can also pass `--advanced`.
 
-The wizard checks Docker and Compose, then offers these practical choices:
-
-- **Local HTTP** for evaluation on one computer
-- **Automatic HTTPS** with the included Caddy reverse proxy
-- **Existing reverse proxy** when your server already runs Traefik, Caddy, Nginx, or another proxy
-- Optional **dynamic Docker challenges**
-- Optional **A&D WireGuard VPN** on a compatible Linux host
+For a public server, point DNS at the server and allow inbound TCP 80/443 and UDP
+443 before installing. The basic profiles support accounts, teams, file-based
+challenges and scoring. They leave local Docker challenge hosting and VPN disabled.
 
 Secrets are stored in `deploy/.env` with owner-only permissions. The file is ignored by Git and is not overwritten on later runs unless you explicitly reconfigure it.
 
@@ -49,9 +56,8 @@ Dynamic Docker challenges require mounting `/var/run/docker.sock` into rsctf. Ac
 
 ## 3. Confirm the installation
 
-When installation succeeds, the wizard prints the site URL and useful
-management commands, but it does not print secrets. You can check it again at
-any time:
+When installation succeeds, the wizard shows the setup URL and the setup token
+from the first-start Docker logs. You can check service status again at any time:
 
 ```bash
 cd rsctf/deploy
@@ -66,15 +72,14 @@ An `ok` response from `/livez` means the HTTP process can serve a request.
 
 ## 4. Create the administrator
 
-Open the site with `/account/register?bootstrap=1` appended. From a trusted
-local terminal in the installed `rsctf` directory, read the setup token from
-the owner-only environment file:
+Open the setup URL printed by the installer. Copy the displayed code into the
+browser's **Setup token** field and choose your administrator account.
+If you started Docker Compose directly, find the same instructions with
+`docker compose logs rsctf`.
 
-```bash
-sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' deploy/.env
-```
-
-Do not put the token in a URL, screenshot, shell history, or shared log. The
+Docker creates the code automatically, persists it across restarts, and shows
+it at startup while the database has no users. It is removed when the first
+administrator is created. Do not share the startup logs before completing setup. The
 matching first account becomes the administrator and is activated immediately.
 Later registrations neither require nor honor this token.
 
@@ -106,6 +111,11 @@ cd rsctf
 ./scripts/install.sh --doctor
 ./scripts/install.sh --help
 ```
+
+To prepare VPN or Docker settings on another host, use `--configure-only`.
+It requires the Docker CLI and Compose v2 to validate the configuration, but
+does not require daemon access, a Docker socket, WireGuard, or `/dev/net/tun`.
+Those runtime requirements are checked when you start the installation.
 
 If a startup check fails, inspect the most recent logs:
 

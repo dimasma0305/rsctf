@@ -9,6 +9,7 @@ pub mod anti_cheat;
 pub mod audit;
 pub(crate) mod authorization_lease;
 pub mod blob_refs;
+pub mod bootstrap_admin;
 pub(crate) mod bulk_challenges;
 pub(crate) mod bulk_export;
 pub mod byoc_tunnel;

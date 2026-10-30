@@ -96,6 +96,11 @@ reconnection must be tested separately from process exit.
 
 ## Deployment entry points
 
+- [First-run Docker setup](../../../../src/services/bootstrap_admin.rs) generates
+  a persistent token for an empty database and shows it in startup logs until setup completes.
+  Registration consumes its stored token in the first administrator's transaction.
+  `RSCTF_BOOTSTRAP_AUTO=false` disables announcements; Helm supplies its Secret instead.
+
 - [deploy/README.md](../../../../deploy/README.md), [deploy/.env.example](../../../../deploy/.env.example), [deploy/compose.yml](../../../../deploy/compose.yml):
   base services and configuration names. Never copy real secrets into the map.
 - [deploy/compose.roles.yml](../../../../deploy/compose.roles.yml), [deploy/compose.roles.docker.yml](../../../../deploy/compose.roles.docker.yml),

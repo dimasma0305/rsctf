@@ -12,7 +12,10 @@ You can use rsctf on one machine for a small event or run it in Kubernetes. Star
 | Run A&D with the integrated VPN | **Docker + A&D VPN** | WireGuard, isolated A&D services, and the SSH bastion; Linux-only and privileged |
 | Use an existing cluster | **Kubernetes + Helm** | The platform and optional challenge Pods/Services; some Docker-only features are unavailable |
 
-If you are unsure, choose **Local Docker**. You can re-run the wizard later and enable more features.
+If you are unsure, choose **Try locally** in the wizard. **Public server** adds
+automatic HTTPS; **Advanced setup** exposes proxy, local Docker challenge and
+VPN options. To change an existing installation, back up and edit `deploy/.env`
+before running the installed copy again; reruns preserve your saved configuration.
 
 ## What the standard installation includes
 

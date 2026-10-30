@@ -86,6 +86,7 @@ COPY LICENSING.md LICENSE.txt NOTICE /app/web/build/legal/
 COPY web/src/lib/creepjs/LICENSE /app/web/build/legal/third-party/CreepJS-LICENSE.txt
 ENV RSCTF_BIND=0.0.0.0:8080
 ENV RSCTF_STATIC_DIR=/app/web/build
+ENV RSCTF_BOOTSTRAP_AUTO=true
 EXPOSE 8080
 # Optional trusted worker-plane mTLS listener.
 EXPOSE 9443

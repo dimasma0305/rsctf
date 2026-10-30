@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 use crate::app_state::SharedState;
 use crate::utils::error::{AppError, AppResult};
 
-const TOKEN_ENV: &str = "RSCTF_BOOTSTRAP_TOKEN";
 const DENIED: &str = "Bootstrap registration is unavailable";
 const MIN_TOKEN_BYTES: usize = 32;
 
@@ -34,17 +33,24 @@ pub(super) async fn preflight(st: &SharedState, supplied: Option<&str>) -> AppRe
         .fetch_one(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    require(is_first, supplied)?;
+    require(st.pg(), is_first, supplied).await?;
     Ok(is_first)
 }
 
 /// Later registrations retain their existing behavior and never inspect the
 /// optional token. All bootstrap failures intentionally share one response.
-pub(super) fn require(is_first: bool, supplied: Option<&str>) -> AppResult<()> {
+pub(super) async fn require<'e, E>(
+    executor: E,
+    is_first: bool,
+    supplied: Option<&str>,
+) -> AppResult<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     if !is_first {
         return Ok(());
     }
-    let configured = std::env::var(TOKEN_ENV).ok();
+    let configured = crate::services::bootstrap_admin::token(executor).await?;
     if matches(configured.as_deref(), supplied) {
         Ok(())
     } else {
@@ -69,7 +75,7 @@ fn matches(configured: Option<&str>, supplied: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{matches, require};
+    use super::matches;
 
     #[test]
     fn bootstrap_match_requires_a_configured_exact_token() {
@@ -91,11 +97,5 @@ mod tests {
             Some("0123456789abcdef0123456789abcde"),
             Some("0123456789abcdef0123456789abcde")
         ));
-    }
-
-    #[test]
-    fn established_installation_ignores_the_bootstrap_field() {
-        assert!(require(false, None).is_ok());
-        assert!(require(false, Some("arbitrary-client-value")).is_ok());
     }
 }

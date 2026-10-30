@@ -1,5 +1,32 @@
 # Installer options
 
+## One-line installation
+
+With Docker Engine, Compose v2, Bash, and curl installed:
+
+```bash
+curl --proto '=https' -fsSL https://github.com/dimasma0305/rsctf/releases/latest/download/install.sh | bash
+```
+
+The command trusts the installer downloaded over HTTPS. The installer then
+verifies the versioned deployment bundle's checksum and artifact attestation,
+and uses its pinned image digest. If a suitable GitHub CLI is unavailable, it
+downloads a pinned temporary verifier from the official GitHub CLI release,
+checks its SHA-256 checksum, and removes it after verification.
+It reads interactive answers from `/dev/tty`;
+non-interactive provisioning can pass options after `bash -s --`:
+
+```bash
+curl --proto '=https' -fsSL https://github.com/dimasma0305/rsctf/releases/latest/download/install.sh | bash -s -- --ref vX.Y.Z --mode local --non-interactive
+```
+
+An incomplete script on stdin does not execute the installation. To check the
+installer's provenance before executing any downloaded code, use the procedure below.
+
+## Verify the installer before execution
+
+This optional procedure requires a current GitHub CLI already installed.
+
 Resolve a strict release, download its installer and attestation, verify the
 publisher policy, and only then execute it:
 
@@ -45,8 +72,8 @@ bundle selects the matching immutable
 silently follows `main`, a version tag, or `latest`. It does not download the
 application source or build an image.
 
-Install a current GitHub CLI with `gh attestation verify` support before using
-the remote bootstrap. The explicit `--skip-attestation` recovery option retains
+The installer uses an existing suitable GitHub CLI or prepares a temporary one.
+The explicit `--skip-attestation` recovery option retains
 HTTPS and checksum verification but gives up independent build-provenance
 verification; it prints a warning and should not be used for a production
 event.
@@ -67,6 +94,7 @@ bash scripts/install.sh --doctor
 | `--mode local` | Local HTTP bound to loopback; the default |
 | `--mode caddy --domain ctf.example.org` | Public HTTPS with the included Caddy proxy |
 | `--mode proxy --public-url https://ctf.example.org` | Use an existing reverse proxy |
+| `--advanced` | Show proxy, custom port, local Docker challenge and VPN choices interactively |
 | `--trusted-proxy-cidrs CIDRS` | Trust forwarded client addresses only from these proxy CIDRs |
 | `--with-docker` | Enable dynamic Docker challenge containers |
 | `--with-ad-vpn` | Enable Docker challenges plus WireGuard and the SSH bastion |
@@ -75,7 +103,7 @@ bash scripts/install.sh --doctor
 | `--install-dir PATH` | Choose where the small deployment bundle is saved |
 | `--ref vX.Y.Z` | Install one exact strict release tag instead of resolving the latest release |
 | `--skip-attestation` | Explicitly accept checksum-only verification for controlled recovery/development |
-| `--configure-only` | Generate and validate without starting containers |
+| `--configure-only` | Generate and validate using the Docker/Compose CLI; no daemon or VPN devices required |
 | `--doctor` | Diagnose Docker and the existing configuration |
 | `--non-interactive` | Use explicit flags and safe defaults without prompting |
 
@@ -122,15 +150,23 @@ server image with `--image` when the checkout is not the matching release tag.
 - Changing only the PostgreSQL environment password does not change the password stored inside an existing PostgreSQL volume.
 - Destructive volume removal is never part of normal installation or diagnosis.
 
-The setup token is not printed after installation. Retrieve it only from a
-trusted local terminal when creating the first administrator:
+Docker automatically creates a persistent setup code for an empty user database
+and shows it in startup logs until setup completes. The installer displays those instructions
+after the service becomes healthy. To read them yourself:
 
 ```bash
-sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' deploy/.env
+cd deploy
+docker compose logs rsctf
 ```
 
-`deploy/.env` is owner-readable only. Do not paste the token into a URL or run
-the retrieval command in captured provisioning logs.
+The code is deleted from the database when the first administrator registration
+commits. Established installations never announce setup credentials. Anyone
+with access to the initial logs can complete setup, so keep those logs private
+until you create the administrator.
+
+For manually provisioned secrets, set `RSCTF_BOOTSTRAP_AUTO=false` and supply
+`RSCTF_BOOTSTRAP_TOKEN` with at least 32 random bytes. Existing explicit tokens
+continue to work. Helm uses its generated Secret and notes instead of startup logs.
 
 ## Verify what will run
 

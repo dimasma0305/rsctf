@@ -49,9 +49,14 @@ case "${0##*/}" in
     if [[ "$*" == *"config --services"* ]]; then
       printf 'db\nredis\nrsctf\n'
     fi
+    if [[ "$*" == *"logs --no-color --no-log-prefix --since"* ]]; then
+      token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      printf 'RSCTF FIRST-TIME SETUP\nOpen: http://localhost:8080/account/register?bootstrap=1\nSetup token: %s\nThis token stops authorizing administrator setup after the first account is created.\n' "$token"
+    fi
     ;;
   gh)
     if [[ "$*" == "attestation verify --help" ]]; then
+      [[ "$0" != "${RSCTF_TEST_OLD_GH:-}" ]] || exit 1
       printf '%s\n' \
         --bundle \
         --deny-self-hosted-runners \
