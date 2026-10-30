@@ -681,6 +681,9 @@ jobs:
       - name: Exercise runtime profile switching and live status badge in Chromium
         run: node tests/visual/runtime-profiles.mjs
 
+      - name: Exercise first-game setup and simple challenge creation in Chromium
+        run: node tests/visual/easy-start.mjs
+
       - name: Check delayed reads and live round layout stability in Chromium
         run: node tests/visual/layout-stability.mjs
 
@@ -1066,6 +1069,7 @@ jobs:
             exact_session_proof_detects_unlock_disconnect_and_preserves_graceful_drain
             readiness_rechecks_ownership_and_shutdown_after_waiting_for_dependencies
             docker_bootstrap_reuses_pending_code_and_stops_after_registration
+            simple_challenge_create_is_atomic_authorized_and_retryable
           )
           for filter in "${filters[@]}"; do
             # A renamed/missing regression must fail instead of passing zero tests.
@@ -1257,6 +1261,7 @@ jobs:
           scripts/install.sh --help >/dev/null
           scripts/test-install.sh
           python3 scripts/test-install-ux.py
+          python3 scripts/test-manage.py
 
       - name: Validate native image publication topology
         shell: bash

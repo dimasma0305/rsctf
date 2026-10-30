@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next'
 import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
 import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
 import { showErrorMsg } from '@Utils/Shared'
-import { isValidTeamInviteCode } from '@Utils/TeamInvite'
+import { isValidTeamInviteCode, teamInviteFromInput } from '@Utils/TeamInvite'
 import { settleTeamJoinAttempt } from '@Utils/TeamJoinFlow'
 import api from '@Api'
 
@@ -151,7 +151,7 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
           disabled={joining}
           error={code.length > 0 && !validCode ? t('team.notification.join.wrong_invite_code') : undefined}
           styles={{ error: { color: 'var(--app-text-primary)' } }}
-          onChange={(event) => onCodeChange(event.currentTarget.value)}
+          onChange={(event) => onCodeChange(teamInviteFromInput(event.currentTarget.value, window.location.origin))}
         />
         <Button
           type="submit"

@@ -11,6 +11,8 @@ mod deletion_tests;
 mod hints;
 mod lifecycle;
 mod mutation_sql;
+#[cfg(test)]
+mod simple_create_tests;
 use crate::services::repository_push as repo_push;
 mod review;
 mod revision_effects;
@@ -105,10 +107,28 @@ pub async fn add_challenge(
 ) -> AppResult<RequestResponse<ChallengeEditDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
     load_game(&st, id).await?;
-    let fingerprint = crate::services::mutation_operations::fingerprint(
-        "challenge-create",
-        &(&model.title, model.category, model.challenge_type),
-    )?;
+    mutation_sql::validate_create(&model)?;
+    let fingerprint = if model.content.is_none()
+        && model.initial_flag.is_none()
+        && model.original_score.is_none()
+    {
+        crate::services::mutation_operations::fingerprint(
+            "challenge-create",
+            &(&model.title, model.category, model.challenge_type),
+        )?
+    } else {
+        crate::services::mutation_operations::fingerprint(
+            "challenge-create-simple",
+            &(
+                &model.title,
+                model.category,
+                model.challenge_type,
+                &model.content,
+                &model.initial_flag,
+                model.original_score,
+            ),
+        )?
+    };
 
     // Every challenge kind shares the game deletion/control domain. A game
     // whose hard-delete fence committed must not gain a new child while its
@@ -170,7 +190,12 @@ pub async fn add_challenge(
     let created = load_challenge(&st, id, challenge_id).await?;
     flush_game_scoreboards(&st, id).await;
     Ok(RequestResponse::ok(
-        ChallengeEditDetailModel::from_challenge(&st, &created, Vec::new()).await?,
+        ChallengeEditDetailModel::from_challenge(
+            &st,
+            &created,
+            load_flags(&st, challenge_id).await?,
+        )
+        .await?,
     ))
 }
 

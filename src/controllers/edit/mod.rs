@@ -105,7 +105,7 @@ impl PostDetailModel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeInfoModel {
     #[serde(default)]
@@ -116,6 +116,15 @@ pub struct ChallengeInfoModel {
     pub challenge_type: ChallengeType,
     #[serde(default)]
     pub operation_id: Uuid,
+    /// Optional simple-editor fields, committed together with the disabled challenge.
+    pub content: Option<String>,
+    pub initial_flag: Option<String>,
+    pub original_score: Option<i32>,
+}
+impl std::fmt::Debug for ChallengeInfoModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChallengeInfoModel").finish_non_exhaustive()
+    }
 }
 fn default_category() -> ChallengeCategory {
     ChallengeCategory::Misc

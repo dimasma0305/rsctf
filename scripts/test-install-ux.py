@@ -129,6 +129,12 @@ esac
         self.assertTrue((target / "deploy/.env").is_file())
         self.assertFalse(self.environment.exists(), "piped code must not use the working checkout")
         self.assertIn("--source-ref refs/tags/v1.2.3", (self.root / "gh.log").read_text())
+        self.env['DAEMON_TEST_STATUS'] = '1'
+        target = self.root / 'download-only'
+        result = self.run_installer('--download-only', '--install-dir', str(target), '--ref', 'v1.2.3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((target / 'deploy/release.env').is_file())
+        self.assertFalse((target / 'deploy/.env').exists())
 
     def test_public_server_needs_only_choice_and_domain(self):
         status, output = self.terminal(

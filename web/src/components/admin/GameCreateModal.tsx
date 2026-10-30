@@ -23,8 +23,8 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
   const owner = useRef(new RetryableMutationOwner())
   const navigate = useNavigate()
   const [title, setTitle] = useInputState('')
-  const [start, setStart] = useInputState(dayjs())
-  const [end, setEnd] = useInputState(dayjs().add(2, 'h'))
+  const [start, setStart] = useInputState(dayjs().add(1, 'd'))
+  const [end, setEnd] = useInputState(dayjs().add(1, 'd').add(2, 'h'))
 
   const { t } = useTranslation()
 
@@ -40,7 +40,7 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
     const lease = owner.current.claim(digest)
     if (!lease) return
     setDisabled(true)
-    if (!title || end < start) {
+    if (!title.trim() || !start.isValid() || !end.isValid() || end <= start) {
       showNotification({
         color: 'red',
         title: t('common.error.param_invalid'),
@@ -55,7 +55,8 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
     try {
       const res = await api.edit.editAddGame(
         {
-          title,
+          title: title.trim(),
+          hidden: true,
           sourceRevision: 0,
           start: start.valueOf(),
           end: end.valueOf(),
@@ -70,7 +71,7 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
       onAddGame(res.data)
-      navigate(`/admin/games/${res.data.id}/info`)
+      navigate(`/admin/games/${res.data.id}/setup`)
     } catch (e) {
       if (!owner.current.settle(lease, false)) return
       showErrorMsg(e, t)

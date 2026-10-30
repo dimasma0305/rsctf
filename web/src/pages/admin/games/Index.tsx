@@ -43,6 +43,7 @@ import { GameColorMap } from '@Components/GameCard'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { CloneGameModal } from '@Components/admin/CloneGameModal'
 import { GameCreateModal } from '@Components/admin/GameCreateModal'
+import { SampleGameButton } from '@Components/admin/SampleGameButton'
 import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
@@ -232,6 +233,7 @@ const Games: FC = () => {
               >
                 {t('admin.button.games.new')}
               </Button>
+              <SampleGameButton />
               <FileButton onChange={onImportGame} accept="application/zip">
                 {(props) => (
                   <Button

@@ -13,4 +13,8 @@ tests
 files
 scratch
 /visual-audit-output
+/backups
+/.releases
+/.rsctf-update.json
+/.rsctf-maintenance.lock
 **/*.log

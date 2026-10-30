@@ -58,7 +58,7 @@ test('Pages preserves every public route, parameter, and page module', async () 
     })
   )
   const bySource = (a, b) => a.source.localeCompare(b.source)
-  assert.equal(context.pageRouteMap.size, 56)
+  assert.equal(context.pageRouteMap.size, 57)
   assert.deepEqual(actual.sort(bySource), expected.sort(bySource))
 })
 

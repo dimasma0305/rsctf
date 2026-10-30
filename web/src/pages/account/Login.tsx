@@ -7,6 +7,7 @@ import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { AccountView } from '@Components/AccountView'
+import { InvitationNotice } from '@Components/InvitationNotice'
 import { Captcha, useCaptchaRef } from '@Components/Captcha'
 import { OAuthButtons } from '@Components/OAuthButtons'
 import { TermsOfService } from '@Components/TermsOfService'
@@ -186,6 +187,7 @@ const Login: FC = () => {
       description={t('account.content.login.description', 'Welcome back. Enter your account details to continue.')}
       onSubmit={onLogin}
     >
+      <InvitationNotice from={from} />
       {oauthError && (
         <Alert
           role="alert"

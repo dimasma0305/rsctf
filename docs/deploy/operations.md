@@ -1,5 +1,47 @@
 # Back up and update
 
+## Simple commands
+
+For a basic wizard installation (one server, local uploaded files, no challenge
+containers or VPN), open a terminal in the installed `rsctf` folder:
+
+```bash
+./rsctf update                 # verifies the release, backs up, then updates
+./rsctf backup                 # saves accounts, games, files and settings
+./rsctf backups enable        # daily at 03:00 in the host timezone; keeps 7
+./rsctf backups disable       # keeps existing backups
+./rsctf status
+./rsctf doctor
+```
+
+These commands need Python 3.9 or later and Docker access. Scheduling also needs
+cron. Use `./rsctf backups enable --time 05:30` to choose a quiet time. Backups
+briefly pause the game so the database and uploaded files agree. Check
+`backup.log` after a scheduled run. Manual backups keep all copies unless you
+pass `--keep 7`. Store another copy off the server; backups contain secret settings
+and are saved with owner-only directory permissions. Failed partial copies are
+never treated as completed backups.
+
+To recover, copy the backup's printed folder path and choose a new folder:
+
+```bash
+./rsctf restore backups/YOUR-BACKUP --to ../recovered-rsctf
+```
+
+The command verifies every saved file, downloads the matching verified release,
+and restores a separate copy at `http://localhost:8081`. It keeps your current
+installation untouched. Use `--port 8082` if that port is taken. Sign in with
+your existing account, check a game and an uploaded file, then configure the
+recovered copy's public address when ready. Never restore an untrusted backup.
+If recovery fails, its separate project is stopped and retained for inspection;
+fix the reported problem and choose another new destination folder.
+
+If an update is interrupted, rerun `./rsctf update`. It retains the selected
+release and resumes the migration cutover. It never downgrades a migrated
+database. If a backup was interrupted, check `./rsctf status` before resuming
+the same application image. Advanced topologies, Docker challenges, VPN and
+S3 storage use the procedures below.
+
 An rsctf backup is complete only when it contains PostgreSQL and the uploaded-file storage from the same operational period. For a single ended event, the per-event archive described in [Back up and restore competition data](../organizers/games#back-up-and-restore-competition-data) complements, but does not replace, this platform backup.
 
 ## Docker backup

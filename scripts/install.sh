@@ -36,6 +36,8 @@ NON_INTERACTIVE=0
 CONFIGURE_ONLY=0
 DOCTOR_ONLY=0
 ADVANCED=0
+DOWNLOAD_ONLY=0
+INSTALL_DOCKER=0
 INSTALL_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 if [[ -t 1 ]]; then
@@ -86,6 +88,8 @@ Options:
   --timeout SECONDS     Health-check wait limit (default: 180)
   --configure-only      Write/validate deploy/.env without starting containers
   --doctor              Check this host and configuration, then exit
+  --install-docker      Install Docker with its official Linux installer if missing
+  --download-only       Download and verify a release bundle without configuring it
   --non-interactive     Use flags and safe defaults; never prompt
   --yes                 Alias for --non-interactive
 
@@ -144,6 +148,8 @@ while (($#)); do
     --configure-only|--no-start) CONFIGURE_ONLY=1; shift ;;
     --doctor) DOCTOR_ONLY=1; NON_INTERACTIVE=1; shift ;;
     --advanced) ADVANCED=1; shift ;;
+    --download-only) DOWNLOAD_ONLY=1; shift ;;
+    --install-docker) INSTALL_DOCKER=1; shift ;;
     --non-interactive|--yes) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
@@ -154,6 +160,9 @@ done
 [[ $# -eq 0 ]] || die "unexpected positional argument: $1"
 
 preflight_tools() {
+  if ! command -v docker >/dev/null 2>&1; then
+    guide_docker_install
+  fi
   command -v docker >/dev/null 2>&1 \
     || die "Docker is not installed. Install Docker Engine with the Compose plugin, then run this command again: https://docs.docker.com/engine/install/"
   docker compose version >/dev/null 2>&1 \
@@ -161,6 +170,35 @@ preflight_tools() {
   if [[ $CONFIGURE_ONLY -eq 0 ]]; then
     docker info >/dev/null 2>&1 \
       || die "Cannot connect to Docker. Start Docker and check that 'docker info' works for this user, then run this command again."
+  fi
+}
+
+guide_docker_install() {
+  local answer script
+  [[ "$(uname -s)" == Linux ]] || die "Install Docker Desktop from https://www.docker.com/products/docker-desktop/ and run this command again."
+  if [[ $INSTALL_DOCKER -eq 0 && $NON_INTERACTIVE -eq 0 ]]; then
+    printf '\nDocker is needed to run RSCTF.\n'
+    printf 'The official Docker installer can install it. This needs administrator access.\n'
+    if read -r -p 'Install Docker now? [y/N] ' answer </dev/tty && [[ "$answer" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+      INSTALL_DOCKER=1
+    fi
+  fi
+  [[ $INSTALL_DOCKER -eq 1 ]] || die "Docker is not installed. Install it at https://docs.docker.com/engine/install/ or rerun with --install-docker."
+  command -v curl >/dev/null || die "Install curl first, then try again."
+  if [[ $EUID -ne 0 ]]; then command -v sudo >/dev/null || die "Ask an administrator to install Docker: https://docs.docker.com/engine/install/"; fi
+  script=$(mktemp)
+  if ! release_curl --max-filesize 1048576 -o "$script" https://get.docker.com; then
+    rm -f -- "$script"
+    die "Could not download the Docker installer. Check your internet connection and try again."
+  fi
+  if [[ $EUID -eq 0 ]]; then
+    sh "$script" || { rm -f -- "$script"; die "Docker installation failed. See the message above, then try again."; }
+  else
+    sudo sh "$script" || { rm -f -- "$script"; die "Docker installation failed. See the message above, then try again."; }
+  fi
+  rm -f -- "$script"
+  if ! docker info >/dev/null 2>&1; then
+    die "Docker is installed. Start it and give your user Docker access (https://docs.docker.com/engine/install/linux-postinstall/), then run this installer again."
   fi
 }
 
@@ -355,7 +393,7 @@ bootstrap_bundle() {
   local archive checksum_file attestation_file extract_root installed
   local archive_list archive_verbose required_option
 
-  if [[ $DOCTOR_ONLY -eq 0 ]]; then preflight_tools; fi
+  if [[ $DOCTOR_ONLY -eq 0 && $DOWNLOAD_ONLY -eq 0 ]]; then preflight_tools; fi
 
   for required_option in awk basename chmod curl dirname find grep gzip head mkdir mktemp mv rm sha256sum tar uname wc; do
     command -v "$required_option" >/dev/null 2>&1 \
@@ -437,10 +475,14 @@ bootstrap_bundle() {
     || die "could not atomically install the verified deployment bundle"
   rm -rf -- "$temporary"
   trap - EXIT
+  if [[ $DOWNLOAD_ONLY -eq 1 ]]; then
+    info "Verified release ${version} downloaded to ${target}"
+    exit 0
+  fi
   exec "$target/scripts/install.sh" "${ORIGINAL_ARGS[@]}"
 }
 
-if [[ -z "$REPO_ROOT" || ! -f "$REPO_ROOT/deploy/compose.yml" ]]; then
+if [[ $DOWNLOAD_ONLY -eq 1 || -z "$REPO_ROOT" || ! -f "$REPO_ROOT/deploy/compose.yml" ]]; then
   bootstrap_bundle
 fi
 

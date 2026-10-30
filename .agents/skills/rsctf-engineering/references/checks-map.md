@@ -19,6 +19,12 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 
 ## Discover the smallest meaningful check
 
+Simple challenge creation is covered by
+[controller regressions](../../../../src/controllers/edit/challenges/simple_create_tests.rs):
+authorization, rollback after failed flag insertion, concurrent retry, and disabled
+creation with saved instructions/answer/points. Run its ignored test against a
+disposable PostgreSQL database.
+
 For shutdown during external work, run the
 [control-job shutdown harness](../../../../tests/load/control-job-shutdown.mjs).
 It uses the real control process and Docker builds/resets, with graceful and forced

@@ -43,12 +43,14 @@ make_fixture() {
     "$package/rsctf/deploy/postgres/init/"
   install -m 0755 \
     "$REPOSITORY_ROOT/scripts/install.sh" \
+    "$REPOSITORY_ROOT/scripts/manage.py" \
     "$REPOSITORY_ROOT/scripts/compose-maintenance-cutover.sh" \
     "$REPOSITORY_ROOT/scripts/kubernetes-maintenance-cutover.sh" \
     "$REPOSITORY_ROOT/scripts/docker-proxy-firewall.sh" \
     "$package/rsctf/scripts/"
   printf 'RSCTF_RELEASE_VERSION=v1.2.3\nRSCTF_RELEASE_IMAGE=%s\n' "$PINNED_IMAGE" \
     > "$package/rsctf/deploy/release.env"
+  install -m 0755 "$REPOSITORY_ROOT/rsctf" "$package/rsctf/rsctf"
   tar -C "$package" -czf "$fixture/rsctf-deployment-bundle.tar.gz" rsctf
   (
     cd "$fixture"

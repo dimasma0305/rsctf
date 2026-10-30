@@ -5,6 +5,11 @@ Start with the feature row in [application-map.md](application-map.md). Read
 
 ## Routes and composition
 
+The [first-game guide](../../../../web/src/pages/admin/games/%5Bid%5D/Setup.tsx)
+connects simple challenge creation, saved-answer testing, readiness and sharing.
+[SampleGameButton](../../../../web/src/components/admin/SampleGameButton.tsx)
+retains both mutation identities when the challenge step must be retried.
+
 Challenge execution placement is edited by
 [RuntimeProfileSelect.tsx](../../../../web/src/components/admin/RuntimeProfileSelect.tsx).
 It consumes the administrator-owned catalog returned with challenge details;
