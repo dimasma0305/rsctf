@@ -1,231 +1,61 @@
-# rsctf
+# RSCTF
 
-rsctf is a Rust platform for running Capture-the-Flag competitions with a React and Mantine frontend. It supports accounts, teams, Jeopardy challenges, dynamic containers, scoreboards, event administration, Attack & Defense, and King of the Hill.
-
-<p align="center">
-  <img src="web/public/static/guide/games.webp" alt="RSCTF event catalog with search, lifecycle groups, and event cards" width="960">
-</p>
-
-## Three competition engines
-
-One installation can host ordinary Jeopardy events, infrastructure-heavy Attack & Defense matches, and King of the Hill arenas. Each engine has its own player workflow, scoring model, admin controls, and live scoreboard.
-
-### Jeopardy
-
-Run static or dynamic challenges with categories, attachments, hints, flags, deadlines, first-blood bonuses, per-division scoring, and practice archives. Dynamic challenges can build on demand, run on a trusted worker, and expose either a direct port, an event VPN endpoint, or a Platform Proxy/WSRX connection.
-
-<p align="center">
-  <img src="web/public/static/guide/challenge.webp" alt="Jeopardy challenge board with category filters, solve counts, and point values" width="960">
-</p>
-
-### Attack & Defense
-
-RSCTF provisions per-team services, distributes rotating flags, runs checker rounds, tracks SLA and attack/defense results, manages patch and reset workflows, and gives players scoped API tokens, SSH access, targets, and WireGuard profiles.
-
-<p align="center">
-  <img src="docs/public/screenshots/ad-scoreboard-journal.png" alt="Attack and Defense scoreboard showing captures, settled score, offense, defense, and SLA" width="1200">
-</p>
-
-### King of the Hill
-
-KotH supports shared hills, timed crown cycles, health and control checks, cooldown/reset phases, token-based control, and an epoch-aware scoreboard. A hill can be a managed network service or an API arena with server-verified objectives.
-
-<p align="center">
-  <img src="docs/public/screenshots/koth-scoreboard-desktop.png" alt="King of the Hill scoreboard showing crown cycles, hill health, control, and team ranking" width="1200">
-</p>
-
-## Evidence-backed cheat review
-
-The monitoring workspace correlates hard evidence, network/device signals, abnormal solve order, timing similarity, identity overlap, suspicious submissions, flag transport, VPN telemetry, and traffic-capture health. Organizers can inspect the source evidence and detector coverage, record reviews or exemptions, and apply blocks with an audit trail. Signals are presented for human review; the platform does not treat one heuristic as proof.
-
-<p align="center">
-  <img src="docs/public/screenshots/cheat-analysis-overview.png" alt="RSCTF cheat analysis workspace with detector coverage, evidence families, filters, and suspicion rankings" width="1200">
-</p>
-
-## AI chat links for solve review
-
-An event can ask teams to disclose the AI chats they used. After a team solves a Jeopardy challenge, its members can attach up to five public share links (ChatGPT, Claude, Gemini, and other accepted providers) to that challenge until the later of the event end and the writeup deadline. Monitors read every team's links in one list, and administrators decide which providers are accepted. The server validates each link against the provider list but never fetches it. Events can also require a disclosure after every solve (links or an explicit "No AI used"), and every create, edit, and removal is kept in an append-only history with server time, delay since the solve, the links added or removed, and a keyed network hash for cheat review. Both switches are off by default for each event.
-
-<p align="center">
-  <img src="docs/public/screenshots/ai-chat-links-player.png" alt="Solved Jeopardy challenge card listing ChatGPT and Claude share links, each with a provider validation badge" width="640">
-</p>
-
-The [organizer guide](docs/organizers/games.md#ai-chat-links) covers the event switch, monitor review, and provider settings.
-
-## Solver uploads for solve verification
-
-An event can also let teams upload the solver they used. After a team solves a Jeopardy challenge, any member can upload the script or notes from the challenge card (up to 1 MiB per file). Each upload is kept as a new version, with up to 10 versions per challenge and 16 MiB per team per event. Monitors see every version with its uploader, server time, delay since the solve and SHA-256, and download files as plain attachments. The server stores the bytes but never unpacks, opens or runs them. Uploading is optional for teams, and the switch is off by default for each event.
-
-<p align="center">
-  <img src="docs/public/screenshots/solver-uploads-player.png" alt="Solved Jeopardy challenge card with a Solver section listing two uploaded versions and a file picker" width="640">
-</p>
-
-The [organizer guide](docs/organizers/games.md#solver-uploads) covers the switch and monitor review.
-
-## Feature overview
-
-| Area | Included capabilities |
-| --- | --- |
-| Players and teams | Password or OAuth registration, optional OAuth-only registration, email confirmation, invitations, team membership, divisions, participation approval, responsive navigation, and light/dark themes |
-| Event discovery | Searchable event catalog, joined/not-joined filters and badges, schedules, notices, rules, webhooks, global challenge search restricted to joined events, and read-only post-event archives |
-| Challenge delivery | Static challenges, real attachments, dynamic Docker or Kubernetes workloads, immutable build/pull status, on-demand image builds, lifecycle limits, practice instances, BYOC, and Linux or Windows trusted workers |
-| Networking | Direct host/port mappings, Platform Proxy with WSRX or copyable WSS URLs, integrated WireGuard, per-event VPN access gates, protected routes, and VPN-specific port behavior |
-| Scoring | Jeopardy dynamic scoring, divisions, optional blood bonuses, live scoreboards, A&D rounds/SLA/flag capture, and KotH crown-cycle scoring |
-| AI chat disclosure | Optional or required per-event AI chat disclosure on solved Jeopardy challenges (share links or "No AI used"), edit history with timing for cheat review, a monitor list with missing-disclosure filter, and an administrator-managed allowlist of built-in and custom providers |
-| Solver verification | Optional per-event solver uploads on solved Jeopardy challenges, immutable versions with solve-relative timing and SHA-256, and a monitor list with inert attachment downloads |
-| AI agent traces | Solver uploads and writeup PDFs are scanned (never run) for traces AI agent tools leave, such as a coding agent's scratchpad path; matches become cheat-report findings, and a "No AI used" declaration that contradicts a team's own solver is flagged separately. Signatures are admin-managed |
-| Organizer operations | Event and challenge editors, real instance previews, Git repository bindings and imports, team/user administration, build and image inventory, safe pruning, worker enrollment, logs, traffic views, and event monitoring |
-| Guidance and accessibility | Permanent screenshot-based player handbook, resumable interactive coach marks, contextual container/VPN tips, keyboard navigation, screen-reader semantics, reduced motion, and layouts audited down to 320 px |
-| Platform services | PostgreSQL and Redis, bounded background reconciliation, SMTP, optional Trakteer donations and donor leaderboard, Docker Compose, Helm/Kubernetes, role-separated replicas, health checks, and verified release installers |
-
-The [documentation](docs/index.md) covers player workflows, organizer operations, deployment, security, configuration, backups, updates, and troubleshooting.
+Run your own Capture-the-Flag (CTF) competition. Create challenges, invite players,
+and follow their scores.
 
 ## Install
 
-Use a Linux server with Docker Engine and Compose v2.
-You do not need Rust, Node.js, Git, or a source checkout.
+Use a Linux machine with [Docker Engine and Docker Compose](https://docs.docker.com/engine/install/) installed.
 
-1. Run the command below. It downloads and verifies the published deployment bundle.
-2. Choose **Try locally** or **Public server**. Public setup asks for your domain and configures HTTPS. Choose **Advanced** for an existing reverse proxy, custom ports, local challenge containers, or VPN.
-3. Open the setup URL shown at startup, copy the setup token into the form, and create your administrator account.
+Run this command in a terminal:
 
 ```bash
 curl --proto '=https' -fsSL https://github.com/dimasma0305/rsctf/releases/latest/download/install.sh | bash
 ```
 
-The verified bundle supplies the exact `ghcr.io/dimasma0305/rsctf@sha256:…`
-image built from the same tag; it never defaults to `latest`. A new database
-grants the first administrator role only to a registration carrying the
-private setup token generated by Docker or the Helm chart.
-Docker generates this token at first startup and shows it in its logs until setup is complete.
-The installer shows those instructions automatically. No separate token command
-or GitHub CLI installation is needed.
+1. Press **Enter** to try it locally. For a public website, choose **Public server** and enter your domain.
+2. Open the setup link printed by the installer.
+3. Paste the displayed code into **Setup token** and create your administrator account.
 
-This command trusts the installer delivered over HTTPS. To verify the installer
-itself before executing it, use the [manual verification procedure](docs/reference/installer.md#verify-the-installer-before-execution).
+Docker creates the setup code automatically. The installer shows it for you;
+you can also find it in the Docker logs while setup is unfinished.
 
-The basic profiles include accounts, teams, file-based challenges, and scoring.
-Dynamic challenge containers and VPN are opt-in advanced features. Docker and
-Compose are checked before setup questions or configuration changes.
+See the [installation guide](docs/getting-started/install-wizard.md) for help.
+The command downloads the installer over HTTPS; [verification before execution](docs/reference/installer.md#verify-the-installer-before-execution) is also available.
 
-See the [installation guide](docs/getting-started/install-wizard.md) for prerequisites,
-advanced choices, and troubleshooting. After installation, run
-`./scripts/install.sh --doctor` to diagnose the deployment.
+## Run your first game
 
-## Documentation
+1. Open **Admin → Games** and create a game with a future start time.
+2. Add a challenge and its answer (the flag), test it, and enable it.
+3. Share the game link with your players.
 
-The task-oriented documentation covers:
+Follow the [first-event guide](docs/organizers/index.md) to test and publish it.
 
-- Guided Docker installation and automatic HTTPS
-- Kubernetes deployment with Helm
-- First login and platform setup
-- Player guides for Jeopardy, A&D, and KotH
-- Organizer event and challenge workflows
-- Configuration, backup, update, security, and troubleshooting
-- GitHub Pages, Docker image publishing, and challenge repository bindings
+<p align="center">
+  <img src="web/public/static/guide/games.webp" alt="RSCTF showing games that players can join" width="960">
+</p>
 
-Run the docs locally:
+## What you can run
 
-```bash
-cd docs
-corepack enable
-pnpm install --frozen-lockfile
-pnpm dev
-```
+- **Jeopardy:** players solve challenges and submit flags for points.
+- **Attack & Defense:** teams protect their services and attack other teams.
+- **King of the Hill:** teams compete to control a shared target.
 
-Build the deployable static site with `pnpm build`. GitHub Actions publishes the result to GitHub Pages.
+RSCTF includes accounts, teams, scoreboards, event management, and optional
+cheat review, AI chat disclosures, and solver uploads.
 
-## Deployment choices
+## Help
 
-| Path | Best for | Entry point |
-| --- | --- | --- |
-| Docker Compose | One server or VM | `scripts/install.sh` |
-| Kubernetes | Existing cluster | `oci://ghcr.io/dimasma0305/charts/rsctf` |
-| Specialized homelab | Existing Traefik + full A&D VPN | Root `docker-compose.yml` |
+- [Player guide](docs/players/accounts-and-teams.md)
+- [Organizer guide](docs/organizers/index.md)
+- [Advanced deployment](deploy/README.md), including containers, workers, and VPN
+- [Backups and updates](docs/deploy/operations.md)
+- [All documentation](docs/index.md)
 
-The generic deployment defaults to platform-only mode. Dynamic Docker challenges require the host Docker socket, which is root-equivalent access. The integrated WireGuard VPN additionally requires Linux, `NET_ADMIN`, `NET_RAW` for its iptables ipset matcher, `/dev/net/tun`, and one VPN-enabled rsctf replica.
+## Contributing
 
-## Trusted workers
-
-Dedicated Linux and native Windows-container Docker hosts can connect outbound
-to RSCTF without a public IP or inbound port. After configuring the server
-worker plane, use the command shown in `/admin/workers`. The bootstrap verifies
-the release checksum and privately prompts for the one-use token; no GitHub CLI,
-login, or token in the command is required:
-
-```sh
-(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --server-url https://ctf.example)
-```
-
-```powershell
-& ([scriptblock]::Create((Invoke-RestMethod https://ctf.example/install/worker.ps1))) -ServerUrl https://ctf.example
-```
-
-Tagged releases publish checksum-verified Linux AMD64/ARM64 archives and a
-Windows AMD64 archive on
-[GitHub Releases](https://github.com/dimasma0305/rsctf/releases). The admin page
-supplies one copyable command for Linux and one for Administrator PowerShell;
-both require a dedicated-host acknowledgement and prompt for the one-use token
-without putting it in history or process arguments. On Linux, the same command
-uses a native systemd service when systemd is active and otherwise creates a
-Docker-supervised agent container with a durable, labeled identity volume.
-Safe production use still requires a quota-capable Docker storage driver; the
-explicit unbounded-storage escape hatch is only for trusted disposable
-development workers. See the
-[trusted-worker deployment guide](docs/deploy/workers.md) for
-server setup, enrollment, provenance verification, and source builds.
-
-## Repository layout
-
-```text
-src/                 Rust/axum backend
-web/                 React, Mantine, and Vite client
-docs/                VitePress documentation site
-deploy/              Generic image-based Docker deployment
-charts/rsctf/        Kubernetes Helm chart
-scripts/install.sh          Interactive installation wizard
-scripts/install-worker.sh   Linux worker-agent installer
-scripts/install-worker.ps1  Windows worker-agent installer
-.github/workflows/   CI, docs deployment, and image publishing
-```
-
-The Rust source keeps controllers, services, models, repositories, and migrations in predictable domain-oriented modules. See [AGENTS.md](AGENTS.md) for repository conventions.
-
-## Contributing from source
-
-Source builds are for contributors and image publishing, not normal installation.
-
-For an isolated local stack with PostgreSQL, Redis, automatic Rust rebuilds,
-and Vite hot module replacement, run:
-
-```bash
-node scripts/dev.mjs
-```
-
-Open `http://localhost:63000`. The development database, storage, and secrets
-live under a separate Compose project and ignored `.rsctf-dev/` directory; the
-workflow never uses production data or requires a GitHub push. See the
-[source-development guide](docs/reference/source-development.md) for remote SSH
-forwarding, port overrides, status, and shutdown commands.
-
-```bash
-cargo test --locked
-
-cd web
-corepack enable
-pnpm install --frozen-lockfile
-pnpm check
-pnpm test
-pnpm build
-```
-
-The production Dockerfile builds the React client and Rust release binary into one runtime image.
-See the [testing and coverage reference](docs/reference/testing.md) for the
-database-backed suite, coverage baseline, agent checks, and event-scale harness.
-
-## Security
-
-Before exposing rsctf publicly, read the [deployment security guide](docs/deploy/security.md). Back up both PostgreSQL and the uploaded-file volume. Never commit deployment `.env` files, Kubernetes Secret values, repository PATs, or live CTF credentials.
+To change RSCTF itself, see [CONTRIBUTE.md](CONTRIBUTE.md) for development setup,
+source builds, tests, repository layout, and publishing.
 
 ## License
 
