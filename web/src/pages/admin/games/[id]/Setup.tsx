@@ -20,9 +20,10 @@ export default function GameSetup() {
   const clipboard = useClipboard()
   const root = `/admin/games/${id}`
   const failed = game.error || challenges.error
+  const loading = !failed && (!game.data || !challenges.data)
   return (
     <AdminPage
-      isLoading={!failed && (!game.data || !challenges.data)}
+      isLoading={loading}
       headerActions={
         <Button component={Link} to={`${root}/info`} variant="default">
           {t('admin.easy.advanced_settings', 'Advanced settings')}
@@ -32,7 +33,7 @@ export default function GameSetup() {
       {failed ? (
         <RequestError name={t('common.label.game')} onRetry={() => Promise.all([game.mutate(), challenges.mutate()])} />
       ) : (
-        <>
+        <Stack gap="lg" aria-busy={loading} style={{ visibility: loading ? 'hidden' : undefined }}>
           <Paper withBorder p="md">
             <Stack>
               <Title order={2}>{t('admin.easy.step1', '1. Add a challenge')}</Title>
@@ -98,7 +99,7 @@ export default function GameSetup() {
               </Group>
             </Stack>
           </Paper>
-        </>
+        </Stack>
       )}
       <ChallengeCreateModal
         title={t('admin.button.challenges.new')}
