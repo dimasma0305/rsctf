@@ -300,7 +300,7 @@ const Register: FC = () => {
           label={t('account.label.bootstrap_token', 'Setup token')}
           description={t(
             'account.content.register.bootstrap_token',
-            'Enter the one-time setup token shown by your rsctf installer or Helm notes.'
+            'Copy the setup token shown by the installer or in your first-start Docker logs. For Kubernetes, follow the Helm notes.'
           )}
           value={bootstrapToken}
           disabled={disabled}

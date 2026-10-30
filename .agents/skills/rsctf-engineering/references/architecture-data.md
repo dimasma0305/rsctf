@@ -62,6 +62,10 @@
   that matter to the endpoint.
 - Do not expose flags, image/build secrets, JWTs, registry credentials, VPN credentials,
   security stamps, or provider API keys through DTOs, logs, screenshots, or tests.
+- The first-run Docker setup token is intentionally printed in startup logs
+  for an empty user database. Never print it on an established installation; remove
+  its stored bootstrap row when the first administrator commits. HTTP request Debug
+  output and ordinary diagnostic output must continue to redact it.
 - Follow applicable SEI CERT secure-coding rules. Apply MISRA only to safety-critical
   C/C++ work and never claim compliance without formal analysis and documented
   deviations.

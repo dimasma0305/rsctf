@@ -105,6 +105,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "rsctf.secretName" . }}
                   key: {{ .Values.existingSecret.identityHashKey }}
+            - name: RSCTF_BOOTSTRAP_AUTO
+              value: "false"
             - name: RSCTF_BOOTSTRAP_TOKEN
               valueFrom:
                 secretKeyRef:

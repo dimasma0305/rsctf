@@ -9,25 +9,25 @@ The guided installer is the easiest path:
 It creates `deploy/.env`, validates the complete Compose configuration, pulls
 the published full-stack image, starts the stack, and waits for `/healthz`. The
 first account becomes the active administrator only when registration supplies
-the private token stored in the owner-only `deploy/.env`. The installer does
-not print that secret. The maintained Compose files refuse an empty setup token
-so a fresh database cannot come up in an unbootstrappable state.
+the setup token. Docker generates and persists it automatically, shows it in
+startup logs, and deletes it when the first administrator registers. The
+installer shows these startup instructions after the application is healthy.
 
 You do not need Git or a source checkout. The bootstrap resolves only a strict
 `vX.Y.Z` release, verifies the coherent deployment archive against its checksum
 and GitHub artifact attestation, and uses the matching immutable server image
-digest. Follow the
-[verified release-installer procedure](../docs/reference/installer.md) rather
-than executing a mutable branch copy. Install a current GitHub CLI with
-`gh attestation verify` support first. Pin a release with `--ref vX.Y.Z`; the
+digest. The [one-line installation command](../docs/reference/installer.md#one-line-installation)
+downloads the installer over HTTPS; the same guide also includes a manual
+procedure to verify the installer before executing it. A suitable temporary
+GitHub CLI is downloaded and checksum-checked when needed. Pin a release with `--ref vX.Y.Z`; the
 explicit `--skip-attestation` option is a warned checksum-only escape hatch for
 controlled recovery or development. A trusted source checkout can still run
 `./scripts/install.sh` directly and use its existing local deployment files.
 
-Retrieve the first-administrator token only from a trusted local terminal:
+To see the first-start setup URL and token again, run from the deployment directory:
 
 ```bash
-sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' deploy/.env
+docker compose logs rsctf
 ```
 
 For a configuration-only run that does not start containers:

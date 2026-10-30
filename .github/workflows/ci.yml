@@ -1065,6 +1065,7 @@ jobs:
             services::control_jobs::supervisor::pg_tests
             exact_session_proof_detects_unlock_disconnect_and_preserves_graceful_drain
             readiness_rechecks_ownership_and_shutdown_after_waiting_for_dependencies
+            docker_bootstrap_reuses_pending_code_and_stops_after_registration
           )
           for filter in "${filters[@]}"; do
             # A renamed/missing regression must fail instead of passing zero tests.
@@ -1255,6 +1256,7 @@ jobs:
           dash -n scripts/docker-proxy-firewall.sh
           scripts/install.sh --help >/dev/null
           scripts/test-install.sh
+          python3 scripts/test-install-ux.py
 
       - name: Validate native image publication topology
         shell: bash

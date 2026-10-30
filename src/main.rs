@@ -455,6 +455,21 @@ async fn async_main() -> anyhow::Result<()> {
     // and no detached background task can briefly claim work for a process
     // that is about to exit.
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;
+    if matches!(role, RuntimeRole::All | RuntimeRole::Web)
+        && rsctf::services::bootstrap_admin::auto_enabled()?
+    {
+        let configured = rsctf::services::bootstrap_admin::configured_token();
+        if let Some(notice) =
+            rsctf::services::bootstrap_admin::prepare(state.pg(), configured.as_deref()).await?
+        {
+            notice.print(
+                config
+                    .public_url
+                    .as_deref()
+                    .unwrap_or("http://localhost:8080"),
+            );
+        }
+    }
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut background = start_background_services(&state, role, shutdown_rx.clone(), worker_plane);
 

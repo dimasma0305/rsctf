@@ -142,7 +142,8 @@ services:
       RSCTF_TRUSTED_PROXY_CIDRS: "${RSCTF_TRUSTED_PROXY_CIDRS:-}"
       RSCTF_JWT_SECRET: "${RSCTF_JWT_SECRET:?Set RSCTF_JWT_SECRET in .env to a random 32-byte value}"
       RSCTF_IDENTITY_HASH_KEY: "${RSCTF_IDENTITY_HASH_KEY:?Set RSCTF_IDENTITY_HASH_KEY in .env to a separate random 32-byte value}"
-      RSCTF_BOOTSTRAP_TOKEN: "${RSCTF_BOOTSTRAP_TOKEN:?Set RSCTF_BOOTSTRAP_TOKEN in .env to a random 32-byte value}"
+      RSCTF_BOOTSTRAP_TOKEN: "${RSCTF_BOOTSTRAP_TOKEN:-}"
+      RSCTF_BOOTSTRAP_AUTO: "${RSCTF_BOOTSTRAP_AUTO:-true}"
       # Event security is opt-in at the game level. Independent secrets remain
       # empty by default, so an organizer cannot accidentally enable a partial
       # or unverifiable policy.

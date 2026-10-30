@@ -4,22 +4,26 @@ Use this checklist before inviting players. It takes a few minutes and prevents 
 
 ## 1. Register the administrator
 
-Open `/account/register?bootstrap=1` and choose a unique password. For Docker
-Compose, retrieve the private setup token on the deployment host without
-putting it in shell history or a shared log:
+Open the setup URL shown by the installer and choose a unique password.
+Copy its setup token into the form. If you started Docker Compose directly,
+view the same first-start instructions from the deployment directory:
 
 ```bash
-sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' deploy/.env
+docker compose logs rsctf
 ```
 
-For Kubernetes, use the Secret retrieval command in the Helm notes. Only a
+Docker generates and stores the code automatically and shows it at startup before
+the first account exists. After that account is created, the stored code is
+deleted and cannot grant administrator access again. For Kubernetes, use the
+Secret retrieval command in the Helm notes. Only a
 token-authorized registration can become the first **Admin**; public requests
 without it fail closed.
 
 ::: warning Existing database
 “First account” means the first account in the connected PostgreSQL database,
 not the first registration after a container restart or reinstall. If you
-deliberately wipe the database, rotate the setup token before exposing it again.
+deliberately wipe the database, Docker generates a new setup code. Rotate any
+manually supplied setup token before exposing the fresh database.
 :::
 
 ## 2. Review the public identity

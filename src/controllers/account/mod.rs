@@ -345,7 +345,7 @@ pub async fn register(
         .map_err(|error| AppError::internal(error.to_string()))?;
     let account_policy =
         anti_cheat::lock_and_load_account_policy(&mut txn, st.config.as_ref()).await?;
-    bootstrap::require(is_first, model.bootstrap_token.as_deref())?;
+    bootstrap::require(&mut *txn, is_first, model.bootstrap_token.as_deref()).await?;
     if let Err(error) = account_policy.authorize_password_registration(is_first) {
         txn.rollback()
             .await
@@ -487,6 +487,9 @@ pub async fn register(
             )
             .await?;
         }
+    }
+    if is_first {
+        crate::services::bootstrap_admin::consume_token(&mut *txn).await?;
     }
     txn.commit()
         .await

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Guided Docker installer for rsctf.
 
+# Parse the complete script before doing any work, including when curl feeds stdin.
+{
 set -Eeuo pipefail
 IFS=$'\n\t'
 
@@ -10,6 +12,8 @@ readonly RELEASE_WORKFLOW="${REPOSITORY}/.github/workflows/worker-agent-release.
 readonly DEPLOYMENT_ASSET="rsctf-deployment-bundle.tar.gz"
 readonly CHECKSUM_ASSET="SHA256SUMS"
 readonly ATTESTATION_ASSET="rsctf-worker-agent-attestation.json"
+readonly GH_VERSION="2.103.3"
+ATTESTATION_CLI=gh
 
 ORIGINAL_ARGS=("$@")
 MODE=""
@@ -31,6 +35,8 @@ AD_VPN=0
 NON_INTERACTIVE=0
 CONFIGURE_ONLY=0
 DOCTOR_ONLY=0
+ADVANCED=0
+INSTALL_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 if [[ -t 1 ]]; then
   BOLD=$'\033[1m'
@@ -61,6 +67,7 @@ Modes:
   --mode local          Plain HTTP bound to localhost (default)
   --mode caddy          Public Caddy proxy with automatic HTTPS
   --mode proxy          Run behind an existing reverse proxy
+  --advanced            Show port, proxy, Docker challenge and VPN choices
 
 Options:
   --domain HOST         Public hostname (required for Caddy mode)
@@ -136,6 +143,7 @@ while (($#)); do
     --with-ad-vpn) AD_VPN=1; DOCKER_BACKEND=1; shift ;;
     --configure-only|--no-start) CONFIGURE_ONLY=1; shift ;;
     --doctor) DOCTOR_ONLY=1; NON_INTERACTIVE=1; shift ;;
+    --advanced) ADVANCED=1; shift ;;
     --non-interactive|--yes) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
@@ -145,12 +153,25 @@ done
 
 [[ $# -eq 0 ]] || die "unexpected positional argument: $1"
 
+preflight_tools() {
+  command -v docker >/dev/null 2>&1 \
+    || die "Docker is not installed. Install Docker Engine with the Compose plugin, then run this command again: https://docs.docker.com/engine/install/"
+  docker compose version >/dev/null 2>&1 \
+    || die "Docker Compose v2 is missing. Install the Compose plugin, then run this command again: https://docs.docker.com/compose/install/"
+  if [[ $CONFIGURE_ONLY -eq 0 ]]; then
+    docker info >/dev/null 2>&1 \
+      || die "Cannot connect to Docker. Start Docker and check that 'docker info' works for this user, then run this command again."
+  fi
+}
+
 unset CDPATH
-if ! SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd); then
-  SCRIPT_DIR=""
-fi
-if ! REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd); then
-  REPO_ROOT=""
+SCRIPT_DIR=""
+REPO_ROOT=""
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || SCRIPT_DIR=""
+  if [[ -n "$SCRIPT_DIR" ]]; then
+    REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd) || REPO_ROOT=""
+  fi
 fi
 
 release_curl() {
@@ -288,32 +309,58 @@ validate_deployment_archive() {
   done
 }
 
+attestation_cli_supported() {
+  local help option
+  help=$("$ATTESTATION_CLI" attestation verify --help 2>&1) || return 1
+  for option in --bundle --deny-self-hosted-runners --hostname --repo --signer-workflow --source-ref; do
+    grep -q -- "$option" <<< "$help" || return 1
+  done
+}
+
+prepare_attestation_cli() {
+  local directory=$1 architecture asset archive checksums expected actual member
+  if attestation_cli_supported; then return; fi
+  case "$(uname -s):$(uname -m)" in
+    Linux:x86_64) architecture=amd64 ;;
+    Linux:aarch64|Linux:arm64) architecture=arm64 ;;
+    *) die "Automatic release verification supports Linux AMD64 and ARM64. Install a current GitHub CLI on this host, then retry." ;;
+  esac
+  info "Preparing a temporary release verifier"
+  asset="gh_${GH_VERSION}_linux_${architecture}.tar.gz"
+  archive="$directory/$asset"
+  checksums="$directory/gh-checksums.txt"
+  local base="https://github.com/cli/cli/releases/download/v${GH_VERSION}"
+  download_release_asset "$base" "$asset" "$archive" 67108864
+  download_release_asset "$base" "gh_${GH_VERSION}_checksums.txt" "$checksums" 1048576
+  expected=$(awk -v name="$asset" '
+    $2 == name && length($1) == 64 && $1 ~ /^[0-9A-Fa-f]+$/ {count++; hash=$1}
+    END {if (count != 1) exit 1; print hash}
+  ' "$checksums") || die "The release verifier has no unique SHA-256 checksum."
+  actual=$(sha256sum "$archive")
+  actual=${actual%% *}
+  [[ "${actual,,}" == "${expected,,}" ]] || die "Release verifier SHA-256 verification failed."
+  member="gh_${GH_VERSION}_linux_${architecture}/bin/gh"
+  LC_ALL=C tar -tvzf "$archive" "$member" | awk '
+    {count++; if (substr($1,1,1) != "-" || $3 !~ /^[0-9]+$/ || $3 > 67108864) exit 1}
+    END {if (count != 1) exit 1}
+  ' || die "The release verifier archive has an invalid executable."
+  tar -xzOf "$archive" "$member" > "$directory/gh"
+  chmod 0700 "$directory/gh"
+  ATTESTATION_CLI="$directory/gh"
+  attestation_cli_supported || die "The downloaded release verifier cannot verify the required publisher policy."
+}
+
 bootstrap_bundle() {
   local version target_input target_parent target_name target temporary download_base
   local archive checksum_file attestation_file extract_root installed
-  local archive_list archive_verbose attestation_help required_option
+  local archive_list archive_verbose required_option
 
-  for required_option in awk basename chmod curl dirname find gh grep gzip head mkdir mktemp mv rm sha256sum tar wc; do
-    if [[ "$required_option" == gh && $SKIP_ATTESTATION -eq 1 ]]; then
-      continue
-    fi
+  if [[ $DOCTOR_ONLY -eq 0 ]]; then preflight_tools; fi
+
+  for required_option in awk basename chmod curl dirname find grep gzip head mkdir mktemp mv rm sha256sum tar uname wc; do
     command -v "$required_option" >/dev/null 2>&1 \
       || die "required bootstrap command is missing: ${required_option}"
   done
-  if [[ $SKIP_ATTESTATION -eq 0 ]]; then
-    attestation_help="$(gh attestation verify --help 2>&1)" \
-      || die "GitHub CLI with attestation support is required; upgrade gh, or explicitly use --skip-attestation"
-    for required_option in \
-      --bundle \
-      --deny-self-hosted-runners \
-      --hostname \
-      --repo \
-      --signer-workflow \
-      --source-ref; do
-      grep -q -- "$required_option" <<< "$attestation_help" \
-        || die "GitHub CLI lacks the required attestation policy option ${required_option}; upgrade gh, or explicitly use --skip-attestation"
-    done
-  fi
 
   version="$(resolve_release_version)"
   if [[ -n "$BUNDLE_URL" ]]; then
@@ -348,6 +395,7 @@ bootstrap_bundle() {
   archive_verbose="${temporary}/archive-verbose.txt"
   extract_root="${temporary}/extract"
   mkdir -m 0700 "$extract_root"
+  if [[ $SKIP_ATTESTATION -eq 0 ]]; then prepare_attestation_cli "$temporary"; fi
 
   info "Downloading verified rsctf release ${version} into ${target}"
   download_release_asset "$download_base" "$DEPLOYMENT_ASSET" "$archive" 33554432
@@ -358,7 +406,7 @@ bootstrap_bundle() {
   verify_deployment_checksum "$checksum_file" "$archive"
 
   if [[ $SKIP_ATTESTATION -eq 0 ]]; then
-    gh attestation verify \
+    "$ATTESTATION_CLI" attestation verify \
       "$archive" \
       --bundle "$attestation_file" \
       --hostname github.com \
@@ -392,7 +440,7 @@ bootstrap_bundle() {
   exec "$target/scripts/install.sh" "${ORIGINAL_ARGS[@]}"
 }
 
-if [[ ! -f "$REPO_ROOT/deploy/compose.yml" ]]; then
+if [[ -z "$REPO_ROOT" || ! -f "$REPO_ROOT/deploy/compose.yml" ]]; then
   bootstrap_bundle
 fi
 
@@ -456,6 +504,20 @@ prompt_configuration() {
   [[ -r /dev/tty ]] || die "interactive setup needs a terminal; use --non-interactive with flags"
   exec 3</dev/tty
   printf '\n%srsctf setup%s\n' "$BOLD" "$RESET"
+  if [[ -z "$MODE" && $ADVANCED -eq 0 ]]; then
+    printf 'How would you like to use rsctf?\n'
+    printf '  1) Try locally (http://localhost:%s)\n' "$HTTP_PORT"
+    printf '  2) Public server (automatic HTTPS)\n'
+    printf '  3) Advanced setup (proxy, ports, Docker challenges and VPN)\n'
+    local profile
+    read -r -u 3 -p 'Choice [1]: ' profile
+    case "${profile:-1}" in
+      1) MODE=local ;;
+      2) MODE=caddy ;;
+      3) ADVANCED=1 ;;
+      *) die "choose 1, 2, or 3" ;;
+    esac
+  fi
   if [[ -z "$MODE" ]]; then
     printf 'Choose how browsers will reach rsctf:\n'
     printf '  1) Local HTTP (localhost only)\n'
@@ -478,13 +540,13 @@ prompt_configuration() {
   fi
   if [[ "$MODE" == "proxy" && -z "$TRUSTED_PROXY_CIDRS" ]]; then
     read -r -u 3 -p 'Trusted proxy CIDR(s), comma-separated (blank trusts none): ' TRUSTED_PROXY_CIDRS
-  elif [[ "$MODE" == "local" ]]; then
+  elif [[ "$MODE" == "local" && $ADVANCED -eq 1 ]]; then
     local entered_port
     read -r -u 3 -p "Local HTTP port [$HTTP_PORT]: " entered_port
     HTTP_PORT=${entered_port:-$HTTP_PORT}
   fi
 
-  if [[ $DOCKER_BACKEND -lt 0 ]]; then
+  if [[ $ADVANCED -eq 1 && $DOCKER_BACKEND -lt 0 ]]; then
     if ask_yes_no 'Enable Docker-backed challenge containers? (Docker socket grants host-level control)' no; then
       DOCKER_BACKEND=1
     else
@@ -492,12 +554,12 @@ prompt_configuration() {
     fi
   fi
 
-  if [[ $DOCKER_BACKEND -eq 1 && $AD_VPN -eq 0 ]] \
+  if [[ $ADVANCED -eq 1 && $DOCKER_BACKEND -eq 1 && $AD_VPN -eq 0 ]] \
     && ask_yes_no 'Enable the Attack-Defense WireGuard VPN and SSH bastion?' no; then
     AD_VPN=1
   fi
 
-  if [[ $DOCKER_BACKEND -eq 1 && -z "$PUBLIC_ENTRY" ]]; then
+  if [[ $DOCKER_BACKEND -eq 1 && -z "$PUBLIC_ENTRY" && -z "$DOMAIN" ]]; then
     local default_entry=${DOMAIN:-localhost}
     local entered_entry
     read -r -u 3 -p "Public host/IP for challenge ports [$default_entry]: " entered_entry
@@ -604,7 +666,7 @@ write_new_environment() {
     printf 'RSCTF_JWT_SECRET=%s\n' "$jwt_secret"
     printf 'RSCTF_IDENTITY_HASH_KEY=%s\n' "$(random_hex 32)"
     printf 'RSCTF_EVENT_VPN_CREDENTIAL_KEY=%s\n' "$(random_hex 32)"
-    printf 'RSCTF_BOOTSTRAP_TOKEN=%s\n' "$(random_hex 32)"
+    printf 'RSCTF_BOOTSTRAP_AUTO=true\nRSCTF_BOOTSTRAP_TOKEN=\n'
     printf 'RSCTF_DOCKER_SCOPE=%s\n' "$(random_hex 16)"
     printf '\nRSCTF_PUBLIC_URL=%s\n' "$PUBLIC_URL"
     printf 'RSCTF_COOKIE_SECURE=%s\n' "$(cookie_secure_value)"
@@ -681,7 +743,8 @@ complete_existing_environment() {
   append_env_if_missing RSCTF_JWT_SECRET "$(random_hex 32)"
   append_env_if_missing RSCTF_IDENTITY_HASH_KEY "$(random_hex 32)"
   append_env_if_missing RSCTF_EVENT_VPN_CREDENTIAL_KEY "$(random_hex 32)"
-  append_env_if_missing RSCTF_BOOTSTRAP_TOKEN "$(random_hex 32)"
+  append_env_if_missing RSCTF_BOOTSTRAP_AUTO true
+  append_env_if_missing RSCTF_BOOTSTRAP_TOKEN ""
   append_env_if_missing RSCTF_DOCKER_SCOPE "$(random_hex 16)"
   append_env_if_missing RSCTF_PUBLIC_URL "$PUBLIC_URL"
   append_env_if_missing RSCTF_COOKIE_SECURE "$(cookie_secure_value)"
@@ -750,8 +813,10 @@ check_environment_values() {
     || die "RSCTF_IDENTITY_HASH_KEY in deploy/.env must be at least 32 characters"
   [[ "$identity_hash_key" != "$jwt" && "$identity_hash_key" != "change-me-in-production" ]] \
     || die "RSCTF_IDENTITY_HASH_KEY must be a dedicated random secret, distinct from RSCTF_JWT_SECRET"
-  [[ ${#bootstrap_token} -ge 32 ]] \
-    || die "RSCTF_BOOTSTRAP_TOKEN in deploy/.env must be at least 32 characters"
+  if [[ -n "$bootstrap_token" || "$(env_get RSCTF_BOOTSTRAP_AUTO)" == false || "$(env_get RSCTF_BOOTSTRAP_AUTO)" == 0 ]]; then
+    [[ ${#bootstrap_token} -ge 32 ]] \
+      || die "Manual setup needs RSCTF_BOOTSTRAP_TOKEN with at least 32 characters; otherwise use RSCTF_BOOTSTRAP_AUTO=true."
+  fi
   [[ "$password" =~ ^[A-Za-z0-9._~-]+$ ]] \
     || die "POSTGRES_PASSWORD must be non-empty and URL-safe (letters, numbers, . _ ~ -)"
   valid_public_url "$public_url" \
@@ -798,11 +863,7 @@ validate_compose() {
 }
 
 preflight() {
-  command -v docker >/dev/null 2>&1 || die "Docker is not installed; install Docker Engine with the Compose plugin first"
-  docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required (the 'docker compose' command)"
   if [[ $CONFIGURE_ONLY -eq 0 ]]; then
-    docker info >/dev/null 2>&1 \
-      || die "cannot reach the Docker daemon; start Docker or grant this user Docker access"
     local disk_used
     disk_used=$(df -P "$DEPLOY_DIR" 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')
     if [[ "$disk_used" =~ ^[0-9]+$ ]]; then
@@ -817,8 +878,10 @@ preflight() {
   fi
 
   local files
-  files=$(env_get COMPOSE_FILE)
-  if [[ $CONFIGURE_ONLY -eq 0 && ( "$files" == *compose.docker.yml* || "$files" == *compose.ad-vpn.yml* ) ]]; then
+  if [[ -f "$ENV_FILE" ]]; then files=$(env_get COMPOSE_FILE); else files=$(compose_file_value); fi
+  # Configuration can be prepared on a different host from the one that will run it.
+  [[ $CONFIGURE_ONLY -eq 0 ]] || return 0
+  if [[ "$files" == *compose.docker.yml* || "$files" == *compose.ad-vpn.yml* ]]; then
     [[ "$(uname -s)" == Linux ]] \
       || die "the Docker challenge backend requires Linux host-firewall isolation"
     [[ -S /var/run/docker.sock ]] || die "the Docker backend needs /var/run/docker.sock"
@@ -929,11 +992,9 @@ wait_for_health() {
 }
 
 print_bootstrap_token_hint() {
-  printf 'The first-administrator setup token is stored only in %s (owner-readable mode).\n' \
-    "$ENV_FILE"
-  printf 'Retrieve it locally when needed with this command (it is not run automatically):\n'
-  printf "  sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' %q\n" "$ENV_FILE"
-  printf 'Keep its output private; a normal registration can never win first-admin ownership without it.\n'
+  printf 'Open %s/account/register?bootstrap=1 and create your administrator.\n' "$(env_get RSCTF_PUBLIC_URL)"
+  printf 'Copy the setup token shown in the first-start Docker logs. View them with:\n'
+  printf '  cd %q && docker compose logs rsctf\n' "$DEPLOY_DIR"
 }
 
 main() {
@@ -941,6 +1002,8 @@ main() {
     doctor
     exit
   fi
+
+  preflight_tools
 
   if [[ -f "$ENV_FILE" ]]; then
     local existing_image
@@ -950,6 +1013,7 @@ main() {
     fi
     MODE=${MODE:-local}
     validate_inputs
+    preflight
     complete_existing_environment
   else
     guard_missing_environment_with_existing_data
@@ -959,10 +1023,10 @@ main() {
       MODE=${MODE:-local}
     fi
     validate_inputs
+    preflight
     write_new_environment
   fi
 
-  preflight
   validate_compose
   if [[ $CONFIGURE_ONLY -eq 1 ]]; then
     printf '\n%sConfiguration is ready.%s No containers were started.\n' "$BOLD" "$RESET"
@@ -979,9 +1043,13 @@ main() {
   local url
   url=$(env_get RSCTF_PUBLIC_URL)
   printf '\n%srsctf is ready: %s%s\n' "$BOLD" "$url" "$RESET"
-  printf '%sFirst administrator:%s open %s/account/register?bootstrap=1\n' "$YELLOW" "$RESET" "$url"
+  if ! compose logs --no-color --no-log-prefix --since "$INSTALL_STARTED_AT" --tail 100 rsctf \
+    | awk '/^RSCTF FIRST-TIME SETUP$/ {show=1} show {print} /^This token stops/ {show=0}'; then
+    warn "Could not read startup instructions; use docker compose logs rsctf."
+  fi
   print_bootstrap_token_hint
   printf 'Manage it with: cd %q && docker compose ps\n' "$DEPLOY_DIR"
 }
 
 main
+}
