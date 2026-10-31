@@ -27,6 +27,8 @@ disposable PostgreSQL database.
 
 For shutdown during external work, run the
 [control-job shutdown harness](../../../../tests/load/control-job-shutdown.mjs).
+Its [cleanup regression](../../../../tests/load/test/control-job-shutdown.test.mjs)
+accepts already-removed anonymous volumes while preserving real Docker errors.
 It uses the real control process and Docker builds/resets, with graceful and forced
 exit cases. Rollout cases use durable worker state with injected observations;
 they do not replace native-worker acceptance. The [load README](../../../../tests/load/README.md)

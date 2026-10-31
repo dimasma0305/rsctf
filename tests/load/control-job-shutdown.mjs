@@ -11,6 +11,7 @@ import http from 'node:http'
 import net from 'node:net'
 import { setTimeout as pause } from 'node:timers/promises'
 import { rolloutShutdown } from './control-job-shutdown/rollout.mjs'
+import { removeAnonymousVolume } from './control-job-shutdown/cleanup.mjs'
 
 const execute = promisify(execFile)
 const binary = process.env.ARCHITECTURE_RUNTIME_BINARY
@@ -305,7 +306,7 @@ finally {
     await trackVolumes(container).catch(error => { failure ||= error })
     await docker(['rm', '-f', container]).catch(error => { failure ||= error })
   }
-  for (const volume of volumes) await docker(['volume', 'rm', volume]).catch(error => { failure ||= error })
+  for (const volume of volumes) await removeAnonymousVolume(docker, volume).catch(error => { failure ||= error })
   // Include prior image IDs made dangling by rebuilding this invocation's tag.
   const scope = hash(`explicit\0${name}`).slice(0, 32)
   const builtIds = (await docker(['image', 'ls', '-aq', '--filter', `label=rsctf.image.scope=${scope}`])).stdout.trim().split('\n').filter(Boolean)
