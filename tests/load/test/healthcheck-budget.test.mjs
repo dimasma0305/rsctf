@@ -47,6 +47,8 @@ test("application services log through the bounded local driver", () => {
     ["docker-compose.yml", { local: ["rsctf", "rsctf-proxy-firewall"], "json-file": ["db", "redis"] }],
     ["deploy/compose.yml", { local: ["rsctf"], "json-file": ["db", "redis"] }],
     ["deploy/compose.roles.yml", { local: ["rsctf-control"], "json-file": [] }],
+    ["deploy/compose.ad-vpn.yml", { local: ["koth-reporter"], "json-file": [] }],
+    ["deploy/compose.roles.ad-vpn.yml", { local: ["koth-reporter"], "json-file": [] }],
     ["deploy/compose.docker.yml", { local: ["rsctf-proxy-firewall"], "json-file": [] }],
     ["deploy/compose.caddy.yml", { local: ["caddy"], "json-file": [] }],
     ["deploy/compose.event-vpn-ingress.yml", { local: ["event-vpn-dns"], "json-file": [] }],

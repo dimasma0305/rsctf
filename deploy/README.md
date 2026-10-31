@@ -101,6 +101,12 @@ driver only in a planned maintenance window that already recreates them.
   rejects `true` because a shared bridge cannot safely isolate outbound access.
   Use the Kubernetes backend with per-workload NetworkPolicy when egress is a
   challenge requirement.
+  Both VPN overlays include a private reporter proxy for managed KotH targets.
+  It exposes only health and authenticated context/observation routes, forwarding
+  over the application network while the VPN owner's input firewall stays closed.
+  Reserve `RSCTF_KOTH_REPORTER_IP` (default `10.13.40.254`) inside the services
+  subnet; change it alongside a custom `RSCTF_AD_VPN_SERVICES_CIDR`. Do not point
+  `RSCTF_KOTH_REPORTER_BASE_URL` directly at the VPN owner on the services network.
 - `compose.event-vpn-ingress.yml` adds split-horizon DNS and a private HTTPS
   path for the same `RSCTF_DOMAIN`. Merge it after `compose.caddy.yml` and
   `compose.ad-vpn.yml` on an all-in-one deployment. VPN profiles then resolve

@@ -557,6 +557,9 @@ jobs:
       - name: Validate Compose capability ownership
         run: ./scripts/validate-compose-security.sh
 
+      - name: Verify managed KotH reporter proxy isolation
+        run: python3 scripts/test-koth-reporter-proxy.py
+
       - name: Verify PlatformProxy host-firewall isolation
         run: sudo ./scripts/test-docker-proxy-firewall.sh
 

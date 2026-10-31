@@ -284,6 +284,7 @@ jobs:
           install -m 0644 deploy/compose*.yml "$bundle_root/deploy/"
           install -m 0644 \
             deploy/Caddyfile \
+            deploy/koth-reporter.Caddyfile \
             deploy/README.md \
             deploy/.env.example \
             deploy/.gitignore \

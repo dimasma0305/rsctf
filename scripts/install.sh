@@ -470,6 +470,14 @@ bootstrap_bundle() {
       || die "the extracted deployment helper scripts/$helper is not a regular file"
     chmod 0755 "$installed/scripts/$helper"
   done
+  # This verified, non-secret route configuration is read by a proxy that
+  # drops DAC_OVERRIDE. A restrictive caller umask must not make it unreadable
+  # to the container UID. Older release bundles do not contain this file.
+  if [[ -e "$installed/deploy/koth-reporter.Caddyfile" ]]; then
+    [[ -f "$installed/deploy/koth-reporter.Caddyfile" && ! -L "$installed/deploy/koth-reporter.Caddyfile" ]] \
+      || die "the reporter configuration is not a regular file"
+    chmod 0644 "$installed/deploy/koth-reporter.Caddyfile"
+  fi
 
   mv -T -- "$installed" "$target" \
     || die "could not atomically install the verified deployment bundle"

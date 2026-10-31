@@ -146,14 +146,18 @@ if actual != expected:
 ' "$service"
 }
 
-assert_split_koth_reporting() {
+assert_koth_reporting() {
+  local owner="$1"
+  local address="${2:-10.13.40.254}"
   python3 -c '
+import ipaddress
 import json
 import sys
 
 document = json.load(sys.stdin)
+owner, address = sys.argv[1:]
 expected = "http://rsctf-koth-reporter:8080"
-for name in ("rsctf", "rsctf-control"):
+for name in {"rsctf", owner}:
     actual = document["services"][name].get("environment", {}).get(
         "RSCTF_KOTH_REPORTER_BASE_URL"
     )
@@ -161,15 +165,30 @@ for name in ("rsctf", "rsctf-control"):
         raise SystemExit(
             f"{name} managed KotH reporting mismatch: expected {expected}, got {actual}"
         )
-aliases = (
-    document["services"]["rsctf-control"]
-    .get("networks", {})
-    .get("rsctf-ad", {})
-    .get("aliases", [])
-)
-if "rsctf-koth-reporter" not in aliases:
-    raise SystemExit("control does not own the private managed KotH reporter alias")
-'
+services = document["services"]
+proxy = services["koth-reporter"]
+alias_owners = [name for name, service in services.items()
+                if "rsctf-koth-reporter" in
+                (service.get("networks", {}).get("rsctf-ad", {}) or {}).get("aliases", [])]
+assert alias_owners == ["koth-reporter"], alias_owners
+assert proxy["networks"]["rsctf-ad"]["ipv4_address"] == address
+subnet = document["networks"]["rsctf-ad"]["ipam"]["config"][0]["subnet"]
+assert ipaddress.ip_address(address) in ipaddress.ip_network(subnet)
+assert set(proxy["networks"]) == {"default", "rsctf-ad"}
+assert "rsctf-network" in services[owner]["networks"]["default"]["aliases"]
+assert proxy["depends_on"][owner]["condition"] == "service_healthy"
+assert "@sha256:" in proxy["image"]
+assert proxy["read_only"] and not proxy.get("ports")
+assert not proxy.get("privileged") and not proxy.get("devices")
+assert set(proxy["cap_drop"]) == {"ALL"}
+assert set(proxy["cap_add"]) == {"NET_BIND_SERVICE"}
+assert "no-new-privileges:true" in proxy["security_opt"]
+assert proxy["pids_limit"] == 64 and proxy["mem_limit"] == "67108864"
+mounts = proxy["volumes"]
+assert len(mounts) == 1 and mounts[0]["read_only"]
+assert mounts[0]["source"].endswith("/koth-reporter.Caddyfile")
+assert mounts[0]["target"] == "/etc/caddy/Caddyfile"
+' "$owner" "$address"
 }
 
 # Application services use the `local` driver. PostgreSQL and Redis keep
@@ -350,6 +369,10 @@ RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE=3000 \
 
 "${compose[@]}" -f deploy/compose.yml -f deploy/compose.ad-vpn.yml \
   config --format json | assert_service_security rsctf yes yes yes
+"${compose[@]}" -f deploy/compose.yml -f deploy/compose.ad-vpn.yml \
+  config --format json | assert_koth_reporting rsctf
+"${compose[@]}" -f deploy/compose.yml -f deploy/compose.ad-vpn.yml \
+  config --format json | assert_bounded_logs koth-reporter
 
 docker_backend=(-f deploy/compose.yml -f deploy/compose.docker.yml)
 "${compose[@]}" "${docker_backend[@]}" config --format json \
@@ -388,7 +411,10 @@ RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE=3000 \
 "${compose[@]}" "${split[@]}" config --format json \
   | assert_bounded_logs rsctf-control
 "${compose[@]}" "${split[@]}" config --format json \
-  | assert_split_koth_reporting
+  | assert_koth_reporting rsctf-control
+RSCTF_AD_VPN_SERVICES_CIDR=10.199.17.0/24 RSCTF_KOTH_REPORTER_IP=10.199.17.254 \
+  "${compose[@]}" "${split[@]}" config --format json \
+  | assert_koth_reporting rsctf-control 10.199.17.254
 
 split_docker=(
   -f deploy/compose.yml

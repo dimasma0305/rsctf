@@ -31,6 +31,7 @@ make_fixture() {
   install -m 0644 "$REPOSITORY_ROOT"/deploy/compose*.yml "$package/rsctf/deploy/"
   install -m 0644 \
     "$REPOSITORY_ROOT/deploy/Caddyfile" \
+    "$REPOSITORY_ROOT/deploy/koth-reporter.Caddyfile" \
     "$REPOSITORY_ROOT/deploy/README.md" \
     "$REPOSITORY_ROOT/deploy/.env.example" \
     "$REPOSITORY_ROOT/deploy/.gitignore" \
@@ -288,6 +289,8 @@ mkdir "$target"
 RSCTF_TEST_ENV_ARGS=(RSCTF_TEST_GH_VERIFY=1 RSCTF_TEST_LATEST_TAG=v1.2.3)
 run_installer "$VALID_FIXTURE" "$target" "$output"
 test -f "$target/deploy/compose.yml"
+test -f "$target/deploy/koth-reporter.Caddyfile"
+test "$(stat -c %a "$target/deploy/koth-reporter.Caddyfile")" = 644
 test -f "$target/deploy/event-vpn/Corefile"
 grep -Fq 'releases/latest' "$TEMP_DIRECTORY/curl.log"
 
