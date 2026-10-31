@@ -15,6 +15,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
+  # Only trusted, disposable test workloads run on the runner's non-quota disk.
+  RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE: 'true'
 
 jobs:
   plan:
@@ -145,7 +147,7 @@ jobs:
           image_id="$(docker image inspect rsctf-server-smoke:ci --format '{{.Id}}')"
           RSCTF_DOCKER_SCOPE="ci-server-retry" \
             RSCTF_REAL_DOCKER_RETRY_IMAGE="$image_id" \
-            cargo test --locked retryable_flag_adopts_one_real_docker_workload -- --nocapture
+            cargo test --locked services::container::real_docker_tests -- --nocapture
           RSCTF_DOCKER_SCOPE="ci-server-image-repair" \
             RSCTF_DOCKER_PROXY_BIND="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')" \
             RSCTF_REAL_DOCKER_RETRY_IMAGE="rsctf-server-smoke:ci" \
@@ -684,6 +686,9 @@ jobs:
       - name: Exercise first-game setup and simple challenge creation in Chromium
         run: node tests/visual/easy-start.mjs
 
+      - name: Exercise audit contrast, scroll regions, and Overall scores in Chromium
+        run: node tests/visual/audit-regressions.mjs
+
       - name: Check delayed reads and live round layout stability in Chromium
         run: node tests/visual/layout-stability.mjs
 
@@ -699,6 +704,7 @@ jobs:
             visual-audit-output/account-access/
             visual-audit-output/team-access/
             visual-audit-output/design-ux/
+            visual-audit-output/audit-regressions/
             visual-audit-output/runtime-profiles/
             visual-audit-output/layout-stability/
             visual-audit-output/navigation-layout/
@@ -1057,6 +1063,7 @@ jobs:
           docker build --tag rsctf-architecture-smoke:ci \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
           export RSCTF_REAL_DOCKER_RETRY_IMAGE="$(docker image inspect rsctf-architecture-smoke:ci --format '{{.Id}}')"
+          export RSCTF_TEST_CONTAINER_IMAGE="$RSCTF_REAL_DOCKER_RETRY_IMAGE"
           export RSCTF_DOCKER_PROXY_BIND="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
           export RSCTF_DOCKER_SCOPE=ci-architecture
           filters=(
@@ -1070,6 +1077,9 @@ jobs:
             readiness_rechecks_ownership_and_shutdown_after_waiting_for_dependencies
             docker_bootstrap_reuses_pending_code_and_stops_after_registration
             simple_challenge_create_is_atomic_authorized_and_retryable
+            stale_conditional_delete_cannot_destroy_a_real_replacement_runtime
+            newly_issued_sessions_work_immediately_after_a_cached_credential_rotation
+            exact_replay_and_stale_phase_recovery_are_durable
           )
           for filter in "${filters[@]}"; do
             # A renamed/missing regression must fail instead of passing zero tests.

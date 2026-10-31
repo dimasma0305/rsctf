@@ -270,6 +270,7 @@ const CustomTheme: MantineThemeOverride = {
     Anchor: Anchor.extend({
       defaultProps: {
         underline: 'hover',
+        c: 'var(--app-accent-text)',
       },
     }),
     Checkbox: Checkbox.extend({

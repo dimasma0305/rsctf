@@ -8,7 +8,7 @@ overrides:
   canvas: npm:dry-uninstall
   vite-plugin-pages@0.33.3>micromatch: npm:picomatch@4.0.5
   form-data: '>=4.0.6'
-  follow-redirects: 1.16.1
+  follow-redirects: 1.16.2
   '@trivago/prettier-plugin-sort-imports>minimatch': 10.2.5
   minimatch>brace-expansion: 5.0.12
   postcss-nested>postcss-selector-parser: 7.1.6
@@ -87,7 +87,7 @@ importers:
         version: 6.0.0
       axios:
         specifier: ^1.20.0
-        version: 1.20.0
+        version: 1.20.0(debug@4.4.3)
       chroma-js:
         specifier: ^3.2.0
         version: 3.2.0
@@ -250,7 +250,7 @@ importers:
         version: 0.33.3(react-router@8.4.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(vite@8.3.4(@types/node@22.13.14)(esbuild@0.28.2)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.31))(yaml@2.9.1))
       vite-plugin-webfont-dl:
         specifier: ^3.13.1
-        version: 3.13.1(vite@8.3.4(@types/node@22.13.14)(esbuild@0.28.2)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.31))(yaml@2.9.1))
+        version: 3.13.1(debug@4.4.3)(vite@8.3.4(@types/node@22.13.14)(esbuild@0.28.2)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.31))(yaml@2.9.1))
 
 packages:
 
@@ -1524,8 +1524,8 @@ packages:
   flatted@3.4.4:
     resolution: {integrity: sha512-5+ybhBZANEJxaH3X5evAFatUxLfEHSr7n6kYJ+1Qd0mUqr4eu9gIf6GDbWHf8RJijHrjjO8G+la14SlL2SeS1Q==}
 
-  follow-redirects@1.16.1:
-    resolution: {integrity: sha512-FNvFGzoMLWmE6Yj9spb/zjd7yiNCHiAW9/Tg9CXrQ8wuu32HtlJOwWO11OJafl5FfY3DxTdQ0vj42zU1kvv5jg==}
+  follow-redirects@1.16.2:
+    resolution: {integrity: sha512-/kVP2U8z596Ia0gwFrwyIeo74ta5aVmSeU1FfAUMAmcEP5EP7zydmag3SLiN64NaRKef3lxsq7i/g7ltJQDGow==}
     engines: {node: '>=4.0'}
     peerDependencies:
       debug: '*'
@@ -3354,9 +3354,9 @@ snapshots:
 
   axe-core@4.14.0: {}
 
-  axios@1.20.0:
+  axios@1.20.0(debug@4.4.3):
     dependencies:
-      follow-redirects: 1.16.1
+      follow-redirects: 1.16.2(debug@4.4.3)
       form-data: 4.0.6
       https-proxy-agent: 5.0.1
       proxy-from-env: 2.1.0
@@ -3678,7 +3678,9 @@ snapshots:
 
   flatted@3.4.4: {}
 
-  follow-redirects@1.16.1: {}
+  follow-redirects@1.16.2(debug@4.4.3):
+    optionalDependencies:
+      debug: 4.4.3
 
   form-data@4.0.6:
     dependencies:
@@ -4672,9 +4674,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  vite-plugin-webfont-dl@3.13.1(vite@8.3.4(@types/node@22.13.14)(esbuild@0.28.2)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.31))(yaml@2.9.1)):
+  vite-plugin-webfont-dl@3.13.1(debug@4.4.3)(vite@8.3.4(@types/node@22.13.14)(esbuild@0.28.2)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.31))(yaml@2.9.1)):
     dependencies:
-      axios: 1.20.0
+      axios: 1.20.0(debug@4.4.3)
       clean-css: 5.3.3
       flat-cache: 6.1.23
       picocolors: 1.1.1

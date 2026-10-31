@@ -27,6 +27,7 @@ services:
       - path: ./.rsctf-dev/runtime.container.env
         required: true
     environment:
+      RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE: ${RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE:-false}
       RSCTF_BIND: 0.0.0.0:8080
       RSCTF_DATABASE_URL: postgres://rsctf_dev:rsctf_dev@db:5432/rsctf_dev
       RSCTF_REDIS_URL: redis://redis:6379

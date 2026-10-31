@@ -95,7 +95,12 @@ const Home: FC = () => {
             <Text size="xs" fw={650} c="dimmed">
               {pinnedPost ? t('interface.home.pinned') : t('common.tab.post')}
             </Text>
-            <Anchor component={Link} to={pinnedPost ? `/posts/${pinnedPost.id}` : '/posts'} fw={650}>
+            <Anchor
+              component={Link}
+              to={pinnedPost ? `/posts/${pinnedPost.id}` : '/posts'}
+              fw={650}
+              c="var(--app-accent-surface-text)"
+            >
               {pinnedPost?.title ?? t('common.tab.post')}
             </Anchor>
           </div>

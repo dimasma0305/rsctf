@@ -121,11 +121,11 @@ the complete body after 70 seconds. It does not submit a player's writeup.
 The standard source runner intentionally disables container provisioning. A
 Docker backend applies the configured writable-layer limit when the daemon and
 backing filesystem support it. On an incompatible host (for example overlay2
-on ext4), rsctf keeps the configured value but starts the workload without a
-writable-layer quota and displays a persistent warning in the challenge
-editor. CPU, memory, PID, network, log, and lifecycle limits remain active.
-Monitor free disk space closely; production should use overlay2 on XFS with
-project quotas (or another supported driver) or a quota-capable worker.
+on ext4), rsctf refuses new workloads. For trusted disposable development only,
+set `RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE=true` explicitly to run without a
+writable-layer quota. Monitor free disk space when using this override. Production
+must use overlay2 on XFS with project quotas (or another supported driver) or a
+quota-capable worker. Existing running containers remain available.
 
 This stack is for debugging and review. A production deployment must still be
 built by the release workflow and rolled out by immutable image digest.

@@ -1,7 +1,9 @@
 //! Browser request-boundary protections for the cookie-authenticated SPA.
 
 use axum::extract::{Request, State};
-use axum::http::header::{CONTENT_SECURITY_POLICY, HOST, ORIGIN, REFERER};
+use axum::http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_SECURITY_POLICY, HOST, ORIGIN, REFERER, SET_COOKIE,
+};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -37,8 +39,26 @@ fn csrf_violation(req: &Request, public_url: Option<&str>, cookie_secure: bool) 
 
 /// Add headers that are safe for both API responses and the same-origin SPA.
 pub async fn security_headers(req: Request, next: Next) -> Response {
+    let api_response = req.uri().path().split('/').nth(1).is_some_and(|namespace| {
+        namespace.eq_ignore_ascii_case("api") || namespace.eq_ignore_ascii_case("hub")
+    });
+    let credentialed =
+        has_session_cookie(req.headers()) || req.headers().contains_key(AUTHORIZATION);
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
+    // API responses are private by default. Only explicitly public anonymous
+    // projections may opt into caching; a session or issued cookie overrides
+    // that policy. Static assets retain their independent cache lifetime.
+    let public_projection = headers.get_all(CACHE_CONTROL).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value
+                .split(',')
+                .any(|directive| directive.trim().eq_ignore_ascii_case("public"))
+        })
+    });
+    if headers.contains_key(SET_COOKIE) || (api_response && (credentialed || !public_projection)) {
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    }
     headers.insert(
         HeaderName::from_static("x-content-type-options"),
         HeaderValue::from_static("nosniff"),
@@ -146,6 +166,84 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::header::{AUTHORIZATION, COOKIE};
+
+    #[tokio::test]
+    async fn sensitive_api_headers_override_public_caching_without_disabling_static_assets() {
+        use tower::ServiceExt;
+        let app = axum::Router::new()
+            .route(
+                "/api/account/profile",
+                axum::routing::get(|| async { "private profile" }),
+            )
+            .route(
+                "/api/posts/latest",
+                axum::routing::get(|| async {
+                    ([(CACHE_CONTROL, "public, max-age=60")], "public posts")
+                }),
+            )
+            .route(
+                "/assets/app.js",
+                axum::routing::get(|| async {
+                    (
+                        [(CACHE_CONTROL, "public, max-age=31536000, immutable")],
+                        "asset",
+                    )
+                }),
+            )
+            .route(
+                "/callback",
+                axum::routing::get(|| async {
+                    (
+                        [
+                            (SET_COOKIE, "RSCTF_Token=fixture; HttpOnly"),
+                            (CACHE_CONTROL, "public, max-age=60"),
+                        ],
+                        "signed in",
+                    )
+                }),
+            )
+            .layer(axum::middleware::from_fn(security_headers));
+        for (path, credential, expected) in [
+            ("/api/account/profile", None, "private, no-store"),
+            (
+                "/api/account/profile",
+                Some((COOKIE, "RSCTF_Token=fixture")),
+                "private, no-store",
+            ),
+            ("/api/posts/latest", None, "public, max-age=60"),
+            (
+                "/api/posts/latest",
+                Some((AUTHORIZATION, "Bearer fixture")),
+                "private, no-store",
+            ),
+            (
+                "/api/posts/latest",
+                Some((COOKIE, "RSCTF_Token=fixture")),
+                "private, no-store",
+            ),
+            (
+                "/assets/app.js",
+                Some((COOKIE, "RSCTF_Token=fixture")),
+                "public, max-age=31536000, immutable",
+            ),
+            ("/callback", None, "private, no-store"),
+        ] {
+            let mut request = Request::builder().uri(path);
+            if let Some((name, value)) = credential {
+                request = request.header(name, value);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.headers().get(CACHE_CONTROL).unwrap(),
+                expected,
+                "{path}"
+            );
+        }
+    }
 
     fn headers(host: &str, origin: Option<&str>) -> HeaderMap {
         let mut headers = HeaderMap::new();

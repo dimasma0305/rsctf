@@ -35,10 +35,27 @@ async fn retryable_flag_adopts_one_real_docker_workload() {
         operation_id: Some(operation_id.to_string()),
     };
 
+    let mut strict = manager.clone();
+    strict.allow_unbounded_storage = false;
+    if !strict.detect_storage_quota_enforcement().await.unwrap() {
+        let denied = strict.create(spec(&operation_id)).await.unwrap_err();
+        assert!(denied.to_string().contains("cannot enforce"));
+    }
     let first = manager
         .create(spec(&operation_id))
         .await
         .expect("first Docker create");
+    let anonymous_volumes: Vec<String> = manager
+        .client()
+        .unwrap()
+        .inspect_container(&first.id, None)
+        .await
+        .unwrap()
+        .mounts
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|mount| mount.name)
+        .collect();
     let scoped_operation = scoped_operation_id(&manager.scope, Some(&operation_id))
         .expect("stable operation identity");
     let legacy_name = legacy_operation_container_name(&image, &[], &scoped_operation);
@@ -91,6 +108,17 @@ async fn retryable_flag_adopts_one_real_docker_workload() {
         super::docker::is_not_found(&missing),
         "terminal operation cleanup returned an unexpected Docker error: {missing}"
     );
+    for volume in anonymous_volumes {
+        assert!(
+            manager
+                .client()
+                .unwrap()
+                .inspect_volume(&volume)
+                .await
+                .is_err(),
+            "terminal retry leaked anonymous volume {volume}"
+        );
+    }
 
     let replacement_operation = format!("test-retryable-flag:{}", uuid::Uuid::new_v4());
     let replacement = manager
@@ -101,4 +129,144 @@ async fn retryable_flag_adopts_one_real_docker_workload() {
         .destroy(&replacement.id)
         .await
         .expect("real Docker retry workload cleanup");
+}
+
+#[tokio::test]
+async fn scoped_generator_inventory_and_destroy_preserve_foreign_and_named_resources() {
+    use bollard::container::{Config, RemoveContainerOptions};
+    use bollard::models::HostConfig;
+    use bollard::volume::CreateVolumeOptions;
+    use std::collections::HashMap;
+
+    let Ok(image) = std::env::var("RSCTF_REAL_DOCKER_RETRY_IMAGE") else {
+        return;
+    };
+    let manager = DockerContainerManager::connect().unwrap();
+    let docker = manager.client().unwrap();
+    let named = format!("rsctf-audit-kept-{}", uuid::Uuid::new_v4());
+    docker
+        .create_volume(CreateVolumeOptions {
+            name: named.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    let mut anonymous = Vec::new();
+    for foreign in [false, true] {
+        let mut labels =
+            crate::services::event_security::generator_labels(uuid::Uuid::new_v4().to_string());
+        if foreign {
+            labels = super::scoped_managed_labels("another-installation");
+        }
+        let created = docker
+            .create_container::<String, String>(
+                None,
+                Config {
+                    image: Some(image.clone()),
+                    entrypoint: Some(vec!["/bin/sh".to_string()]),
+                    cmd: Some(vec!["-c".to_string(), "exit 0".to_string()]),
+                    labels: Some(labels),
+                    volumes: Some(HashMap::from([(
+                        "/audit-anonymous".to_string(),
+                        HashMap::new(),
+                    )])),
+                    host_config: Some(HostConfig {
+                        binds: Some(vec![format!("{named}:/audit-kept")]),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        docker
+            .start_container::<String>(&created.id, None)
+            .await
+            .unwrap();
+        let info = docker.inspect_container(&created.id, None).await.unwrap();
+        if !foreign {
+            anonymous = info
+                .mounts
+                .unwrap()
+                .into_iter()
+                .filter_map(|mount| mount.name)
+                .filter(|name| name != &named)
+                .collect();
+        }
+        ids.push(created.id);
+    }
+    let inventory = manager.list_managed().await;
+    let visible = inventory.contains(&ids[0]) && !inventory.contains(&ids[1]);
+    let foreign_rejected = manager.destroy(&ids[1]).await.is_err();
+    manager.destroy(&ids[0]).await.unwrap();
+    let leaked =
+        futures::future::join_all(anonymous.iter().map(|name| docker.inspect_volume(name)))
+            .await
+            .into_iter()
+            .any(|result| result.is_ok());
+    let named_preserved = docker.inspect_volume(&named).await.is_ok();
+    let foreign_preserved = docker.inspect_container(&ids[1], None).await.is_ok();
+    docker
+        .remove_container(
+            &ids[1],
+            Some(RemoveContainerOptions {
+                force: true,
+                v: true,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    docker.remove_volume(&named, None).await.unwrap();
+    assert!(visible, "generator absent from installation inventory");
+    assert!(
+        foreign_rejected && foreign_preserved,
+        "foreign workload was not protected"
+    );
+    assert!(
+        !anonymous.is_empty() && !leaked,
+        "destroy leaked anonymous volumes"
+    );
+    assert!(
+        named_preserved,
+        "destroy removed an explicitly named volume"
+    );
+
+    let failed = docker
+        .create_container::<String, String>(
+            None,
+            Config {
+                image: Some(image),
+                entrypoint: Some(vec!["/does-not-exist-audit-fixture".to_string()]),
+                labels: Some(super::scoped_managed_labels(&manager.scope)),
+                volumes: Some(HashMap::from([(
+                    "/audit-anonymous".to_string(),
+                    HashMap::new(),
+                )])),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let failed_volumes: Vec<_> = docker
+        .inspect_container(&failed.id, None)
+        .await
+        .unwrap()
+        .mounts
+        .unwrap()
+        .into_iter()
+        .filter_map(|mount| mount.name)
+        .collect();
+    assert!(manager
+        .start_or_reconcile_container(docker, &failed.id, false, false)
+        .await
+        .is_err());
+    assert!(docker.inspect_container(&failed.id, None).await.is_err());
+    for name in failed_volumes {
+        assert!(
+            docker.inspect_volume(&name).await.is_err(),
+            "failed start leaked {name}"
+        );
+    }
 }

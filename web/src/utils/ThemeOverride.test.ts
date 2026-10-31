@@ -22,7 +22,7 @@ const mixHex = (foreground: string, background: string, foregroundWeight: number
 }
 
 test('semantic accents remain contrast-safe for arbitrary configured colors', () => {
-  const colors = ['#0d9488', '#ffff00', '#00ff00', '#ff00ff', '#ffffff', '#000000', '#777777']
+  const colors = ['#0d9488', '#e33f3d', '#ffff00', '#00ff00', '#ff00ff', '#ffffff', '#000000', '#777777']
 
   for (const color of colors) {
     const semantic = buildSemanticAccentColors(color)

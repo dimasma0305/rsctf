@@ -464,6 +464,15 @@ pub(super) fn writable_layer_storage_opt(
     std::collections::HashMap::from([("size".to_string(), format!("{storage_limit}M"))])
 }
 
+pub(super) fn require_storage_quota(enforced: bool, allow_unbounded: bool) -> AppResult<()> {
+    if !enforced && !allow_unbounded {
+        return Err(AppError::unavailable(
+            "Docker cannot enforce this challenge's disk limit. Use a quota-capable Docker host (for overlay2, XFS with project quotas). RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE=true is only for trusted disposable development workloads.",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn writable_layer_storage_option(
     enforced: bool,
     storage_limit: i32,
@@ -768,7 +777,7 @@ impl DockerContainerManager {
                         docker.remove_container(
                             canonical_id,
                             Some(RemoveContainerOptions {
-                                v: false,
+                                v: true,
                                 force: true,
                                 link: false,
                             }),

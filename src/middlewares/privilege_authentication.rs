@@ -89,11 +89,14 @@ fn live_authorization_window() -> u64 {
         .as_secs()
 }
 
-fn live_authorization_cache_key(id: Uuid, window: u64) -> String {
+fn live_authorization_cache_key(id: Uuid, stamp: &str, window: u64) -> String {
     // The one-second window is part of the key so promoting an almost-expired
     // Redis entry into the process L1 cannot extend authorization staleness for
     // another L1 TTL. Old generations expire through the bounded Cache.
-    format!("_LiveAuthorization_{id}_{window:016x}")
+    // A newly issued credential must never hit the previous stamp's projection.
+    // Hash the stamp so credential material does not appear in Redis key names.
+    let generation = crate::utils::codec::sha256_str(stamp);
+    format!("_LiveAuthorization_v2_{id}_{generation}_{window:016x}")
 }
 
 fn decode_cached_authorization(bytes: &[u8]) -> Option<CachedAuthorization> {
@@ -105,15 +108,16 @@ async fn cached_authorization(app: &SharedState, key: &str) -> Option<CachedAuth
     decode_cached_authorization(&bytes)
 }
 
-/// Load the live account projection once per user and one-second window. The
+/// Load the live account projection once per user, credential generation and window. The
 /// shared `Cache` supplies bounded storage (and cross-replica Redis when
 /// configured); `SingleFlight` collapses a synchronized miss to one detached DB
 /// read per replica without holding a blocking guard across `.await`.
 async fn load_cached_authorization(
     app: &SharedState,
     id: Uuid,
+    stamp: &str,
 ) -> Result<CachedAuthorization, AppError> {
-    let key = live_authorization_cache_key(id, live_authorization_window());
+    let key = live_authorization_cache_key(id, stamp, live_authorization_window());
     if let Some(entry) = cached_authorization(app, &key).await {
         return Ok(entry);
     }
@@ -267,7 +271,7 @@ pub(crate) async fn authenticate_live_identity(
     id: Uuid,
     expected_stamp: &str,
 ) -> Result<CurrentUser, AppError> {
-    let entry = load_cached_authorization(app, id).await?;
+    let entry = load_cached_authorization(app, id, expected_stamp).await?;
     authorize_cached_entry(entry, id, expected_stamp)
 }
 
@@ -408,6 +412,10 @@ where
 }
 
 #[cfg(test)]
+#[path = "privilege_authentication_pg_tests.rs"]
+mod pg_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -517,9 +525,15 @@ mod tests {
     fn live_authorization_cache_window_and_key_are_strictly_bounded() {
         assert!(LIVE_AUTHORIZATION_TTL > std::time::Duration::ZERO);
         assert!(LIVE_AUTHORIZATION_TTL <= std::time::Duration::from_secs(1));
-        let first = live_authorization_cache_key(Uuid::nil(), 0);
-        let second = live_authorization_cache_key(Uuid::from_u128(u128::MAX), u64::MAX);
+        let first = live_authorization_cache_key(Uuid::nil(), "old-stamp", 0);
+        let second =
+            live_authorization_cache_key(Uuid::from_u128(u128::MAX), "new-stamp", u64::MAX);
         assert_eq!(first.len(), second.len());
-        assert!(first.len() < 80);
+        assert!(first.len() < 160);
+        assert_ne!(
+            first,
+            live_authorization_cache_key(Uuid::nil(), "new-stamp", 0)
+        );
+        assert!(!first.contains("old-stamp"));
     }
 }

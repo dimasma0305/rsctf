@@ -112,7 +112,7 @@ async fn attack_ws(
 /// `ReceivedAttack` broadcasts as flat JSON frames (tagged with `kind`) and emit a
 /// standards-compliant control ping every 25s so a reverse proxy can't
 /// idle-drop the socket and conforming clients refresh the read deadline.
-async fn serve_raw(
+pub(super) async fn serve_raw(
     socket: WebSocket,
     mut rx: EventReceiver,
     game_id: i32,
@@ -199,7 +199,11 @@ async fn serve_raw(
                         break;
                     }
                 }
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                Some(Ok(Message::Close(_))) => {
+                    let _ = tokio::time::timeout(Duration::from_secs(1), tx.flush()).await;
+                    break;
+                }
+                None | Some(Err(_)) => break,
             },
             ev = rx.recv() => match ev {
                 Ok(event) => {

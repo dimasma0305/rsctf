@@ -108,7 +108,8 @@ fn validate_identity(
         || row.participation_id != participation_id
         || row.challenge_id != challenge_id
         || row.intent != intent.as_str()
-        || expected_publication_id.is_some_and(|expected| expected != row.publication_id)
+        || (!matches!(intent, Intent::Create)
+            && expected_publication_id.is_some_and(|expected| expected != row.publication_id))
     {
         return Err(AppError::conflict(
             "Container operation identity was reused for another intent",
@@ -140,6 +141,15 @@ async fn create_is_still_published(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     row: &OperationRow,
 ) -> AppResult<bool> {
+    // A shared opener can return an already-running instance. Its receipt
+    // names that instance; the admission identity is only its launch fence.
+    let published_id = row
+        .result
+        .as_ref()
+        .and_then(|result| result.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .unwrap_or(row.publication_id);
     let published = match row.participation_id {
         Some(participation_id) => {
             sqlx::query_scalar(
@@ -154,7 +164,7 @@ async fn create_is_still_published(
             )
             .bind(participation_id)
             .bind(row.challenge_id)
-            .bind(row.publication_id)
+            .bind(published_id)
             .bind(ContainerStatus::Running as i16)
             .fetch_one(&mut **transaction)
             .await
@@ -172,7 +182,7 @@ async fn create_is_still_published(
             )
             .bind(row.challenge_id)
             .bind(row.game_id)
-            .bind(row.publication_id)
+            .bind(published_id)
             .bind(ContainerStatus::Running as i16)
             .fetch_one(&mut **transaction)
             .await
@@ -324,9 +334,12 @@ async fn claim<T: DeserializeOwned>(
                 2,
             ));
         }
+        if row.state == "Failed" && matches!(intent, Intent::Create) {
+            row.publication_id = Uuid::new_v4();
+        }
         let reclaimed = sqlx::query(
             r#"UPDATE "PlayerContainerOperations"
-                  SET state = 'Running', result = NULL,
+                  SET state = 'Running', result = NULL, publication_id = $2,
                       updated_at_utc = clock_timestamp(),
                       lease_expires_at_utc = clock_timestamp() + interval '3 minutes',
                       runtime_started = CASE WHEN state = 'Failed' THEN FALSE
@@ -338,6 +351,7 @@ async fn claim<T: DeserializeOwned>(
                 WHERE operation_id = $1"#,
         )
         .bind(operation_id)
+        .bind(row.publication_id)
         .execute(&mut *tx)
         .await;
         match reclaimed {
@@ -363,10 +377,10 @@ async fn claim<T: DeserializeOwned>(
     // backend liveness is probed and the shared lease is refreshed.
     if matches!(intent, Intent::Create) && participation_id.is_none() {
         let reusable = sqlx::query_as::<_, (Uuid, serde_json::Value, Option<String>)>(
-            r#"SELECT operation.publication_id, operation.result,
+            r#"SELECT container.id, operation.result,
                       operation.definition_fence
                  FROM "PlayerContainerOperations" operation
-                 JOIN "Containers" container ON container.id = operation.publication_id
+                 JOIN "Containers" container ON container.id = (operation.result->>'id')::uuid
                  JOIN "GameChallenges" challenge
                    ON challenge.id = operation.challenge_id
                   AND challenge.shared_container_id = container.id
@@ -444,7 +458,8 @@ async fn claim<T: DeserializeOwned>(
             && row.participation_id == participation_id
             && row.challenge_id == challenge_id
             && row.intent == intent.as_str()
-            && expected_publication_id.is_none_or(|expected| expected == row.publication_id);
+            && (matches!(intent, Intent::Create)
+                || expected_publication_id.is_none_or(|expected| expected == row.publication_id));
         if !row.runtime_started {
             // Pre-launch validation, capacity, and database failures cannot
             // have created an unowned workload. Terminalize them regardless
@@ -501,7 +516,13 @@ async fn claim<T: DeserializeOwned>(
             2,
         ));
     }
-    let publication_id = expected_publication_id.unwrap_or_else(Uuid::new_v4);
+    // Observing an old instance is not permission to reuse its public identity
+    // for a replacement. Delayed deletes must remain scoped to the old UUID.
+    let publication_id = if matches!(intent, Intent::Create) {
+        Uuid::new_v4()
+    } else {
+        expected_publication_id.unwrap_or_else(Uuid::new_v4)
+    };
     let inserted = sqlx::query(
         r#"INSERT INTO "PlayerContainerOperations"
                (operation_id, scope_key, actor_user_id, game_id, participation_id,
