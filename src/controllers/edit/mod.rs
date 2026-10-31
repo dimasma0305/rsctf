@@ -891,6 +891,7 @@ pub fn router() -> Router<SharedState> {
             "/api/edit/games/{id}/ad/ScoringPause",
             post(ad_scoring_pause),
         )
+        .merge(ad::maintenance::router())
         .route(
             "/api/edit/games/{id}/ad/Challenges/{challengeId}/Toggle",
             post(ad_toggle_challenge),

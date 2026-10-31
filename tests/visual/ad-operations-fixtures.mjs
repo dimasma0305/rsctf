@@ -99,6 +99,7 @@ export function fixture(
       (scenario === "stale" && !p.endsWith("/engines"))
     )
       return { status: 503, body: { title: "Fixture unavailable" } };
+    if (p.endsWith("/ad/maintenance")) return { body: null };
     if (p.endsWith("/ad/engines"))
       return {
         body: {

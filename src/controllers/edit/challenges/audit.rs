@@ -550,6 +550,24 @@ pub async fn rebuild_challenge(
     super::reject_pending_mutation(st.pg(), id, c_id).await?;
     let challenge = load_challenge(&st, id, c_id).await?;
     let operation = crate::controllers::edit::control_jobs::operation_id(&headers)?;
+    if challenge.challenge_type.uses_ad_engine() {
+        let mut connection = st
+            .pg()
+            .acquire()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        if crate::services::challenge_mutations::ad_epoch_scoring_started_locked(
+            &mut connection,
+            id,
+        )
+        .await?
+            && !crate::services::ad::maintenance::editing_allowed(&mut connection, id).await?
+        {
+            return Err(AppError::conflict(
+                "Open a maintenance window before rebuilding a scored challenge",
+            ));
+        }
+    }
     let attempt: i32 = sqlx::query_scalar(
         r#"SELECT COALESCE(MAX(attempt), 0) + 1
              FROM "BuildRecords" WHERE challenge_id = $1"#,

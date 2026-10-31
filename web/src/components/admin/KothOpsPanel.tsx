@@ -42,6 +42,7 @@ import {
 } from '@Utils/KothObserverOperations'
 import { showErrorMsg } from '@Utils/Shared'
 import { isKothResetTransition } from '@Utils/kothLifecycle'
+import { useCompetitionMaintenance } from '@Hooks/useCompetitionMaintenance'
 import {
   type AdminKothAuditReceipt,
   type AdminKothHill,
@@ -98,7 +99,11 @@ const CopyId: FC<{ label: string; value?: string | null }> = ({ label, value }) 
   )
 }
 
-const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill) => void }> = ({ hill, onOpen }) => {
+const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill) => void; maintenance: boolean }> = ({
+  hill,
+  onOpen,
+  maintenance,
+}) => {
   const { t } = useTranslation()
   return (
     <Table.Td>
@@ -113,7 +118,7 @@ const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill
             ? hill.apiObserverConfigured
               ? t('admin.content.ad_ops.koth.observer_api', 'Leaderboard')
               : t('admin.content.ad_ops.koth.observer_missing', 'Leaderboard disabled')
-            : hill.cycleNumber > 0
+            : hill.cycleNumber > 0 && !maintenance
               ? t('admin.content.ad_ops.koth.observer_marker_locked', 'Container marker · locked')
               : t('admin.content.ad_ops.koth.observer_marker', 'Container marker')}
         </Badge>
@@ -131,7 +136,7 @@ const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill
           </Text>
         )}
         <Button size="compact-xs" variant="subtle" onClick={() => onOpen(hill)}>
-          {hill.claimSource === 'Marker' && hill.cycleNumber > 0
+          {hill.claimSource === 'Marker' && hill.cycleNumber > 0 && !maintenance
             ? t('admin.button.ad_ops.koth.observer_view', 'View input')
             : hill.apiObserverConfigured
               ? t('admin.button.ad_ops.koth.observer_manage', 'Manage scoring')
@@ -208,6 +213,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({
   onMutate,
 }) => {
   const { t } = useTranslation()
+  const { data: maintenance } = useCompetitionMaintenance(gameId)
   const [retryingHill, setRetryingHill] = useState<number | null>(null)
   const [auditHill, setAuditHill] = useState<AdminKothHill | null>(null)
   const [audit, setAudit] = useState<AdminKothReceiptsModel | null>(null)
@@ -808,7 +814,11 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({
                       </Text>
                     )}
                   </Table.Td>
-                  <KothClaimInputCell hill={hill} onOpen={openObserver} />
+                  <KothClaimInputCell
+                    hill={hill}
+                    onOpen={openObserver}
+                    maintenance={maintenance?.state === 'Editing'}
+                  />
                   <Table.Td>
                     <Tooltip
                       label={t('admin.tooltip.ad_ops.koth.toggle_hill', {
@@ -1180,7 +1190,9 @@ X-RSCTF-Signature: sha256=<HMAC-SHA256>
                 leftSection={<Icon path={mdiKeyVariant} size={0.8} />}
                 disabled={
                   observer.challengeId !== observerHill?.challengeId ||
-                  (observer.claimSource === 'Marker' && (observerHill?.cycleNumber ?? 0) > 0)
+                  (observer.claimSource === 'Marker' &&
+                    (observerHill?.cycleNumber ?? 0) > 0 &&
+                    maintenance?.state !== 'Editing')
                 }
                 loading={observerBusy}
                 onClick={rotateObserver}

@@ -14,6 +14,7 @@ struct Runtime {
     backend: ContainerBackendKind,
     fail_destroy: AtomicBool,
     destroyed: Mutex<Vec<String>>,
+    maintenance_docker: Mutex<Option<Arc<dyn ContainerManager>>>,
 }
 
 impl Runtime {
@@ -22,6 +23,7 @@ impl Runtime {
             backend,
             fail_destroy: AtomicBool::new(false),
             destroyed: Mutex::new(vec![]),
+            maintenance_docker: Mutex::new(None),
         }
     }
 }
@@ -42,6 +44,10 @@ impl ContainerManager for Runtime {
     async fn destroy(&self, id: &str) -> AppResult<()> {
         if self.fail_destroy.swap(false, Ordering::SeqCst) {
             return Err(AppError::unavailable("injected interrupted teardown"));
+        }
+        let docker = self.maintenance_docker.lock().unwrap().clone();
+        if let Some(docker) = docker {
+            docker.destroy(id).await?;
         }
         self.destroyed.lock().unwrap().push(id.into());
         Ok(())
@@ -289,7 +295,7 @@ async fn profile_edits_preserve_instances_and_replacement_resumes_after_teardown
                 .await
                 .unwrap_err()
                 .status(),
-            StatusCode::BAD_REQUEST
+            StatusCode::CONFLICT
         );
         sqlx::query(&format!(
             r#"UPDATE "Games" SET {column} = NULL WHERE id = $1"#
@@ -299,6 +305,295 @@ async fn profile_edits_preserve_instances_and_replacement_resumes_after_teardown
         .await
         .unwrap();
     }
+    // Exercise the same editor after a completed epoch opens maintenance.
+    // The runtime fixture is injected, but authorization, migrations, locks,
+    // build admission, snapshot history and job recovery use real PostgreSQL.
+    sqlx::query(
+        r#"UPDATE "Games" SET start_time_utc=now()-interval '1 hour',
+        koth_scoring_start_round=1 WHERE id=$1"#,
+    )
+    .bind(game_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO "AdRounds" (game_id,number,start_time_utc,end_time_utc,finalized,pipeline_completed_at)
+        VALUES ($1,12,now()-interval '2 minutes',now()-interval '1 minute',FALSE,now())"#)
+        .bind(game_id).execute(&db.pool).await.unwrap();
+    sqlx::query(r#"INSERT INTO "KothOfficialConfigs" (game_id,scoring_start_round,
+        epoch_ticks,cycle_ticks,champion_cooldown_ticks,claim_confirmation_ticks,roster_snapshot,hills_snapshot)
+        VALUES ($1,1,12,3,1,2,'[]',$2)"#).bind(game_id)
+        .bind(serde_json::json!([{"challengeId":id,"serviceWeight":1.0,"image":portable,"claimSource":"Marker"}]))
+        .execute(&db.pool).await.unwrap();
+    let maintenance_id = Uuid::new_v4();
+    let uri = format!("/api/edit/games/{game_id}/ad/maintenance");
+    for principal in [
+        None,
+        Some(CurrentUser {
+            role: Role::User,
+            ..actor.clone()
+        }),
+        Some(actor.clone()),
+    ] {
+        let expected = match &principal {
+            None => StatusCode::UNAUTHORIZED,
+            Some(user) if user.role == Role::User => StatusCode::FORBIDDEN,
+            _ => StatusCode::OK,
+        };
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(&uri)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"operationId":maintenance_id}).to_string(),
+            ))
+            .unwrap();
+        if let Some(user) = principal {
+            request.extensions_mut().insert(user);
+        }
+        let response = super::super::router()
+            .with_state(st.clone())
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    let maintenance = crate::services::ad::maintenance::current(&db.pool, game_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(maintenance.state, "Editing");
+    assert_eq!(maintenance.effective_from_round, Some(13));
+    let image = format!("registry.example/fixed@sha256:{}", "c".repeat(64));
+    let hotfix = serde_json::from_value(serde_json::json!({
+        "operationId":Uuid::new_v4(),"expectedRevision":reset.revision,
+        "containerImage":image,"memoryLimit":256,"cpuCount":2,"storageLimit":1024,
+        "exposePort":8080,"runtimeProfile":"docker"
+    }))
+    .unwrap();
+    let updated = apply(hotfix).await.unwrap().data;
+    assert_eq!(updated.memory_limit, Some(256));
+    let input = serde_json::json!({"windowId":maintenance_id});
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::CompetitionResume,
+        &format!("game:{game_id}:maintenance"),
+        game_id,
+        None,
+        Uuid::new_v4(),
+        &crate::services::control_jobs::fingerprint(&input).unwrap(),
+        input,
+    )
+    .await
+    .unwrap();
+    let claimed = crate::services::control_jobs::claim_next(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::CompetitionResume,
+        std::time::Duration::from_secs(60),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(claimed.model.id, job.id);
+    assert!(
+        crate::services::ad::maintenance::execute_resume(&st, &claimed)
+            .await
+            .is_err(),
+        "an unbuilt image must keep scoring paused"
+    );
+    assert_eq!(
+        crate::services::ad::maintenance::current(st.pg(), game_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "Editing"
+    );
+    sqlx::query(r#"UPDATE "GameChallenges" SET build_status=1,build_image_digest=$2 WHERE id=$1"#)
+        .bind(id)
+        .bind(&image)
+        .execute(st.pg())
+        .await
+        .unwrap();
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/edit/games/{game_id}/ad/koth/{id}/observer"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"operationId":Uuid::new_v4(),"expectedRevision":0}).to_string(),
+        ))
+        .unwrap();
+    request.extensions_mut().insert(actor.clone());
+    let response = crate::controllers::game::koth::router()
+        .with_state(st.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // Optional real Docker proof uses the same application flow and injected
+    // first-attempt failure, with normal installation ownership labels.
+    let maintenance_runtime = if let Ok(image) = std::env::var("RSCTF_REAL_DOCKER_RETRY_IMAGE") {
+        let manager =
+            Arc::new(crate::services::container::DockerContainerManager::connect().unwrap());
+        let runtime = manager
+            .create(ContainerSpec {
+                runtime_profile: None,
+                game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
+                image,
+                memory_limit: 64,
+                cpu_count: 1,
+                storage_limit: 32,
+                expose_port: 6379,
+                publish_port: false,
+                proxy_only: false,
+                env: vec![],
+                flag: None,
+                ad_network: None,
+                allow_egress: false,
+                control_plane_callback_ports: vec![],
+                network_mode: crate::utils::enums::NetworkMode::Isolated,
+                operation_id: Some(format!("maintenance-fixture:{}", Uuid::new_v4())),
+            })
+            .await
+            .unwrap();
+        *docker.maintenance_docker.lock().unwrap() = Some(manager);
+        runtime.id
+    } else {
+        original.id.clone()
+    };
+    sqlx::query(
+        r#"INSERT INTO "KothTargets" (game_id,challenge_id,host,port,container_id)
+        VALUES ($1,$2,'127.0.0.1',80,$3)"#,
+    )
+    .bind(game_id)
+    .bind(id)
+    .bind(&maintenance_runtime)
+    .execute(st.pg())
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "KothCrownCycles" (game_id,challenge_id,cycle_number,epoch,
+        planned_start_round,planned_end_round,actual_start_round,phase,expected_image,
+        replacement_container_id,replacement_host,replacement_port,reset_attempt)
+        VALUES ($1,$2,4,1,10,12,10,'Active',$3,$4,'127.0.0.1',80,1)"#,
+    )
+    .bind(game_id)
+    .bind(id)
+    .bind(&portable)
+    .bind(&maintenance_runtime)
+    .execute(st.pg())
+    .await
+    .unwrap();
+    docker.fail_destroy.store(true, Ordering::SeqCst);
+    assert!(
+        crate::services::ad::maintenance::execute_resume(&st, &claimed)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        crate::services::ad::maintenance::current(st.pg(), game_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "Applying"
+    );
+    let real_docker = docker.maintenance_docker.lock().unwrap().is_some();
+    if real_docker {
+        assert!(
+            bollard::Docker::connect_with_local_defaults()
+                .unwrap()
+                .inspect_container(&maintenance_runtime, None)
+                .await
+                .is_ok(),
+            "failed cleanup must retain the real backend for retry"
+        );
+    }
+    assert!(
+        sqlx::query_scalar::<_, bool>(r#"SELECT ad_scoring_paused FROM "Games" WHERE id=$1"#)
+            .bind(game_id)
+            .fetch_one(st.pg())
+            .await
+            .unwrap()
+    );
+    let result = crate::services::ad::maintenance::execute_resume(&st, &claimed)
+        .await
+        .unwrap();
+    assert_eq!(result["effectiveFromRound"], 13);
+    if real_docker {
+        assert!(
+            bollard::Docker::connect_with_local_defaults()
+                .unwrap()
+                .inspect_container(&maintenance_runtime, None)
+                .await
+                .is_err(),
+            "successful maintenance must retire the old Docker backend"
+        );
+    }
+    // Lost-response recovery does not repeat teardown or advance the round.
+    crate::services::ad::maintenance::execute_resume(&st, &claimed)
+        .await
+        .unwrap();
+    let hills: serde_json::Value =
+        sqlx::query_scalar(r#"SELECT hills_snapshot FROM "KothOfficialConfigs" WHERE game_id=$1"#)
+            .bind(game_id)
+            .fetch_one(st.pg())
+            .await
+            .unwrap();
+    assert_eq!(hills[0]["image"], image);
+    assert_eq!(hills[0]["claimSource"], "Api");
+    assert_eq!(hills[0]["operationalHistory"][0]["image"], portable);
+    assert_eq!(hills[0]["operationalHistory"][0]["claimSource"], "Marker");
+    assert_eq!(hills[0]["operationalHistory"][1]["effectiveFromRound"], 13);
+    assert_eq!(hills[0]["operationalHistory"].as_array().unwrap().len(), 2);
+    let old_cycle: (String, String, i32) = sqlx::query_as(
+        r#"SELECT phase,expected_image,actual_end_round FROM "KothCrownCycles"
+            WHERE game_id=$1 AND challenge_id=$2 AND cycle_number=4"#,
+    )
+    .bind(game_id)
+    .bind(id)
+    .fetch_one(st.pg())
+    .await
+    .unwrap();
+    assert_eq!(old_cycle, ("Completed".into(), portable.clone(), 12));
+    assert!(
+        !sqlx::query_scalar::<_, bool>(r#"SELECT ad_scoring_paused FROM "Games" WHERE id=$1"#)
+            .bind(game_id)
+            .fetch_one(st.pg())
+            .await
+            .unwrap()
+    );
+    // A second window at the same boundary must honor an explicit replacement
+    // even when settings are unchanged, without creating ambiguous history.
+    let second_window = Uuid::new_v4();
+    super::super::ad::maintenance::request(
+        State(st.clone()),
+        actor.clone(),
+        Path(game_id),
+        Json(serde_json::from_value(serde_json::json!({"operationId":second_window})).unwrap()),
+    )
+    .await
+    .unwrap();
+    let revision: i64 = sqlx::query_scalar(r#"SELECT revision FROM "GameChallenges" WHERE id=$1"#)
+        .bind(id)
+        .fetch_one(st.pg())
+        .await
+        .unwrap();
+    apply(edit(revision, Some("docker"), true)).await.unwrap();
+    let second = crate::services::control_jobs::ClaimedControlJob {
+        input: serde_json::json!({"windowId":second_window}),
+        ..claimed.clone()
+    };
+    let result = crate::services::ad::maintenance::execute_resume(&st, &second)
+        .await
+        .unwrap();
+    assert_eq!(result["replacedChallenges"], 1);
+    let history: serde_json::Value = sqlx::query_scalar(
+        r#"SELECT hills_snapshot->0->'operationalHistory' FROM "KothOfficialConfigs" WHERE game_id=$1"#)
+        .bind(game_id).fetch_one(st.pg()).await.unwrap();
+    assert_eq!(history.as_array().unwrap().len(), 2);
+    assert_eq!(history[0]["claimSource"], "Marker");
+    assert_eq!(history[1]["effectiveFromRound"], 13);
+    assert_eq!(history[1]["claimSource"], "Api");
     drop(st);
     db.close().await;
     if root.exists() {

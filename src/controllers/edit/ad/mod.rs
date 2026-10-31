@@ -7,6 +7,7 @@ use base64::Engine as _;
 use super::*;
 
 mod inspector;
+pub(crate) mod maintenance;
 mod provision;
 mod provision_recovery;
 mod state;
@@ -159,6 +160,12 @@ pub async fn ad_scoring_pause(
     let DesiredStateDecision::Transition { next_revision } = decision else {
         unreachable!("already-current scoring command returned above")
     };
+
+    if !command.paused && crate::services::ad::maintenance::resume_required(tx, game_id).await? {
+        return Err(AppError::conflict(
+            "Use Apply changes and resume to finish the maintenance window",
+        ));
+    }
 
     // Resuming: give the live round back the time it was frozen for.
     if !command.paused {

@@ -10,6 +10,7 @@ pub(crate) mod koth_provisioning;
 pub(crate) mod koth_reporter;
 pub(crate) mod koth_scoring;
 pub(crate) mod late_roster;
+pub(crate) mod maintenance;
 pub(crate) mod provision;
 pub(crate) mod provision_recovery;
 pub(crate) mod reset;

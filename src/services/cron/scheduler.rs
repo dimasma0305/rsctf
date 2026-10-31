@@ -179,6 +179,9 @@ async fn advance_game(
     schedule: ActiveGame,
     scope: RoundSchedulerScope,
 ) -> AppResult<bool> {
+    if crate::services::ad::maintenance::enter_if_due(state, schedule.id).await? {
+        return Ok(true);
+    }
     if schedule.ad_scoring_paused {
         return Ok(false);
     }

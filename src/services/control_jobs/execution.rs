@@ -57,6 +57,7 @@ pub(super) async fn execute_claimed(
         }
         "AdReset" => crate::services::ad::reset::execute_job(state, job).await,
         "ImagePreflight" => crate::services::image_preflight::execute_job(state, job).await,
+        "CompetitionResume" => crate::services::ad::maintenance::execute_resume(state, job).await,
         _ => Err(AppError::internal("unsupported claimed control-job kind")),
     }
 }

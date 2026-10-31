@@ -28,6 +28,10 @@ const REACHABLE_SQL: &str = r#"
     SELECT EXISTS(
         SELECT 1 FROM "GameChallenges"
          WHERE ad_checker_image = $1
+        UNION ALL
+        SELECT 1 FROM "CompetitionMaintenanceWindows"
+         WHERE before_snapshot @> jsonb_build_array(jsonb_build_object('ad_checker_image', $1::text))
+            OR after_snapshot @> jsonb_build_array(jsonb_build_object('ad_checker_image', $1::text))
     )
 "#;
 
@@ -296,6 +300,9 @@ mod tests {
             r#"CREATE SCHEMA "{schema}";
                CREATE TABLE "{schema}"."GameChallenges" (
                    id INTEGER PRIMARY KEY, ad_checker_image TEXT
+               );
+               CREATE TABLE "{schema}"."CompetitionMaintenanceWindows" (
+                   before_snapshot JSONB, after_snapshot JSONB
                )"#
         ))
         .execute(&admin)
@@ -353,6 +360,27 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(tokio::fs::try_exists(&reachable).await.unwrap());
         assert!(!tokio::fs::try_exists(&stale).await.unwrap());
+
+        // A prior checker remains reachable through the event's audit history
+        // after the live definition switches to a different revision.
+        sqlx::query(r#"INSERT INTO "CompetitionMaintenanceWindows" VALUES ($1,NULL)"#)
+            .bind(serde_json::json!([{"ad_checker_image": reachable.to_string_lossy()}]))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"DELETE FROM "GameChallenges""#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                collect_stale_checker_revisions_at(&pool, &root, Duration::ZERO, 16)
+                    .await
+                    .unwrap(),
+                0
+            );
+        }
+        assert!(tokio::fs::try_exists(&reachable).await.unwrap());
 
         pool.close().await;
         tokio::fs::remove_dir_all(&root).await.unwrap();

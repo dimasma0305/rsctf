@@ -2,6 +2,49 @@
 
 use super::*;
 
+pub(super) fn operational_fields_changed(
+    model: &ChallengeUpdateModel,
+    challenge: &game_challenge::Model,
+) -> bool {
+    macro_rules! scalar {
+        ($field:ident) => {
+            model.$field.is_some_and(|value| value != challenge.$field)
+        };
+    }
+    macro_rules! optional {
+        ($field:ident) => {
+            model
+                .$field
+                .is_some_and(|value| Some(value) != challenge.$field)
+        };
+    }
+    model.replace_runtime_instances
+        || model.container_image.as_ref().is_some_and(|value| {
+            value.trim() != challenge.container_image.as_deref().unwrap_or("").trim()
+        })
+        || model.ad_checker_image.as_ref().is_some_and(|value| {
+            value.trim() != challenge.ad_checker_image.as_deref().unwrap_or("").trim()
+        })
+        || model
+            .runtime_profile
+            .as_ref()
+            .is_some_and(|value| value != &challenge.runtime_profile)
+        || model.workload_spec.as_ref().is_some_and(|value| {
+            serde_json::to_value(value).ok()
+                != Some(challenge.workload_spec.clone().unwrap_or(JsonValue::Null))
+        })
+        || optional!(memory_limit)
+        || optional!(cpu_count)
+        || optional!(storage_limit)
+        || optional!(expose_port)
+        || optional!(network_mode)
+        || scalar!(is_enabled)
+        || scalar!(ad_allow_egress)
+        || scalar!(ad_self_hosted)
+        || scalar!(ad_allow_self_reset)
+        || scalar!(ad_ssh_requires_flag)
+}
+
 /// Whether a challenge is in shared-container mode (RSCTF
 /// `GameChallenge.UsesSharedContainer`).
 pub(super) fn uses_shared_container(challenge: &game_challenge::Model) -> bool {

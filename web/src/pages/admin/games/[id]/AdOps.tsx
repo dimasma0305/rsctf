@@ -60,6 +60,7 @@ import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { AccessibleModal } from '@Components/AccessibleModal'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
+import { CompetitionMaintenancePanel } from '@Components/admin/CompetitionMaintenancePanel'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { KothOpsPanel } from '@Components/admin/KothOpsPanel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
@@ -72,6 +73,7 @@ import { showErrorMsg } from '@Utils/Shared'
 import { parseUrlFragment, updateUrlFragment } from '@Utils/UrlFragment'
 import { highlight } from '@Utils/marked/ShikiExtension'
 import { sanitizeMarkdownHtml } from '@Utils/sanitize'
+import { useCompetitionMaintenance } from '@Hooks/useCompetitionMaintenance'
 import {
   adminOperatorPolling,
   adminOperatorView,
@@ -939,6 +941,7 @@ const HealthChip: FC<{ icon: string; color: string; count: number; label: string
 const AdOps: FC = () => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1', 10)
+  const { data: maintenance } = useCompetitionMaintenance(numId)
   const { t } = useTranslation()
   const modals = useModals()
   const [busy, setBusy] = useState(false)
@@ -1383,6 +1386,7 @@ const AdOps: FC = () => {
         onClose={closeShell}
       />
       <Stack gap="md" className={ops.workspace} data-ad-workspace>
+        {!eventEnded && !eventUpcoming && <CompetitionMaintenancePanel key={numId} gameId={numId} />}
         <Group justify="space-between" align="center" className={ops.toolbar}>
           <Group gap="sm" wrap="wrap">
             <Text fw={700}>{t('admin.ad_console.title')}</Text>
@@ -1480,7 +1484,7 @@ const AdOps: FC = () => {
                 leftSection={<Icon path={displayedScoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
                 variant="default"
                 color={displayedScoringPaused ? 'teal' : 'orange'}
-                disabled={busy}
+                disabled={busy || maintenance?.state === 'Editing' || maintenance?.state === 'Applying'}
                 aria-busy={pendingScoringPaused !== null}
                 onClick={toggleScoringPause}
               >

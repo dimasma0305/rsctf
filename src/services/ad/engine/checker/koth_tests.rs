@@ -494,6 +494,33 @@ async fn missing_cycle_still_records_one_platform_void() {
         scoped,
         (Some(41), Some("replacement-41".to_string()), Some(0), 3)
     );
+    // A quarantined hill still settles every round, without attributing its
+    // void to the retired runtime generation.
+    sqlx::query(
+        r#"UPDATE "KothOfficialConfigs" SET hills_snapshot =
+        '[{"challengeId":9,"claimSource":"Api","enabled":false}]'"#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    let quarantined = ad_round::Model {
+        id: 103,
+        number: 5,
+        ..scoped_round.clone()
+    };
+    insert_missing_cycle_void(&mut connection, 7, 9, &quarantined)
+        .await
+        .unwrap();
+    insert_missing_cycle_void(&mut connection, 7, 9, &quarantined)
+        .await
+        .unwrap();
+    let quarantined_rows: Vec<(Option<i64>, bool)> = sqlx::query_as(
+        r#"SELECT cycle_id,is_scorable FROM "KothControlResults" WHERE ad_round_id=103"#,
+    )
+    .fetch_all(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(quarantined_rows, vec![(None, false)]);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(*) FROM "KothControlResults" WHERE ad_round_id = 102"#,

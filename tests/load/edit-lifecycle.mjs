@@ -421,6 +421,9 @@ function authorizationProbeRequest(operation) {
   }
 
   const jsonBodies = {
+    edit_maintenance_request: { operationId: randomUUID() },
+    edit_maintenance_resume: { operationId: randomUUID() },
+    edit_maintenance_cancel: { operationId: randomUUID() },
     edit_game_update: primaryGameModel,
     edit_challenge_add: {
       title: "authorization probe",
@@ -1053,6 +1056,28 @@ async function prepareAdFixture() {
     paused.model.scoringPaused === true,
     "A&D scoring did not pause before fixture configuration",
   );
+  // This future fixture has no official rounds yet. Cover the empty status
+  // and admission fences here; real scoring-boundary/retry success is covered
+  // by the PostgreSQL and Docker maintenance regressions.
+  const maintenance = await call("edit_maintenance_get", {
+    jwt: identities.managerJwt,
+  });
+  requireCondition(
+    maintenance.model === null,
+    "fresh fixture has maintenance history",
+  );
+  await call("edit_maintenance_request", {
+    jwt: identities.managerJwt,
+    body: { operationId: randomUUID() },
+  });
+  await call("edit_maintenance_resume", {
+    jwt: identities.managerJwt,
+    body: { operationId: randomUUID() },
+  });
+  await call("edit_maintenance_cancel", {
+    jwt: identities.managerJwt,
+    body: { operationId: randomUUID() },
+  });
   context.adChallengeId = await A.createChallenge(context.adGameId, {
     title: `edit-ad-${runKey}`,
     category: "Pwn",

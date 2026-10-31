@@ -18,6 +18,18 @@ pub(super) async fn drive_hill_transition(
     let _local = crate::utils::single_flight::coalesce(&key).await;
     let lock =
         crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &key).await?;
+    let mut connection = st
+        .pg()
+        .acquire()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let maintenance =
+        crate::services::ad::maintenance::resume_required(&mut connection, game_id).await?;
+    drop(connection);
+    if maintenance {
+        lock.release().await?;
+        return Ok(());
+    }
     let latest = sqlx::query_as::<_, (i64, i32, String, i32)>(
         r#"SELECT id, cycle_number, phase, planned_end_round
              FROM "KothCrownCycles"

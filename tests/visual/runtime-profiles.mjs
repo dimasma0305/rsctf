@@ -20,6 +20,7 @@ const profiles = [
 ]
 let detail = { ...fixture('/api/edit/games/19/challenges/74').body, type: 'DynamicContainer', isEnabled: true, runtimeProfile: 'docker', runtimeProfiles: profiles, containerImage: 'registry.example/challenge@sha256:' + 'a'.repeat(64), memoryLimit: 256, storageLimit: 512, cpuCount: 1, exposePort: 8080, buildStatus: 'Success', networkMode: 'Open', flagTemplate: 'flag{[GUID]}', scoreCurve: 'Standard', originalScore: 500 }
 let locked = null
+let maintenance = null
 const now = Date.now()
 const writes = [], errors = [], reports = []
 const { cdp, close } = await launchBrowser().catch(async error => { await server.close(); throw error })
@@ -33,7 +34,7 @@ const wait = async (expression) => {
     if (await evaluate(`Boolean(${expression})`)) return
     await new Promise(resolve => setTimeout(resolve, 100))
   }
-  throw new Error(`Timed out: ${expression}; ${await evaluate('document.body.innerText.slice(-2500)')}`)
+  throw new Error(`Timed out: ${expression}; ${JSON.stringify({maintenance, errors})}; ${await evaluate('document.body.innerText.slice(-2500)')}`)
 }
 const visit = async (path, selector) => {
   await cdp.send('Page.navigate', { url: 'about:blank' })
@@ -43,7 +44,10 @@ const visit = async (path, selector) => {
   await wait(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); return element && element.getClientRects().length > 0 && getComputedStyle(element).visibility === 'visible'; })()`)
 }
 const key = async (key, code) => {
-  for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', { type, key, windowsVirtualKeyCode: code })
+  for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', {
+    type, key, windowsVirtualKeyCode: code,
+    ...(key === 'Enter' && type === 'keyDown' ? { text: '\r', unmodifiedText: '\r' } : {}),
+  })
 }
 const click = async (text, scope = 'document') => {
   await evaluate(`(() => { const button=[...${scope}.querySelectorAll('button')].find(button => button.textContent.trim() === ${JSON.stringify(text)}); button.focus(); button.click(); })()`)
@@ -67,7 +71,18 @@ try {
     try {
       const path = new URL(request.url).pathname
       let result
-      if (path === '/api/edit/games/19/challenges/74') {
+      if (path === '/api/edit/games/19/ad/maintenance') {
+        if (request.method === 'POST') {
+          const { operationId } = JSON.parse(request.postData)
+          assert.match(operationId, /^[0-9a-f-]{36}$/)
+          maintenance = { id: operationId, gameId: 19, state: 'Requested', effectiveFromRound: null, error: null }
+        }
+        result = { body: maintenance }
+      } else if (path === '/api/edit/games/19/ad/maintenance/resume') {
+        assert.equal(maintenance.state, 'Editing')
+        maintenance = { ...maintenance, state: 'Completed' }
+        result = { body: { id: '22222222-2222-4222-8222-222222222222', status: 'Succeeded' } }
+      } else if (path === '/api/edit/games/19/challenges/74') {
         if (!['GET', 'HEAD'].includes(request.method)) {
           const body = JSON.parse(request.postData)
           writes.push(body)
@@ -135,6 +150,24 @@ try {
     await visit('/admin/games/19/challenges/74', '[data-runtime-profile-controls] input')
     assert.equal(await evaluate(`document.querySelector('[data-runtime-profile-controls] input').disabled`), true)
     assert.equal(await evaluate(`document.querySelector('[data-runtime-profile-controls] button').disabled`), true)
+    await click('Open maintenance window')
+    await wait(`document.querySelector('[data-competition-maintenance]').textContent.includes('Scoring will pause')`)
+    assert.equal(await evaluate(`document.querySelector('[data-runtime-profile-controls] input').disabled`), true)
+    maintenance = { ...maintenance, state: 'Editing', effectiveFromRound: 13 }
+    await visit('/admin/games/19/challenges/74', '[data-runtime-profile-controls] input')
+    await wait(`!document.querySelector('[data-runtime-profile-controls] input').disabled`)
+    await evaluate(`document.querySelector('[data-competition-maintenance]').scrollIntoView({block:'center'})`)
+    await audit(`${scoring}-maintenance-390`, '[data-competition-maintenance]')
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 568, deviceScaleFactor: 1, mobile: false })
+    await evaluate(`document.querySelector('[data-competition-maintenance]').scrollIntoView({block:'center'})`)
+    await audit(`${scoring}-maintenance-320`, '[data-competition-maintenance]')
+    await evaluate(`document.querySelector('[data-competition-maintenance] button').focus()`)
+    assert.equal(await evaluate(`document.activeElement.textContent.trim()`), 'Apply changes and resume')
+    await key('Enter',13)
+    await wait(`document.querySelector('[data-runtime-profile-controls] input').disabled`)
+    assert.equal(maintenance.state,'Completed')
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+    maintenance = null
   }
   locked = null
   detail = { ...detail, type: 'DynamicContainer', isEnabled: false, runtimeTransitionPending: true }

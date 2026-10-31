@@ -213,6 +213,19 @@ async fn require_observer_can_be_enabled(
     game_id: i32,
     challenge_id: i32,
 ) -> AppResult<()> {
+    let applying: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS (SELECT 1 FROM "CompetitionMaintenanceWindows"
+             WHERE game_id = $1 AND state = 'Applying')"#,
+    )
+    .bind(game_id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if applying {
+        return Err(AppError::conflict(
+            "Wait for maintenance to finish before changing observers",
+        ));
+    }
     let row = sqlx::query_as::<_, (Option<String>, bool)>(
         r#"SELECT frozen.item->>'claimSource' AS frozen_source,
                   config.game_id IS NOT NULL AS snapshotted
@@ -236,7 +249,10 @@ async fn require_observer_can_be_enabled(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("KotH challenge not found"))?;
-    if row.1 && row.0.as_deref() != Some("Api") {
+    if row.1
+        && row.0.as_deref() != Some("Api")
+        && !crate::services::ad::maintenance::editing_allowed(connection, game_id).await?
+    {
         return Err(AppError::conflict(
             "the official KotH snapshot fixed this hill to marker scoring",
         ));

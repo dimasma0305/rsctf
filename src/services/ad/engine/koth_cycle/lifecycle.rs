@@ -691,6 +691,18 @@ async fn drive_hill_cycle_transition(
     let _local = crate::utils::single_flight::coalesce(&key).await;
     let lock =
         crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &key).await?;
+    let mut connection = st
+        .pg()
+        .acquire()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let maintenance =
+        crate::services::ad::maintenance::resume_required(&mut connection, game_id).await?;
+    drop(connection);
+    if maintenance {
+        lock.release().await?;
+        return Ok(());
+    }
     let planned_start =
         config.scoring_start_round + (position.cycle_number - 1) * config.cycle_ticks;
     let cycle_id = create_or_load_cycle(

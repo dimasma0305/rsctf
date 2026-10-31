@@ -331,6 +331,29 @@ pub async fn update_challenge(
     } else {
         false
     };
+    let maintenance_edit = scoring_started
+        && crate::services::ad::maintenance::editing_allowed(control.transaction_mut(), id).await?;
+    if scoring_started
+        && !maintenance_edit
+        && update_policy::operational_fields_changed(&model, &challenge)
+    {
+        return Err(AppError::conflict(
+            "Request a maintenance window before changing live A&D/KotH operational settings",
+        ));
+    }
+    if maintenance_edit && update_policy::operational_fields_changed(&model, &challenge) {
+        sqlx::query(
+            r#"UPDATE "CompetitionMaintenanceWindows"
+            SET touched_challenge_ids = array_append(touched_challenge_ids, $2)
+            WHERE game_id = $1 AND state = 'Editing'
+              AND NOT ($2 = ANY(touched_challenge_ids))"#,
+        )
+        .bind(id)
+        .bind(c_id)
+        .execute(&mut **control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
     let old_shared = challenge.enable_shared_container;
     let was_ad_self_hosted = challenge.ad_self_hosted;
     // Capture the pre-update enabled flag so we can detect a false->true
@@ -357,7 +380,7 @@ pub async fn update_challenge(
                 "Runtime profiles apply only to platform-hosted container challenges",
             ));
         }
-        if ch_type.uses_ad_engine() && scoring_started {
+        if ch_type.uses_ad_engine() && scoring_started && !maintenance_edit {
             return Err(AppError::bad_request("A&D/KotH runtime profiles are locked after official scoring starts; select the runtime before starting the competition"));
         }
     }
@@ -498,13 +521,18 @@ pub async fn update_challenge(
     }
     if ch_type.uses_ad_engine()
         && scoring_started
+        && !maintenance_edit
         && (checker_changed || enabled_changed || hosting_changed)
     {
         return Err(AppError::bad_request(
             "A&D/KotH checker, enabled state, and hosting topology are locked after epoch scoring has started.",
         ));
     }
-    if ch_type == ChallengeType::KingOfTheHill && image_changed && scoring_started {
+    if ch_type == ChallengeType::KingOfTheHill
+        && image_changed
+        && scoring_started
+        && !maintenance_edit
+    {
         return Err(AppError::bad_request(
             "The KotH challenge image is locked after official scoring has started.",
         ));
@@ -582,6 +610,11 @@ pub async fn update_challenge(
             crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
         if ch_type.uses_ad_engine()
             && ad_epoch_scoring_started_locked(reacquired_engine.transaction_mut(), id).await?
+            && !crate::services::ad::maintenance::editing_allowed(
+                reacquired_engine.transaction_mut(),
+                id,
+            )
+            .await?
         {
             return Err(AppError::conflict(
                 "A&D/KotH scoring started while the topology transition was draining; the challenge remains disabled",
@@ -786,6 +819,7 @@ pub async fn update_challenge(
             final_enabled,
             workload_update,
             invalidated_build_status,
+            registry_image_hotfix: maintenance_edit && image_changed,
             leaving_managed_generator,
         },
     )

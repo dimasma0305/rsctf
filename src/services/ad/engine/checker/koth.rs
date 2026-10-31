@@ -179,6 +179,7 @@ async fn load_live_hill(
                 ORDER BY crown.cycle_number DESC LIMIT 1
              ) cycle ON TRUE
             WHERE target.game_id = $1 AND target.challenge_id = $2
+              AND COALESCE((frozen.item->>'enabled')::boolean, TRUE)
               AND scoring_round.finalized = FALSE"#,
     )
     .bind(game_id)
@@ -277,11 +278,8 @@ async fn insert_missing_cycle_void(
                    ON (frozen.item->>'challengeId')::integer = crown.challenge_id
                 WHERE crown.game_id = scope.game_id
                   AND crown.challenge_id = scope.challenge_id
-                  AND (
-                    COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker') = 'Api'
-                    OR $6 BETWEEN crown.planned_start_round
-                                      AND crown.planned_end_round
-                  )
+                  AND COALESCE((frozen.item->>'enabled')::boolean, TRUE)
+                  AND $6 BETWEEN crown.planned_start_round AND crown.planned_end_round
                 ORDER BY crown.cycle_number DESC
                 LIMIT 1
              ) cycle ON TRUE
