@@ -1,6 +1,6 @@
 [package]
 name = "rsctf"
-version = "0.1.158"
+version = "0.1.159"
 autobins = false
 edition = "2021"
 license = "MIT"
@@ -36,6 +36,7 @@ hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 hyperlocal = "0.9"
 flate2 = "1"
 brotli = "9"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
 
 # database
 sea-orm = { version = "1.1", default-features = false, features = [

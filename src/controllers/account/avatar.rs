@@ -38,6 +38,7 @@ pub async fn avatar(
         return Err(AppError::bad_request("Invalid avatar file size"));
     }
 
+    let bytes = crate::utils::public_image::validate(bytes).await?;
     let staged = crate::services::blob_refs::stage_blob(
         st.pg(),
         st.storage.as_ref(),

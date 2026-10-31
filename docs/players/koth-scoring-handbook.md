@@ -579,6 +579,20 @@ weights. Objective identity freezes on the first accepted Leaderboard
 snapshot. These score-affecting inputs cannot change after the competition
 boundary.
 
+#### A healthy container with no scoring
+
+Docker health alone does not prove that a hill can score. Check the application's
+readiness and reporter status, then compare the intended format with the official
+snapshot's `claimSource`. A managed Leaderboard hill needs its API observer
+configured **before official scoring starts**. Without that observer, the snapshot
+records `Marker`; adding the observer afterward cannot change the frozen format.
+
+If a started event has this mismatch, preserve its snapshot and scoring evidence.
+Prepare a corrected copy in a private test event, configure its observer, and run
+the Leaderboard preflight above. Schedule an explicitly approved event reset or
+replacement before using that configuration for competition. Restarting the
+container or manually changing the frozen snapshot is not a recovery procedure.
+
 ### 8.2 During play
 
 Monitor checker gaps, void reasons, Boot2Root reset phases, Leaderboard health

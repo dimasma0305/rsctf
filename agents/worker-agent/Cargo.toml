@@ -2,7 +2,7 @@
 
 [package]
 name = "rsctf-worker-agent"
-version = "0.1.158"
+version = "0.1.159"
 edition = "2021"
 license = "MIT"
 description = "Trusted Docker worker for RSCTF"
