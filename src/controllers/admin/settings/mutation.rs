@@ -82,6 +82,7 @@ pub async fn stage_branding(
     if bytes.len() > MAX_LOGO_BYTES {
         return Err(AppError::payload_too_large("Logo exceeds the 3 MiB limit"));
     }
+    let bytes = crate::utils::public_image::validate(bytes).await?;
     let branding_hash = crate::utils::codec::sha256_hex(&bytes);
     let request_digest = Sha256::digest(&bytes).to_vec();
     let publication_scope = format!("settings-branding-stage:{operation_id}");
@@ -234,6 +235,9 @@ pub async fn update_config(
         SettingsOperationAdmission::Fresh => {}
         SettingsOperationAdmission::Replay(existing) => {
             transaction.commit().await.map_err(database_error)?;
+            if let Some(hash) = existing.branding_hash.as_deref() {
+                crate::controllers::assets::invalidate_asset_gate(&st, hash).await;
+            }
             return Ok(RequestResponse::ok(SettingsMutationResult {
                 operation_id,
                 revision: existing.result_revision,
@@ -379,6 +383,14 @@ pub async fn update_config(
     .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
 
+    if branding_action != BrandingAction::Keep {
+        if let Some(hash) = branding_hash.as_deref() {
+            crate::controllers::assets::invalidate_asset_gate(&st, hash).await;
+        }
+        for hash in &old_branding {
+            crate::controllers::assets::invalidate_asset_gate(&st, hash).await;
+        }
+    }
     if has_security_update {
         st.captcha_settings.invalidate().await;
     }

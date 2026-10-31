@@ -78,7 +78,6 @@ pub async fn avatar(
         crate::utils::upload::reserve_buffered(crate::utils::upload::IMAGE_BODY_BYTES)?;
 
     let mut data: Option<Vec<u8>> = None;
-    let mut content_type: Option<String> = None;
     let mut operation_id = None;
     let mut profile_revision = None;
     let mut fields = 0_usize;
@@ -97,7 +96,6 @@ pub async fn avatar(
                 if data.is_some() {
                     return Err(AppError::bad_request("Duplicate avatar file field"));
                 }
-                content_type = field.content_type().map(|s| s.to_owned());
                 let bytes = field
                     .bytes()
                     .await
@@ -151,16 +149,7 @@ pub async fn avatar(
     if bytes.is_empty() || bytes.len() > MAX_AVATAR_BYTES {
         return Err(AppError::bad_request("Invalid avatar file size"));
     }
-    // RSCTF pipes the upload through `CreateOrUpdateImage`, which returns null
-    // (→ 400) for anything it cannot decode as an image. We have no image
-    // decoder here, so at minimum require the part to declare an `image/*`
-    // content-type and reject everything else.
-    if !content_type
-        .as_deref()
-        .is_some_and(|ct| ct.starts_with("image/"))
-    {
-        return Err(AppError::bad_request("Avatar must be an image"));
-    }
+    let bytes = crate::utils::public_image::validate(bytes).await?;
 
     let content_hash = crate::utils::codec::sha256_hex(&bytes);
     let request_digest = avatar_request_digest(id, profile_revision, &content_hash);

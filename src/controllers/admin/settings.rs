@@ -642,6 +642,7 @@ pub async fn logo_upload(
         return Err(AppError::bad_request("File is too large"));
     }
 
+    let bytes = crate::utils::public_image::validate(bytes).await?;
     let staged = crate::services::blob_refs::stage_blob(
         st.pg(),
         st.storage.as_ref(),

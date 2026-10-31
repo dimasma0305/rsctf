@@ -26,6 +26,7 @@ use crate::utils::shared::MessageResponse;
 mod authorization;
 
 pub(crate) use authorization::invalidate_asset_gate;
+mod public_media;
 use authorization::{
     authorize_asset_download, finalize_asset_download, AssetCachePolicy, DownloadTransport,
 };
@@ -579,6 +580,11 @@ async fn serve_asset(
         }
     }
 
+    let public_content_type = if cache_policy == AssetCachePolicy::Public {
+        public_media::content_type(st, hash, size).await?
+    } else {
+        None
+    };
     let body = if size == 0 {
         Body::empty()
     } else {
@@ -608,7 +614,7 @@ async fn serve_asset(
 
     let body = permitted_request_body(body, request_permit);
 
-    asset_response(
+    let mut response = asset_response(
         body,
         status,
         size,
@@ -616,7 +622,17 @@ async fn serve_asset(
         filename,
         &etag,
         cache_policy,
-    )
+    )?;
+    if let Some(content_type) = public_content_type {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+        response.headers_mut().insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("inline"),
+        );
+    }
+    Ok(response)
 }
 
 /// Infer a response Content-Type from the filename extension. Formats that a

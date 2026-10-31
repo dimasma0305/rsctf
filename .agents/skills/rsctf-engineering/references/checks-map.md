@@ -19,6 +19,13 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 
 ## Discover the smallest meaningful check
 
+Public image validation, extensionless MIME/range responses and immediate staged
+branding publication are covered by
+[public_image_tests.rs](../../../../src/controllers/public_image_tests.rs).
+Run `test --lib public_image -- --include-ignored --test-threads=1` through the
+bounded Cargo wrapper against disposable PostgreSQL. Decoder format and size
+boundaries also have unit tests in `utils::public_image`.
+
 Simple challenge creation is covered by
 [controller regressions](../../../../src/controllers/edit/challenges/simple_create_tests.rs):
 authorization, rollback after failed flag insertion, concurrent retry, and disabled

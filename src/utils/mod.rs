@@ -9,6 +9,7 @@ pub mod enums;
 pub mod error;
 pub mod flag_generator;
 pub mod flag_policy;
+pub(crate) mod public_image;
 pub(crate) mod redis;
 pub mod scoring;
 pub mod shared;

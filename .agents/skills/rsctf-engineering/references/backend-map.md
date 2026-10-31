@@ -81,6 +81,13 @@ alone does not cover it.
 
 ## Additional boundary owners
 
+Public avatars, posters and branding share bounded byte-based validation in
+[public_image.rs](../../../../src/utils/public_image.rs). Extensionless public
+downloads detect their passive image type through
+[assets/public_media.rs](../../../../src/controllers/assets/public_media.rs).
+Accepted uploads are PNG, JPEG, GIF, WebP or ICO, at most 3 MiB, 4 megapixels and
+4096 pixels per side; decoding runs outside Tokio with two concurrent slots.
+
 These entry points complete the public module-family index; use their callers and
 adjacent tests when a feature crosses admission, identity, export or telemetry.
 

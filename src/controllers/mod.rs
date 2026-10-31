@@ -15,3 +15,6 @@ pub mod oauth;
 pub mod proxy;
 pub mod team;
 pub mod workers;
+
+#[cfg(test)]
+mod public_image_tests;
