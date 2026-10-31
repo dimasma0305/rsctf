@@ -24,9 +24,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.end_headers(); self.wfile.write(b"ok"); return
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
         status = 200 if self.headers.get("Authorization") == "Bearer fixture" else 401
+        if self.path == "/api/v1/koth/capability/authenticate":
+            status = 200 if json.loads(body).get("token") == "koth_fixture" else 401
         self.send_response(status); self.end_headers()
         self.wfile.write(json.dumps({"path": self.path, "method": self.command,
-            "body": body, "signature": self.headers.get("X-Koth-Signature")}).encode())
+            "body": body, "signature": self.headers.get("X-Koth-Signature"),
+            "xff": self.headers.get("X-Forwarded-For"), "peer": self.client_address[0]}).encode())
     do_POST = do_GET
     def log_message(self, *args): pass
 ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
@@ -34,9 +37,10 @@ ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
 
 CLIENT = r'''
 import json, socket, sys, urllib.error, urllib.request
-mode, owner = sys.argv[1:]
+mode, owner, proxy_ip = sys.argv[1:]
+source_ip = socket.gethostbyname(socket.gethostname())
 def request(origin, path, method="GET", body=None, authenticated=True):
-    headers = {"X-Koth-Signature": "signed-fixture"}
+    headers = {"X-Koth-Signature": "signed-fixture", "X-Forwarded-For": "203.0.113.99"}
     if authenticated: headers["Authorization"] = "Bearer fixture"
     req = urllib.request.Request(origin + path, data=body, method=method, headers=headers)
     try:
@@ -59,18 +63,23 @@ proxy = "http://rsctf-koth-reporter:8080"
 assert request(proxy, "/healthz") == (200, b"ok")
 context = "/api/v1/koth/games/46/challenges/839/context"
 observation = "/api/v1/koth/games/46/challenges/839/observations"
-for method, path, body in [("GET", context, None), ("POST", observation, b'{"sequence":1}')]:
-    code, raw = request(proxy, path, method, body)
+capability = "/api/v1/koth/capability/authenticate"
+for method, path, body in [("GET", context, None), ("POST", observation, b'{"sequence":1}'),
+                           ("POST", capability, b'{"token":"koth_fixture","gameId":46,"challengeId":839}')]:
+    code, raw = request(proxy, path, method, body, authenticated=path != capability)
     assert code == 200, (code, raw)
     assert json.loads(raw) == {"method": method, "path": path,
-        "body": body.decode() if body else "", "signature": "signed-fixture"}
-    assert request(proxy, path, method, body, authenticated=False)[0] == 401
+        "body": body.decode() if body else "", "signature": "signed-fixture",
+        "xff": source_ip, "peer": proxy_ip}
+    rejected_body = b'{"token":"invalid"}' if path == capability else body
+    assert request(proxy, path, method, rejected_body, authenticated=False)[0] == 401
 for method, path in [("POST", context), ("GET", observation),
+                     ("GET", capability),
                      ("GET", "/api/admin/users"), ("GET", "/api/account/profile"),
                      ("GET", "/metrics"), ("GET", context + "/extra"),
                      ("GET", "/api/v1/koth/games/46/challenges/839/status")]:
     assert request(proxy, path, method)[0] == 404, (method, path)
-print("callback GET/POST, credentials, signatures, body, route denial and direct fence passed")
+print("context/observation/capability forwarding, credentials, payload, unspoofable target IP and direct fence passed")
 '''
 
 
@@ -104,23 +113,29 @@ def verify(split):
     # Exercise the actual rendered proxy without starting production DB/app roles.
     proxy = rendered["services"]["koth-reporter"]
     proxy["restart"] = "no"
+    proxy_ip = proxy["networks"]["koth-reporter-upstream"]["ipv4_address"]
+    trusted = rendered["services"][owner]["environment"]["RSCTF_TRUSTED_PROXY_CIDRS"]
+    assert proxy_ip + "/32" in trusted.split(",")
     health = ["CMD", "python", "-c",
               "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
     fixture = {"image": PYTHON_IMAGE, "command": ["python", "-c", SERVER],
                "environment": {"NO_PROXY": "*", "no_proxy": "*"},
-               "networks": {"default": {"aliases": ["rsctf-network"]}, "rsctf-ad": {}},
+               "networks": {"default": {}, "rsctf-ad": {},
+                            "koth-reporter-upstream": {"aliases": ["rsctf-koth-backend"]}},
                "healthcheck": {"test": health, "interval": "1s", "timeout": "2s", "retries": 30}}
     client = {"image": PYTHON_IMAGE, "command": ["sleep", "180"], "networks": ["rsctf-ad"],
               "environment": {"NO_PROXY": "*", "no_proxy": "*"}}
-    document = {"services": {owner: fixture, "koth-reporter": proxy, "client": client},
-                "networks": {key: rendered["networks"][key] for key in ("default", "rsctf-ad")}}
+    document = {"services": {owner: fixture, "koth-reporter": proxy,
+                             "client": client, "client2": client},
+                "networks": {key: rendered["networks"][key]
+                             for key in ("default", "rsctf-ad", "koth-reporter-upstream")}}
     with tempfile.TemporaryDirectory(prefix="rsctf-reporter-") as directory:
         path = Path(directory) / "compose.json"
         path.write_text(json.dumps(document))
         compose = ["docker", "compose", "-p", project, "-f", str(path)]
         try:
             run(*compose, "up", "-d", "--wait", "--wait-timeout", "60", env=env)
-            print(run(*compose, "exec", "-T", "client", "python", "-", "before", owner,
+            print(run(*compose, "exec", "-T", "client", "python", "-", "before", owner, proxy_ip,
                       input=CLIENT, env=env).strip(), flush=True)
             container = run(*compose, "ps", "-q", owner, env=env).strip()
             subnet = document["networks"]["rsctf-ad"]["ipam"]["config"][0]["subnet"]
@@ -132,8 +147,9 @@ def verify(split):
                 PYTHON_IMAGE, "sh", "-ec",
                 'apk add --no-cache iptables >/dev/null; exec iptables "$@"', "--", "-I", "INPUT", "1",
                 "-s", subnet, "-p", "tcp", "--dport", "8080", "-j", "DROP")
-            print(run(*compose, "exec", "-T", "client", "python", "-", "after", owner,
-                      input=CLIENT, env=env).strip(), flush=True)
+            for name in ("client", "client2"):
+                print(run(*compose, "exec", "-T", name, "python", "-", "after", owner, proxy_ip,
+                          input=CLIENT, env=env).strip(), flush=True)
             print(f"{owner}: shipped reporter proxy passed", flush=True)
         except Exception:
             print(run(*compose, "logs", "--no-color", "--tail", "30", env=env, check=False), flush=True)

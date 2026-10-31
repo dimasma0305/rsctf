@@ -113,7 +113,8 @@ reconnection must be tested separately from process exit.
 - The A&D VPN overlays route managed callbacks through the private
   [reporter proxy](../../../../deploy/koth-reporter.Caddyfile). Its reserved service
   address stays separate from the VPN owner's blocked INPUT namespace; only
-  context, observation and health routes reach the owner over the app network.
+  capability authentication, context, observation and health reach the owner over
+  a private uplink. Only the proxy's exact uplink /32 is trusted for target IPs.
   [The Docker regression](../../../../scripts/test-koth-reporter-proxy.py) tests
   both shipped topologies with a real INPUT fence and HTTP fixture upstream.
 - [deploy/compose.roles.yml](../../../../deploy/compose.roles.yml), [deploy/compose.roles.docker.yml](../../../../deploy/compose.roles.docker.yml),

@@ -33,6 +33,7 @@ services:
       RSCTF_AD_VPN_SERVER_ENDPOINT: ${RSCTF_AD_VPN_SERVER_ENDPOINT:?Set the public WireGuard host:port}
       RSCTF_AD_VPN_LISTEN_PORT: ${RSCTF_AD_VPN_PORT:-51820}
       RSCTF_AD_SSH_PORT: ${RSCTF_AD_SSH_PORT:-2222}
+      RSCTF_TRUSTED_PROXY_CIDRS: ${RSCTF_TRUSTED_PROXY_CIDRS:-},${RSCTF_KOTH_REPORTER_UPSTREAM_IP:-172.31.251.254}/32
       RSCTF_KOTH_REPORTER_BASE_URL: ${RSCTF_KOTH_REPORTER_BASE_URL:-http://rsctf-koth-reporter:8080}
     cap_add:
       - NET_ADMIN
@@ -51,6 +52,8 @@ services:
       - ${RSCTF_AD_SSH_BIND_IP:-0.0.0.0}:${RSCTF_AD_SSH_PORT:-2222}:${RSCTF_AD_SSH_PORT:-2222}/tcp
     networks:
       rsctf-ad: {}
+      koth-reporter-upstream:
+        aliases: [rsctf-koth-backend]
 
   # Targets cannot enter the VPN owner's INPUT namespace. Relay only reporter
   # requests through its separate application network; never open that firewall.
@@ -59,8 +62,8 @@ services:
     environment:
       # Callback traffic must stay on the private app network, even on hosts
       # whose Docker client injects an outbound HTTP proxy.
-      NO_PROXY: rsctf-network,localhost,127.0.0.1
-      no_proxy: rsctf-network,localhost,127.0.0.1
+      NO_PROXY: rsctf-koth-backend,localhost,127.0.0.1
+      no_proxy: rsctf-koth-backend,localhost,127.0.0.1
     restart: unless-stopped
     init: true
     depends_on:
@@ -86,7 +89,8 @@ services:
     mem_limit: 64m
     pids_limit: 64
     networks:
-      default: {}
+      koth-reporter-upstream:
+        ipv4_address: ${RSCTF_KOTH_REPORTER_UPSTREAM_IP:-172.31.251.254}
       rsctf-ad:
         ipv4_address: ${RSCTF_KOTH_REPORTER_IP:-10.13.40.254}
         aliases:
@@ -128,6 +132,11 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=8m,mode=1777
 
 networks:
+  koth-reporter-upstream:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${RSCTF_KOTH_REPORTER_UPSTREAM_SUBNET:-172.31.251.0/24}
   rsctf-ad:
     name: ${RSCTF_AD_VPN_SERVICES_NETWORK:-${COMPOSE_PROJECT_NAME:-rsctf}-ad}
     internal: true

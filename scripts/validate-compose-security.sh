@@ -174,8 +174,12 @@ assert alias_owners == ["koth-reporter"], alias_owners
 assert proxy["networks"]["rsctf-ad"]["ipv4_address"] == address
 subnet = document["networks"]["rsctf-ad"]["ipam"]["config"][0]["subnet"]
 assert ipaddress.ip_address(address) in ipaddress.ip_network(subnet)
-assert set(proxy["networks"]) == {"default", "rsctf-ad"}
-assert "rsctf-network" in services[owner]["networks"]["default"]["aliases"]
+assert set(proxy["networks"]) == {"koth-reporter-upstream", "rsctf-ad"}
+uplink = proxy["networks"]["koth-reporter-upstream"]["ipv4_address"]
+trusted = services[owner]["environment"]["RSCTF_TRUSTED_PROXY_CIDRS"].split(",")
+assert uplink + "/32" in trusted and "172.31.252.0/24" in trusted
+assert document["networks"]["koth-reporter-upstream"]["internal"]
+assert "rsctf-koth-backend" in services[owner]["networks"]["koth-reporter-upstream"]["aliases"]
 assert proxy["depends_on"][owner]["condition"] == "service_healthy"
 assert "@sha256:" in proxy["image"]
 assert proxy["read_only"] and not proxy.get("ports")
@@ -223,7 +227,7 @@ dns = services["event-vpn-dns"]
 
 app_environment = app.get("environment") or {}
 expected_app = {
-    "RSCTF_TRUSTED_PROXY_CIDRS": "172.31.252.0/24,10.13.40.253/32",
+    "RSCTF_TRUSTED_PROXY_CIDRS": "172.31.252.0/24,10.13.40.253/32,172.31.251.254/32",
     "RSCTF_EVENT_VPN_HUB_ADDRESS": "10.13.0.1",
     "RSCTF_EVENT_VPN_INGRESS_IP": "10.13.40.253",
 }

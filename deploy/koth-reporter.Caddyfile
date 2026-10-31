@@ -13,14 +13,21 @@
 		method POST
 		path_regexp ^/api/v1/koth/games/[1-9][0-9]*/challenges/[1-9][0-9]*/observations$
 	}
+	@capability {
+		method POST
+		path /api/v1/koth/capability/authenticate
+	}
+	handle @capability {
+		reverse_proxy rsctf-koth-backend:8080
+	}
 	handle @context {
-		reverse_proxy rsctf-network:8080
+		reverse_proxy rsctf-koth-backend:8080
 	}
 	handle @observations {
-		reverse_proxy rsctf-network:8080
+		reverse_proxy rsctf-koth-backend:8080
 	}
 	handle /healthz {
-		reverse_proxy rsctf-network:8080
+		reverse_proxy rsctf-koth-backend:8080
 	}
 	handle {
 		respond 404
