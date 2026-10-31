@@ -13,3 +13,6 @@ pub mod user;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod close_tests;

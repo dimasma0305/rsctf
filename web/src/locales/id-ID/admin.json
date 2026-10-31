@@ -477,7 +477,7 @@
           "description": "Termasuk gambar",
           "label": "Penyimpanan (MB)",
           "unbounded_title": "Kuota lapisan tulis tidak tersedia",
-          "unbounded_warning": "Host Docker ini tidak dapat menerapkan kuota lapisan tulis. Batas yang dikonfigurasi tetap disimpan, tetapi tidak diterapkan pada instance di lingkungan ini. Pantau ruang disk kosong dan pindahkan Docker ke penyimpanan yang mendukung kuota bila memungkinkan."
+          "unbounded_warning": "Host Docker ini tidak dapat menerapkan batas disk. Peluncuran baru diblokir kecuali operator mengaktifkan pengecualian untuk pengembangan sementara. Gunakan penyimpanan yang mendukung kuota untuk produksi. Dengan pengecualian ini, batas tidak diterapkan pada instance: pantau ruang disk kosong."
         },
         "submission_limit": {
           "description": "0 = tidak terbatas",

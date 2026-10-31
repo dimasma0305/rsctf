@@ -600,7 +600,7 @@
           "description": "Storage (including image)",
           "label": "Storage Limit (MB)",
           "unbounded_title": "Writable-layer quota unavailable",
-          "unbounded_warning": "This Docker host cannot enforce writable-layer quotas. The configured limit is saved but is not applied to instances in this environment. Monitor free disk space and move Docker to quota-capable storage when possible."
+          "unbounded_warning": "This Docker host cannot enforce disk limits. New launches are blocked unless an operator enables the disposable-development override. Use quota-capable storage for production. With the override, limits are not applied to instances: monitor free disk space."
         },
         "submission_limit": {
           "description": "0 = unlimited",

@@ -295,6 +295,101 @@ async fn exact_replay_and_stale_phase_recovery_are_durable() {
         ClaimOutcome::Owned(ref operation) if operation.operation_id == ambiguous_id
     ));
 
+    // A new launch observing an obsolete public UUID must never reuse it.
+    // An expired in-flight launch keeps its UUID; a terminal retry rotates it.
+    let old_publication = Uuid::new_v4();
+    let replacement_id = Uuid::new_v4();
+    let replacement_claim = || {
+        claim::<()>(
+            &pool,
+            replacement_id,
+            "participation:74",
+            actor,
+            1,
+            Some(74),
+            15,
+            Intent::Create,
+            Some(old_publication),
+            None,
+            false,
+        )
+    };
+    let ClaimOutcome::Owned(replacement) = replacement_claim().await.unwrap() else {
+        panic!("replacement must own its launch");
+    };
+    assert_ne!(replacement.publication_id, old_publication);
+    assert!(matches!(
+        replacement_claim().await.unwrap(),
+        ClaimOutcome::Following
+    ));
+    sqlx::query(
+        r#"UPDATE "PlayerContainerOperations"
+        SET lease_expires_at_utc = clock_timestamp() - interval '1 second'
+        WHERE operation_id = $1"#,
+    )
+    .bind(replacement_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let ClaimOutcome::Owned(resumed) = replacement_claim().await.unwrap() else {
+        panic!("expired owner must be resumable");
+    };
+    assert_eq!(resumed.publication_id, replacement.publication_id);
+    sqlx::query(
+        r#"UPDATE "PlayerContainerOperations" SET state = 'Failed'
+        WHERE operation_id = $1"#,
+    )
+    .bind(replacement_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let ClaimOutcome::Owned(retried) = replacement_claim().await.unwrap() else {
+        panic!("terminal launch must be retryable");
+    };
+    assert_ne!(retried.publication_id, replacement.publication_id);
+    assert_ne!(retried.publication_id, old_publication);
+
+    // Opening an already-live shared container records its actual public ID,
+    // even though admission reserved a different ID in case launch was needed.
+    let shared = Uuid::new_v4();
+    sqlx::query(r#"INSERT INTO "Containers" VALUES ($1, $2, 'shared-backend')"#)
+        .bind(shared)
+        .bind(ContainerStatus::Running as i16)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "GameChallenges" VALUES (16, 1, $1)"#)
+        .bind(shared)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let shared_operation = Uuid::new_v4();
+    let open_shared = |id| {
+        claim::<serde_json::Value>(
+            &pool,
+            id,
+            "shared:16",
+            actor,
+            1,
+            None,
+            16,
+            Intent::Create,
+            Some(shared),
+            Some("runtime:shared"),
+            false,
+        )
+    };
+    let ClaimOutcome::Owned(opened) = open_shared(shared_operation).await.unwrap() else {
+        panic!("first shared opener must be owned");
+    };
+    assert_ne!(opened.publication_id, shared);
+    let receipt = serde_json::json!({"id": shared});
+    complete(&pool, &opened, &receipt).await.unwrap();
+    for operation_id in [shared_operation, Uuid::new_v4()] {
+        assert!(matches!(open_shared(operation_id).await.unwrap(),
+            ClaimOutcome::Recovered(value) if value == receipt));
+    }
+
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
         .execute(&admin)

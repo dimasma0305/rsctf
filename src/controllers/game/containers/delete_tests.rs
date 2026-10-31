@@ -522,7 +522,35 @@ async fn stale_conditional_delete_cannot_destroy_a_real_replacement_runtime() {
     };
     let harness = Harness::new(manager.clone()).await;
     let stale = uuid::Uuid::new_v4();
-    let replacement = uuid::Uuid::new_v4();
+    sqlx::raw_sql(crate::migrations::PLAYER_CONTAINER_OPERATIONS_SQL)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(crate::migrations::PLAYER_OPERATION_RECOVERY_SQL)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+    // Recovery observes the stale UUID exactly as the create controller does.
+    // Its new public identity must keep the delayed delete off the replacement.
+    use crate::services::player_containers::operations::{claim_create, ClaimOutcome};
+    let ClaimOutcome::Owned(claim) = claim_create(
+        &harness.pool,
+        operation,
+        "participation:61",
+        uuid::Uuid::new_v4(),
+        1,
+        Some(61),
+        71,
+        Some(stale),
+        None,
+        false,
+    )
+    .await
+    .unwrap() else {
+        panic!("replacement launch must be owned");
+    };
+    let replacement = claim.publication_id;
+    assert_ne!(replacement, stale);
     harness.insert_container(stale, &stale_runtime.id).await;
     harness
         .insert_container(replacement, &replacement_runtime.id)

@@ -399,7 +399,13 @@ pub(super) async fn serve(
                 let _ = tx.send(policy_close("invalid SignalR handshake")).await;
                 return;
             }
-            Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => return,
+            Ok(Some(Ok(Message::Close(_)))) => {
+                // Tungstenite queues the peer's close reply while reading.
+                // Flush it before dropping the split sink and TCP stream.
+                let _ = tokio::time::timeout(Duration::from_secs(1), tx.flush()).await;
+                return;
+            }
+            Ok(Some(Err(_))) | Ok(None) => return,
             Err(_) => {
                 admission::record_protocol_rejection();
                 admission::record_close(admission::CloseReason::InvalidHandshake);
@@ -477,7 +483,11 @@ pub(super) async fn serve(
                     let _ = tx.send(policy_close("binary application frames are unsupported")).await;
                     break;
                 }
-                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(Message::Close(_))) => {
+                    let _ = tokio::time::timeout(Duration::from_secs(1), tx.flush()).await;
+                    break;
+                }
+                None => break,
                 Some(Err(_)) => break,
             },
             ev = rx.recv() => match ev {

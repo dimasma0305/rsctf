@@ -1,11 +1,5 @@
 import { Alert, Badge, Button, Group, Paper, SimpleGrid, Skeleton, Stack, Text, ThemeIcon, Title } from '@mantine/core'
-import {
-  mdiAccountMultipleOutline,
-  mdiHandHeart,
-  mdiMessageTextOutline,
-  mdiOpenInNew,
-  mdiPodium,
-} from '@mdi/js'
+import { mdiAccountMultipleOutline, mdiHandHeart, mdiMessageTextOutline, mdiOpenInNew, mdiPodium } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -181,7 +175,13 @@ const DonationPanel: FC<DonationPanelProps> = ({ donateUrl }) => {
                   {t('common.content.donations.no_messages', 'No public messages yet.')}
                 </Text>
               ) : (
-                <Stack gap="sm" className={classes.messages}>
+                <Stack
+                  gap="sm"
+                  className={classes.messages}
+                  tabIndex={0}
+                  role="region"
+                  aria-labelledby="donation-messages-title"
+                >
                   {data.messages.map((message, index) => (
                     <Paper
                       key={`${message.supporterName}-${message.updatedAt}-${index}`}

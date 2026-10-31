@@ -214,7 +214,7 @@ pub(in crate::services::container) async fn adopt_operation_container(
             docker.remove_container(
                 &id,
                 Some(RemoveContainerOptions {
-                    v: false,
+                    v: true,
                     force: true,
                     link: false,
                 }),

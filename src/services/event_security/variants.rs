@@ -27,6 +27,17 @@ const TARGET_PAGE_SIZE: i64 = 128;
 static GENERATOR_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(2));
 
+pub(crate) fn generator_labels(id: String) -> HashMap<String, String> {
+    let scope = crate::services::container::docker_installation_scope();
+    let mut labels = crate::services::container::scoped_managed_labels(&scope);
+    labels.insert(
+        "rsctf.workload".to_string(),
+        "variant-generator".to_string(),
+    );
+    labels.insert("rsctf.operation".to_string(), id);
+    labels
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeneratorInput {
@@ -190,10 +201,7 @@ async fn run_generator_once(
         network_disabled: Some(true),
         attach_stdout: Some(true),
         attach_stderr: Some(true),
-        labels: Some(HashMap::from([
-            ("rsctf.managed".to_string(), "variant-generator".to_string()),
-            ("rsctf.operation".to_string(), id),
-        ])),
+        labels: Some(generator_labels(id)),
         host_config: Some(HostConfig {
             memory: Some(GENERATOR_MEMORY_BYTES),
             memory_swap: Some(GENERATOR_MEMORY_BYTES),
@@ -286,6 +294,7 @@ async fn run_generator_once(
                 &container_id,
                 Some(RemoveContainerOptions {
                     force: true,
+                    v: true,
                     ..Default::default()
                 }),
             ),

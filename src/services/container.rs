@@ -136,7 +136,7 @@ pub(crate) fn docker_installation_scope() -> String {
     )
 }
 
-fn scoped_managed_labels(scope: &str) -> HashMap<String, String> {
+pub(crate) fn scoped_managed_labels(scope: &str) -> HashMap<String, String> {
     HashMap::from([
         (MANAGED_LABEL.to_string(), scope.to_string()),
         (SCOPE_LABEL.to_string(), scope.to_string()),
@@ -301,6 +301,7 @@ pub struct DockerContainerManager {
     capacity_scopes: Vec<String>,
     /// Cached daemon capability used by both the create path and admin warning.
     storage_quota_enforced: std::sync::Arc<std::sync::OnceLock<bool>>,
+    allow_unbounded_storage: bool,
     /// Live Docker client handle populated by [`Self::connect`].
     docker: Option<Docker>,
 }
@@ -321,6 +322,17 @@ impl DockerContainerManager {
             scope: docker_installation_scope(),
             capacity_scopes: profiles::config::docker_scopes(&docker_installation_scope())?,
             storage_quota_enforced: Default::default(),
+            allow_unbounded_storage: match std::env::var("RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE")
+                .as_deref()
+            {
+                Ok("true") => true,
+                Ok("false") | Err(std::env::VarError::NotPresent) => false,
+                _ => {
+                    return Err(AppError::bad_request(
+                        "RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE must be true or false",
+                    ))
+                }
+            },
             docker: Some(docker),
         })
     }
@@ -393,7 +405,8 @@ impl DockerContainerManager {
             tracing::warn!(
                 driver = daemon_info.driver.as_deref().unwrap_or("unknown"),
                 backing_filesystem,
-                "Docker cannot enforce writable-layer quotas; configured storage limits will be retained but instances will use unbounded writable layers"
+                allow_unbounded_storage = self.allow_unbounded_storage,
+                "Docker cannot enforce writable-layer quotas; new workloads require a quota-capable host or the explicit disposable-development override"
             );
         }
         Ok(*self.storage_quota_enforced.get().unwrap_or(&enforced))
@@ -457,6 +470,7 @@ impl ContainerManager for DockerContainerManager {
         validate_docker_container_spec(&spec)?;
         let docker = self.client()?;
         let storage_quota_enforced = self.detect_storage_quota_enforcement().await?;
+        docker::require_storage_quota(storage_quota_enforced, self.allow_unbounded_storage)?;
         let storage_opt = writable_layer_storage_option(storage_quota_enforced, spec.storage_limit);
         let launch_fingerprint = launch_spec_fingerprint(&spec);
 
@@ -721,7 +735,7 @@ impl ContainerManager for DockerContainerManager {
                 docker.remove_container(
                     canonical_id,
                     Some(RemoveContainerOptions {
-                        v: false,
+                        v: true,
                         force: true,
                         link: false,
                     }),

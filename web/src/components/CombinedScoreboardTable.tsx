@@ -420,8 +420,13 @@ export const CombinedScoreboardTable: FC<{
           <Box pos="relative">
             <Table.ScrollContainer
               minWidth={560 + modes.length * 130}
-              tabIndex={0}
-              aria-label={t('game.content.scoreboard.combined.scroll_region', 'Scrollable Overall scoreboard')}
+              scrollAreaProps={{
+                viewportProps: {
+                  tabIndex: 0,
+                  role: 'region',
+                  'aria-label': t('game.content.scoreboard.combined.scroll_region', 'Scrollable Overall scoreboard'),
+                },
+              }}
             >
               <Table striped highlightOnHover verticalSpacing="sm" className={classes.table}>
                 <Table.Thead>

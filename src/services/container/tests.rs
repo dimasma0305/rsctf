@@ -24,6 +24,13 @@ use super::{
 };
 
 #[test]
+fn unsupported_storage_quotas_require_explicit_disposable_development_consent() {
+    assert!(super::docker::require_storage_quota(true, false).is_ok());
+    assert!(super::docker::require_storage_quota(false, false).is_err());
+    assert!(super::docker::require_storage_quota(false, true).is_ok());
+}
+
+#[test]
 fn restricted_runtime_profile_requires_the_exact_organizer_image_label() {
     let image = |value: Option<&str>| ImageInspect {
         config: Some(ContainerConfig {

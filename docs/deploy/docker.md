@@ -119,6 +119,12 @@ reports `Backing Filesystem: xfs`; btrfs, devicemapper, zfs, and windowsfilter
 are also recognized. An unsupported driver makes container creation unavailable
 instead of silently ignoring the author-selected limit.
 
+Upgrading from a release that allowed unbounded writable layers can therefore
+block new launches on an unsupported host; existing containers remain available.
+Move production workloads to a quota-capable host. The explicit
+`RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE=true` override is for trusted, disposable
+development only and does not enforce a disk limit.
+
 Docker deliberately rejects `allowEgress: true` for every A&D and KotH
 workload. A shared external bridge cannot prevent one hostile workload from
 reaching peers, private networks, or cloud metadata, so treating that bridge as
