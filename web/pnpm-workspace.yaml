@@ -27,8 +27,9 @@ overrides:
   "vite-plugin-pages@0.33.3>micromatch": "npm:picomatch@4.0.5"
   # Force-patch the transitive form-data CRLF-injection advisory (<4.0.6).
   form-data: ">=4.0.6"
-  # Patch redirect-loop resource exhaustion and malformed-host handling in Axios.
-  follow-redirects: "1.16.1"
+  # Patch redirect loops, malformed hosts, and cross-realm credential forwarding
+  # in Axios (GHSA-mrwp-f3q8-3g9p).
+  follow-redirects: "1.16.2"
   # The formatter's minimatch 9 branch cannot consume the only release that
   # fixes both 2026 brace-expansion denial-of-service advisories.
   "@trivago/prettier-plugin-sort-imports>minimatch": "10.2.5"
@@ -54,7 +55,7 @@ minimumReleaseAgeExclude:
   - brace-expansion@5.0.12
   - postcss@8.5.23
   - dompurify@3.4.17
-  - follow-redirects@1.16.1
+  - follow-redirects@1.16.2
   - vite@8.3.4
   - happy-dom@21.0.4
   - postcss-selector-parser@7.1.6
