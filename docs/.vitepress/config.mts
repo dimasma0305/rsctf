@@ -118,6 +118,7 @@ export default defineConfig({
             { text: 'KotH API observer', link: '/organizers/koth-api-observer' },
             { text: 'Import the sample repository', link: '/organizers/sample-repository' },
             { text: 'Operate a live event', link: '/organizers/live-event' },
+            { text: 'Fix a live challenge', link: '/organizers/live-maintenance' },
           ],
         },
       ],

@@ -41,6 +41,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { HintList } from '@Components/HintList'
 import { InstanceEntry } from '@Components/InstanceEntry'
 import { ChallengePreviewModal } from '@Components/admin/ChallengePreviewModal'
+import { CompetitionMaintenancePanel } from '@Components/admin/CompetitionMaintenancePanel'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { RuntimeProfileSelect } from '@Components/admin/RuntimeProfileSelect'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
@@ -58,6 +59,7 @@ import {
   ChallengeCategoryList,
 } from '@Utils/Shared'
 import { createDefaultJeopardyWorkloadSpec, formatWorkloadSpec, parseJeopardyWorkloadSpec } from '@Utils/WorkloadSpec'
+import { useCompetitionMaintenance } from '@Hooks/useCompetitionMaintenance'
 import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import { useEditChallenge, useEditChallenges } from '@Hooks/useEdit'
 import { useAdminGame, useGameStatus } from '@Hooks/useGame'
@@ -165,6 +167,10 @@ const GameChallengeEdit: FC = () => {
   const isContainerType = isAdEngine || isJeopardyContainer
   const isKoth = type === ChallengeType.KingOfTheHill
   const adScoringStarted = type === ChallengeType.AttackDefense && game?.adScoringStartRound != null
+  const { data: maintenance } = useCompetitionMaintenance(
+    numId,
+    isAdEngine && (game?.adScoringStartRound != null || game?.kothScoringStartRound != null)
+  )
   const [workloadEditorEnabled, setWorkloadEditorEnabled] = useState(challenge?.workloadSpec != null)
   const [workloadJson, setWorkloadJson] = useState(
     challenge?.workloadSpec ? formatWorkloadSpec(challenge.workloadSpec) : ''
@@ -765,6 +771,9 @@ const GameChallengeEdit: FC = () => {
       }
     >
       <Stack>
+        {isAdEngine && (game?.adScoringStartRound != null || game?.kothScoringStartRound != null) && (
+          <CompetitionMaintenancePanel key={numId} gameId={numId} />
+        )}
         <Grid columns={3}>
           <Grid.Col span={{ base: 3, md: 1 }}>
             <TextInput
@@ -1140,6 +1149,7 @@ const GameChallengeEdit: FC = () => {
                   workloadEditorEnabled ||
                   !!challengeInfo.adSelfHosted ||
                   (isAdEngine &&
+                    maintenance?.state !== 'Editing' &&
                     (game?.adScoringStartRound != null || game?.kothScoringStartRound != null))
                 }
                 replacementAllowed={!!challenge?.isEnabled || !!challenge?.runtimeTransitionPending}
@@ -1459,13 +1469,13 @@ const GameChallengeEdit: FC = () => {
             <Grid columns={12}>
               <Grid.Col span={{ base: 12, sm: 6 }}>
                 <TextInput
-                  label={t('admin.content.games.challenges.ad.checker_image.label', 'Checker image')}
+                  label={t('admin.content.games.challenges.ad.checker_path.label', 'Prepared checker directory')}
                   description={t(
-                    'admin.content.games.challenges.ad.checker_image.description',
-                    'Image that probes the team service each tick to plant and retrieve flags.'
+                    'admin.content.games.challenges.ad.checker_path.description',
+                    'Directory containing run.py on the engine host. Import the checker before selecting its path.'
                   )}
-                  placeholder="ghcr.io/myorg/vuln-flask-checker:1.0"
-                  disabled={disabled || adScoringStarted}
+                  placeholder="/app/files/checkers/…/revisions/…"
+                  disabled={disabled || (adScoringStarted && maintenance?.state !== 'Editing')}
                   value={challengeInfo.adCheckerImage ?? ''}
                   onChange={(e) => setChallengeInfo({ ...challengeInfo, adCheckerImage: e.target.value })}
                 />

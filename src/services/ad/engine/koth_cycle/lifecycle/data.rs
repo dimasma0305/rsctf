@@ -111,6 +111,9 @@ fn snapshot_hills(snapshot: &serde_json::Value) -> AppResult<Vec<OfficialHill>> 
         .into_iter()
         .flatten()
         .filter_map(|value| {
+            if value.get("enabled").and_then(serde_json::Value::as_bool) == Some(false) {
+                return None;
+            }
             let challenge_id = value
                 .as_i64()
                 .or_else(|| value.get("challengeId")?.as_i64())

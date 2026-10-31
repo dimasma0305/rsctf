@@ -9,6 +9,7 @@ pub(super) struct DefinitionWriteOptions {
     pub final_enabled: bool,
     pub workload_update: Option<Option<JsonValue>>,
     pub invalidated_build_status: Option<ChallengeBuildStatus>,
+    pub registry_image_hotfix: bool,
     pub leaving_managed_generator: bool,
 }
 
@@ -101,6 +102,13 @@ pub(super) async fn update(
         assign!("build_status", value as i16);
         assign!("build_image_digest", Option::<String>::None);
         assign!("last_build_log", Option::<String>::None);
+    }
+    if options.registry_image_hotfix {
+        // A new live image reference is pulled as supplied. Preserve the
+        // original immutable archive for audit, without rebuilding its old
+        // Dockerfile under the new registry name.
+        updated.build_context_subdir = None;
+        assign!("build_context_subdir", Option::<String>::None);
     }
     if let Some(value) = model.memory_limit {
         updated.memory_limit = Some(value);

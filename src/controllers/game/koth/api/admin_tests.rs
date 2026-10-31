@@ -167,6 +167,11 @@ impl RotationHarness {
         sqlx::raw_sql(
             r#"
             CREATE TABLE "AspNetUsers" (id UUID PRIMARY KEY);
+            CREATE TABLE "Games" (id INTEGER PRIMARY KEY, ad_scoring_paused BOOLEAN NOT NULL DEFAULT FALSE);
+            CREATE TABLE "AdRounds" (game_id INTEGER, number INTEGER);
+            CREATE TABLE "CompetitionMaintenanceWindows" (
+              game_id INTEGER, state TEXT, effective_from_round INTEGER
+            );
             CREATE TABLE "GameChallenges" (
               id INTEGER PRIMARY KEY,
               game_id INTEGER NOT NULL,

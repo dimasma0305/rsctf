@@ -27,6 +27,7 @@ impl Lane {
                 ControlJobKind::ImagePreflight,
             ],
             Self::Maintenance => &[
+                ControlJobKind::CompetitionResume,
                 ControlJobKind::VariantGeneration,
                 ControlJobKind::SecurityDerivation,
             ],
@@ -40,9 +41,9 @@ impl Lane {
             | ControlJobKind::BuildBatch
             | ControlJobKind::WorkloadRollout
             | ControlJobKind::ImagePreflight => Self::Build,
-            ControlJobKind::VariantGeneration | ControlJobKind::SecurityDerivation => {
-                Self::Maintenance
-            }
+            ControlJobKind::VariantGeneration
+            | ControlJobKind::SecurityDerivation
+            | ControlJobKind::CompetitionResume => Self::Maintenance,
         }
     }
 

@@ -892,6 +892,18 @@ pub fn router() -> Router<SharedState> {
             post(ad_scoring_pause),
         )
         .route(
+            "/api/edit/games/{id}/ad/maintenance",
+            get(ad::maintenance::get).post(ad::maintenance::request),
+        )
+        .route(
+            "/api/edit/games/{id}/ad/maintenance/resume",
+            limited(Policy::Concurrency, post(ad::maintenance::resume)),
+        )
+        .route(
+            "/api/edit/games/{id}/ad/maintenance/cancel",
+            post(ad::maintenance::cancel),
+        )
+        .route(
             "/api/edit/games/{id}/ad/Challenges/{challengeId}/Toggle",
             post(ad_toggle_challenge),
         )

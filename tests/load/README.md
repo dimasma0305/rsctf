@@ -3,6 +3,24 @@
 Behaviour-mimicking load against a running rsctf stack — to find architecture/
 implementation flaws and capacity limits under real concurrency (not just peak req/s).
 
+## Live maintenance polling
+
+`npm run competition-maintenance` checks the organizer status poll at a fixed
+2 iterations/second for 30 seconds, including `healthz` on every iteration.
+The single administrator stays within the existing 150-request/minute budget;
+`RATE` accepts 1 or 2 without changing application rate limits.
+Run against a release binary on a disposable loopback stack, with `GAME` naming
+an event whose title starts with `LIVE-MAINTENANCE-LOAD-`, a retained maintenance
+window, and a disposable administrator. Supply the usual `PG_CONTAINER`,
+`PG_DATABASE`, `RSCTF_JWT_SECRET`, `TARGET`, and `SUMMARY_JSON` settings.
+
+The gate requires zero 5xx, failed polls, or dropped iterations and status p95
+below 200 ms. It compares all retained maintenance windows, rounds, and KoTH
+results before and after and rejects duplicate active windows. Sample server
+and PostgreSQL CPU/RAM alongside the run. This is a regression budget, not a
+throughput or production-capacity claim; use the same fixture and rate for
+before/after comparisons.
+
 ## Architecture runtime gate
 
 `control-job-shutdown.mjs` starts the real production control role and interrupts

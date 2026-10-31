@@ -66,6 +66,7 @@ pub enum ControlJobKind {
     AdReconcile,
     AdReset,
     ImagePreflight,
+    CompetitionResume,
 }
 
 impl ControlJobKind {
@@ -79,6 +80,7 @@ impl ControlJobKind {
             Self::AdReconcile => "AdReconcile",
             Self::AdReset => "AdReset",
             Self::ImagePreflight => "ImagePreflight",
+            Self::CompetitionResume => "CompetitionResume",
         }
     }
 }

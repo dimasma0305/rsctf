@@ -53,7 +53,7 @@ pub(super) async fn load_evidence(
                 WHERE game_id = $1
                   AND scoring_start_round = $2 AND epoch_ticks = $3
            ), hills AS (
-               SELECT (item->>'challengeId')::integer AS challenge_id,
+               SELECT item AS definition, (item->>'challengeId')::integer AS challenge_id,
                       COALESCE(NULLIF(item->>'claimSource', ''), 'Marker')
                         AS claim_source,
                       LEAST(1.2, GREATEST(0.8,
@@ -73,7 +73,7 @@ pub(super) async fn load_evidence(
            ), observations AS (
                SELECT scoring_round.id AS round_id, scoring_round.number,
                       scoring_round.epoch, scoring_round.finalized,
-                      hill.challenge_id, hill.claim_source, hill.service_weight,
+                      hill.challenge_id, COALESCE(historical.claim_source, hill.claim_source) AS claim_source, hill.service_weight,
                       result.cycle_id, result.token_window_attempt,
                       result.id AS result_id,
                       CASE WHEN result.id IS NULL THEN FALSE
@@ -88,6 +88,12 @@ pub(super) async fn load_evidence(
                            THEN result.checked_at ELSE $6 END AS checked_at
                  FROM scoring_rounds scoring_round
                  CROSS JOIN hills hill
+                 LEFT JOIN LATERAL (
+                   SELECT revision->>'claimSource' AS claim_source
+                     FROM jsonb_array_elements(hill.definition->'operationalHistory') revision
+                    WHERE (revision->>'effectiveFromRound')::integer <= scoring_round.number
+                    ORDER BY (revision->>'effectiveFromRound')::integer DESC LIMIT 1
+                 ) historical ON TRUE
                  LEFT JOIN "KothCrownCycles" cycle
                    ON cycle.game_id = $1
                   AND cycle.challenge_id = hill.challenge_id
@@ -158,7 +164,7 @@ pub(super) async fn load_evidence(
                  FROM config,
                       LATERAL jsonb_array_elements_text(config.roster_snapshot) value
            ), hills AS (
-               SELECT (item->>'challengeId')::integer AS challenge_id,
+               SELECT item AS definition, (item->>'challengeId')::integer AS challenge_id,
                       COALESCE(NULLIF(item->>'claimSource', ''), 'Marker')
                         AS claim_source
                  FROM config,
@@ -174,7 +180,7 @@ pub(super) async fn load_evidence(
                        OR ($7 AND round.start_time_utc < $5))
            ), observations AS (
                SELECT scoring_round.id AS round_id, scoring_round.number,
-                      scoring_round.epoch, hill.challenge_id, hill.claim_source,
+                      scoring_round.epoch, hill.challenge_id, COALESCE(historical.claim_source, hill.claim_source) AS claim_source,
                       result.cycle_id,
                       result.token_window_attempt,
                       result.id AS result_id,
@@ -199,6 +205,12 @@ pub(super) async fn load_evidence(
                         AS responsible_participation_id
                  FROM scoring_rounds scoring_round
                  CROSS JOIN hills hill
+                 LEFT JOIN LATERAL (
+                   SELECT revision->>'claimSource' AS claim_source
+                     FROM jsonb_array_elements(hill.definition->'operationalHistory') revision
+                    WHERE (revision->>'effectiveFromRound')::integer <= scoring_round.number
+                    ORDER BY (revision->>'effectiveFromRound')::integer DESC LIMIT 1
+                 ) historical ON TRUE
                  LEFT JOIN "KothCrownCycles" cycle
                    ON cycle.game_id = $1
                   AND cycle.challenge_id = hill.challenge_id
@@ -269,7 +281,7 @@ pub(super) async fn load_evidence(
                 GROUP BY participation_id, challenge_id, epoch
            )
            SELECT roster.participation_id, hill.challenge_id, epoch.epoch,
-                  CASE WHEN hill.claim_source = 'Api'
+                  CASE WHEN MAX(observation.claim_source) = 'Api'
                     THEN COALESCE(SUM(
                       api_score.activity_earned / 1000000
                     ) FILTER (
@@ -282,7 +294,7 @@ pub(super) async fn load_evidence(
                       WHERE acquisition.cycle_id IS NOT NULL
                     )
                   END::bigint AS acquisition_windows,
-                  CASE WHEN hill.claim_source = 'Api'
+                  CASE WHEN MAX(observation.claim_source) = 'Api'
                     THEN COUNT(*) FILTER (
                       WHERE observation.result_id IS NOT NULL
                         AND observation.is_scorable
@@ -294,7 +306,7 @@ pub(super) async fn load_evidence(
                         AND observation.controlling_participation_id = roster.participation_id
                     )
                   END::bigint AS controlled_ticks,
-                  CASE WHEN hill.claim_source = 'Api'
+                  CASE WHEN MAX(observation.claim_source) = 'Api'
                     THEN COALESCE(SUM(
                       api_score.activity_possible / 1000000
                     ) FILTER (
@@ -307,7 +319,7 @@ pub(super) async fn load_evidence(
                         AND observation.responsible_participation_id = roster.participation_id
                     )
                   END::bigint AS responsible_ticks,
-                  CASE WHEN hill.claim_source = 'Api'
+                  CASE WHEN MAX(observation.claim_source) = 'Api'
                     THEN COALESCE(SUM(ROUND(
                       api_score.lead_credit
                         * (api_score.activity_possible / 1000000)
@@ -530,6 +542,37 @@ mod tests {
         let challenger = teams.iter().find(|row| row.participation_id == 9).unwrap();
         assert_eq!(challenger.personal_scorable_ticks, 3);
         assert_eq!(challenger.acquisition_windows, 0);
+
+        // Switching the live transport at a later epoch cannot reinterpret
+        // retained Marker evidence as API evidence, even during a full rebuild.
+        sqlx::query(
+            r#"UPDATE "KothOfficialConfigs" SET hills_snapshot =
+             '[{"challengeId":5,"serviceWeight":1.0,"claimSource":"Api",
+                "operationalHistory":[{"effectiveFromRound":1,"claimSource":"Marker"},
+                                      {"effectiveFromRound":13,"claimSource":"Api"}]}]'
+             WHERE game_id = 41"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        let (historical_meta, historical_teams) =
+            load_evidence(&mut connection, 41, 1, 1, 12, None, None, false)
+                .await
+                .unwrap();
+        assert_eq!(historical_meta[0].claim_source, "Marker");
+        assert_eq!(
+            historical_meta[0].eligible_windows,
+            meta[0].eligible_windows
+        );
+        let historical_cooled = historical_teams
+            .iter()
+            .find(|row| row.participation_id == 7)
+            .unwrap();
+        assert_eq!(historical_cooled.controlled_ticks, cooled.controlled_ticks);
+        assert_eq!(
+            historical_cooled.acquisition_windows,
+            cooled.acquisition_windows
+        );
     }
 
     #[tokio::test]

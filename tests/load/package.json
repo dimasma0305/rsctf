@@ -4,6 +4,7 @@
   "type": "module",
   "description": "rsctf load / stress tests — k6 HTTP scenarios (k6/) driven by Node orchestrators (*.mjs)",
   "scripts": {
+    "competition-maintenance": "node competition-maintenance.mjs",
     "cache-audit": "node cache-audit.mjs",
     "storage-audit": "node storage-audit.mjs",
     "checker-audit": "node checker-audit.mjs",

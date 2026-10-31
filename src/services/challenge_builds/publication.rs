@@ -94,12 +94,14 @@ pub(super) async fn publish_build_outcome(
     outcome: &BuildOutcome,
     ownership: Option<&BuildImageOwnership>,
 ) -> AppResult<u64> {
-    let mut definition_lock = crate::services::challenge_workloads::acquire_definition_lock(
-        st.pg(),
-        challenge.game_id,
-        challenge.id,
+    let mut definition_lock =
+        crate::services::ad_engine::acquire_ad_game_lock(&st.db, challenge.game_id).await?;
+    crate::utils::single_flight::acquire_transaction_advisory_lock(
+        definition_lock.transaction_mut(),
+        &crate::services::challenge_workloads::definition_lock_key(challenge.game_id, challenge.id),
     )
-    .await?;
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     crate::services::challenge_mutations::reject_pending_mutation(
         &mut **definition_lock.transaction_mut(),
         challenge.game_id,
@@ -128,7 +130,7 @@ pub(super) async fn publish_build_outcome(
                 .await
                 .map_err(|error| AppError::internal(error.to_string()))?;
             if upserted.rows_affected() != 1 {
-                definition_lock.rollback().await?;
+                drop(definition_lock);
                 return Err(AppError::overloaded(
                     "Image cleanup is finalizing this build image; retry publication shortly",
                     1,
