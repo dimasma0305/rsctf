@@ -6,9 +6,26 @@ use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
+use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::services::ad::maintenance::{self, MaintenanceWindow};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
+
+pub(crate) fn router() -> axum::Router<SharedState> {
+    axum::Router::new()
+        .route(
+            "/api/edit/games/{id}/ad/maintenance",
+            axum::routing::get(get).post(request),
+        )
+        .route(
+            "/api/edit/games/{id}/ad/maintenance/resume",
+            limited(Policy::Concurrency, axum::routing::post(resume)),
+        )
+        .route(
+            "/api/edit/games/{id}/ad/maintenance/cancel",
+            axum::routing::post(cancel),
+        )
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

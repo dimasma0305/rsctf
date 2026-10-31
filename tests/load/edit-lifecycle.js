@@ -585,6 +585,48 @@ export const EDIT_OPERATIONS = Object.freeze([
     responseKind: "ad-live",
   }),
   operation(
+    "edit_maintenance_get",
+    "GET",
+    "/api/edit/games/{id}/ad/maintenance",
+    {
+      params: { id: "adGameId" },
+      responseKind: "maintenance",
+    },
+  ),
+  operation(
+    "edit_maintenance_request",
+    "POST",
+    "/api/edit/games/{id}/ad/maintenance",
+    {
+      params: { id: "adGameId" },
+      mutation: true,
+      expectedStatuses: [200, 409],
+      responseKind: "maintenance",
+    },
+  ),
+  operation(
+    "edit_maintenance_resume",
+    "POST",
+    "/api/edit/games/{id}/ad/maintenance/resume",
+    {
+      params: { id: "adGameId" },
+      mutation: true,
+      expectedStatuses: [200, 409],
+      responseKind: "control-job",
+    },
+  ),
+  operation(
+    "edit_maintenance_cancel",
+    "POST",
+    "/api/edit/games/{id}/ad/maintenance/cancel",
+    {
+      params: { id: "adGameId" },
+      mutation: true,
+      expectedStatuses: [200, 409],
+      responseKind: "maintenance",
+    },
+  ),
+  operation(
     "edit_ad_ensure_containers",
     "POST",
     "/api/edit/games/{id}/ad/EnsureContainers",
@@ -1304,6 +1346,27 @@ export function validateEditResponse(operationOrId, response) {
       ) {
         throw new Error(`${item.id} invalid challenge import job`);
       }
+      break;
+    case "maintenance":
+      if (body === null) break;
+      object();
+      if (
+        !UUID_PATTERN.test(body.id) ||
+        !Number.isSafeInteger(body.gameId) ||
+        body.gameId <= 0 ||
+        ![
+          "Requested",
+          "Editing",
+          "Applying",
+          "Completed",
+          "Cancelled",
+        ].includes(body.state) ||
+        (body.effectiveFromRound !== null &&
+          (!Number.isSafeInteger(body.effectiveFromRound) ||
+            body.effectiveFromRound <= 0)) ||
+        (body.error !== null && typeof body.error !== "string")
+      )
+        throw new Error(`${item.id} invalid maintenance window`);
       break;
     case "ad-state":
       object();
