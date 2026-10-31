@@ -473,6 +473,14 @@ done
   "${scale_args[@]}" "${runtime_services[@]}" \
   || die "new runtime startup failed; do not restore the old image after migration"
 
+# The callback proxy depends on a healthy runtime, so starting runtime services
+# alone cannot create it. Reconcile it after the owner, without restarting any
+# runtime or database dependency, before declaring the cutover complete.
+if array_contains koth-reporter "${configured_services[@]}"; then
+  "${compose[@]}" up --detach --no-deps --force-recreate --wait --wait-timeout "$timeout" koth-reporter \
+    || die "managed KotH reporter proxy startup failed; retry the new-image cutover"
+fi
+
 new_runtime_ids=()
 for service in "${runtime_services[@]}"; do
   id_output=$(docker container ls \

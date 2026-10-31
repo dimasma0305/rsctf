@@ -305,6 +305,17 @@ function runDockerCompose(values) {
   }
   if (action === 'up') {
     if (!state.migrationSucceeded) fail('Compose runtime started before successful migration', 98);
+    if (actionArgs.includes('koth-reporter')) {
+      if (!actionArgs.includes('--no-deps') || !actionArgs.includes('--wait')) {
+        fail('Reporter startup must preserve runtime dependencies and wait for health', 98);
+      }
+      if (!state.containers.some((item) => runtimeRoles.has(item.role) && item.running)) {
+        fail('Reporter started before the new runtime', 98);
+      }
+      event('compose:reporter-up');
+      if (state.reporterFail) process.exit(1);
+      return;
+    }
     const scales = [];
     for (let index = 0; index < actionArgs.length; index += 1) {
       if (actionArgs[index] === '--scale') scales.push(actionArgs[index + 1]);

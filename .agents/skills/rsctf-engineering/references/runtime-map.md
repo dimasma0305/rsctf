@@ -110,6 +110,13 @@ reconnection must be tested separately from process exit.
 
 - [deploy/README.md](../../../../deploy/README.md), [deploy/.env.example](../../../../deploy/.env.example), [deploy/compose.yml](../../../../deploy/compose.yml):
   base services and configuration names. Never copy real secrets into the map.
+- The A&D VPN overlays route managed callbacks through the private
+  [reporter proxy](../../../../deploy/koth-reporter.Caddyfile). Its reserved service
+  address stays separate from the VPN owner's blocked INPUT namespace; only
+  capability authentication, context, observation and health reach the owner over
+  a private uplink. Only the proxy's exact uplink /32 is trusted for target IPs.
+  [The Docker regression](../../../../scripts/test-koth-reporter-proxy.py) tests
+  both shipped topologies with a real INPUT fence and HTTP fixture upstream.
 - [deploy/compose.roles.yml](../../../../deploy/compose.roles.yml), [deploy/compose.roles.docker.yml](../../../../deploy/compose.roles.docker.yml),
   [deploy/compose.roles.ad-vpn.yml](../../../../deploy/compose.roles.ad-vpn.yml), [deploy/compose.roles.capture.yml](../../../../deploy/compose.roles.capture.yml),
   [deploy/compose.roles.workers.yml](../../../../deploy/compose.roles.workers.yml): supported role overlays.

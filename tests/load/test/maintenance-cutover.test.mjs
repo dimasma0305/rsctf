@@ -349,6 +349,25 @@ test('Compose migration failure does not start runtime and retries from protecte
   assert.equal(existsSync(context.stateFile), false);
 });
 
+test('Compose reconciles the reporter after runtime startup and retains retry state on failure', (t) => {
+  const state = composeState();
+  state.configServices.push({ name: 'koth-reporter', image: 'caddy@sha256:' + 'c'.repeat(64) });
+  state.reporterFail = true;
+  const context = harness(t, state);
+  const first = runCompose(context);
+  assert.notEqual(first.status, 0);
+  assert.match(first.stderr, /reporter proxy startup failed/);
+  assert.equal(existsSync(context.stateFile), true);
+  const failed = context.readState();
+  assert.ok(failed.events.indexOf('compose:reporter-up') >
+    failed.events.indexOf('compose:up:rsctf-control=1,rsctf=2'));
+  failed.reporterFail = false;
+  context.writeState(failed);
+  const retry = runCompose(context);
+  assert.equal(retry.status, 0, retry.stderr);
+  assert.equal(existsSync(context.stateFile), false);
+});
+
 test('Compose catches an old runtime that reappears after the migration preflight', (t) => {
   const state = composeState();
   state.reappearAfterMigration = true;
