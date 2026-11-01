@@ -69,6 +69,9 @@ For cold loads and popup opening/closing across all discovered routes, run
 lists rendered popup families and contract-generated empty reads. Scrollbar
 compensation belongs in [App.css](../../../../web/src/styles/App.css): root gutter
 reservation must not be counted again by the modal scroll-lock library.
+Date-time picker viewport bounds belong to the shared defaults in
+[ThemeOverride.ts](../../../../web/src/utils/ThemeOverride.ts); the full layout scan
+checks that calendars stay inside the screen without shifting the mobile dock.
 
 | Concern | Owning files/directories |
 | --- | --- |

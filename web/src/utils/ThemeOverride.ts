@@ -451,6 +451,10 @@ export const useCustomTheme = () => {
         ...theme.components,
         DateTimePicker: DateTimePicker.extend({
           defaultProps: {
+            popoverProps: {
+              middlewares: { shift: { crossAxis: true, padding: 10 } },
+              styles: { dropdown: { maxHeight: 'calc(100dvh - 20px)', overflowY: 'auto' } },
+            },
             previousLabel: t('common.pagination.previous'),
             nextLabel: t('common.pagination.next'),
             submitButtonProps: { 'aria-label': t('common.button.confirm') },
