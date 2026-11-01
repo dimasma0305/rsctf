@@ -6,7 +6,13 @@ import { showErrorMsg } from '@Utils/Shared'
 import { useCompetitionMaintenance } from '@Hooks/useCompetitionMaintenance'
 import api, { ContentType, type ControlJobModel } from '@Api'
 
-export const CompetitionMaintenancePanel = ({ gameId }: { gameId: number }) => {
+export const CompetitionMaintenancePanel = ({
+  gameId,
+  unsavedChanges = false,
+}: {
+  gameId: number
+  unsavedChanges?: boolean
+}) => {
   const { t } = useTranslation()
   const { data: window, mutate, error } = useCompetitionMaintenance(gameId)
   const [busy, setBusy] = useState(false)
@@ -42,6 +48,7 @@ export const CompetitionMaintenancePanel = ({ gameId }: { gameId: number }) => {
     }
   }
   const resume = async () => {
+    if (unsavedChanges) return
     setBusy(true)
     try {
       resumeId.current ??= createOperationId()
@@ -125,6 +132,11 @@ export const CompetitionMaintenancePanel = ({ gameId }: { gameId: number }) => {
             {window?.error || t('admin.maintenance.load_error', 'Could not read maintenance status. Refresh to retry.')}
           </Text>
         )}
+        {editing && unsavedChanges && (
+          <Text size="sm">
+            {t('admin.maintenance.save_first', 'Save your challenge changes before applying and resuming scoring.')}
+          </Text>
+        )}
         <Group wrap="wrap">
           {requested && (
             <Button size="xs" variant="subtle" disabled={busy} onClick={cancel}>
@@ -132,7 +144,7 @@ export const CompetitionMaintenancePanel = ({ gameId }: { gameId: number }) => {
             </Button>
           )}
           {editing || applying ? (
-            <Button size="xs" loading={busy} onClick={resume}>
+            <Button size="xs" loading={busy} disabled={unsavedChanges} onClick={resume}>
               {t('admin.maintenance.apply', 'Apply changes and resume')}
             </Button>
           ) : (

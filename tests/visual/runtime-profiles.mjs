@@ -52,10 +52,14 @@ const key = async (key, code) => {
 const click = async (text, scope = 'document') => {
   await evaluate(`(() => { const button=[...${scope}.querySelectorAll('button')].find(button => button.textContent.trim() === ${JSON.stringify(text)}); button.focus(); button.click(); })()`)
 }
+const field = (label) => `document.getElementById([...document.querySelectorAll('label')].find(label => label.textContent.startsWith(${JSON.stringify(label)})).htmlFor)`
+const typeField = async (label, value) => {
+  await evaluate(`(() => { const input=${field(label)}; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)}); input.dispatchEvent(new Event('input',{bubbles:true})); })()`)
+}
 const audit = async (name, selector) => {
   await evaluate('Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().endTime !== Infinity).map(a => a.finished.catch(() => {})))')
   await evaluate(readFileSync(resolve(repositoryRoot, 'web/node_modules/axe-core/axe.min.js'), 'utf8'))
-  const report = await evaluate(`(async () => ({overflow: document.documentElement.scrollWidth > innerWidth + 1, violations: (await axe.run(document.querySelector(${JSON.stringify(selector)}), {runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.map(v => ({id:v.id, nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))}))}))()`)
+  const report = await evaluate(`(async () => ({overflow: document.documentElement.scrollWidth > innerWidth + 1, violations: (await axe.run(document.querySelector(${JSON.stringify(selector)}), {runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.map(v => ({id:v.id, nodes:v.nodes.map(n=>({target:n.target,html:n.html,summary:n.failureSummary}))}))}))()`)
   reports.push({ name, ...report })
   const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
   writeFileSync(`${output}/${name}.png`, Buffer.from(shot.data, 'base64'))
@@ -103,8 +107,26 @@ try {
     await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (location.origin === ${JSON.stringify(target)}) localStorage.setItem('mantine-color-scheme-value',${JSON.stringify(theme)});` })
     await visit('/admin/games/19/challenges/74', '[data-runtime-profile-controls] input')
+    await evaluate(`document.querySelector('nav[aria-label="Challenge editor sections"]').scrollIntoView({block:'start'})`)
+    await audit(`${theme}-${width}-editor-overview`, '#main-content')
+    assert.equal(await evaluate(`[...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Delete')`), false)
+    await click('More actions')
+    await wait(`document.querySelector('[role="menuitem"]')`)
+    assert.match(await evaluate(`document.querySelector('[role="menuitem"]').textContent`), /Delete/)
+    await key('Escape',27)
+    await wait(`!document.querySelector('[role="menuitem"]')`)
+    await evaluate(`document.querySelector('a[href="#challenge-runtime"]').focus()`)
+    await key('Enter', 13)
+    await wait(`document.activeElement.id === 'challenge-runtime'`)
+    assert.ok(await evaluate(`document.activeElement.getBoundingClientRect().top >= 68`), 'section shortcut must not hide its heading behind the mobile header')
+    assert.equal(await evaluate(`document.querySelector('[data-editor-advanced="provenance"]').open`), false)
+    assert.equal(await evaluate(`document.querySelector('[data-editor-advanced="resources"]').open`), false)
+    await evaluate(`document.querySelector('[data-editor-advanced="resources"] summary').focus()`)
+    await key('Enter',13)
+    await wait(`document.querySelector('[data-editor-advanced="resources"]').open`)
+    assert.equal(writes.length,0,'expanding advanced options must not save or reset values')
     await evaluate(`document.querySelector('[data-runtime-profile-controls]').scrollIntoView({block:'center'})`)
-    await audit(`${theme}-${width}-editor`, '[data-runtime-profile-controls]')
+    await audit(`${theme}-${width}-editor`, '#main-content')
     await visit('/games/19', '[data-game-status] .mantine-Badge-label')
     const spacing = await evaluate(`(() => { const badge=document.querySelector('[data-game-status]'); const dot=badge.querySelector('[aria-hidden]'); const label=badge.querySelector('.mantine-Badge-label'); return {gap:label.getBoundingClientRect().left-dot.getBoundingClientRect().right, width:dot.getBoundingClientRect().width, text:label.textContent, shadow:getComputedStyle(dot).boxShadow}; })()`)
     assert.ok(spacing.gap >= 7 && spacing.width >= 6, JSON.stringify(spacing))
@@ -150,12 +172,30 @@ try {
     await visit('/admin/games/19/challenges/74', '[data-runtime-profile-controls] input')
     assert.equal(await evaluate(`document.querySelector('[data-runtime-profile-controls] input').disabled`), true)
     assert.equal(await evaluate(`document.querySelector('[data-runtime-profile-controls] button').disabled`), true)
+    for (const label of ['Container Image', 'Service Port', 'CPU Limit', 'Memory Limit', 'Storage Limit', 'Prepared checker directory']) {
+      assert.equal(await evaluate(`${field(label)}.disabled`), true, `${type}: ${label} must explain its live lock before editing`)
+    }
     await click('Open maintenance window')
     await wait(`document.querySelector('[data-competition-maintenance]').textContent.includes('Scoring will pause')`)
     assert.equal(await evaluate(`document.querySelector('[data-runtime-profile-controls] input').disabled`), true)
     maintenance = { ...maintenance, state: 'Editing', effectiveFromRound: 13 }
     await visit('/admin/games/19/challenges/74', '[data-runtime-profile-controls] input')
     await wait(`!document.querySelector('[data-runtime-profile-controls] input').disabled`)
+    for (const label of ['Container Image', 'Service Port', 'CPU Limit', 'Memory Limit', 'Storage Limit', 'Prepared checker directory']) {
+      assert.equal(await evaluate(`${field(label)}.disabled`), false, `${type}: ${label} must unlock during maintenance`)
+    }
+    await typeField('Container Image', 'registry.example/hotfix:v2')
+    await wait(`document.querySelector('[data-competition-maintenance] button').disabled`)
+    assert.equal(await evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Build image').disabled`), true)
+    assert.match(await evaluate(`document.querySelector('[data-competition-maintenance]').textContent`), /Save your challenge changes/)
+    await audit(`${scoring}-unsaved-390`, '#main-content')
+    const beforeSave = writes.length
+    await click('Save Changes')
+    await wait(`!document.querySelector('[data-competition-maintenance] button').disabled`)
+    assert.equal(writes.length, beforeSave + 1)
+    assert.equal(writes.at(-1).containerImage, 'registry.example/hotfix:v2')
+    // Use a different value in the next event type, so its dirty-state guard is exercised too.
+    detail = { ...detail, containerImage: 'registry.example/challenge:original' }
     await evaluate(`document.querySelector('[data-competition-maintenance]').scrollIntoView({block:'center'})`)
     await audit(`${scoring}-maintenance-390`, '[data-competition-maintenance]')
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 568, deviceScaleFactor: 1, mobile: false })

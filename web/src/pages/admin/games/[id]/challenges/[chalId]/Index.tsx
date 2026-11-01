@@ -1,4 +1,5 @@
 import {
+  Affix,
   Alert,
   Badge,
   Button,
@@ -9,6 +10,7 @@ import {
   Group,
   Input,
   Loader,
+  Menu,
   NumberInput,
   Paper,
   Select,
@@ -32,6 +34,7 @@ import {
   mdiDeleteOutline,
   mdiEyeOutline,
   mdiHammerWrench,
+  mdiDotsHorizontal,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
@@ -74,6 +77,7 @@ import api, {
   ScoreCurve,
   SolveReceiptMode,
 } from '@Api'
+import editorStyles from '@Styles/AdminGameInfo.module.css'
 import misc from '@Styles/Misc.module.css'
 
 const WORKLOAD_SPEC_SECTION_HELP_ID = 'challenge-workload-spec-section-help'
@@ -171,6 +175,8 @@ const GameChallengeEdit: FC = () => {
     numId,
     isAdEngine && (game?.adScoringStartRound != null || game?.kothScoringStartRound != null)
   )
+  const scoringStarted = isAdEngine && (game?.adScoringStartRound != null || game?.kothScoringStartRound != null)
+  const operationalLocked = scoringStarted && maintenance?.state !== 'Editing'
   const [workloadEditorEnabled, setWorkloadEditorEnabled] = useState(challenge?.workloadSpec != null)
   const [workloadJson, setWorkloadJson] = useState(
     challenge?.workloadSpec ? formatWorkloadSpec(challenge.workloadSpec) : ''
@@ -686,6 +692,14 @@ const GameChallengeEdit: FC = () => {
     return vs.find((v) => !!v) ?? d
   }
 
+  const saveChanges = () =>
+    onUpdate({
+      ...challengeInfo,
+      category: category as ChallengeCategory,
+      minScoreRate: minRate / 100,
+      networkMode: isAdEngine ? NetworkMode.Open : (challengeInfo.networkMode as NetworkMode),
+    })
+
   return (
     <WithChallengeEdit
       isLoading={!challenge}
@@ -697,36 +711,44 @@ const GameChallengeEdit: FC = () => {
             # {challengeInfo?.title}
           </Title>
           <Group wrap="wrap" justify="right" w={{ base: '100%', lg: 'auto' }}>
-            <Button
-              w={{ base: '100%', sm: 'auto' }}
-              disabled={disabled}
-              color="red"
-              leftSection={<Icon path={mdiDeleteOutline} size={1} />}
-              variant="outline"
-              style={{ color: 'light-dark(var(--mantine-color-red-8), var(--mantine-color-red-3))' }}
-              onClick={() =>
-                modals.openConfirmModal({
-                  title: t('admin.button.challenges.delete'),
-                  children: (
-                    <Text size="sm">
-                      {t('admin.content.games.challenges.delete', {
-                        name: challengeInfo?.title,
-                      })}
-                    </Text>
-                  ),
-                  onConfirm: () => onConfirmDelete(),
-                  confirmProps: { color: 'red' },
-                })
-              }
-            >
-              {t('admin.button.challenges.delete')}
-            </Button>
+            <Menu position="bottom-end">
+              <Menu.Target>
+                <Button
+                  variant="default"
+                  disabled={disabled}
+                  leftSection={<Icon path={mdiDotsHorizontal} size={1} aria-hidden="true" />}
+                >
+                  {t('admin.challenge_editor.more', 'More actions')}
+                </Button>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Item
+                  color="red"
+                  leftSection={<Icon path={mdiDeleteOutline} size={1} aria-hidden="true" />}
+                  onClick={() =>
+                    modals.openConfirmModal({
+                      title: t('admin.button.challenges.delete'),
+                      children: (
+                        <Text size="sm">
+                          {t('admin.content.games.challenges.delete', {
+                            name: challengeInfo?.title,
+                          })}
+                        </Text>
+                      ),
+                      onConfirm: () => onConfirmDelete(),
+                      confirmProps: { color: 'red' },
+                    })
+                  }
+                >
+                  {t('admin.button.challenges.delete')}
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
             {isBuildable && (
               <Button
                 w={{ base: '100%', sm: 'auto' }}
-                disabled={disabled || building || inFlightBuild}
-                color="orange"
-                variant="outline"
+                disabled={disabled || building || inFlightBuild || dirty || operationalLocked}
+                variant="default"
                 leftSection={<Icon path={mdiHammerWrench} size={1} />}
                 onClick={onBuildNow}
                 loading={building || inFlightBuild}
@@ -738,6 +760,7 @@ const GameChallengeEdit: FC = () => {
               w={{ base: '100%', sm: 'auto' }}
               disabled={disabled}
               leftSection={<Icon path={mdiEyeOutline} size={1} />}
+              variant="default"
               onClick={() => setPreviewOpened(true)}
             >
               {t('admin.button.challenges.preview')}
@@ -747,6 +770,7 @@ const GameChallengeEdit: FC = () => {
               disabled={disabled}
               component={Link}
               leftSection={<Icon path={mdiDatabaseEditOutline} size={1} />}
+              variant="default"
               to={`/admin/games/${numId}/challenges/${numCId}/flags`}
             >
               {t('admin.button.challenges.edit_more')}
@@ -755,14 +779,7 @@ const GameChallengeEdit: FC = () => {
               w={{ base: '100%', sm: 'auto' }}
               disabled={disabled}
               leftSection={<Icon path={mdiContentSaveOutline} size={1} />}
-              onClick={() =>
-                onUpdate({
-                  ...challengeInfo,
-                  category: category as ChallengeCategory,
-                  minScoreRate: minRate / 100,
-                  networkMode: isAdEngine ? NetworkMode.Open : (challengeInfo.networkMode as NetworkMode),
-                })
-              }
+              onClick={saveChanges}
             >
               {t('admin.button.save')}
             </Button>
@@ -770,10 +787,43 @@ const GameChallengeEdit: FC = () => {
         </>
       }
     >
-      <Stack>
+      <Stack className={editorStyles.formContent} pb={dirty ? 100 : 0}>
+        <Group
+          component="nav"
+          aria-label={t('admin.challenge_editor.sections', 'Challenge editor sections')}
+          gap="xs"
+          style={{ scrollMarginTop: '6rem' }}
+        >
+          <Button component="a" href="#challenge-details" variant="light" size="xs">
+            {t('admin.challenge_editor.details', 'Details')}
+          </Button>
+          {isContainerType && (
+            <Button component="a" href="#challenge-runtime" variant="light" size="xs">
+              {t('admin.challenge_editor.runtime', 'Container & resources')}
+            </Button>
+          )}
+          {isAdEngine && (
+            <Button component="a" href="#challenge-checker" variant="light" size="xs">
+              {t('admin.challenge_editor.checker', 'Checker & access')}
+            </Button>
+          )}
+          {isBuildable && challenge?.buildStatus && challenge.buildStatus !== 'None' && (
+            <Button component="a" href="#challenge-build-log" variant="light" size="xs">
+              {t('admin.content.audit.build_log')}
+            </Button>
+          )}
+        </Group>
+        <Text size="sm" c={dirty ? undefined : 'dimmed'} role="status">
+          {dirty
+            ? t('admin.challenge_editor.unsaved', 'Unsaved changes. Save before building or applying live updates.')
+            : t('admin.challenge_editor.saved', 'All changes saved.')}
+        </Text>
         {isAdEngine && (game?.adScoringStartRound != null || game?.kothScoringStartRound != null) && (
-          <CompetitionMaintenancePanel key={numId} gameId={numId} />
+          <CompetitionMaintenancePanel key={numId} gameId={numId} unsavedChanges={dirty} />
         )}
+        <Title order={3} id="challenge-details" tabIndex={-1} style={{ scrollMarginTop: '6rem' }}>
+          {t('admin.challenge_editor.details', 'Details')}
+        </Title>
         <Grid columns={3}>
           <Grid.Col span={{ base: 3, md: 1 }}>
             <TextInput
@@ -868,7 +918,12 @@ const GameChallengeEdit: FC = () => {
                 size="sm"
                 value={deadline?.toDate()}
                 valueFormat="L LT"
-                disabled={disabled}
+                disabled={disabled || scoringStarted}
+                description={
+                  scoringStarted
+                    ? t('admin.challenge_editor.scoring_locked', 'Scoring rules stay locked after scoring starts.')
+                    : undefined
+                }
                 clearable
                 onChange={(e) => {
                   setDeadline(e ? dayjs(e) : null)
@@ -1016,8 +1071,11 @@ const GameChallengeEdit: FC = () => {
         )}
 
         {!isAdEngine && (
-          <Paper p="md" withBorder>
-            <Stack gap="md">
+          <Paper component="details" p="md" withBorder data-editor-advanced="provenance">
+            <Text component="summary" fw={600} style={{ cursor: 'pointer' }}>
+              {t('admin.challenge_editor.provenance', 'Advanced provenance options')}
+            </Text>
+            <Stack gap="md" mt="md">
               <Stack gap={2}>
                 <Title order={3}>{t('admin.event_security.challenge_title', 'Challenge provenance')}</Title>
                 <Text size="sm" c="dimmed">
@@ -1139,207 +1197,232 @@ const GameChallengeEdit: FC = () => {
           </Paper>
         )}
         {(type === ChallengeType.StaticContainer || type === ChallengeType.DynamicContainer || isAdEngine) && (
-          <Grid columns={12}>
-            <Grid.Col span={12}>
-              <RuntimeProfileSelect
-                profiles={challenge?.runtimeProfiles ?? []}
-                value={challengeInfo.runtimeProfile ?? null}
-                disabled={disabled}
-                locked={
-                  workloadEditorEnabled ||
-                  !!challengeInfo.adSelfHosted ||
-                  (isAdEngine &&
-                    maintenance?.state !== 'Editing' &&
-                    (game?.adScoringStartRound != null || game?.kothScoringStartRound != null))
-                }
-                replacementAllowed={!!challenge?.isEnabled || !!challenge?.runtimeTransitionPending}
-                pending={!!challenge?.runtimeTransitionPending}
-                onChange={(runtimeProfile) => setChallengeInfo((current) => ({ ...current, runtimeProfile }))}
-                onReplace={() =>
-                  onUpdate({
-                    ...challengeInfo,
-                    category: category as ChallengeCategory,
-                    minScoreRate: minRate / 100,
-                    networkMode: isAdEngine ? NetworkMode.Open : (challengeInfo.networkMode as NetworkMode),
-                    replaceRuntimeInstances: true,
-                  })
-                }
-              />
-            </Grid.Col>
-            <Grid.Col span={{ base: 12, lg: 8 }}>
-              <Group justify="space-between" align="flex-end" wrap="wrap">
-                <TextInput
-                  label={t('admin.content.games.challenges.container_image')}
-                  disabled={disabled}
-                  value={challengeInfo.containerImage ?? ''}
-                  required
-                  onChange={(e) => setChallengeInfo({ ...challengeInfo, containerImage: e.target.value })}
-                  classNames={{ root: misc.flexGrow }}
-                  style={{ flex: '1 1 18rem' }}
-                />
-                <NumberInput
-                  label={t('admin.content.games.challenges.service_port.label')}
-                  min={1}
-                  max={65535}
-                  w={{ base: '100%', xs: '8rem' }}
-                  required
-                  disabled={disabled}
-                  stepHoldDelay={500}
-                  stepHoldInterval={(t) => Math.max(1000 / t ** 2, 25)}
-                  value={challengeInfo.exposePort ?? 80}
-                  onChange={(e) => {
-                    const number = getInputNumber(e)
-                    if (isNaN(number)) return
-                    setChallengeInfo({ ...challengeInfo, exposePort: number })
-                  }}
-                />
-                <Button
-                  w={{ base: '100%', xs: 'auto' }}
-                  miw={{ base: 0, xs: '8rem' }}
-                  color={challenge?.testContainer ? 'orange' : 'green'}
-                  c="dark.9"
-                  disabled={disabled}
-                  onClick={onToggleTestContainer}
-                >
-                  {challenge?.testContainer
-                    ? t('admin.button.challenges.test_container.destroy')
-                    : t('admin.button.challenges.test_container.create')}
-                </Button>
-                <Button
-                  w={{ base: '100%', xs: 'auto' }}
-                  miw={{ base: 0, xs: '6rem' }}
-                  variant="default"
-                  disabled={disabled || !challenge?.testContainer || challenge.testContainer.status !== 'Running'}
-                  onClick={() => setExecOpened(true)}
-                >
-                  {t('admin.button.challenges.test_container.shell')}
-                </Button>
-              </Group>
-            </Grid.Col>
-            <Grid.Col span={{ base: 12, lg: 4 }}>
-              <InstanceEntry
-                test
-                label={`${challenge?.title} @ ${game?.title} (test)`}
-                disabled={disabled}
-                context={{
-                  closeTime: challenge?.testContainer?.expectStopAt,
-                  instanceId: challenge?.testContainer?.id,
-                  instanceEntry: challenge?.testContainer?.entry,
-                }}
-              />
-            </Grid.Col>
-            <Grid.Col span={{ base: 12, xs: 6, lg: 2 }}>
-              <Select
-                required
-                label={t('admin.content.games.challenges.network_mode.label')}
-                description={t('admin.content.games.challenges.network_mode.description')}
-                value={isAdEngine ? NetworkMode.Open : (networkMode ?? NetworkMode.Open)}
-                disabled={disabled || isAdEngine}
-                onChange={(e) => {
-                  setNetworkMode(e)
-                  setChallengeInfo({ ...challengeInfo, networkMode: e as NetworkMode })
-                }}
-                renderOption={NetworkModeItem}
-                data={(isAdEngine ? [NetworkMode.Open] : NetworkModeList).map((mode) => {
-                  const data = networkModeLabelMap.get(mode)
-                  return { value: mode, ...data } as ComboboxItem
-                })}
-              />
-            </Grid.Col>
-            <Grid.Col span={{ base: 12, xs: 6, lg: 2 }}>
-              <NumberInput
-                label={t('admin.content.games.challenges.cpu_limit.label')}
-                description={t('admin.content.games.challenges.cpu_limit.description')}
-                min={1}
-                max={1024}
-                required
-                disabled={disabled}
-                stepHoldDelay={500}
-                stepHoldInterval={(t) => Math.max(1000 / t ** 2, 25)}
-                value={challengeInfo.cpuCount ?? 1}
-                onChange={(e) => {
-                  const number = getInputNumber(e)
-                  if (isNaN(number)) return
-                  setChallengeInfo({ ...challengeInfo, cpuCount: number })
-                }}
-              />
-            </Grid.Col>
-            <Grid.Col span={{ base: 12, xs: 6, lg: 2 }}>
-              <NumberInput
-                label={t('admin.content.games.challenges.memory_limit.label')}
-                description={t('admin.content.games.challenges.memory_limit.description')}
-                min={32}
-                max={1048576}
-                required
-                disabled={disabled}
-                stepHoldDelay={500}
-                stepHoldInterval={(t) => Math.max(1000 / t ** 2, 25)}
-                value={challengeInfo.memoryLimit ?? 32}
-                onChange={(e) => {
-                  const number = getInputNumber(e)
-                  if (isNaN(number)) return
-                  setChallengeInfo({ ...challengeInfo, memoryLimit: number })
-                }}
-              />
-            </Grid.Col>
-            <Grid.Col span={{ base: 12, xs: 6, lg: 2 }}>
-              <NumberInput
-                label={t('admin.content.games.challenges.storage_limit.label')}
-                description={t('admin.content.games.challenges.storage_limit.description')}
-                min={0}
-                max={1048576}
-                required
-                disabled={disabled}
-                stepHoldDelay={500}
-                stepHoldInterval={(t) => Math.max(1000 / t ** 2, 25)}
-                value={challengeInfo.storageLimit ?? 32}
-                onChange={(e) => {
-                  const number = getInputNumber(e)
-                  if (isNaN(number)) return
-                  setChallengeInfo({ ...challengeInfo, storageLimit: number })
-                }}
-              />
-            </Grid.Col>
-            {isContainerType && challenge?.storageQuotaEnforced === false && (
-              <Grid.Col span={12}>
-                <Alert
-                  color="orange"
-                  variant="light"
-                  title={t('admin.content.games.challenges.storage_limit.unbounded_title')}
-                  icon={<Icon path={mdiAlertCircleOutline} size={1} aria-hidden />}
-                >
-                  {t('admin.content.games.challenges.storage_limit.unbounded_warning')}
-                </Alert>
-              </Grid.Col>
-            )}
-            <Grid.Col span={{ base: 12, lg: 4 }} display="flex" className={misc.alignCenter}>
-              <Switch
-                disabled={disabled}
-                checked={challengeInfo.enableTrafficCapture ?? false}
-                label={SwitchLabel(
-                  t('admin.content.games.challenges.traffic_capture.label'),
-                  t('admin.content.games.challenges.traffic_capture.description')
-                )}
-                onChange={(e) => setChallengeInfo({ ...challengeInfo, enableTrafficCapture: e.target.checked })}
-              />
-            </Grid.Col>
-            {type === ChallengeType.StaticContainer && (
-              <Grid.Col span={{ base: 12, lg: 4 }} display="flex" className={misc.alignCenter}>
-                <Switch
-                  disabled={disabled}
-                  checked={challengeInfo.enableSharedContainer ?? false}
-                  label={SwitchLabel(
-                    t('admin.content.games.challenges.shared_container.label', 'Shared instance'),
-                    t(
-                      'admin.content.games.challenges.shared_container.description',
-                      'All teams connect to one shared container instead of one per team. Saves resources; the static flag is the same for everyone.'
-                    )
+          <Paper p="md" withBorder>
+            <Stack>
+              <Title order={3} id="challenge-runtime" tabIndex={-1} style={{ scrollMarginTop: '6rem' }}>
+                {t('admin.challenge_editor.runtime', 'Container & resources')}
+              </Title>
+              {operationalLocked && (
+                <Text size="sm">
+                  {t(
+                    'admin.challenge_editor.runtime_locked',
+                    'Open a maintenance window above to change these settings. Titles and descriptions can still be edited.'
                   )}
-                  onChange={(e) => setChallengeInfo({ ...challengeInfo, enableSharedContainer: e.target.checked })}
-                />
-              </Grid.Col>
-            )}
-          </Grid>
+                </Text>
+              )}
+              <Grid columns={12}>
+                <Grid.Col span={12}>
+                  <RuntimeProfileSelect
+                    profiles={challenge?.runtimeProfiles ?? []}
+                    value={challengeInfo.runtimeProfile ?? null}
+                    disabled={disabled}
+                    locked={workloadEditorEnabled || !!challengeInfo.adSelfHosted || operationalLocked}
+                    replacementAllowed={!!challenge?.isEnabled || !!challenge?.runtimeTransitionPending}
+                    pending={!!challenge?.runtimeTransitionPending}
+                    onChange={(runtimeProfile) => setChallengeInfo((current) => ({ ...current, runtimeProfile }))}
+                    onReplace={() =>
+                      onUpdate({
+                        ...challengeInfo,
+                        category: category as ChallengeCategory,
+                        minScoreRate: minRate / 100,
+                        networkMode: isAdEngine ? NetworkMode.Open : (challengeInfo.networkMode as NetworkMode),
+                        replaceRuntimeInstances: true,
+                      })
+                    }
+                  />
+                </Grid.Col>
+                <Grid.Col span={{ base: 12, lg: 8 }}>
+                  <Group justify="space-between" align="flex-end" wrap="wrap">
+                    <TextInput
+                      label={t('admin.content.games.challenges.container_image')}
+                      disabled={disabled || operationalLocked}
+                      value={challengeInfo.containerImage ?? ''}
+                      required
+                      onChange={(e) => setChallengeInfo({ ...challengeInfo, containerImage: e.target.value })}
+                      classNames={{ root: misc.flexGrow }}
+                      style={{ flex: '1 1 18rem' }}
+                    />
+                    <NumberInput
+                      label={t('admin.content.games.challenges.service_port.label')}
+                      min={1}
+                      max={65535}
+                      w={{ base: '100%', xs: '8rem' }}
+                      required
+                      disabled={disabled || operationalLocked}
+                      stepHoldDelay={500}
+                      stepHoldInterval={(t) => Math.max(1000 / t ** 2, 25)}
+                      value={challengeInfo.exposePort ?? 80}
+                      onChange={(e) => {
+                        const number = getInputNumber(e)
+                        if (isNaN(number)) return
+                        setChallengeInfo({ ...challengeInfo, exposePort: number })
+                      }}
+                    />
+                    <Button
+                      w={{ base: '100%', xs: 'auto' }}
+                      miw={{ base: 0, xs: '8rem' }}
+                      color={challenge?.testContainer ? 'orange' : 'green'}
+                      c="dark.9"
+                      disabled={disabled}
+                      onClick={onToggleTestContainer}
+                    >
+                      {challenge?.testContainer
+                        ? t('admin.challenge_editor.stop_test', 'Stop test container')
+                        : t('admin.challenge_editor.start_test', 'Start test container')}
+                    </Button>
+                    <Button
+                      w={{ base: '100%', xs: 'auto' }}
+                      miw={{ base: 0, xs: '6rem' }}
+                      variant="default"
+                      disabled={disabled || !challenge?.testContainer || challenge.testContainer.status !== 'Running'}
+                      onClick={() => setExecOpened(true)}
+                    >
+                      {t('admin.challenge_editor.terminal', 'Open terminal')}
+                    </Button>
+                  </Group>
+                </Grid.Col>
+                <Grid.Col span={{ base: 12, lg: 4 }}>
+                  <InstanceEntry
+                    test
+                    label={`${challenge?.title} @ ${game?.title} (test)`}
+                    disabled={disabled}
+                    context={{
+                      closeTime: challenge?.testContainer?.expectStopAt,
+                      instanceId: challenge?.testContainer?.id,
+                      instanceEntry: challenge?.testContainer?.entry,
+                    }}
+                  />
+                </Grid.Col>
+                <Grid.Col span={12}>
+                  <details
+                    data-editor-advanced="resources"
+                    open={challenge?.storageQuotaEnforced === false || undefined}
+                  >
+                    <Text component="summary" fw={600} style={{ cursor: 'pointer' }}>
+                      {t('admin.challenge_editor.resources', 'Network & resource limits')}
+                    </Text>
+                    <Grid columns={12} mt="md">
+                      <Grid.Col span={{ base: 12, xs: 6, lg: 3 }}>
+                        <Select
+                          required
+                          label={t('admin.content.games.challenges.network_mode.label')}
+                          description={t('admin.content.games.challenges.network_mode.description')}
+                          value={isAdEngine ? NetworkMode.Open : (networkMode ?? NetworkMode.Open)}
+                          disabled={disabled || isAdEngine}
+                          onChange={(e) => {
+                            setNetworkMode(e)
+                            setChallengeInfo({ ...challengeInfo, networkMode: e as NetworkMode })
+                          }}
+                          renderOption={NetworkModeItem}
+                          data={(isAdEngine ? [NetworkMode.Open] : NetworkModeList).map((mode) => {
+                            const data = networkModeLabelMap.get(mode)
+                            return { value: mode, ...data } as ComboboxItem
+                          })}
+                        />
+                      </Grid.Col>
+                      <Grid.Col span={{ base: 12, xs: 6, lg: 3 }}>
+                        <NumberInput
+                          label={t('admin.content.games.challenges.cpu_limit.label')}
+                          description={t('admin.content.games.challenges.cpu_limit.description')}
+                          min={1}
+                          max={1024}
+                          required
+                          disabled={disabled || operationalLocked}
+                          stepHoldDelay={500}
+                          stepHoldInterval={(t) => Math.max(1000 / t ** 2, 25)}
+                          value={challengeInfo.cpuCount ?? 1}
+                          onChange={(e) => {
+                            const number = getInputNumber(e)
+                            if (isNaN(number)) return
+                            setChallengeInfo({ ...challengeInfo, cpuCount: number })
+                          }}
+                        />
+                      </Grid.Col>
+                      <Grid.Col span={{ base: 12, xs: 6, lg: 3 }}>
+                        <NumberInput
+                          label={t('admin.content.games.challenges.memory_limit.label')}
+                          description={t('admin.content.games.challenges.memory_limit.description')}
+                          min={32}
+                          max={1048576}
+                          required
+                          disabled={disabled || operationalLocked}
+                          stepHoldDelay={500}
+                          stepHoldInterval={(t) => Math.max(1000 / t ** 2, 25)}
+                          value={challengeInfo.memoryLimit ?? 32}
+                          onChange={(e) => {
+                            const number = getInputNumber(e)
+                            if (isNaN(number)) return
+                            setChallengeInfo({ ...challengeInfo, memoryLimit: number })
+                          }}
+                        />
+                      </Grid.Col>
+                      <Grid.Col span={{ base: 12, xs: 6, lg: 3 }}>
+                        <NumberInput
+                          label={t('admin.content.games.challenges.storage_limit.label')}
+                          description={t('admin.content.games.challenges.storage_limit.description')}
+                          min={0}
+                          max={1048576}
+                          required
+                          disabled={disabled || operationalLocked}
+                          stepHoldDelay={500}
+                          stepHoldInterval={(t) => Math.max(1000 / t ** 2, 25)}
+                          value={challengeInfo.storageLimit ?? 32}
+                          onChange={(e) => {
+                            const number = getInputNumber(e)
+                            if (isNaN(number)) return
+                            setChallengeInfo({ ...challengeInfo, storageLimit: number })
+                          }}
+                        />
+                      </Grid.Col>
+                      {isContainerType && challenge?.storageQuotaEnforced === false && (
+                        <Grid.Col span={12}>
+                          <Alert
+                            color="orange"
+                            variant="light"
+                            title={t('admin.content.games.challenges.storage_limit.unbounded_title')}
+                            icon={<Icon path={mdiAlertCircleOutline} size={1} aria-hidden />}
+                          >
+                            {t('admin.content.games.challenges.storage_limit.unbounded_warning')}
+                          </Alert>
+                        </Grid.Col>
+                      )}
+                      <Grid.Col span={{ base: 12, lg: 4 }} display="flex" className={misc.alignCenter}>
+                        <Switch
+                          disabled={disabled}
+                          checked={challengeInfo.enableTrafficCapture ?? false}
+                          label={SwitchLabel(
+                            t('admin.content.games.challenges.traffic_capture.label'),
+                            t('admin.content.games.challenges.traffic_capture.description')
+                          )}
+                          onChange={(e) =>
+                            setChallengeInfo({ ...challengeInfo, enableTrafficCapture: e.target.checked })
+                          }
+                        />
+                      </Grid.Col>
+                      {type === ChallengeType.StaticContainer && (
+                        <Grid.Col span={{ base: 12, lg: 4 }} display="flex" className={misc.alignCenter}>
+                          <Switch
+                            disabled={disabled}
+                            checked={challengeInfo.enableSharedContainer ?? false}
+                            label={SwitchLabel(
+                              t('admin.content.games.challenges.shared_container.label', 'Shared instance'),
+                              t(
+                                'admin.content.games.challenges.shared_container.description',
+                                'All teams connect to one shared container instead of one per team. Saves resources; the static flag is the same for everyone.'
+                              )
+                            )}
+                            onChange={(e) =>
+                              setChallengeInfo({ ...challengeInfo, enableSharedContainer: e.target.checked })
+                            }
+                          />
+                        </Grid.Col>
+                      )}
+                    </Grid>
+                  </details>
+                </Grid.Col>
+              </Grid>
+            </Stack>
+          </Paper>
         )}
 
         {isJeopardyContainer && (
@@ -1446,146 +1529,169 @@ const GameChallengeEdit: FC = () => {
 
         {/* Attack & Defense / King of the Hill — per-challenge config */}
         {isAdEngine && (
-          <Stack gap="sm">
-            <Divider
-              label={
-                isKoth
-                  ? t('admin.content.games.challenges.koth.title', 'King of the Hill')
-                  : t('admin.content.games.challenges.ad.title', 'Attack & Defense')
-              }
-              labelPosition="left"
-            />
-            <Text size="sm" c="dimmed">
-              {isKoth
-                ? t(
-                    'admin.content.games.challenges.koth.description',
-                    'Per-challenge config for the shared hill (checker + egress).'
-                  )
-                : t(
-                    'admin.content.games.challenges.ad.description',
-                    'Per-challenge config for Attack & Defense (checker image, egress, and self-reset).'
-                  )}
-            </Text>
-            <Grid columns={12}>
-              <Grid.Col span={{ base: 12, sm: 6 }}>
-                <TextInput
-                  label={t('admin.content.games.challenges.ad.checker_path.label', 'Prepared checker directory')}
-                  description={t(
-                    'admin.content.games.challenges.ad.checker_path.description',
-                    'Directory containing run.py on the engine host. Import the checker before selecting its path.'
-                  )}
-                  placeholder="/app/files/checkers/…/revisions/…"
-                  disabled={disabled || (adScoringStarted && maintenance?.state !== 'Editing')}
-                  value={challengeInfo.adCheckerImage ?? ''}
-                  onChange={(e) => setChallengeInfo({ ...challengeInfo, adCheckerImage: e.target.value })}
-                />
-              </Grid.Col>
-              {!isKoth && (
-                <Grid.Col span={{ base: 12, sm: 6 }}>
-                  <NumberInput
-                    label={t('admin.content.games.challenges.ad.scoring_weight.label', 'Epoch service weight')}
-                    description={t(
-                      'admin.content.games.challenges.ad.scoring_weight.description',
-                      '0.80–1.20. Use modestly for services that are genuinely harder or less AI-sloppable. Weights are normalized, so every epoch remains capped at 100. Locked once scoring starts.'
+          <Paper p="md" withBorder>
+            <Stack gap="sm">
+              <Title order={3} id="challenge-checker" tabIndex={-1} style={{ scrollMarginTop: '6rem' }}>
+                {t('admin.challenge_editor.checker', 'Checker & access')}
+              </Title>
+              <Divider
+                label={
+                  isKoth
+                    ? t('admin.content.games.challenges.koth.title', 'King of the Hill')
+                    : t('admin.content.games.challenges.ad.title', 'Attack & Defense')
+                }
+                labelPosition="left"
+              />
+              <Text size="sm" c="dimmed">
+                {isKoth
+                  ? t(
+                      'admin.content.games.challenges.koth.description',
+                      'Per-challenge config for the shared hill (checker + egress).'
+                    )
+                  : t(
+                      'admin.content.games.challenges.ad.description',
+                      'Per-challenge config for Attack & Defense (checker image, egress, and self-reset).'
                     )}
-                    disabled={disabled || adScoringStarted}
-                    min={0.8}
-                    max={1.2}
-                    step={0.05}
-                    decimalScale={2}
-                    value={challengeInfo.adScoringWeight ?? 1}
-                    onChange={(e) => {
-                      const weight = getInputNumber(e, true)
-                      if (!isNaN(weight)) setChallengeInfo({ ...challengeInfo, adScoringWeight: weight })
-                    }}
+              </Text>
+              <Grid columns={12}>
+                <Grid.Col span={{ base: 12, sm: 6 }}>
+                  <TextInput
+                    label={t('admin.content.games.challenges.ad.checker_path.label', 'Prepared checker directory')}
+                    description={t(
+                      'admin.content.games.challenges.ad.checker_path.description',
+                      'Directory containing run.py on the engine host. Import the checker before selecting its path.'
+                    )}
+                    placeholder="/app/files/checkers/…/revisions/…"
+                    disabled={disabled || operationalLocked}
+                    value={challengeInfo.adCheckerImage ?? ''}
+                    onChange={(e) => setChallengeInfo({ ...challengeInfo, adCheckerImage: e.target.value })}
                   />
                 </Grid.Col>
-              )}
-              {/* tick / flag-lifetime / reset-cooldown / snapshot-download AND the
+                {!isKoth && (
+                  <Grid.Col span={{ base: 12, sm: 6 }}>
+                    <NumberInput
+                      label={t('admin.content.games.challenges.ad.scoring_weight.label', 'Epoch service weight')}
+                      description={t(
+                        'admin.content.games.challenges.ad.scoring_weight.description',
+                        '0.80–1.20. Use modestly for services that are genuinely harder or less AI-sloppable. Weights are normalized, so every epoch remains capped at 100. Locked once scoring starts.'
+                      )}
+                      disabled={disabled || adScoringStarted}
+                      min={0.8}
+                      max={1.2}
+                      step={0.05}
+                      decimalScale={2}
+                      value={challengeInfo.adScoringWeight ?? 1}
+                      onChange={(e) => {
+                        const weight = getInputNumber(e, true)
+                        if (!isNaN(weight)) setChallengeInfo({ ...challengeInfo, adScoringWeight: weight })
+                      }}
+                    />
+                  </Grid.Col>
+                )}
+                {/* tick / flag-lifetime / reset-cooldown / snapshot-download AND the
                   checker timing knobs (getflag jitter window + min grace period)
                   are event-wide now — edit them in the game's settings (Info tab),
                   not per challenge. The putflag jitter window was removed (flags
                   plant at round start; it was never honored). */}
-              <Grid.Col span={{ base: 12, sm: 6 }} display="flex" className={misc.alignCenter}>
-                <Switch
-                  disabled={disabled}
-                  checked={challengeInfo.adAllowEgress ?? true}
-                  label={SwitchLabel(
-                    t('admin.content.games.challenges.ad.allow_egress.label', 'Allow egress'),
-                    t(
-                      'admin.content.games.challenges.ad.allow_egress.description',
-                      'Permit the challenge container to make outbound network connections.'
-                    )
-                  )}
-                  onChange={(e) => setChallengeInfo({ ...challengeInfo, adAllowEgress: e.target.checked })}
-                />
-              </Grid.Col>
-              {/* Self-reset is per-team-container only — meaningless for a KotH shared
+                <Grid.Col span={{ base: 12, sm: 6 }} display="flex" className={misc.alignCenter}>
+                  <Switch
+                    disabled={disabled || operationalLocked}
+                    checked={challengeInfo.adAllowEgress ?? true}
+                    label={SwitchLabel(
+                      t('admin.content.games.challenges.ad.allow_egress.label', 'Allow egress'),
+                      t(
+                        'admin.content.games.challenges.ad.allow_egress.description',
+                        'Permit the challenge container to make outbound network connections.'
+                      )
+                    )}
+                    onChange={(e) => setChallengeInfo({ ...challengeInfo, adAllowEgress: e.target.checked })}
+                  />
+                </Grid.Col>
+                {/* Self-reset is per-team-container only — meaningless for a KotH shared
                   hill (no per-team box to rebuild), so don't show the no-op switch. */}
-              {!isKoth && (
-                <Grid.Col span={{ base: 12, sm: 6 }} display="flex" className={misc.alignCenter}>
-                  <Switch
-                    disabled={disabled}
-                    checked={challengeInfo.adAllowSelfReset ?? true}
-                    label={SwitchLabel(
-                      t('admin.content.games.challenges.ad.allow_self_reset.label', 'Allow self-reset'),
-                      t(
-                        'admin.content.games.challenges.ad.allow_self_reset.description',
-                        'Let teams rebuild their own challenge container to clear a botched patch.'
-                      )
-                    )}
-                    onChange={(e) => setChallengeInfo({ ...challengeInfo, adAllowSelfReset: e.target.checked })}
-                  />
-                </Grid.Col>
-              )}
-              {/* Offense-gates-defense: only let a team SSH into its box once it has
+                {!isKoth && (
+                  <Grid.Col span={{ base: 12, sm: 6 }} display="flex" className={misc.alignCenter}>
+                    <Switch
+                      disabled={disabled || operationalLocked}
+                      checked={challengeInfo.adAllowSelfReset ?? true}
+                      label={SwitchLabel(
+                        t('admin.content.games.challenges.ad.allow_self_reset.label', 'Allow self-reset'),
+                        t(
+                          'admin.content.games.challenges.ad.allow_self_reset.description',
+                          'Let teams rebuild their own challenge container to clear a botched patch.'
+                        )
+                      )}
+                      onChange={(e) => setChallengeInfo({ ...challengeInfo, adAllowSelfReset: e.target.checked })}
+                    />
+                  </Grid.Col>
+                )}
+                {/* Offense-gates-defense: only let a team SSH into its box once it has
                   captured a flag for this challenge. Per-team container only → hide for KotH. */}
-              {!isKoth && (
-                <Grid.Col span={{ base: 12, sm: 6 }} display="flex" className={misc.alignCenter}>
-                  <Switch
-                    disabled={disabled}
-                    checked={challengeInfo.adSshRequiresFlag ?? false}
-                    label={SwitchLabel(
-                      t('admin.content.games.challenges.ad.ssh_requires_flag.label', 'SSH requires a captured flag'),
-                      t(
-                        'admin.content.games.challenges.ad.ssh_requires_flag.description',
-                        'Teams can only SSH into their service container after submitting at least one accepted captured flag for this challenge.'
-                      )
-                    )}
-                    onChange={(e) => setChallengeInfo({ ...challengeInfo, adSshRequiresFlag: e.target.checked })}
-                  />
-                </Grid.Col>
-              )}
-              {/* Bring-your-own-container: the team runs the service on their own
+                {!isKoth && (
+                  <Grid.Col span={{ base: 12, sm: 6 }} display="flex" className={misc.alignCenter}>
+                    <Switch
+                      disabled={disabled || operationalLocked}
+                      checked={challengeInfo.adSshRequiresFlag ?? false}
+                      label={SwitchLabel(
+                        t('admin.content.games.challenges.ad.ssh_requires_flag.label', 'SSH requires a captured flag'),
+                        t(
+                          'admin.content.games.challenges.ad.ssh_requires_flag.description',
+                          'Teams can only SSH into their service container after submitting at least one accepted captured flag for this challenge.'
+                        )
+                      )}
+                      onChange={(e) => setChallengeInfo({ ...challengeInfo, adSshRequiresFlag: e.target.checked })}
+                    />
+                  </Grid.Col>
+                )}
+                {/* Bring-your-own-container: the team runs the service on their own
                   machine and connects it to the game via an RSCTF relay. Per-team
                   service model → hide for KotH (single shared hill). */}
-              {!isKoth && (
-                <Grid.Col span={{ base: 12, sm: 6 }} display="flex" className={misc.alignCenter}>
-                  <Switch
-                    disabled={disabled}
-                    checked={challengeInfo.adSelfHosted ?? false}
-                    label={SwitchLabel(
-                      t(
-                        'admin.content.games.challenges.ad.self_hosted.label',
-                        'Self-hosted / Bring Your Own Container (BYOC)'
-                      ),
-                      t(
-                        'admin.content.games.challenges.ad.self_hosted.description',
-                        'Teams run the service container on their own machine and connect it to the game network through an RSCTF relay, instead of RSCTF hosting it. The checker, attack proxy, and flag rotation still apply.'
-                      )
-                    )}
-                    onChange={(e) => setChallengeInfo({ ...challengeInfo, adSelfHosted: e.target.checked })}
-                  />
-                </Grid.Col>
-              )}
-            </Grid>
-          </Stack>
+                {!isKoth && (
+                  <Grid.Col span={{ base: 12, sm: 6 }} display="flex" className={misc.alignCenter}>
+                    <Switch
+                      disabled={disabled || operationalLocked}
+                      checked={challengeInfo.adSelfHosted ?? false}
+                      label={SwitchLabel(
+                        t(
+                          'admin.content.games.challenges.ad.self_hosted.label',
+                          'Self-hosted / Bring Your Own Container (BYOC)'
+                        ),
+                        t(
+                          'admin.content.games.challenges.ad.self_hosted.description',
+                          'Teams run the service container on their own machine and connect it to the game network through an RSCTF relay, instead of RSCTF hosting it. The checker, attack proxy, and flag rotation still apply.'
+                        )
+                      )}
+                      onChange={(e) => setChallengeInfo({ ...challengeInfo, adSelfHosted: e.target.checked })}
+                    />
+                  </Grid.Col>
+                )}
+              </Grid>
+            </Stack>
+          </Paper>
         )}
 
         {isBuildable && challenge?.buildStatus && challenge.buildStatus !== 'None' && (
-          <BuildLogSection buildStatus={challenge.buildStatus} lastBuildLog={challenge.lastBuildLog ?? null} />
+          <div id="challenge-build-log" tabIndex={-1} style={{ scrollMarginTop: '6rem' }}>
+            <BuildLogSection buildStatus={challenge.buildStatus} lastBuildLog={challenge.lastBuildLog ?? null} />
+          </div>
         )}
       </Stack>
+      {dirty && (
+        <Affix position={{ bottom: 24, left: '50%' }} className={editorStyles.saveAffix} withinPortal={false}>
+          <Paper shadow="md" radius="md" p="sm" withBorder className={editorStyles.saveBar}>
+            <Group gap="sm" wrap="wrap">
+              <Text size="sm">{t('admin.challenge_editor.unsaved_short', 'Unsaved changes')}</Text>
+              <Button
+                disabled={disabled}
+                onClick={saveChanges}
+                leftSection={<Icon path={mdiContentSaveOutline} size={0.85} aria-hidden="true" />}
+              >
+                {t('admin.button.save')}
+              </Button>
+            </Group>
+          </Paper>
+        </Affix>
+      )}
       <ChallengePreviewModal
         size="min(56rem, calc(100vw - 2rem))"
         challenge={{

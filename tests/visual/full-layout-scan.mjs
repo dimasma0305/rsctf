@@ -275,6 +275,11 @@ try {
             `__surfaceProbe(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.focus({preventScroll:true});e.click();if(location.pathname.endsWith('/monitor/cheatcheck') && e instanceof HTMLInputElement) {Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'@');e.dispatchEvent(new Event('input',{bubbles:true}));}})`,
           );
           await record(`popup-${i}-open`, opened, { popup: true });
+          const datePickerOverflow = await evaluate(
+            `(() => { const e=[...document.querySelectorAll('[data-dates-dropdown]')].find(${visible}); if(!e)return false; const r=e.getBoundingClientRect(); return r.top < 0 || r.bottom > innerHeight || r.left < 0 || r.right > innerWidth; })()`,
+          );
+          if (datePickerOverflow)
+            active.failures.push(`popup ${i} date picker extends outside viewport`);
           const dialog = await evaluate(
             `Boolean([...document.querySelectorAll('[role="dialog"]')].find(${visible}))`,
           );

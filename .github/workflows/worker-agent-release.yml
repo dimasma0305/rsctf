@@ -356,8 +356,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Independent subjects share one signed bundle. Bound verification
-          # concurrency and fail the step if any subject is missing or invalid.
+          # Subjects share one bundle and the runner's Sigstore trust cache.
+          # v0.1.161's parallel checks failed during trust initialization;
+          # serial recovery succeeded. Any missing/invalid subject still fails.
           printf '%s\0' \
             dist/rsctf-worker-agent-linux-amd64.tar.gz \
             dist/rsctf-worker-agent-linux-arm64.tar.gz \
@@ -366,7 +367,7 @@ jobs:
             dist/install-worker.ps1 \
             dist/install.sh \
             dist/rsctf-deployment-bundle.tar.gz \
-            | xargs -0 -n1 -P7 bash -c '
+            | xargs -0 -n1 -P1 bash -c '
                 exec gh attestation verify "$1" \
                   --bundle dist/rsctf-worker-agent-attestation.json \
                   --hostname github.com \

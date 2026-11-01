@@ -16,6 +16,10 @@ It consumes the administrator-owned catalog returned with challenge details;
 ordinary saves preserve running instances, while replacement has a destructive
 confirmation. [runtime-profiles.mjs](../../../../tests/visual/runtime-profiles.mjs)
 checks the real editor payload/locks and the event landing badge's icon spacing.
+The challenge editor also groups details, runtime resources and checker controls
+with keyboard-accessible section links. The same browser journey checks live
+operational locks, the unsaved-change save bar, and the save-before-apply guard in
+[CompetitionMaintenancePanel.tsx](../../../../web/src/components/admin/CompetitionMaintenancePanel.tsx).
 
 [web/vite.config.mts](../../../../web/vite.config.mts) configures `vite-plugin-pages` for `web/src/pages/**/*.tsx`.
 [web/src/App.tsx](../../../../web/src/App.tsx) imports `~react-pages`, renders `useRoutes`, and composes the
@@ -65,6 +69,9 @@ For cold loads and popup opening/closing across all discovered routes, run
 lists rendered popup families and contract-generated empty reads. Scrollbar
 compensation belongs in [App.css](../../../../web/src/styles/App.css): root gutter
 reservation must not be counted again by the modal scroll-lock library.
+Date-time picker viewport bounds belong to the shared defaults in
+[ThemeOverride.ts](../../../../web/src/utils/ThemeOverride.ts); the full layout scan
+checks that calendars stay inside the screen without shifting the mobile dock.
 
 | Concern | Owning files/directories |
 | --- | --- |
