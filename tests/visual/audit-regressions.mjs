@@ -80,9 +80,13 @@ try {
         await cdp.send('Page.navigate', { url: 'about:blank' })
         await cdp.send('Page.navigate', { url: server.origin + path })
         await wait(ready)
+        // Content can appear before fonts and the first painted frame settle.
+        // Audit the rendered page rather than an intermediate layout snapshot.
+        await evaluate('document.fonts.ready')
         await evaluate('Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().endTime!==Infinity).map(a=>a.finished.catch(()=>{})))')
+        await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
         await evaluate(readFileSync(resolve(repositoryRoot, 'web/node_modules/axe-core/axe.min.js'), 'utf8'))
-        const result = await evaluate(`(async()=>({overflow:document.documentElement.scrollWidth>innerWidth+1,violations:(await axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))}))}))()`)
+        const result = await evaluate(`(async()=>({overflow:document.documentElement.scrollWidth>innerWidth+1,violations:(await axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,html:n.html,summary:n.failureSummary}))}))}))()`)
         const name = `${theme}-${width}-${path.replace(/[^a-z0-9]/gi,'_') || 'home'}`
         const shot = await cdp.send('Page.captureScreenshot', {format:'png',captureBeyondViewport:false})
         writeFileSync(resolve(output, name+'.png'),Buffer.from(shot.data,'base64'))
@@ -102,5 +106,15 @@ try {
   writeFileSync(resolve(output,'report.json'),JSON.stringify({reports,errors},null,2))
   assert.deepEqual(errors, [])
   assert.deepEqual(reports.filter(r=>r.overflow||r.violations.length||r.keyboardFailure), [])
+  // Negative control: settling must not hide genuinely unnamed controls.
+  const missingNames = await evaluate(`(async()=>{
+    const radio=document.querySelector('input[value="overall"]');
+    [...radio.labels].forEach(label=>label.remove());
+    const link=document.querySelector('a[href$="scoreboard"]');
+    link.replaceChildren();
+    return (await axe.run(document,{runOnly:{type:'rule',values:['label','link-name']}})).violations.map(v=>v.id);
+  })()`)
+  assert.ok(missingNames.includes('label'), 'Axe must still reject a radio without a label')
+  assert.ok(missingNames.includes('link-name'), 'Axe must still reject a link without a name')
   console.log(`Passed ${reports.length} responsive light/dark Axe views with keyboard scrolling and populated Overall scores`)
 } finally { await close(); await server.close() }
