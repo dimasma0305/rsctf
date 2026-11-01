@@ -76,12 +76,22 @@ pub async fn reserve(
             "container reservation key exceeds its durable bound",
         ));
     }
-    if request.cpu_millis > capacity.cpu_millis
-        || request.memory_bytes > capacity.memory_bytes
-        || request.slots > capacity.slots
+    if capacity
+        .cpu_millis
+        .is_some_and(|limit| request.cpu_millis > limit)
     {
         return Err(AppError::unavailable(
-            "The challenge requests more CPU or memory than this container host allows",
+            "This challenge exceeds the host's CPU allocation budget. Ask an organizer to adjust its CPU limit or the host budget.",
+        ));
+    }
+    if request.memory_bytes > capacity.memory_bytes {
+        return Err(AppError::unavailable(
+            "This challenge exceeds the host's memory allocation budget. Ask an organizer to adjust its memory limit or the host budget.",
+        ));
+    }
+    if capacity.slots.is_some_and(|limit| request.slots > limit) {
+        return Err(AppError::unavailable(
+            "This request exceeds the host's container-count limit",
         ));
     }
     let mut tx = match tokio::time::timeout(
@@ -109,9 +119,12 @@ pub async fn reserve(
                    updated_at_utc = clock_timestamp()"#,
     )
     .bind(host_key)
-    .bind(capacity.cpu_millis)
+    // The existing host row has positive, non-null columns. Store the type's
+    // maximum for an absent cap for compatibility; admission below uses Option
+    // and skips that dimension entirely. Reservation accounting stays intact.
+    .bind(capacity.cpu_millis.unwrap_or(i64::MAX))
     .bind(capacity.memory_bytes)
-    .bind(capacity.slots)
+    .bind(capacity.slots.unwrap_or(i32::MAX))
     .execute(&mut *tx)
     .await
     .map_err(database_error)?;
@@ -128,12 +141,26 @@ pub async fn reserve(
     .fetch_one(&mut *tx)
     .await
     .map_err(database_error)?;
-    if used.cpu_millis.saturating_add(request.cpu_millis) > capacity.cpu_millis
-        || used.memory_bytes.saturating_add(request.memory_bytes) > capacity.memory_bytes
-        || used.slots.saturating_add(i64::from(request.slots)) > i64::from(capacity.slots)
+    let exhausted = if used.memory_bytes.saturating_add(request.memory_bytes)
+        > capacity.memory_bytes
     {
+        Some("Container memory allocation budget is full. Stop an unused container or ask an organizer to add capacity.")
+    } else if capacity
+        .slots
+        .is_some_and(|limit| used.slots.saturating_add(i64::from(request.slots)) > i64::from(limit))
+    {
+        Some("The host's running-container limit has been reached. Stop an unused container or ask an organizer to add capacity.")
+    } else if capacity
+        .cpu_millis
+        .is_some_and(|limit| used.cpu_millis.saturating_add(request.cpu_millis) > limit)
+    {
+        Some("Container CPU allocation budget is full. This is an allocation limit, not a live CPU usage measurement. Ask an organizer to adjust CPU allocations or capacity.")
+    } else {
+        None
+    };
+    if let Some(message) = exhausted {
         tx.rollback().await.map_err(database_error)?;
-        return Err(AppError::overloaded("Container host capacity is busy", 5));
+        return Err(AppError::overloaded(message, 5));
     }
     sqlx::query(
         r#"INSERT INTO "LocalContainerReservations"
@@ -300,7 +327,7 @@ pub async fn reconcile(
 
 /// Current accounted usage for `host_key`.
 #[cfg(test)]
-pub(super) async fn usage(pool: &sqlx::PgPool, host_key: &str) -> AppResult<(i64, i64, i64)> {
+pub(crate) async fn usage(pool: &sqlx::PgPool, host_key: &str) -> AppResult<(i64, i64, i64)> {
     let used = sqlx::query_as::<_, Usage>(
         r#"SELECT COALESCE(SUM(cpu_millis), 0)::BIGINT AS cpu_millis,
                   COALESCE(SUM(memory_bytes), 0)::BIGINT AS memory_bytes,

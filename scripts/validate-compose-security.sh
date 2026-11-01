@@ -35,8 +35,28 @@ export RSCTF_DISCORD_TOKEN_URL=https://discord.example/token
 export RSCTF_DISCORD_USERINFO_URL=https://discord.example/userinfo
 unset RSCTF_AD_SUBMIT_BURST_FLAGS
 unset RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE
+unset RSCTF_LOCAL_CONTAINER_CPU_MILLIS RSCTF_LOCAL_CONTAINER_SLOTS
+unset RSCTF_LOCAL_CONTAINER_MEMORY_BYTES RSCTF_LOCAL_CONTAINER_RESERVE_FRACTION
+unset RSCTF_LOCAL_CONTAINER_RESERVE_MEMORY_BYTES
 
 compose=(docker compose --env-file /dev/null -p rsctf-compose-security)
+
+assert_local_capacity() {
+  python3 -c '
+import json, sys
+document = json.load(sys.stdin)
+mode = sys.argv[1]
+expected = dict(zip(
+    ["CPU_MILLIS", "SLOTS", "MEMORY_BYTES", "RESERVE_FRACTION", "RESERVE_MEMORY_BYTES"],
+    ["", "", "", "0.25", "2147483648"] if mode == "default" else
+    ["6000", "80", "8589934592", "0.1", "1073741824"]
+))
+for name in sys.argv[2:]:
+    environment = document["services"][name]["environment"]
+    actual = {key: environment.get("RSCTF_LOCAL_CONTAINER_" + key) for key in expected}
+    assert actual == expected, (name, actual, expected)
+' "$@"
+}
 
 assert_service_security() {
   local service="$1"
@@ -380,6 +400,13 @@ RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE=3000 \
 
 docker_backend=(-f deploy/compose.yml -f deploy/compose.docker.yml)
 "${compose[@]}" "${docker_backend[@]}" config --format json \
+  | assert_local_capacity default rsctf
+RSCTF_LOCAL_CONTAINER_CPU_MILLIS=6000 RSCTF_LOCAL_CONTAINER_SLOTS=80 \
+RSCTF_LOCAL_CONTAINER_MEMORY_BYTES=8589934592 RSCTF_LOCAL_CONTAINER_RESERVE_FRACTION=0.1 \
+RSCTF_LOCAL_CONTAINER_RESERVE_MEMORY_BYTES=1073741824 \
+  "${compose[@]}" "${docker_backend[@]}" config --format json \
+  | assert_local_capacity custom rsctf
+"${compose[@]}" "${docker_backend[@]}" config --format json \
   | assert_proxy_firewall rsctf
 "${compose[@]}" "${docker_backend[@]}" config --format json \
   | assert_private_challenge_proxy rsctf
@@ -426,6 +453,13 @@ split_docker=(
   -f deploy/compose.docker.yml
   -f deploy/compose.roles.docker.yml
 )
+"${compose[@]}" "${split_docker[@]}" config --format json \
+  | assert_local_capacity default rsctf rsctf-control
+RSCTF_LOCAL_CONTAINER_CPU_MILLIS=6000 RSCTF_LOCAL_CONTAINER_SLOTS=80 \
+RSCTF_LOCAL_CONTAINER_MEMORY_BYTES=8589934592 RSCTF_LOCAL_CONTAINER_RESERVE_FRACTION=0.1 \
+RSCTF_LOCAL_CONTAINER_RESERVE_MEMORY_BYTES=1073741824 \
+  "${compose[@]}" "${split_docker[@]}" config --format json \
+  | assert_local_capacity custom rsctf rsctf-control
 "${compose[@]}" "${split_docker[@]}" config --format json \
   | assert_proxy_firewall rsctf-control
 "${compose[@]}" -f deploy/compose.yml -f deploy/compose.caddy.yml config --format json \

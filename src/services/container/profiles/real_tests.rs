@@ -162,9 +162,9 @@ async fn real_docker_profiles_share_capacity_even_when_one_profile_reconciles() 
                 docker,
                 db.pool.clone(),
                 LocalCapacity {
-                    cpu_millis: 4_000,
+                    cpu_millis: Some(4_000),
                     memory_bytes: 1024 * 1024 * 1024,
-                    slots: 1,
+                    slots: Some(1),
                 },
             ));
         entries.push((profile, manager));
