@@ -1,8 +1,8 @@
 //! Startup configuration for local Docker aggregate admission.
 //!
-//! Defaults derive from the Docker daemon host minus an explicit reserve for
-//! Docker, rsctf, PostgreSQL, Redis, networking, and maintenance work. An
-//! explicit capacity is an operator override and is used verbatim.
+//! CPU and container-count caps are opt-in. Memory defaults to the Docker
+//! host's memory minus a reserve for the platform. Individual container limits
+//! remain enforced by Docker regardless of aggregate admission settings.
 
 use crate::utils::error::{AppError, AppResult};
 
@@ -16,15 +16,10 @@ pub const RESERVE_MEMORY_BYTES_ENV: &str = "RSCTF_LOCAL_CONTAINER_RESERVE_MEMORY
 /// Default share of the host kept back from challenge containers.
 pub const DEFAULT_RESERVE_FRACTION: f64 = 0.25;
 /// Absolute floors for the reserve when the fractional share is smaller.
-pub const DEFAULT_RESERVE_CPU_MILLIS: i64 = 1_000;
 pub const DEFAULT_RESERVE_MEMORY_BYTES: i64 = 2 * 1024 * 1024 * 1024;
 /// A small development host still admits at least one ordinary container.
 pub const MINIMUM_CPU_MILLIS: i64 = 1_000;
 pub const MINIMUM_MEMORY_BYTES: i64 = 1024 * 1024 * 1024;
-pub const MINIMUM_SLOTS: i32 = 8;
-/// Derived slot default: running containers per admitted CPU.
-const SLOTS_PER_CPU: i64 = 8;
-const MAX_DERIVED_SLOTS: i32 = 2_048;
 const MAX_CPU_MILLIS: i64 = 4_096_000;
 const MAX_MEMORY_BYTES: i64 = 1 << 50;
 const MAX_SLOTS: i32 = 65_535;
@@ -40,9 +35,9 @@ pub struct HostResources {
 /// Aggregate ceiling every admitted local container counts against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocalCapacity {
-    pub cpu_millis: i64,
+    pub cpu_millis: Option<i64>,
     pub memory_bytes: i64,
-    pub slots: i32,
+    pub slots: Option<i32>,
 }
 
 fn invalid(name: &str, detail: &str) -> AppError {
@@ -101,27 +96,19 @@ fn derived(total: i64, fraction: f64, absolute_reserve: i64, minimum: i64) -> i6
     total.saturating_sub(reserve).max(minimum)
 }
 
-fn derived_slots(cpu_millis: i64) -> i32 {
-    let per_cpu = (cpu_millis / 1_000).saturating_mul(SLOTS_PER_CPU);
-    i32::try_from(per_cpu)
-        .unwrap_or(MAX_DERIVED_SLOTS)
-        .clamp(MINIMUM_SLOTS, MAX_DERIVED_SLOTS)
-}
-
 /// Resolve the enforced capacity from the environment and the detected host.
 pub fn resolve(
     env: &dyn Fn(&str) -> Option<String>,
     host: HostResources,
 ) -> AppResult<LocalCapacity> {
     let fraction = parse_reserve_fraction(env)?;
-    let reserve_cpu = parse_bounded_i64(env, RESERVE_CPU_MILLIS_ENV, 0..=MAX_CPU_MILLIS)?
-        .unwrap_or(DEFAULT_RESERVE_CPU_MILLIS);
+    // Validate the legacy setting for compatibility, but CPU is no longer
+    // reserved from the host. Only an explicit aggregate CPU cap is enforced.
+    parse_bounded_i64(env, RESERVE_CPU_MILLIS_ENV, 0..=MAX_CPU_MILLIS)?;
     let reserve_memory = parse_bounded_i64(env, RESERVE_MEMORY_BYTES_ENV, 0..=MAX_MEMORY_BYTES)?
         .unwrap_or(DEFAULT_RESERVE_MEMORY_BYTES);
-    let cpu_millis = match parse_bounded_i64(env, CPU_MILLIS_ENV, 1..=MAX_CPU_MILLIS)? {
-        Some(explicit) => explicit,
-        None => derived(host.cpu_millis, fraction, reserve_cpu, MINIMUM_CPU_MILLIS),
-    };
+    let cpu_millis =
+        parse_bounded_i64(env, CPU_MILLIS_ENV, 0..=MAX_CPU_MILLIS)?.filter(|value| *value != 0);
     let memory_bytes = match parse_bounded_i64(env, MEMORY_BYTES_ENV, 1..=MAX_MEMORY_BYTES)? {
         Some(explicit) => explicit,
         None => derived(
@@ -131,13 +118,12 @@ pub fn resolve(
             MINIMUM_MEMORY_BYTES,
         ),
     };
-    let slots = match parse_bounded_i64(env, SLOTS_ENV, 1..=i64::from(MAX_SLOTS))? {
-        Some(explicit) => i32::try_from(explicit).expect("bounded slots fit in i32"),
-        None => derived_slots(cpu_millis),
-    };
-    if cpu_millis > host.cpu_millis || memory_bytes > host.memory_bytes {
+    let slots = parse_bounded_i64(env, SLOTS_ENV, 0..=i64::from(MAX_SLOTS))?
+        .filter(|value| *value != 0)
+        .map(|value| i32::try_from(value).expect("bounded slots fit in i32"));
+    if memory_bytes > host.memory_bytes {
         tracing::warn!(
-            cpu_millis,
+            cpu_millis = ?cpu_millis,
             memory_bytes,
             host_cpu_millis = host.cpu_millis,
             host_memory_bytes = host.memory_bytes,
@@ -183,9 +169,9 @@ mod tests {
     #[test]
     fn defaults_subtract_the_larger_of_fraction_and_absolute_reserve() {
         let capacity = resolve_with(&[], LARGE_HOST).unwrap();
-        assert_eq!(capacity.cpu_millis, 12_000);
+        assert_eq!(capacity.cpu_millis, None);
         assert_eq!(capacity.memory_bytes, 48 * GIB);
-        assert_eq!(capacity.slots, 96);
+        assert_eq!(capacity.slots, None);
 
         let small = resolve_with(
             &[],
@@ -195,9 +181,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(small.cpu_millis, 1_000);
+        assert_eq!(small.cpu_millis, None);
         assert_eq!(small.memory_bytes, 2 * GIB);
-        assert_eq!(small.slots, MINIMUM_SLOTS);
+        assert_eq!(small.slots, None);
     }
 
     #[test]
@@ -210,9 +196,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(tiny.cpu_millis, MINIMUM_CPU_MILLIS);
+        assert_eq!(tiny.cpu_millis, None);
         assert_eq!(tiny.memory_bytes, MINIMUM_MEMORY_BYTES);
-        assert_eq!(tiny.slots, MINIMUM_SLOTS);
+        assert_eq!(tiny.slots, None);
     }
 
     #[test]
@@ -229,9 +215,9 @@ mod tests {
         assert_eq!(
             capacity,
             LocalCapacity {
-                cpu_millis: 15_000,
+                cpu_millis: Some(15_000),
                 memory_bytes: 16 * GIB,
-                slots: 12,
+                slots: Some(12),
             }
         );
     }
@@ -247,18 +233,18 @@ mod tests {
             LARGE_HOST,
         )
         .unwrap();
-        assert_eq!(capacity.cpu_millis, 8_000);
+        assert_eq!(capacity.cpu_millis, None);
         assert_eq!(capacity.memory_bytes, 32 * GIB);
     }
 
     #[test]
     fn out_of_range_values_fail_startup() {
         for pairs in [
-            vec![(CPU_MILLIS_ENV, "0")],
+            vec![(CPU_MILLIS_ENV, "-1")],
             vec![(CPU_MILLIS_ENV, "abc")],
             vec![(MEMORY_BYTES_ENV, "-1")],
             vec![(SLOTS_ENV, "65536")],
-            vec![(SLOTS_ENV, "0")],
+            vec![(SLOTS_ENV, "-1")],
             vec![(RESERVE_FRACTION_ENV, "0.95")],
             vec![(RESERVE_FRACTION_ENV, "-0.1")],
             vec![(RESERVE_FRACTION_ENV, "nan")],
@@ -270,5 +256,52 @@ mod tests {
             );
         }
         assert!(resolve_with(&[(CPU_MILLIS_ENV, " ")], LARGE_HOST).is_ok());
+    }
+
+    #[test]
+    fn absent_blank_and_zero_caps_allow_cpu_sharing_without_a_container_count_cap() {
+        let host = HostResources {
+            cpu_millis: 8_000,
+            memory_bytes: 16 * GIB,
+        };
+        let shared = resolve_with(&[], host).unwrap();
+        assert_eq!(
+            shared,
+            LocalCapacity {
+                cpu_millis: None,
+                memory_bytes: 12 * GIB,
+                slots: None
+            }
+        );
+        for value in ["", " ", "0"] {
+            assert_eq!(
+                resolve_with(&[(CPU_MILLIS_ENV, value), (SLOTS_ENV, value)], host).unwrap(),
+                shared
+            );
+        }
+        let explicit = resolve_with(&[(CPU_MILLIS_ENV, "6000")], host).unwrap();
+        assert_eq!(
+            explicit,
+            LocalCapacity {
+                cpu_millis: Some(6_000),
+                ..shared
+            }
+        );
+        let slots = resolve_with(&[(SLOTS_ENV, "6")], host).unwrap();
+        assert_eq!(
+            slots,
+            LocalCapacity {
+                slots: Some(6),
+                ..shared
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_cpu_reserve_does_not_reintroduce_a_cpu_or_slot_cap() {
+        assert_eq!(
+            resolve_with(&[(RESERVE_CPU_MILLIS_ENV, "6000")], LARGE_HOST).unwrap(),
+            resolve_with(&[], LARGE_HOST).unwrap()
+        );
     }
 }

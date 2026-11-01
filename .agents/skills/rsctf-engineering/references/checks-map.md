@@ -19,6 +19,14 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 
 ## Discover the smallest meaningful check
 
+Local Docker admission defaults and optional caps are covered by
+[capacity tests](../../../../src/services/container/capacity/tests.rs): run
+`test --lib services::container::capacity -- --include-ignored` against disposable
+PostgreSQL. [Real Docker tests](../../../../src/services/container/real_docker_tests.rs)
+use `RSCTF_REAL_DOCKER_RETRY_IMAGE` and `RSCTF_TEST_DATABASE_URL` to prove launches
+beyond the former CPU budget retain individual container limits and release their
+reservations. Compose validation checks consistent settings across web/control.
+
 Public image validation, extensionless MIME/range responses and immediate staged
 branding publication are covered by
 [public_image_tests.rs](../../../../src/controllers/public_image_tests.rs).

@@ -120,9 +120,9 @@ impl CapacityGatedDockerManager {
         tracing::info!(
             host_cpu_millis = host.cpu_millis,
             host_memory_bytes = host.memory_bytes,
-            cpu_millis = capacity.cpu_millis,
+            cpu_millis = ?capacity.cpu_millis,
             memory_bytes = capacity.memory_bytes,
-            slots = capacity.slots,
+            slots = ?capacity.slots,
             "local container capacity admission enabled"
         );
         Ok(Self::with_capacity(inner, pool, capacity))

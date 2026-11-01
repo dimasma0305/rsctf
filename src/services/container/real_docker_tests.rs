@@ -5,6 +5,80 @@ use super::{
 };
 
 #[tokio::test]
+async fn default_admission_shares_cpu_and_preserves_real_docker_limits() {
+    use super::capacity::{config, store, CapacityGatedDockerManager, HostResources};
+    let Ok(image) = std::env::var("RSCTF_REAL_DOCKER_RETRY_IMAGE") else {
+        return;
+    };
+    let db = crate::utils::test_database::TestDatabase::new("shared_cpu").await;
+    sqlx::raw_sql(crate::migrations::LOCAL_CONTAINER_CAPACITY_SQL)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    // Reproduce the reported 8-core host: four hills allocated 2+2+1+1 CPUs.
+    let capacity = config::resolve(
+        &|_| None,
+        HostResources {
+            cpu_millis: 8_000,
+            memory_bytes: 16 * 1024 * 1024 * 1024,
+        },
+    )
+    .unwrap();
+    let inner = DockerContainerManager::connect().unwrap();
+    let docker = inner.client().unwrap().clone();
+    let manager = CapacityGatedDockerManager::with_capacity(inner, db.pool.clone(), capacity);
+    let mut created = Vec::new();
+    let result: crate::utils::error::AppResult<()> = async {
+        for cpu_count in [2, 2, 1, 1, 2, 2] {
+            let info = manager
+                .create(ContainerSpec {
+                    runtime_profile: None,
+                    game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
+                    image: image.clone(),
+                    memory_limit: 64,
+                    cpu_count,
+                    storage_limit: DEFAULT_CONTAINER_STORAGE_MB,
+                    expose_port: 8080,
+                    publish_port: false,
+                    proxy_only: false,
+                    env: Vec::new(),
+                    flag: None,
+                    ad_network: None,
+                    allow_egress: false,
+                    control_plane_callback_ports: Vec::new(),
+                    network_mode: crate::utils::enums::NetworkMode::Isolated,
+                    operation_id: Some(format!("shared-cpu:{}", uuid::Uuid::new_v4())),
+                })
+                .await?;
+            created.push((info.id, cpu_count));
+        }
+        Ok(())
+    }
+    .await;
+    let mut limits = Vec::new();
+    for (id, cpu) in &created {
+        limits.push((*cpu, docker.inspect_container(id, None).await));
+    }
+    let usage = store::usage(&db.pool, &super::docker_installation_scope()).await;
+    // Clean actual workloads before asserting, including partial launch failures.
+    for (id, _) in &created {
+        manager.destroy(id).await.unwrap();
+    }
+    let remaining = store::usage(&db.pool, &super::docker_installation_scope()).await;
+    db.close().await;
+    result.unwrap();
+    assert_eq!(usage.unwrap(), (10_000, 6 * 64 * 1024 * 1024, 6));
+    assert_eq!(remaining.unwrap(), (0, 0, 0));
+    for (cpu, inspection) in limits {
+        let inspection = inspection.unwrap();
+        assert_eq!(inspection.state.unwrap().running, Some(true));
+        let host = inspection.host_config.unwrap();
+        assert_eq!(host.nano_cpus, Some(i64::from(cpu) * 1_000_000_000));
+        assert_eq!(host.memory, Some(64 * 1024 * 1024));
+    }
+}
+
+#[tokio::test]
 async fn retryable_flag_adopts_one_real_docker_workload() {
     let Ok(image) = std::env::var("RSCTF_REAL_DOCKER_RETRY_IMAGE") else {
         return;

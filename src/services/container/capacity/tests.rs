@@ -74,9 +74,9 @@ async fn two_replicas_cannot_both_admit_the_last_slot() {
     let fixture = Fixture::new().await;
     let host = "host-a";
     let capacity = LocalCapacity {
-        cpu_millis: 4_000,
+        cpu_millis: Some(4_000),
         memory_bytes: 8 * GIB,
-        slots: 1,
+        slots: Some(1),
     };
     let replica_a = fixture.replica().await;
     let replica_b = fixture.replica().await;
@@ -136,9 +136,9 @@ async fn cpu_and_memory_are_accounted_and_oversized_requests_are_unavailable() {
     let fixture = Fixture::new().await;
     let host = "host-b";
     let capacity = LocalCapacity {
-        cpu_millis: 3_000,
+        cpu_millis: Some(3_000),
         memory_bytes: 4 * GIB,
-        slots: 16,
+        slots: Some(16),
     };
     let pool = fixture.replica().await;
 
@@ -150,6 +150,7 @@ async fn cpu_and_memory_are_accounted_and_oversized_requests_are_unavailable() {
         .await
         .unwrap_err();
     assert!(is_retryable(&cpu_exhausted), "{cpu_exhausted:?}");
+    assert!(cpu_exhausted.to_string().contains("CPU allocation budget"));
     store::reserve(&pool, host, &capacity, &reservation("three", 500, 2 * GIB))
         .await
         .unwrap();
@@ -159,6 +160,9 @@ async fn cpu_and_memory_are_accounted_and_oversized_requests_are_unavailable() {
         .await
         .unwrap_err();
     assert!(is_retryable(&memory_exhausted), "{memory_exhausted:?}");
+    assert!(memory_exhausted
+        .to_string()
+        .contains("memory allocation budget"));
 
     let oversized = store::reserve(&pool, host, &capacity, &reservation("six", 4_000, GIB))
         .await
@@ -182,13 +186,162 @@ async fn cpu_and_memory_are_accounted_and_oversized_requests_are_unavailable() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn defaults_admit_beyond_old_cpu_and_count_caps_without_overcommitting_memory() {
+    use super::config::{resolve, HostResources, CPU_MILLIS_ENV};
+    let fixture = Fixture::new().await;
+    let pool = fixture.replica().await;
+    let host = HostResources {
+        cpu_millis: 8_000,
+        memory_bytes: 16 * GIB,
+    };
+    let shared = resolve(&|_| None, host).unwrap();
+    let strict = resolve(&|key| (key == CPU_MILLIS_ENV).then(|| "6000".into()), host).unwrap();
+    for (key, cpu) in [
+        ("koth-a", 2_000),
+        ("koth-b", 2_000),
+        ("koth-c", 1_000),
+        ("koth-d", 1_000),
+    ] {
+        store::reserve(&pool, "shared-host", &shared, &reservation(key, cpu, GIB))
+            .await
+            .unwrap();
+    }
+    let fifth = reservation("another-event", 2_000, GIB);
+    let strict_error = store::reserve(&pool, "shared-host", &strict, &fifth)
+        .await
+        .unwrap_err();
+    assert!(strict_error.to_string().contains("CPU allocation budget"));
+    store::reserve(&pool, "shared-host", &shared, &fifth)
+        .await
+        .unwrap();
+    store::reserve(
+        &pool,
+        "shared-host",
+        &shared,
+        &reservation("sixth", 2_000, GIB),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        store::usage(&pool, "shared-host").await.unwrap(),
+        (10_000, 6 * GIB, 6)
+    );
+    // An exact retry remains idempotent, and removing CPU caps cannot admit excess memory.
+    store::reserve(&pool, "shared-host", &shared, &fifth)
+        .await
+        .unwrap();
+    let memory = store::reserve(
+        &pool,
+        "shared-host",
+        &shared,
+        &reservation("large", 1_000, 7 * GIB),
+    )
+    .await
+    .unwrap_err();
+    assert!(memory.to_string().contains("memory allocation budget"));
+    let limited_slots = LocalCapacity {
+        slots: Some(6),
+        ..shared
+    };
+    let slots = store::reserve(
+        &pool,
+        "shared-host",
+        &limited_slots,
+        &reservation("seventh", 1_000, GIB),
+    )
+    .await
+    .unwrap_err();
+    assert!(slots.to_string().contains("running-container limit"));
+    assert_eq!(
+        store::usage(&pool, "shared-host").await.unwrap(),
+        (10_000, 6 * GIB, 6)
+    );
+    // Continue past the previous 48-container cap with ample memory remaining.
+    for index in 0..50 {
+        store::reserve(
+            &pool,
+            "shared-host",
+            &shared,
+            &reservation(&format!("small-{index}"), 2_000, 64 * 1024 * 1024),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        store::usage(&pool, "shared-host").await.unwrap(),
+        (110_000, 6 * GIB + 50 * 64 * 1024 * 1024, 56)
+    );
+    pool.close().await;
+    fixture.drop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn uncapped_replicas_preserve_memory_admission_under_fixed_rate_arrivals() {
+    use super::config::{resolve, HostResources};
+    let fixture = Fixture::new().await;
+    let replicas = [fixture.replica().await, fixture.replica().await];
+    let capacity = resolve(
+        &|_| None,
+        HostResources {
+            cpu_millis: 8_000,
+            memory_bytes: 16 * GIB,
+        },
+    )
+    .unwrap();
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut arrivals = tokio::time::interval(std::time::Duration::from_millis(20));
+    arrivals.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // 50 arrivals/second across independent replica pools. Keep admitted rows
+    // until the end so the memory boundary is crossed with no CPU/count cap.
+    for index in 0..250 {
+        arrivals.tick().await;
+        let pool = replicas[index % 2].clone();
+        tasks.spawn(async move {
+            store::reserve(
+                &pool,
+                "arrival-host",
+                &capacity,
+                &reservation(&format!("arrival-{index}"), 2_000, 64 * 1024 * 1024),
+            )
+            .await
+        });
+    }
+    let mut admitted = 0;
+    let mut memory_rejected = 0;
+    while let Some(result) = tasks.join_next().await {
+        match result.unwrap() {
+            Ok(()) => admitted += 1,
+            Err(error) => {
+                assert!(is_retryable(&error), "{error:?}");
+                assert!(
+                    error.to_string().contains("memory allocation budget"),
+                    "{error:?}"
+                );
+                memory_rejected += 1;
+            }
+        }
+    }
+    assert_eq!((admitted, memory_rejected), (192, 58));
+    assert_eq!(
+        store::usage(&replicas[0], "arrival-host").await.unwrap(),
+        (384_000, 12 * GIB, 192)
+    );
+    for pool in replicas {
+        pool.close().await;
+    }
+    fixture.drop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn failure_and_removal_release_their_reservation() {
     let fixture = Fixture::new().await;
     let host = "host-d";
     let capacity = LocalCapacity {
-        cpu_millis: 1_000,
+        cpu_millis: Some(1_000),
         memory_bytes: GIB,
-        slots: 1,
+        slots: Some(1),
     };
     let pool = fixture.replica().await;
 
@@ -230,9 +383,9 @@ async fn stale_reservations_reconcile_against_the_labeled_inventory() {
     let fixture = Fixture::new().await;
     let host = "host-e";
     let capacity = LocalCapacity {
-        cpu_millis: 64_000,
+        cpu_millis: Some(64_000),
         memory_bytes: 64 * GIB,
-        slots: 64,
+        slots: Some(64),
     };
     let pool = fixture.replica().await;
 
@@ -337,9 +490,9 @@ async fn a_contended_host_row_returns_the_retryable_response() {
     let fixture = Fixture::new().await;
     let host = "host-f";
     let capacity = LocalCapacity {
-        cpu_millis: 4_000,
+        cpu_millis: Some(4_000),
         memory_bytes: 4 * GIB,
-        slots: 4,
+        slots: Some(4),
     };
     let holder = fixture.replica().await;
     let contender = fixture.replica().await;
