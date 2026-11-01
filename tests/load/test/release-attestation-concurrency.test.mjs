@@ -42,18 +42,18 @@ function verify(change) {
     assert.equal(running.size, 0, 'the step must settle every verification process')
     for (const phase of ['start', 'end']) assert.deepEqual(
       recorded.filter((event) => event.phase === phase).map((event) => event.artifact).sort(), [...artifacts].sort())
-    assert.ok(peak >= 2 && peak <= 7, `verification concurrency must be bounded, observed ${peak}`)
+    assert.equal(peak, 1, 'the shared Sigstore trust cache must not initialize concurrently')
     return result.status
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 }
 
-test('the actual release step verifies every subject and trust constraint with bounded parallelism', () => {
+test('the actual release step verifies every subject and trust constraint serially', () => {
   assert.equal(verify(), 0)
 })
 
-test('a missing artifact fails the whole parallel verification step', () => {
+test('a missing artifact fails the whole verification step', () => {
   assert.notEqual(verify((directory) => rmSync(join(directory, 'dist', 'install.sh'))), 0)
 })
 

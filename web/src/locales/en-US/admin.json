@@ -1,4 +1,21 @@
 {
+  "challenge_editor": {
+    "provenance": "Advanced provenance options",
+    "resources": "Network & resource limits",
+    "start_test": "Start test container",
+    "stop_test": "Stop test container",
+    "terminal": "Open terminal",
+    "more": "More actions",
+    "sections": "Challenge editor sections",
+    "details": "Details",
+    "runtime": "Container & resources",
+    "checker": "Checker & access",
+    "unsaved": "Unsaved changes. Save before building or applying live updates.",
+    "saved": "All changes saved.",
+    "unsaved_short": "Unsaved changes",
+    "scoring_locked": "Scoring rules stay locked after scoring starts.",
+    "runtime_locked": "Open a maintenance window above to change these settings. Titles and descriptions can still be edited."
+  },
   "runtime_profile": {
     "pending": "An interrupted runtime update is pending. Restore the same edits and use Save and replace instances to retry it. The challenge stays disabled until recovery finishes.",
     "label": "Runtime profile",
@@ -6,7 +23,7 @@
     "description": "Choose where and how new challenge instances run. Saving keeps existing instances on their original runtime.",
     "unavailable": "unavailable",
     "missing": "This profile is unavailable or retired. Select an active profile for new instances; existing instances retain their original owner.",
-    "locked": "A&D/KotH runtime changes are locked after official scoring starts. Multi-service worker definitions and BYOC services use their own runtime configuration.",
+    "locked": "Live A&D/KotH runtime changes require an open maintenance window. Multi-service workloads and BYOC services use their own runtime configuration.",
     "replace_title": "Replace running challenge instances?",
     "replace_warning": "This saves your edits and stops all current instances of this challenge, including test instances. Writable files and player modifications will be lost. Shared and defending services are reprovisioned; Jeopardy players start fresh instances. Scores and submissions are preserved.",
     "replace_confirm": "Save and replace instances"

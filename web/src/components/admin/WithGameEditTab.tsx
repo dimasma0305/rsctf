@@ -59,7 +59,6 @@ export const WithGameEditTab: FC<GameEditTabProps> = ({
             to={`/games/${id}`}
             variant="default"
             leftSection={<Icon path={mdiOpenInNew} size={0.85} />}
-            aria-label={t('common.workspace.view_event', 'View event as player')}
           >
             {t('admin.navigation.player_view')}
           </Button>
