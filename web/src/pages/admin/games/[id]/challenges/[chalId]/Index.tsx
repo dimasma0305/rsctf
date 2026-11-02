@@ -1390,6 +1390,7 @@ const GameChallengeEdit: FC = () => {
                         <Switch
                           disabled={disabled}
                           checked={challengeInfo.enableTrafficCapture ?? false}
+                          aria-label={t('admin.content.games.challenges.traffic_capture.label')}
                           label={SwitchLabel(
                             t('admin.content.games.challenges.traffic_capture.label'),
                             t('admin.content.games.challenges.traffic_capture.description')
