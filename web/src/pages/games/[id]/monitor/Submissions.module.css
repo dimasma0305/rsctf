@@ -1,0 +1,8 @@
+.answer {
+  display: block;
+  min-width: 12rem;
+  max-width: clamp(12rem, 36vw, 48rem);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
