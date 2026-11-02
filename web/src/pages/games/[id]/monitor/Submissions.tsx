@@ -7,6 +7,7 @@ import {
   ScrollArea,
   SegmentedControl,
   Table,
+  Text,
   TextInput,
   Tooltip,
   VisuallyHidden,
@@ -53,12 +54,12 @@ import {
   unreconciledMonitorRows,
 } from '@Utils/MonitorFeed'
 import { OPERATOR_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
-import { useDisplayInputStyles } from '@Utils/ThemeOverride'
 import { useViewerIdentity } from '@Utils/ViewerIdentity'
 import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import { useRecoveringHub } from '@Hooks/useRecoveringHub'
 import api, { AnswerResult, MonitorSubmission } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
+import classes from './Submissions.module.css'
 
 const ITEM_COUNT_PER_PAGE = 50
 const BACKFILL_PAGE_SIZE = 100
@@ -120,7 +121,6 @@ const Submissions: FC = () => {
   const monitorConnectionActive = Boolean(game?.end) && !finished
 
   const iconMap = AnswerResultIconMap(0.8)
-  const { classes: inputClasses } = useDisplayInputStyles({ ff: 'monospace' })
   const theme = useMantineTheme()
 
   const { t } = useTranslation()
@@ -340,15 +340,10 @@ const Submissions: FC = () => {
         <ScrollingText text={item.user ?? 'User'} ff="monospace" size="sm" fw="bold" maw={150} />
       </Table.Td>
       <Table.Td>{item.challenge ?? 'Challenge'}</Table.Td>
-      <Table.Td w="36vw" maw="100%" p="0">
-        <Input
-          variant="unstyled"
-          value={item.answer}
-          aria-label={t('game.label.submissions.answer', 'Submitted answer')}
-          readOnly
-          size="sm"
-          classNames={inputClasses}
-        />
+      <Table.Td w="36vw">
+        <Text component="code" size="sm" ff="monospace" className={classes.answer}>
+          {item.answer}
+        </Text>
       </Table.Td>
     </Table.Tr>
   ))
@@ -471,7 +466,7 @@ const Submissions: FC = () => {
                 <Table.Th scope="col" miw="3rem">
                   {t('common.label.challenge')}
                 </Table.Th>
-                <Table.Th scope="col" ff="monospace">
+                <Table.Th scope="col">
                   {t('common.label.flag')}
                 </Table.Th>
               </Table.Tr>
