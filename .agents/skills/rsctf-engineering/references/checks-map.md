@@ -5,6 +5,19 @@ Read [verification-release.md](verification-release.md) for completion rules,
 [fast-development.md](fast-development.md) for worktree/build batching.
 Commands below run from the repository root unless stated otherwise.
 
+Operational readiness regressions: `ready_hills_start_without_broken_hills_and_late_repairs_cannot_join`
+and `postgres_claims_are_cross_replica_host_bounded_and_lease_recoverable` require disposable PostgreSQL.
+`git_storage_does_not_consume_content_budget_and_errors_identify_the_file` and
+`transport_options_do_not_disable_download_budget_monitoring` cover checkout budgets.
+`advertised_revision_can_be_fetched_into_new_and_existing_checkouts` uses public GitHub
+to verify pinned imports and restoration of the branch used by push-on-edit.
+The existing `ad-operations.mjs` and `admin-operations.mjs` visual fixtures include frozen hill exclusions
+and policy-blocked/permanently failed repository scans.
+`docker_isolated_publication_fails_before_daemon_access_without_relaxing_isolation`
+guards unsupported local Docker publication. `npm run operational-readiness` in
+`tests/load/` polls the affected operator reads on a disposable release server
+and verifies that scoring evidence and blocked-import counters remain unchanged.
+
 The real OAuth cookie regression uses Chromium, a disposable PostgreSQL schema,
 and a local provider. Set RSCTF_TEST_DATABASE_URL to a disposable database and
 CHROME_BIN if Chromium is not on PATH, then run:

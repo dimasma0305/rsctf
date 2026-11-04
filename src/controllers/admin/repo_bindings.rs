@@ -49,6 +49,7 @@ pub async fn create_repo_binding(
         crate::services::repo_binding_scheduler::run_manual(st.clone(), id)
             .await
             .unwrap_or_else(|e| RepoBindingScanResultModel {
+                outcome: crate::services::repository_bindings::RepoScanOutcome::RetryableFailure,
                 games_created: 0,
                 games_updated: 0,
                 challenges_imported: 0,
@@ -58,6 +59,7 @@ pub async fn create_repo_binding(
             })
     } else {
         RepoBindingScanResultModel {
+            outcome: crate::services::repository_bindings::RepoScanOutcome::NoChange,
             games_created: 0,
             games_updated: 0,
             challenges_imported: 0,

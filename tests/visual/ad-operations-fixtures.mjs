@@ -131,6 +131,7 @@ export function fixture(
       return {
         body: {
           epochTicks: 8,
+          excludedHills: [{ challengeId: 819, reasons: ["ImageNotReady", "TargetNotReady"] }],
           cycleTicks: 3,
           championCooldownTicks: 1,
           claimConfirmationTicks: 1,

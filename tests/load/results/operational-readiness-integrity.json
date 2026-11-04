@@ -1,0 +1,127 @@
+{
+  "before": "[\"afad213072d01c6ad393bef41e32810c\", \"d751713988987e9331980363e24189ce\", \"d751713988987e9331980363e24189ce\", [0, \"PolicyBlocked\", null, \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"], 0]",
+  "after": "[\"afad213072d01c6ad393bef41e32810c\", \"d751713988987e9331980363e24189ce\", \"d751713988987e9331980363e24189ce\", [0, \"PolicyBlocked\", null, \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"], 0]",
+  "samples": [
+    {
+      "at": 1793807913529,
+      "server": "4.9 52984",
+      "postgres": {
+        "BlockIO": "272MB / 117MB",
+        "CPUPerc": "6.52%",
+        "Container": "rsctf-readiness-pg",
+        "ID": "bb6dcba3b0f9",
+        "MemPerc": "0.73%",
+        "MemUsage": "131.9MiB / 17.59GiB",
+        "Name": "rsctf-readiness-pg",
+        "NetIO": "23.9MB / 11.3MB",
+        "PIDs": "31"
+      }
+    },
+    {
+      "at": 1793807920112,
+      "server": "3.8 58212",
+      "postgres": {
+        "BlockIO": "272MB / 117MB",
+        "CPUPerc": "10.75%",
+        "Container": "rsctf-readiness-pg",
+        "ID": "bb6dcba3b0f9",
+        "MemPerc": "0.87%",
+        "MemUsage": "155.8MiB / 17.59GiB",
+        "Name": "rsctf-readiness-pg",
+        "NetIO": "24.2MB / 11.4MB",
+        "PIDs": "31"
+      }
+    },
+    {
+      "at": 1793807925114,
+      "server": "3.2 58228",
+      "postgres": {
+        "BlockIO": "272MB / 117MB",
+        "CPUPerc": "6.19%",
+        "Container": "rsctf-readiness-pg",
+        "ID": "bb6dcba3b0f9",
+        "MemPerc": "0.91%",
+        "MemUsage": "163.7MiB / 17.59GiB",
+        "Name": "rsctf-readiness-pg",
+        "NetIO": "24.3MB / 11.4MB",
+        "PIDs": "31"
+      }
+    },
+    {
+      "at": 1793807930114,
+      "server": "2.8 58240",
+      "postgres": {
+        "BlockIO": "272MB / 117MB",
+        "CPUPerc": "4.76%",
+        "Container": "rsctf-readiness-pg",
+        "ID": "bb6dcba3b0f9",
+        "MemPerc": "0.94%",
+        "MemUsage": "169.7MiB / 17.59GiB",
+        "Name": "rsctf-readiness-pg",
+        "NetIO": "24.5MB / 11.5MB",
+        "PIDs": "31"
+      }
+    },
+    {
+      "at": 1793807935120,
+      "server": "2.8 58248",
+      "postgres": {
+        "BlockIO": "272MB / 117MB",
+        "CPUPerc": "6.14%",
+        "Container": "rsctf-readiness-pg",
+        "ID": "bb6dcba3b0f9",
+        "MemPerc": "0.97%",
+        "MemUsage": "174.1MiB / 17.59GiB",
+        "Name": "rsctf-readiness-pg",
+        "NetIO": "24.6MB / 11.5MB",
+        "PIDs": "31"
+      }
+    },
+    {
+      "at": 1793807940120,
+      "server": "2.5 58248",
+      "postgres": {
+        "BlockIO": "272MB / 117MB",
+        "CPUPerc": "2.98%",
+        "Container": "rsctf-readiness-pg",
+        "ID": "bb6dcba3b0f9",
+        "MemPerc": "0.99%",
+        "MemUsage": "178.2MiB / 17.59GiB",
+        "Name": "rsctf-readiness-pg",
+        "NetIO": "24.7MB / 11.6MB",
+        "PIDs": "31"
+      }
+    },
+    {
+      "at": 1793807945124,
+      "server": "2.4 58248",
+      "postgres": {
+        "BlockIO": "272MB / 117MB",
+        "CPUPerc": "3.21%",
+        "Container": "rsctf-readiness-pg",
+        "ID": "bb6dcba3b0f9",
+        "MemPerc": "1.01%",
+        "MemUsage": "181.3MiB / 17.59GiB",
+        "Name": "rsctf-readiness-pg",
+        "NetIO": "24.8MB / 11.6MB",
+        "PIDs": "31"
+      }
+    },
+    {
+      "at": 1793807946672,
+      "server": "2.3 58248",
+      "postgres": {
+        "BlockIO": "272MB / 117MB",
+        "CPUPerc": "2.82%",
+        "Container": "rsctf-readiness-pg",
+        "ID": "bb6dcba3b0f9",
+        "MemPerc": "1.01%",
+        "MemUsage": "181.8MiB / 17.59GiB",
+        "Name": "rsctf-readiness-pg",
+        "NetIO": "24.8MB / 11.6MB",
+        "PIDs": "31"
+      }
+    }
+  ],
+  "samplingErrors": []
+}

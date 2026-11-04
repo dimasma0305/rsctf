@@ -158,6 +158,11 @@ pub mod repo_binding {
         pub scan_lease_expires_at_utc: Option<DateTime<Utc>>,
         pub scan_attempt: i64,
         pub scan_failures: i32,
+        #[sea_orm(default_value = "NoChange")]
+        pub scan_outcome: String,
+        pub blocked_commit_sha: Option<String>,
+        #[sea_orm(default_value = "{}")]
+        pub scan_blocked_game_ids: Vec<i32>,
         pub current_activity: Option<String>,
     }
 
@@ -186,6 +191,8 @@ pub mod repo_binding_scan {
         pub challenges_updated: i32,
         pub failures: i32,
         pub messages: Option<String>,
+        #[sea_orm(default_value = "Success")]
+        pub outcome: String,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

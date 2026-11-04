@@ -272,7 +272,12 @@
     "hill_scope": "Review hill health and lifecycle before using recovery controls. Scroll sideways for endpoints, receipts, and enable controls. Leaderboard scores below are settled values, with live projections shown separately.",
     "no_service": "No service registered",
     "stale": "Status could not be refreshed",
-    "stale_hint": "Showing the last loaded snapshot. Use Refresh to retry; these values may be out of date."
+    "stale_hint": "Showing the last loaded snapshot. Use Refresh to retry; these values may be out of date.",
+    "excluded_hills": "Hills excluded from scoring",
+    "excluded_hills_help": "These hills were not ready when scoring started. Repairing them does not add them to this competition’s frozen scoring set.",
+    "exclusion_ImageNotReady": "Image not ready",
+    "exclusion_TargetNotReady": "Target not ready",
+    "exclusion_CheckerNotReady": "Checker not ready"
   },
   "operations": {
     "images_error": "Image inventory could not be refreshed",
@@ -599,7 +604,7 @@
           "logarithmic": "Logarithmic (gentle)"
         },
         "network_mode": {
-          "description": "Public network access",
+            "description": "Open supports player access. On Docker, Isolated is for exec-only workloads and cannot publish challenge ports.",
           "label": "Network Mode",
           "modes": {
             "custom": "Custom",
@@ -1539,7 +1544,9 @@
         "next_scan": "Next scan",
         "commit": "Commit",
         "actions": "Actions"
-      }
+      },
+      "policy_blocked": "Import paused by competition rules. An unchanged commit will not be imported again; review the reason below.",
+      "permanent_failure": "This revision needs a source or configuration fix. Push a new commit or use Scan after fixing the issue."
     },
     "anti_cheat": {
       "title": "Anti-cheat conflict history",

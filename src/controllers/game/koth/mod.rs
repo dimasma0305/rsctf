@@ -290,6 +290,7 @@ pub struct AdminKothHill {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminKothStateModel {
+    pub excluded_hills: Vec<serde_json::Value>,
     pub epoch_ticks: i32,
     pub cycle_ticks: i32,
     pub champion_cooldown_ticks: i32,

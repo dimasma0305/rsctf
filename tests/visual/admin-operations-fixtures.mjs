@@ -42,8 +42,9 @@ const bindings = Array.from({ length: 22 }, (_, i) => ({
   intervalSeconds: 120,
   status: i % 3 === 1 ? 'Paused' : 'Active',
   lastCommitSha: 'a'.repeat(40),
+  scanOutcome: i === 0 ? 'PolicyBlocked' : i === 1 ? 'PermanentFailure' : 'Success',
   lastScanMessage:
-    i === 1 ? 'clone/fetch failed: repository exceeds the configured size limit' : 'Repository is up to date.',
+    i === 0 ? 'Repository sync is locked after A&D/KotH scoring has started.' : i === 1 ? 'repository checked-out content exceeds its limit at challenge.zip: 1073741825 bytes, limit 1073741824 bytes; adjust RSCTF_REPO_CONTENT_MIB' : 'Repository is up to date.',
   hasGitHubToken: i !== 2,
   tokenStatus: i === 1 ? 'DecryptFailed' : 'Available',
   pushOnEdit: false,

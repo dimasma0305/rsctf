@@ -498,17 +498,9 @@ async fn prepare_round_transaction(
     let has_koth = engine_challenges
         .iter()
         .any(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16);
-    let has_marker_hill = engine_challenges
-        .iter()
-        .any(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16 && !challenge.4);
     let has_api_hill = engine_challenges
         .iter()
         .any(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16 && challenge.4);
-    let koth_challenge_ids: Vec<i32> = engine_challenges
-        .iter()
-        .filter(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16)
-        .map(|challenge| challenge.0)
-        .collect();
 
     let latest: Option<RoundRow> = sqlx::query_as(
         r#"SELECT id, number, start_time_utc, end_time_utc, finalized
@@ -746,10 +738,12 @@ async fn prepare_round_transaction(
         .iter()
         .filter(|challenge| challenge.1 == ChallengeType::AttackDefense as i16)
         .all(|challenge| prepared_checker_exists(challenge.2.as_deref()));
-    let koth_checkers_ready = engine_challenges
+    let koth_checker_ids: Vec<i32> = engine_challenges
         .iter()
         .filter(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16)
-        .all(|challenge| prepared_checker_exists(challenge.2.as_deref()));
+        .filter(|challenge| prepared_checker_exists(challenge.2.as_deref()))
+        .map(|challenge| challenge.0)
+        .collect();
     let accepted_participation_ids: Vec<i32> = sqlx::query_scalar(
         r#"SELECT id FROM "Participations"
                 WHERE game_id = $1 AND status = $2
@@ -761,28 +755,7 @@ async fn prepare_round_transaction(
     .fetch_all(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let koth_target_ids: HashSet<i32> = if koth_challenge_ids.is_empty() {
-        HashSet::new()
-    } else {
-        sqlx::query_scalar::<_, i32>(
-            r#"SELECT challenge_id FROM "KothTargets"
-                WHERE game_id = $1 AND challenge_id = ANY($2)
-                  AND NULLIF(BTRIM(host), '') IS NOT NULL
-                  AND port BETWEEN 1 AND 65535
-                  AND NULLIF(BTRIM(container_id), '') IS NOT NULL
-                FOR SHARE"#,
-        )
-        .bind(game_id)
-        .bind(&koth_challenge_ids)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .into_iter()
-        .collect()
-    };
-    let koth_targets_ready = koth_challenge_ids
-        .iter()
-        .all(|challenge_id| koth_target_ids.contains(challenge_id));
+    let ready_hills = super::koth_cycle::ready_hills(tx, game_id, &koth_checker_ids).await?;
     let crown_shape_ready = super::koth_cycle::valid_crown_shape(
         crown_settings.0,
         crown_settings.1,
@@ -791,7 +764,7 @@ async fn prepare_round_transaction(
     );
     let koth_lifecycle_ready = koth_scoring_lifecycle_ready(
         crown_shape_ready,
-        has_marker_hill,
+        ready_hills.has_marker,
         crown_settings.2,
         accepted_participation_ids.len(),
         crate::services::ad_vpn::enabled(),
@@ -805,8 +778,8 @@ async fn prepare_round_transaction(
     let koth_scoring_ready = complete_koth_scoring_roster(
         &accepted_participation_ids,
         has_koth,
-        koth_targets_ready,
-        koth_checkers_ready,
+        !ready_hills.ids.is_empty(),
+        true, // Every selected hill has a prepared checker.
         koth_lifecycle_ready,
         game_settings.practice_mode,
     );
@@ -852,7 +825,8 @@ async fn prepare_round_transaction(
         };
         // This is intentionally idempotent so a round can repair a boundary
         // whose official snapshot was interrupted on an older deployment.
-        super::koth_cycle::snapshot_official_config(tx, game_id, koth_start_round).await?;
+        super::koth_cycle::snapshot_official_config(tx, game_id, koth_start_round, &ready_hills)
+            .await?;
     }
 
     if !services.is_empty() {

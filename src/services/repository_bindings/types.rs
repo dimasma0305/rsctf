@@ -1,9 +1,31 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum RepoScanOutcome {
+    Success,
+    NoChange,
+    PolicyBlocked,
+    RetryableFailure,
+    PermanentFailure,
+}
+
+impl RepoScanOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "Success",
+            Self::NoChange => "NoChange",
+            Self::PolicyBlocked => "PolicyBlocked",
+            Self::RetryableFailure => "RetryableFailure",
+            Self::PermanentFailure => "PermanentFailure",
+        }
+    }
+}
+
 /// RSCTF `RepoBindingScanResultModel`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoBindingScanResultModel {
+    pub outcome: RepoScanOutcome,
     pub games_created: i32,
     pub games_updated: i32,
     pub challenges_imported: i32,
@@ -17,12 +39,15 @@ pub(crate) struct RepoBindingScanExecution {
     pub ran_at: DateTime<Utc>,
     pub commit_sha: Option<String>,
     pub message: String,
+    pub blocked_games: Vec<i32>,
+    pub unchanged_block: bool,
 }
 
 /// RSCTF `RepoBindingInfoModel`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoBindingInfoModel {
+    pub scan_outcome: String,
     pub id: i32,
     pub repo_url: String,
     pub r#ref: Option<String>,
@@ -80,6 +105,7 @@ pub struct RepoBindingUpdateModel {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoBindingScanHistoryModel {
+    pub outcome: String,
     pub id: i32,
     #[serde(with = "crate::utils::datetime::millis")]
     pub ran_at_utc: DateTime<Utc>,

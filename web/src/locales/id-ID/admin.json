@@ -255,7 +255,12 @@
     "hill_scope": "Periksa kesehatan dan siklus hill sebelum memakai kontrol pemulihan. Geser ke samping untuk melihat endpoint, bukti, dan kontrol aktivasi. Skor di bawah sudah ditetapkan, dengan proyeksi langsung ditampilkan terpisah.",
     "no_service": "Belum ada layanan terdaftar",
     "stale": "Status belum dapat dimuat ulang",
-    "stale_hint": "Menampilkan data terakhir yang dimuat. Gunakan Muat ulang untuk mencoba lagi; nilai ini mungkin sudah berubah."
+    "stale_hint": "Menampilkan data terakhir yang dimuat. Gunakan Muat ulang untuk mencoba lagi; nilai ini mungkin sudah berubah.",
+    "excluded_hills": "Hill tidak ikut scoring",
+    "excluded_hills_help": "Hill ini belum siap saat scoring dimulai. Setelah diperbaiki, hill tetap tidak ditambahkan ke daftar scoring resmi pertandingan ini.",
+    "exclusion_ImageNotReady": "Image belum siap",
+    "exclusion_TargetNotReady": "Target belum siap",
+    "exclusion_CheckerNotReady": "Checker belum siap"
   },
   "operations": {
     "images_error": "Daftar image belum dapat dimuat ulang",
@@ -459,7 +464,7 @@
           "label": "Rasio skor minimum"
         },
         "network_mode": {
-          "description": "Akses jaringan publik",
+            "description": "Terbuka mendukung akses pemain. Pada Docker, Terisolasi hanya untuk akses exec dan tidak dapat membuka port challenge.",
           "label": "Mode jaringan",
           "modes": {
             "custom": "Kustom",
@@ -829,6 +834,10 @@
         "title": "Reset password untuk {{name}}"
       },
       "stats": "<1>{{current}}</1> dari <1>{{total}}</1> pengguna yang ditampilkan"
+    },
+    "repo_binding": {
+      "policy_blocked": "Impor tertahan aturan pertandingan. Commit yang sama tidak diimpor berulang; lihat alasannya di bawah.",
+      "permanent_failure": "Revisi ini perlu perbaikan source atau konfigurasi. Push commit baru atau gunakan Scan setelah memperbaikinya."
     }
   },
   "label": {

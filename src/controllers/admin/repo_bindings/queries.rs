@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(sqlx::FromRow)]
 struct BindingListRow {
+    scan_outcome: String,
     id: i32,
     repo_url: String,
     git_ref: Option<String>,
@@ -39,6 +40,7 @@ fn binding_info(row: BindingListRow) -> AppResult<RepoBindingInfoModel> {
     let games = serde_json::from_value::<Vec<Value>>(row.games)
         .map_err(|error| AppError::internal(format!("decode repository games: {error}")))?;
     Ok(RepoBindingInfoModel {
+        scan_outcome: row.scan_outcome,
         id: row.id,
         repo_url: row.repo_url,
         r#ref: row.git_ref,
@@ -94,6 +96,7 @@ pub(super) async fn repo_info_after_update(
         .as_deref()
         .is_some_and(|value| !value.is_empty());
     Ok(RepoBindingInfoModel {
+        scan_outcome: model.scan_outcome,
         id: model.id,
         repo_url: model.repo_url,
         r#ref: model.git_ref,
@@ -127,7 +130,7 @@ pub async fn list_repo_bindings(
 ) -> AppResult<ArrayResponse<RepoBindingInfoModel>> {
     let (count, skip) = bounded_page(query);
     let rows = sqlx::query_as::<_, BindingListRow>(
-        r#"SELECT binding.id, binding.repo_url, binding.git_ref,
+        r#"SELECT binding.id, binding.repo_url, binding.git_ref, binding.scan_outcome,
                   binding.created_at_utc, binding.last_scan_utc,
                   binding.next_scan_utc, binding.interval_seconds,
                   binding.status::smallint AS status,
@@ -175,6 +178,7 @@ pub async fn list_repo_bindings(
 
 #[derive(sqlx::FromRow)]
 struct ScanHistoryRow {
+    outcome: String,
     id: i32,
     ran_at_utc: DateTime<Utc>,
     commit_sha: Option<String>,
@@ -195,7 +199,7 @@ pub async fn repo_binding_scans(
 ) -> AppResult<ArrayResponse<RepoBindingScanHistoryModel>> {
     let (count, skip) = bounded_history_page(query);
     let rows = sqlx::query_as::<_, ScanHistoryRow>(
-        r#"SELECT id, ran_at_utc, commit_sha, games_created, games_updated,
+        r#"SELECT id, ran_at_utc, commit_sha, games_created, games_updated, outcome,
                   challenges_imported, challenges_updated, failures, messages,
                   COUNT(*) OVER() AS total
              FROM "RepoBindingScans"
@@ -213,6 +217,7 @@ pub async fn repo_binding_scans(
     let data = rows
         .into_iter()
         .map(|row| RepoBindingScanHistoryModel {
+            outcome: row.outcome,
             id: row.id,
             ran_at_utc: row.ran_at_utc,
             commit_sha: row.commit_sha,

@@ -153,6 +153,9 @@ try {
     await wait(`document.body.innerText.includes('Stargazers')`);
     await audit(name + "-ad");
     await chooseMode("koth");
+    const exclusionTitle = language === "id-ID" ? "Hill tidak ikut scoring" : "Hills excluded from scoring";
+    const exclusionReason = language === "id-ID" ? "Image belum siap" : "Image not ready";
+    await wait(`document.body.innerText.includes(${JSON.stringify(exclusionTitle)}) && document.body.innerText.includes(${JSON.stringify(exclusionReason)})`);
     await audit(name + "-koth");
   }
   if (!before && !screensOnly) {

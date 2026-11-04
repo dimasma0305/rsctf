@@ -174,7 +174,7 @@ const RepoBindings: FC = () => {
   const flash = (r: RepoBindingScanResultModel) => {
     setLastResult(r)
     showNotification({
-      color: r.failures === 0 ? 'teal' : 'orange',
+      color: r.failures === 0 && r.outcome !== 'PolicyBlocked' && r.outcome !== 'PermanentFailure' ? 'teal' : 'orange',
       title: t('admin.notification.repo_binding.scanned'),
       message: t('admin.notification.repo_binding.summary', {
         games: r.gamesCreated + r.gamesUpdated,
@@ -660,6 +660,13 @@ const RepoBindings: FC = () => {
                       </Group>
                     )}
 
+                    {(b.scanOutcome === 'PolicyBlocked' || b.scanOutcome === 'PermanentFailure') && (
+                      <Text size="sm" className={classes.warningText} role="status">
+                        {b.scanOutcome === 'PolicyBlocked'
+                          ? t('admin.content.repo_binding.policy_blocked', 'Import paused by competition rules. An unchanged commit will not be imported again; review the reason below.')
+                          : t('admin.content.repo_binding.permanent_failure', 'This revision needs a source or configuration fix. Push a new commit or use Scan after fixing the issue.')}
+                      </Text>
+                    )}
                     {b.lastScanMessage && (
                       <Text
                         size="xs"
