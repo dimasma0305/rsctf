@@ -296,7 +296,9 @@ async fn checkout_tree_quota_includes_git_object_storage() {
     let pack = tokio::fs::File::create(objects.join("pack-large.pack"))
         .await
         .unwrap();
-    pack.set_len(MAX_REPO_TOTAL_BYTES + 1).await.unwrap();
+    pack.set_len(limits::CheckoutLimits::configured().unwrap().metadata + 1)
+        .await
+        .unwrap();
 
     assert!(checkout_usage_exceeds(&root).await.unwrap());
     assert!(validate_checkout_tree(&root).await.is_err());
@@ -312,7 +314,7 @@ async fn checkout_tree_accepts_a_large_bounded_ctf_repository() {
         let file = tokio::fs::File::create(root.join(format!("artifact-{index}")))
             .await
             .unwrap();
-        file.set_len(MAX_REPO_FILE_BYTES).await.unwrap();
+        file.set_len(64 * 1024 * 1024).await.unwrap();
     }
     let pack = tokio::fs::File::create(packs.join("pack-repository.pack"))
         .await

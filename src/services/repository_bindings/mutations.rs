@@ -12,7 +12,7 @@ pub(crate) async fn commit_already_applied(
         return Ok(false);
     }
     let clean = sqlx::query_scalar::<_, bool>(
-        r#"SELECT failures = 0
+        r#"SELECT failures = 0 AND outcome IN ('Success', 'NoChange')
              FROM "RepoBindingScans"
             WHERE binding_id = $1 AND commit_sha = $2
             ORDER BY id DESC
@@ -127,6 +127,7 @@ pub(crate) async fn update_repo_binding_record(
     }
     let resumed =
         existing.status == RepoWatchStatus::Paused && status == Some(RepoWatchStatus::Active);
+    let retry_requested = resumed || m.r#ref.is_some() || m.github_token.is_some();
     let mut model: repo_binding::ActiveModel = existing.into();
     if let Some(value) = m.r#ref {
         model.git_ref = Set(crate::services::git_sync::validate_git_ref(Some(&value))?);
@@ -152,12 +153,17 @@ pub(crate) async fn update_repo_binding_record(
         model.push_on_edit = Set(value);
     }
     let updated = model.update(&st.db).await?;
-    if resumed {
-        sqlx::query(r#"UPDATE "RepoBindings" SET next_scan_utc = clock_timestamp() WHERE id = $1"#)
-            .bind(id)
-            .execute(st.pg())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+    if retry_requested {
+        sqlx::query(
+            r#"UPDATE "RepoBindings"
+                         SET next_scan_utc = clock_timestamp(), scan_outcome = 'NoChange',
+                             blocked_commit_sha = NULL, scan_blocked_game_ids = '{}'
+                       WHERE id = $1"#,
+        )
+        .bind(id)
+        .execute(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     }
     if !effective_push {
         sqlx::query(r#"DELETE FROM "RepoPushQueue" WHERE binding_id = $1"#)
@@ -166,7 +172,7 @@ pub(crate) async fn update_repo_binding_record(
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
-    if resumed {
+    if retry_requested {
         return repo_binding::Entity::find_by_id(id)
             .one(&st.db)
             .await?

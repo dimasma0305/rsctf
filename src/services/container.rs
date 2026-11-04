@@ -549,13 +549,6 @@ impl ContainerManager for DockerContainerManager {
             Some(NetworkingConfig {
                 endpoints_config: HashMap::from([(net.clone(), EndpointSettings::default())]),
             })
-        } else if spec.network_mode == NetworkMode::Isolated && spec.publish_port {
-            let network = format!("rsctf-isolated-{}", &self.scope[..12]);
-            self.ensure_bridge_network(&network, None, true, true)
-                .await?;
-            Some(NetworkingConfig {
-                endpoints_config: HashMap::from([(network, EndpointSettings::default())]),
-            })
         } else {
             None
         };

@@ -62,7 +62,7 @@ pub(super) async fn build_from_context(
 
     match failed {
         Some(err) => {
-            log.push_str(&err);
+            log.push_str(&diagnostics::explain(&err));
             BuildOutcome {
                 status: ChallengeBuildStatus::Failed,
                 log: cap_build_log(log),
@@ -125,7 +125,7 @@ pub(super) async fn pull_image(
 
     match failed {
         Some(err) => {
-            log.push_str(&err);
+            log.push_str(&diagnostics::explain(&format!("Image {image}: {err}")));
             BuildOutcome {
                 status: ChallengeBuildStatus::Failed,
                 log: cap_build_log(log),

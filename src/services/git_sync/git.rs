@@ -13,11 +13,11 @@ use tokio::process::Command;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio::time::timeout;
 
-use super::{
-    is_git_object_pack, MAX_REPO_DEPTH, MAX_REPO_ENTRIES, MAX_REPO_FILES, MAX_REPO_FILE_BYTES,
-    MAX_REPO_TOTAL_BYTES,
-};
+use super::limits::validate_checkout_tree;
 use crate::utils::error::{AppError, AppResult};
+
+#[path = "git_refs.rs"]
+mod refs;
 
 /// Hard wall-clock cap on a single `git` invocation. Two minutes is generous for
 /// a shallow clone of any real-world CTF repo; past that we assume the connection
@@ -479,6 +479,15 @@ impl GitCredentials {
 /// Any non-zero `git` exit or a timeout maps to [`AppError::internal`] carrying
 /// the (credential-scrubbed) stderr.
 pub async fn sync_repo(url: &str, branch: Option<&str>, dest: &Path) -> AppResult<()> {
+    let result = sync_repo_inner(url, branch, dest).await;
+    if matches!(&result, Err(AppError::PayloadTooLarge(_))) {
+        // This also covers an in-flight download stopped by the budget monitor.
+        let _ = tokio::fs::remove_dir_all(dest).await;
+    }
+    result
+}
+
+async fn sync_repo_inner(url: &str, branch: Option<&str>, dest: &Path) -> AppResult<()> {
     let url = validate_sync_repo_url(url)?;
     let transport = resolve_git_transport(&url).await?;
     let clean_url = url_without_credentials(&url)?;
@@ -486,7 +495,16 @@ pub async fn sync_repo(url: &str, branch: Option<&str>, dest: &Path) -> AppResul
     let branch = branch.as_deref();
     let git_dir = dest.join(".git");
 
-    if git_dir.exists() {
+    let pinned_commit = branch.is_some_and(|reference| {
+        reference.len() == 40 && reference.bytes().all(|byte| byte.is_ascii_hexdigit())
+    });
+    if git_dir.exists() || pinned_commit {
+        if !git_dir.exists() {
+            tokio::fs::create_dir_all(dest).await.map_err(|error| {
+                AppError::internal(format!("git_sync: create checkout: {error}"))
+            })?;
+            run_git(dest, &["init", "--quiet"]).await?;
+        }
         let cleared = clear_stale_git_locks(&git_dir).await;
         if cleared > 0 {
             tracing::warn!(
@@ -498,17 +516,10 @@ pub async fn sync_repo(url: &str, branch: Option<&str>, dest: &Path) -> AppResul
 
         tracing::debug!(url = %redact_url(&url), dir = %dest.display(), "git_sync: fetching");
         // Keep the remote URL current in case the binding's URL/token changed.
-        run_git(dest, &["remote", "set-url", "origin", &clean_url]).await?;
-        // "--" so a ref beginning with '-' is treated as a refspec, not an option.
-        let refspec = branch.unwrap_or("HEAD");
-        run_git_with_transport(
-            Some(dest),
-            &transport,
-            &["fetch", "--depth", "1", "--", &url, refspec],
-        )
-        .await?;
-        // FETCH_HEAD always points at whatever we just fetched.
-        run_git(dest, &["reset", "--hard", "FETCH_HEAD"]).await?;
+        run_git(dest, &["config", "remote.origin.url", &clean_url]).await?;
+        // Restore the requested branch after an immutable scan. Push-on-edit
+        // must never inherit git-init's default branch or a prior binding ref.
+        refs::fetch_and_checkout(dest, &url, &transport, branch, pinned_commit).await?;
         // Drop untracked files a previous import may have written (e.g. build
         // artifacts). Safe: the checkout dir is internal, nothing else touches it.
         run_git(dest, &["clean", "-fdx"]).await?;
@@ -529,7 +540,7 @@ pub async fn sync_repo(url: &str, branch: Option<&str>, dest: &Path) -> AppResul
             .ok_or_else(|| AppError::internal("git_sync: destination path is not valid UTF-8"))?;
 
         tracing::info!(url = %redact_url(&url), dir = %dest.display(), "git_sync: cloning");
-        let mut args: Vec<&str> = vec!["clone", "--depth", "1", "--single-branch"];
+        let mut args: Vec<&str> = vec!["clone", "--depth", "1", "--single-branch", "--no-tags"];
         if let Some(b) = branch {
             args.push("--branch");
             args.push(b);
@@ -555,71 +566,33 @@ pub async fn sync_repo(url: &str, branch: Option<&str>, dest: &Path) -> AppResul
     Ok(())
 }
 
-pub(super) async fn validate_checkout_tree(root: &Path) -> AppResult<()> {
-    let mut stack = vec![(root.to_path_buf(), 0usize)];
-    let mut entries_seen = 0usize;
-    let mut files_seen = 0usize;
-    let mut total_bytes = 0u64;
-    while let Some((current, depth)) = stack.pop() {
-        if depth > MAX_REPO_DEPTH {
-            return Err(AppError::bad_request("repository tree is too deep"));
-        }
-        let mut entries = tokio::fs::read_dir(&current).await.map_err(|e| {
-            AppError::internal(format!("git_sync: read_dir {}: {e}", current.display()))
-        })?;
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|e| AppError::internal(format!("git_sync: read repository entry: {e}")))?
-        {
-            entries_seen += 1;
-            if entries_seen > MAX_REPO_ENTRIES {
-                return Err(AppError::bad_request(
-                    "repository contains too many entries",
-                ));
-            }
-            let file_type = entry.file_type().await.map_err(|e| {
-                AppError::internal(format!("git_sync: stat {}: {e}", entry.path().display()))
-            })?;
-            if file_type.is_symlink() {
-                continue;
-            }
-            if file_type.is_dir() {
-                stack.push((entry.path(), depth + 1));
-            } else if file_type.is_file() {
-                files_seen += 1;
-                if files_seen > MAX_REPO_FILES {
-                    return Err(AppError::bad_request("repository contains too many files"));
-                }
-                let path = entry.path();
-                let len = entry
-                    .metadata()
-                    .await
-                    .map_err(|e| {
-                        AppError::internal(format!(
-                            "git_sync: stat {}: {e}",
-                            entry.path().display()
-                        ))
-                    })?
-                    .len();
-                if (!is_git_object_pack(root, &path) && len > MAX_REPO_FILE_BYTES)
-                    || total_bytes.saturating_add(len) > MAX_REPO_TOTAL_BYTES
-                {
-                    return Err(AppError::bad_request("repository exceeds the size limit"));
-                }
-                total_bytes = total_bytes.saturating_add(len);
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Return the SHA the checkout at `dest` currently points at (`git rev-parse
 /// HEAD`). Useful for recording the synced commit and short-circuiting an import
 /// when the SHA hasn't moved since the last scan.
 pub async fn head_sha(dest: &Path) -> AppResult<String> {
     let out = run_git(dest, &["rev-parse", "HEAD"]).await?;
     Ok(out.trim().to_string())
+}
+
+/// Probe only the advertised ref when an unchanged revision cannot be imported.
+/// Use the same DNS pinning, credentials and subprocess deadline as fetch.
+pub async fn remote_head_sha(url: &str, branch: Option<&str>) -> AppResult<Option<String>> {
+    let url = validate_sync_repo_url(url)?;
+    let branch = validate_git_ref(branch)?;
+    let reference = branch.as_deref().unwrap_or("HEAD");
+    if reference.len() == 40 && reference.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(Some(reference.to_ascii_lowercase()));
+    }
+    let transport = resolve_git_transport(&url).await?;
+    let output =
+        run_git_with_transport(None, &transport, &["ls-remote", "--", &url, reference]).await?;
+    let mut lines = output.lines();
+    let sha = lines.next().and_then(|line| line.split_whitespace().next());
+    Ok(sha
+        .filter(|sha| {
+            lines.next().is_none() && sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+        .map(str::to_owned))
 }
 
 /// Remove stale `*.lock` files under a `.git` directory left by a git process
@@ -742,12 +715,9 @@ async fn run_git_opt_cwd(cwd: Option<&Path>, args: &[&str]) -> AppResult<String>
                 )));
             }
             _ = quota_tick.tick(), if monitored_root.is_some() => {
-                if checkout_usage_exceeds(
-                    monitored_root.as_deref().expect("guarded monitored workspace")
-                ).await? {
-                    return Err(AppError::bad_request(
-                        "repository checkout exceeds the filesystem quota",
-                    ));
+                let root = monitored_root.as_deref().expect("guarded monitored workspace");
+                if tokio::fs::try_exists(root).await.unwrap_or(false) {
+                    validate_checkout_tree(root).await?;
                 }
             }
         }
@@ -771,73 +741,93 @@ async fn run_git_opt_cwd(cwd: Option<&Path>, args: &[&str]) -> AppResult<String>
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn monitored_git_workspace(cwd: Option<&Path>, args: &[&str]) -> Option<PathBuf> {
+fn monitored_git_workspace(cwd: Option<&Path>, mut args: &[&str]) -> Option<PathBuf> {
+    // Network policy prepends `-c key=value` pairs before the subcommand.
+    // Account for them so hardened clone/fetch calls still enforce disk budgets.
+    while args.len() >= 2 && args[0] == "-c" {
+        args = &args[2..];
+    }
     match args.first().copied() {
         Some("clone") => args.last().map(PathBuf::from),
-        Some("fetch") => cwd.map(Path::to_path_buf),
+        Some("fetch" | "reset" | "checkout") => cwd.map(Path::to_path_buf),
         _ => None,
     }
 }
 
-/// Check paid checkout bytes while the network process is still running. This
-/// includes `.git` object packs and stops at the first declared bound instead
-/// of completing an attacker-sized download and only then rejecting it.
-pub(super) async fn checkout_usage_exceeds(root: &Path) -> AppResult<bool> {
-    if !tokio::fs::try_exists(root)
-        .await
-        .map_err(|error| AppError::internal(format!("git_sync: stat workspace: {error}")))?
-    {
-        return Ok(false);
-    }
-    let mut stack = vec![(root.to_path_buf(), 0usize)];
-    let mut entries_seen = 0usize;
-    let mut total_bytes = 0u64;
-    while let Some((current, depth)) = stack.pop() {
-        if depth > MAX_REPO_DEPTH {
-            return Ok(true);
-        }
-        let mut entries = tokio::fs::read_dir(&current).await.map_err(|error| {
-            AppError::internal(format!("git_sync: read_dir {}: {error}", current.display()))
-        })?;
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|error| AppError::internal(format!("git_sync: read workspace: {error}")))?
-        {
-            entries_seen += 1;
-            if entries_seen > MAX_REPO_ENTRIES {
-                return Ok(true);
-            }
-            let file_type = entry.file_type().await.map_err(|error| {
-                AppError::internal(format!(
-                    "git_sync: stat {}: {error}",
-                    entry.path().display()
-                ))
-            })?;
-            if file_type.is_dir() {
-                stack.push((entry.path(), depth + 1));
-            } else if file_type.is_file() {
-                let path = entry.path();
-                let size = entry
-                    .metadata()
+#[cfg(test)]
+mod monitoring_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires public GitHub network access"]
+    async fn advertised_revision_can_be_fetched_into_new_and_existing_checkouts() {
+        let url = "https://github.com/octocat/Hello-World.git";
+        let sha = remote_head_sha(url, Some("master")).await.unwrap().unwrap();
+        let root = std::env::temp_dir().join(format!("rsctf-pinned-{}", uuid::Uuid::new_v4()));
+        sync_repo(url, Some(&sha), &root).await.unwrap();
+        assert_eq!(head_sha(&root).await.unwrap(), sha);
+        assert!(root.join("README").exists());
+        assert_eq!(
+            run_git(&root, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .await
+                .unwrap()
+                .trim(),
+            "HEAD"
+        );
+        sync_repo(url, Some(&sha), &root).await.unwrap();
+        assert_eq!(head_sha(&root).await.unwrap(), sha);
+        for branch in [Some("master"), None] {
+            sync_repo(url, branch, &root).await.unwrap();
+            assert_eq!(
+                run_git(&root, &["rev-parse", "--abbrev-ref", "HEAD"])
                     .await
-                    .map_err(|error| {
-                        AppError::internal(format!(
-                            "git_sync: stat {}: {error}",
-                            entry.path().display()
-                        ))
-                    })?
-                    .len();
-                if (!is_git_object_pack(root, &path) && size > MAX_REPO_FILE_BYTES)
-                    || total_bytes.saturating_add(size) > MAX_REPO_TOTAL_BYTES
-                {
-                    return Ok(true);
-                }
-                total_bytes = total_bytes.saturating_add(size);
-            }
+                    .unwrap()
+                    .trim(),
+                "master"
+            );
         }
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
-    Ok(false)
+
+    #[test]
+    fn transport_options_do_not_disable_download_budget_monitoring() {
+        let policy = GitTransportPolicy {
+            curl_resolve: Some("github.com:443:1.1.1.1".into()),
+        };
+        let args = policy.command_args(&[
+            "clone",
+            "--depth",
+            "1",
+            "--",
+            "https://github.com/test/repo",
+            "/tmp/checkout",
+        ]);
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(
+            monitored_git_workspace(None, &args),
+            Some(PathBuf::from("/tmp/checkout"))
+        );
+        let args = policy.command_args(&[
+            "fetch",
+            "--depth",
+            "1",
+            "--",
+            "https://github.com/test/repo",
+            "HEAD",
+        ]);
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(
+            monitored_git_workspace(Some(Path::new("/tmp/checkout")), &args),
+            Some(PathBuf::from("/tmp/checkout"))
+        );
+        assert_eq!(
+            monitored_git_workspace(
+                None,
+                &["ls-remote", "--", "https://github.com/test/repo", "HEAD"]
+            ),
+            None
+        );
+    }
 }
 
 /// Killing only the direct `git` process can leave credential helpers, hooks,

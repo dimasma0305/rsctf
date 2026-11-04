@@ -242,7 +242,17 @@ pub async fn admin_state(
         })
         .collect();
 
+    let exclusions: Option<serde_json::Value> = sqlx::query_scalar(
+        r#"SELECT excluded_hills_snapshot FROM "KothOfficialConfigs" WHERE game_id = $1"#,
+    )
+    .bind(game_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(RequestResponse::ok(AdminKothStateModel {
+        excluded_hills: exclusions
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default(),
         epoch_ticks: game.koth_epoch_ticks,
         cycle_ticks: game.koth_cycle_ticks,
         champion_cooldown_ticks: game.koth_champion_cooldown_ticks,

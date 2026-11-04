@@ -49,6 +49,7 @@ pub(crate) async fn snapshot_official_config(
     transaction: &mut Transaction<'static, Postgres>,
     game_id: i32,
     scoring_start_round: i32,
+    ready: &super::ReadyHills,
 ) -> AppResult<()> {
     let unsnapshotted_cooldown: Option<i32> = sqlx::query_scalar(
         r#"SELECT game.koth_champion_cooldown_ticks
@@ -73,6 +74,7 @@ pub(crate) async fn snapshot_official_config(
                   AND challenge.is_enabled = TRUE
                   AND challenge.review_status = $2
                   AND challenge."Type" = $3
+                  AND challenge.id = ANY($5)
                ),
                EXISTS(
                  SELECT 1 FROM "GameChallenges" challenge
@@ -80,6 +82,7 @@ pub(crate) async fn snapshot_official_config(
                   AND challenge.is_enabled = TRUE
                   AND challenge.review_status = $2
                   AND challenge."Type" = $3
+                  AND challenge.id = ANY($5)
                   AND NOT EXISTS (
                         SELECT 1 FROM "KothApiObservers" observer
                          WHERE observer.game_id = challenge.game_id
@@ -94,6 +97,7 @@ pub(crate) async fn snapshot_official_config(
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(ChallengeType::KingOfTheHill as i16)
     .bind(ParticipationStatus::Accepted as i16)
+    .bind(&ready.ids)
     .fetch_one(&mut **transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -118,7 +122,7 @@ pub(crate) async fn snapshot_official_config(
            INSERT INTO "KothOfficialConfigs"
              (game_id, scoring_start_round, epoch_ticks,
               cycle_ticks, champion_cooldown_ticks, claim_confirmation_ticks,
-              roster_snapshot, hills_snapshot)
+              roster_snapshot, hills_snapshot, excluded_hills_snapshot)
            SELECT game.id, $2,
                   game.koth_epoch_ticks, game.koth_cycle_ticks,
                   game.koth_champion_cooldown_ticks,
@@ -151,10 +155,11 @@ pub(crate) async fn snapshot_official_config(
                        AND challenge.is_enabled = TRUE
                        AND challenge.review_status = $4
                        AND challenge."Type" = $5
+                       AND challenge.id = ANY($7)
                        AND challenge.build_status = $6
                        AND NULLIF(BTRIM(challenge.build_image_digest), '') IS NOT NULL
                        AND NULLIF(BTRIM(target.container_id), '') IS NOT NULL
-                  ), '[]'::jsonb)
+                  ), '[]'::jsonb), $8
              FROM "Games" game
             WHERE game.id = $1
               AND game.koth_scoring_start_round = $2
@@ -167,6 +172,7 @@ pub(crate) async fn snapshot_official_config(
                     WHERE participation.game_id = game.id
                       AND participation.status = $3)
                     >= CASE WHEN game.practice_mode THEN 1 ELSE 2 END
+              AND cardinality($7::integer[]) > 0
               AND NOT EXISTS (
                     SELECT 1 FROM "GameChallenges" challenge
                     LEFT JOIN "KothTargets" target
@@ -176,6 +182,7 @@ pub(crate) async fn snapshot_official_config(
                      AND challenge.is_enabled = TRUE
                      AND challenge.review_status = $4
                      AND challenge."Type" = $5
+                     AND challenge.id = ANY($7)
                      AND (challenge.build_status <> $6
                           OR NULLIF(BTRIM(challenge.build_image_digest), '') IS NULL
                           OR NULLIF(BTRIM(target.container_id), '') IS NULL)
@@ -193,6 +200,8 @@ pub(crate) async fn snapshot_official_config(
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(ChallengeType::KingOfTheHill as i16)
     .bind(ChallengeBuildStatus::Success as i16)
+    .bind(&ready.ids)
+    .bind(serde_json::json!(ready.excluded))
     .fetch_one(&mut **transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

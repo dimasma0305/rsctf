@@ -6,6 +6,10 @@
 
 mod claims;
 mod config;
+mod readiness;
+#[cfg(test)]
+mod readiness_tests;
+pub(crate) use readiness::{ready_hills, ReadyHills};
 mod cooldown;
 mod lifecycle;
 mod rollover;

@@ -141,10 +141,25 @@ active account policy in the Admin UI and test it with a normal account.
 | `RSCTF_LOCAL_CONTAINER_RESERVE_CPU_MILLIS` | Deprecated | Accepted for compatibility but no longer reserves CPU or derives a container-count cap |
 | `RSCTF_LOCAL_CONTAINER_RESERVE_MEMORY_BYTES` | `2147483648` | Absolute memory reserve floor (2 GiB) used when the fractional reserve is smaller |
 | `RSCTF_REPO_SCAN_CONCURRENCY` | `1` | Concurrent long-lived shared checkout scans per process (`1..4`) |
+| `RSCTF_REPO_CONTENT_MIB` | `1024` | Materialized repository content and immutable checkout snapshot disk budget; excludes `.git` |
+| `RSCTF_REPO_FILE_MIB` | `256` | Maximum individual file in a repository checkout, in MiB |
+| `RSCTF_REPO_GIT_MIB` | `512` | Separate Git metadata/object budget in MiB, enforced during downloads too |
 | `RSCTF_TRAFFIC_CAPTURE_ENABLED` | `false` | Allow the singleton `all`/`control`/`network` worker to collect packet captures for challenges that enable it; Compose deployments must also select the matching capture overlay that grants `NET_RAW` |
 | `RSCTF_CAPTURE_DEVICE` | `any` | libpcap device used by the singleton capture owner |
 | `RSCTF_CAPTURE_RECONCILE_SECONDS` | `2` | Durable capture desired-state recovery interval (`1..60` seconds) |
 | `DOCKER_HOST` | Local socket | Docker daemon endpoint used by the Docker backend |
+
+### Repository checkout budgets
+
+Repository checkout budgets above are disk limits. They are separate from the
+per-challenge build archive expansion limits (256 MiB total, 32 MiB per entry).
+Changing a repository budget does not disable archive validation. After raising
+a checkout budget, use **Scan** on the binding to retry a previously rejected revision.
+
+Repository scans distinguish competition-policy blocks from transient failures.
+An unchanged blocked revision is checked with a metadata-only ref probe rather
+than cloned and imported again. A new revision, an unlocked/detached affected
+game, a binding credential/ref change, or a manual **Scan** permits another attempt.
 
 ### Local Docker aggregate capacity
 

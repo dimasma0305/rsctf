@@ -12,10 +12,7 @@ use std::path::{Component, Path, PathBuf};
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
 
-use super::{
-    repository, CheckoutLockGuard, MAX_REPO_DEPTH, MAX_REPO_ENTRIES, MAX_REPO_FILES,
-    MAX_REPO_FILE_BYTES, MAX_REPO_TOTAL_BYTES,
-};
+use super::{repository, CheckoutLockGuard, MAX_REPO_DEPTH, MAX_REPO_ENTRIES, MAX_REPO_FILES};
 use crate::utils::error::{AppError, AppResult};
 
 const SNAPSHOT_DIRECTORY: &str = ".snapshots";
@@ -307,6 +304,7 @@ struct CopyBudget {
 }
 
 async fn copy_checkout_tree(source: &Path, destination: &Path) -> AppResult<()> {
+    let limits = super::limits::CheckoutLimits::configured()?;
     let mut budget = CopyBudget::default();
     let mut stack = vec![(source.to_path_buf(), destination.to_path_buf(), 0usize)];
     while let Some((source_dir, destination_dir, depth)) = stack.pop() {
@@ -365,11 +363,11 @@ async fn copy_checkout_tree(source: &Path, destination: &Path) -> AppResult<()> 
                         ))
                     })?
                     .len();
-                if size > MAX_REPO_FILE_BYTES
-                    || budget.bytes.saturating_add(size) > MAX_REPO_TOTAL_BYTES
-                {
-                    return Err(AppError::bad_request("repository exceeds the size limit"));
-                }
+                limits.content_file(
+                    source_path.strip_prefix(source).unwrap_or(&source_path),
+                    size,
+                    budget.bytes,
+                )?;
                 tokio::fs::copy(&source_path, &destination_path)
                     .await
                     .map_err(|error| {

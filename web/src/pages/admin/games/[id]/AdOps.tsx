@@ -1386,6 +1386,16 @@ const AdOps: FC = () => {
         onClose={closeShell}
       />
       <Stack gap="md" className={ops.workspace} data-ad-workspace>
+        {showKoth && (koth?.excludedHills?.length ?? 0) > 0 && (
+          <Alert color="orange" styles={{ title: { color: 'var(--mantine-color-text)' } }} title={t('admin.ad_console.excluded_hills', 'Hills excluded from scoring')}>
+            <Text size="sm">{t('admin.ad_console.excluded_hills_help', 'These hills were not ready when scoring started. Repairing them does not add them to this competition’s frozen scoring set.')}</Text>
+            {koth?.excludedHills?.map((hill) => (
+              <Text size="sm" key={hill.challengeId}>
+                #{hill.challengeId}: {hill.reasons.map((reason) => t(`admin.ad_console.exclusion_${reason}`, reason)).join(', ')}
+              </Text>
+            ))}
+          </Alert>
+        )}
         {!eventEnded && !eventUpcoming && <CompetitionMaintenancePanel key={numId} gameId={numId} />}
         <Group justify="space-between" align="center" className={ops.toolbar}>
           <Group gap="sm" wrap="wrap">

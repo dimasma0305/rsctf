@@ -4479,6 +4479,7 @@ export interface RepoBindingGameSummary {
 
 /** Row returned by GET /api/Admin/RepoBindings */
 export interface RepoBindingInfoModel {
+  scanOutcome?: 'Success' | 'NoChange' | 'PolicyBlocked' | 'RetryableFailure' | 'PermanentFailure'
   id: number
   repoUrl: string
   ref?: string | null
@@ -4534,6 +4535,7 @@ export interface RepoBindingUpdateModel {
 
 /** Response from POST /api/Admin/RepoBindings or .../Scan */
 export interface RepoBindingScanResultModel {
+  outcome?: RepoBindingInfoModel['scanOutcome']
   gamesCreated: number
   gamesUpdated: number
   challengesImported: number

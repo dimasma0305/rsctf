@@ -1,0 +1,22 @@
+{
+  "result": "passed",
+  "testedAtUtc": "2026-11-04",
+  "version": "0.1.165",
+  "baseCommit": "5789585abedaeea74bd239a5c4a48d06ec5f641e",
+  "dirtySource": true,
+  "artifactSourcePatchSha256": "2add70db0b3ddbf82865c01d864364b7e985a209f6cd88aa11c7cdaceda2437b",
+  "serverBinarySha256": "bc8674207acdd13eb2d5ee31584752a01fb935ca0c6e5dc312a3bfecf8171964",
+  "harnessSha256": {
+    "tests/load/operational-readiness.mjs": "897d6d1f708858aecebd86b73bb75462e79417f751986bf7f7b818c3d722ae21",
+    "tests/load/k6/operational-readiness.js": "7bf44989506eb915d7fbe1f0905a5f8ef3ecb7b5573597693151c5708960768f",
+    "tests/load/lib.mjs": "7e22df560877d1e85bbb0282cd790a7ed0b5bd7637d032b96c5318e57edb4dcc"
+  },
+  "profile": "release, all features, repository opt-level=3/fat LTO/codegen-units=1",
+  "topology": "One loopback development-role release process, PostgreSQL 18.4 and Redis 7; one empty fixture event with a frozen exclusion and one paused policy-blocked binding. No real challenge workloads under load.",
+  "negativeAuthorization": "Anonymous requests denied; authenticated ordinary user profile 200 and both admin endpoints 403.",
+  "startup": "Fresh database completed all 196 migrations; subsequent release restart succeeded.",
+  "runtimeLogs": "No warnings/errors during release startup and polling.",
+  "limitations": "Read-only regression smoke at 1 iteration/s for 30s, not a capacity benchmark or before/after performance comparison. Server CPU samples use process-lifetime ps percentages.",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "logicalCpus": 5
+}

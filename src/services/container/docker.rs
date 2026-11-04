@@ -192,6 +192,11 @@ pub(super) fn append_snapshot_chunk(
 }
 
 pub(super) fn validate_docker_container_spec(spec: &ContainerSpec) -> AppResult<()> {
+    if spec.network_mode == crate::utils::enums::NetworkMode::Isolated && spec.publish_port {
+        return Err(AppError::bad_request(
+            "Docker cannot publish challenge ports on an Isolated network. Use Open networking with PlatformProxy for player access, or keep Isolated for exec-only workloads. Kubernetes supports isolated published services through NetworkPolicy.",
+        ));
+    }
     if spec.allow_egress
         && matches!(
             spec.game_kind,

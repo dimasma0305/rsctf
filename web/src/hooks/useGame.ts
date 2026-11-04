@@ -1024,6 +1024,7 @@ export interface KothCycleChampion {
   healthyControlledTicks: number
 }
 export interface AdminKothStateModel {
+  excludedHills?: { challengeId: number; reasons: string[] }[]
   epochTicks: number
   cycleTicks: number
   championCooldownTicks: number

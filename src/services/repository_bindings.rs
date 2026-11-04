@@ -10,6 +10,7 @@ use serde_json::Value;
 mod types;
 pub use types::*;
 mod mutations;
+mod scan_policy;
 pub(crate) use mutations::{
     commit_already_applied, delete_repo_binding_record, update_bound_game_manifest_path,
     update_repo_binding_record,
@@ -194,6 +195,8 @@ pub(crate) async fn execute_repo_binding_scan(
     let mut failures = 0;
     let mut challenge_counts = ChallengeSyncCounts::default();
     let mut commit_sha: Option<String> = None;
+    let mut outcome = RepoScanOutcome::Success;
+    let mut blocked_games = Vec::new();
 
     // Embed the token (if any) as Basic-auth userinfo, like RSCTF's fetch URL.
     let url = match &binding.github_token {
@@ -205,10 +208,27 @@ pub(crate) async fn execute_repo_binding_scan(
 
     let mut games_created = 0;
     let mut games_updated = 0;
-    match crate::services::git_sync::sync_repo(&url, git_ref.as_deref(), &dest).await {
+    if let Some(mut execution) =
+        scan_policy::unchanged_block(st, &binding, &url, git_ref.as_deref()).await?
+    {
+        execution.ran_at = claim.claimed_at;
+        return Ok(execution);
+    }
+    let advertised_before =
+        crate::services::git_sync::remote_head_sha(&url, git_ref.as_deref()).await?;
+    // Fetch the advertised immutable revision, so a moving branch cannot make
+    // an oversized old download suppress a newer, never-inspected commit.
+    match crate::services::git_sync::sync_repo(
+        &url,
+        advertised_before.as_deref().or(git_ref.as_deref()),
+        &dest,
+    )
+    .await
+    {
         Ok(()) => {
             commit_sha = crate::services::git_sync::head_sha(&dest).await.ok();
             if commit_already_applied(st, &binding, commit_sha.as_deref()).await? {
+                outcome = RepoScanOutcome::NoChange;
                 drop(checkout_lock.take());
                 messages.push(format!(
                     "Commit {} was already imported successfully; no repository changes applied.",
@@ -299,7 +319,7 @@ pub(crate) async fn execute_repo_binding_scan(
                                 )
                                 .await?
                                 {
-                                    failures += 1;
+                                    blocked_games.push(gid);
                                     messages.push(format!(
                                 "{rel}: repository sync is locked after A&D/KotH epoch scoring has started"
                             ));
@@ -613,10 +633,19 @@ pub(crate) async fn execute_repo_binding_scan(
         }
         Err(e) => {
             failures += 1;
+            if matches!(e, AppError::PayloadTooLarge(_)) {
+                outcome = RepoScanOutcome::PermanentFailure;
+                commit_sha = advertised_before;
+            }
             messages.push(format!("clone/fetch failed: {e}"));
         }
     }
 
+    if failures > 0 && outcome != RepoScanOutcome::PermanentFailure {
+        outcome = RepoScanOutcome::RetryableFailure;
+    } else if failures == 0 && !blocked_games.is_empty() {
+        outcome = RepoScanOutcome::PolicyBlocked;
+    }
     let messages = bound_scan_messages(messages);
     let history_message = bounded_chars(&messages.join("\n"), MAX_SCAN_HISTORY_CHARS);
     // Persist the bounded scan history row.
@@ -630,6 +659,7 @@ pub(crate) async fn execute_repo_binding_scan(
         challenges_updated: Set(challenge_counts.updated),
         failures: Set(failures),
         messages: Set(Some(history_message)),
+        outcome: Set(outcome.as_str().to_string()),
         ..Default::default()
     };
     scan.insert(&st.db).await?;
@@ -638,6 +668,7 @@ pub(crate) async fn execute_repo_binding_scan(
     let message = bounded_chars(&messages.join("; "), MAX_SCAN_MESSAGE_CHARS);
     Ok(RepoBindingScanExecution {
         result: RepoBindingScanResultModel {
+            outcome,
             games_created,
             games_updated,
             challenges_imported: challenge_counts.imported,
@@ -648,6 +679,8 @@ pub(crate) async fn execute_repo_binding_scan(
         ran_at: now,
         commit_sha,
         message,
+        blocked_games,
+        unchanged_block: false,
     })
 }
 

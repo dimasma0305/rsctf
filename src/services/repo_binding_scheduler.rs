@@ -54,6 +54,10 @@ WITH candidates AS MATERIALIZED (
     SELECT binding.id
       FROM "RepoBindings" binding
       JOIN ranked ON ranked.id = binding.id AND ranked.host_rank = 1
+     WHERE binding.status = 0
+       AND binding.next_scan_utc <= clock_timestamp()
+       AND (binding.scan_lease_expires_at_utc IS NULL
+            OR binding.scan_lease_expires_at_utc <= clock_timestamp())
      ORDER BY ranked.next_scan_utc, binding.id
      LIMIT $1
      FOR UPDATE OF binding SKIP LOCKED
@@ -65,6 +69,8 @@ UPDATE "RepoBindings" binding
        current_activity = 'Scanning repository'
   FROM due
  WHERE binding.id = due.id
+   AND (binding.scan_lease_expires_at_utc IS NULL
+        OR binding.scan_lease_expires_at_utc <= clock_timestamp())
 RETURNING binding.id, binding.repo_url, binding.scan_attempt, clock_timestamp()
 "#;
 
@@ -124,7 +130,9 @@ async fn claim_manual(pool: &sqlx::PgPool, id: i32) -> AppResult<RepoScanClaim> 
                   scan_lease_expires_at_utc = clock_timestamp()
                       + make_interval(secs => $3),
                   scan_attempt = LEAST(9007199254740991, scan_attempt + 1),
-                  current_activity = 'Scanning repository (manual)'
+                  current_activity = 'Scanning repository (manual)',
+                  scan_outcome = 'NoChange', blocked_commit_sha = NULL,
+                  scan_blocked_game_ids = '{}'
             WHERE id = $1
               AND (scan_lease_expires_at_utc IS NULL
                    OR scan_lease_expires_at_utc <= clock_timestamp())
@@ -200,11 +208,21 @@ async fn finish_success(
     claim: &RepoScanClaim,
     execution: &RepoBindingScanExecution,
 ) -> AppResult<bool> {
-    let failed = execution.result.failures > 0;
+    use crate::services::repository_bindings::RepoScanOutcome;
+    let outcome = execution.result.outcome;
+    let failed = outcome == RepoScanOutcome::RetryableFailure;
+    let blocked = matches!(
+        outcome,
+        RepoScanOutcome::PolicyBlocked | RepoScanOutcome::PermanentFailure
+    );
     let affected = sqlx::query(
         r#"UPDATE "RepoBindings"
               SET last_scan_utc = $4,
-                  last_commit_sha = COALESCE($5, last_commit_sha),
+                  last_commit_sha = CASE WHEN $8 IN ('Success', 'NoChange')
+                    THEN COALESCE($5, last_commit_sha) ELSE last_commit_sha END,
+                  scan_outcome = $8,
+                  blocked_commit_sha = CASE WHEN $9 THEN $5 ELSE NULL END,
+                  scan_blocked_game_ids = $10,
                   last_scan_message = $6,
                   next_scan_utc = CASE WHEN $7
                        THEN clock_timestamp() + make_interval(secs => LEAST(
@@ -214,7 +232,9 @@ async fn finish_success(
                        ))
                        ELSE clock_timestamp() + make_interval(secs => interval_seconds)
                   END,
-                  scan_failures = CASE WHEN $7 THEN LEAST(1000000, scan_failures + 1) ELSE 0 END,
+                  scan_failures = CASE WHEN $11 THEN scan_failures
+                    WHEN $7 OR $8 = 'PermanentFailure' THEN LEAST(1000000, scan_failures + 1)
+                    ELSE 0 END,
                   scan_lease_owner = NULL,
                   scan_lease_expires_at_utc = NULL,
                   current_activity = NULL
@@ -227,6 +247,10 @@ async fn finish_success(
     .bind(&execution.commit_sha)
     .bind(&execution.message)
     .bind(failed)
+    .bind(outcome.as_str())
+    .bind(blocked)
+    .bind(&execution.blocked_games)
+    .bind(execution.unchanged_block)
     .execute(pool)
     .await
     .map_err(database_error)?
@@ -244,6 +268,8 @@ async fn finish_failure(
         r#"UPDATE "RepoBindings"
               SET last_scan_utc = clock_timestamp(),
                   last_scan_message = $4,
+                  scan_outcome = CASE WHEN blocked_commit_sha IS NOT NULL
+                    THEN scan_outcome ELSE 'RetryableFailure' END,
                   next_scan_utc = clock_timestamp() + make_interval(secs => LEAST(
                        3600,
                        30 * power(2, LEAST(scan_failures + 1, 7))::integer
@@ -582,6 +608,9 @@ mod tests {
                    scan_lease_expires_at_utc TIMESTAMPTZ,
                    scan_attempt BIGINT NOT NULL DEFAULT 0,
                    scan_failures INTEGER NOT NULL DEFAULT 0,
+                   scan_outcome TEXT NOT NULL DEFAULT 'NoChange',
+                   blocked_commit_sha TEXT,
+                   scan_blocked_game_ids INTEGER[] NOT NULL DEFAULT '{}',
                    current_activity TEXT,
                    last_scan_utc TIMESTAMPTZ,
                    last_commit_sha TEXT,
@@ -636,6 +665,75 @@ mod tests {
             manual_a.is_ok(),
             manual_b.is_ok(),
             "manual race has one owner"
+        );
+
+        use crate::services::repository_bindings::RepoScanOutcome;
+        let claim = manual_a.or(manual_b).unwrap();
+        let mut execution = RepoBindingScanExecution {
+            result: RepoBindingScanResultModel {
+                outcome: RepoScanOutcome::PolicyBlocked,
+                games_created: 0,
+                games_updated: 0,
+                challenges_imported: 0,
+                challenges_updated: 0,
+                failures: 0,
+                messages: vec![],
+            },
+            ran_at: Utc::now(),
+            commit_sha: Some("blocked-revision".into()),
+            message: "Competition rules block this revision".into(),
+            blocked_games: vec![45],
+            unchanged_block: false,
+        };
+        sqlx::query(r#"UPDATE "RepoBindings" SET scan_failures = 128, last_commit_sha = 'applied-revision' WHERE id = 4"#)
+            .execute(&pool).await.unwrap();
+        assert!(finish_success(&pool, &claim, &execution).await.unwrap());
+        let state: (i32, String, String, String, Vec<i32>) = sqlx::query_as(
+            r#"SELECT scan_failures, last_commit_sha, blocked_commit_sha, scan_outcome, scan_blocked_game_ids FROM "RepoBindings" WHERE id = 4"#,
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            state,
+            (
+                0,
+                "applied-revision".into(),
+                "blocked-revision".into(),
+                "PolicyBlocked".into(),
+                vec![45]
+            )
+        );
+        assert!(
+            !finish_success(&pool, &claim, &execution).await.unwrap(),
+            "stale finalizer must not write"
+        );
+        let retry = claim_manual(&pool, 4).await.unwrap();
+        let cleared: bool = sqlx::query_scalar(r#"SELECT blocked_commit_sha IS NULL AND scan_outcome = 'NoChange' FROM "RepoBindings" WHERE id = 4"#)
+            .fetch_one(&pool).await.unwrap();
+        assert!(cleared, "manual retry must reopen an unchanged revision");
+        execution.result.outcome = RepoScanOutcome::PermanentFailure;
+        execution.result.failures = 1;
+        assert!(finish_success(&pool, &retry, &execution).await.unwrap());
+        sqlx::query(
+            r#"UPDATE "RepoBindings" SET scan_lease_owner = $1, scan_attempt = $2 WHERE id = 4"#,
+        )
+        .bind(retry.owner)
+        .bind(retry.attempt + 1)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let probe = RepoScanClaim {
+            attempt: retry.attempt + 1,
+            ..retry
+        };
+        execution.unchanged_block = true;
+        assert!(finish_success(&pool, &probe, &execution).await.unwrap());
+        let failures: i32 =
+            sqlx::query_scalar(r#"SELECT scan_failures FROM "RepoBindings" WHERE id = 4"#)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            failures, 1,
+            "unchanged blocked probes must not inflate failure counters"
         );
 
         pool.close().await;

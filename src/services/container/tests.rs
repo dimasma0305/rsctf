@@ -777,6 +777,38 @@ fn docker_competitive_default_deny_egress_remains_supported() {
 }
 
 #[tokio::test]
+async fn docker_isolated_publication_fails_before_daemon_access_without_relaxing_isolation() {
+    let mut spec = fingerprint_spec();
+    spec.game_kind = rsctf_worker_protocol::GameKind::Jeopardy;
+    spec.ad_network = None;
+    spec.allow_egress = false;
+    spec.control_plane_callback_ports.clear();
+    spec.network_mode = crate::utils::enums::NetworkMode::Isolated;
+    for proxy in [false, true] {
+        spec.proxy_only = proxy;
+        let error = DockerContainerManager::default()
+            .create(spec.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::utils::error::AppError::BadRequest(_)
+        ));
+        assert!(error
+            .to_string()
+            .contains("Open networking with PlatformProxy"));
+    }
+    spec.publish_port = false;
+    spec.proxy_only = false;
+    assert!(validate_docker_container_spec(&spec).is_ok());
+    assert_eq!(docker_network_mode(&spec).as_deref(), Some("none"));
+    spec.network_mode = crate::utils::enums::NetworkMode::Open;
+    spec.publish_port = true;
+    spec.proxy_only = true;
+    assert!(validate_docker_container_spec(&spec).is_ok());
+}
+
+#[tokio::test]
 async fn docker_create_rejects_competitive_egress_before_daemon_access() {
     let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let spec = ContainerSpec::ad_service(

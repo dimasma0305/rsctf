@@ -1,5 +1,19 @@
 # Load / stress tests
 
+`npm run operational-readiness` exercises the organizer KoTH state and repository
+binding list at one fixed iteration/second for 30 seconds, plus `healthz` on every
+iteration. Use a disposable loopback release server, a game titled `READINESS-LOAD-*`
+with a frozen exclusion for hill 819 (`TargetNotReady`), and a paused binding with
+`scanOutcome=PolicyBlocked`. Set `GAME`, `BINDING`, `TARGET`, `PG_CONTAINER`,
+`PG_DATABASE`, `RSCTF_JWT_SECRET`, `READINESS_SERVER_PID`, and `SUMMARY_JSON`.
+The gate requires zero invalid responses, 5xx, or dropped iterations and p95 below
+200 ms. It checks retained round/result/configuration hashes, repository counters,
+and duplicate configurations before/after, and records server/PostgreSQL resource
+samples. These are regression thresholds, not a production capacity claim.
+The [4 November 2026 baseline](REPORT.md#operational-readiness--4-november-2026)
+passed 93 requests with zero response/integrity failures and organizer-read
+p95 79.77 ms on the release candidate.
+
 Behaviour-mimicking load against a running rsctf stack — to find architecture/
 implementation flaws and capacity limits under real concurrency (not just peak req/s).
 

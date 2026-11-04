@@ -86,17 +86,17 @@ pub(crate) use reviewed::prepare_checker as prepare_reviewed_checker;
 
 mod git;
 use git::run_git;
-#[cfg(test)]
-use git::{
-    checkout_usage_exceeds, url_without_credentials, validate_checkout_tree, validate_sync_repo_url,
-};
 pub use git::{
-    head_sha, lock_checkout, lock_checkout_distributed, sync_repo, validate_binding_repo_url,
-    validate_git_ref, validate_github_repo_url, CheckoutLockGuard, GitCredentials,
+    head_sha, lock_checkout, lock_checkout_distributed, remote_head_sha, sync_repo,
+    validate_binding_repo_url, validate_git_ref, validate_github_repo_url, CheckoutLockGuard,
+    GitCredentials,
 };
-mod limits;
-use limits::is_git_object_pack;
+#[cfg(test)]
+use git::{url_without_credentials, validate_sync_repo_url};
+#[cfg(test)]
+use limits::{checkout_usage_exceeds, validate_checkout_tree};
 mod checkout_snapshot;
+mod limits;
 pub use checkout_snapshot::CheckoutSnapshot;
 mod package;
 use package::{find_dockerfile_context, image_tag, parse_enum, resolve_category, zip_context_dir};
@@ -162,9 +162,7 @@ pub struct ManifestImportResult {
 const MAX_REPO_ENTRIES: usize = 4_096;
 const MAX_REPO_FILES: usize = 2_048;
 const MAX_REPO_FILE_BYTES: u64 = 32 * 1024 * 1024;
-// Challenge repositories commonly contain VM kernels, debugger symbols, game
-// assets, and other build inputs. Keep a hard aggregate bound, including Git
-// object storage, while allowing a realistic multi-challenge event repository.
+// Per-challenge archive expansion limits, independent of repository disk budgets.
 const MAX_REPO_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_REPO_DEPTH: usize = 32;
 

@@ -19,6 +19,7 @@ impl BuildProgress {
         }
 
         let Some(BuildInfoAux::BuildKit(status)) = info.aux else {
+            self.trim_log();
             return;
         };
         for entry in status.logs {
@@ -36,8 +37,19 @@ impl BuildProgress {
         }
         for vertex in status.vertexes {
             if !vertex.error.trim().is_empty() {
-                self.fail(vertex.error);
+                self.fail(if vertex.name.is_empty() {
+                    vertex.error
+                } else {
+                    format!("{}: {}", vertex.name, vertex.error)
+                });
             }
+        }
+        self.trim_log();
+    }
+
+    fn trim_log(&mut self) {
+        if let Some(start) = super::truncated_tail_start(&self.log, 16 * 1024) {
+            self.log.drain(..start);
         }
     }
 
@@ -85,5 +97,23 @@ mod tests {
         let (log, failed) = progress.into_parts();
         assert_eq!(log, "compiler output\n");
         assert_eq!(failed.as_deref(), Some("Dockerfile step failed"));
+    }
+
+    #[test]
+    fn chatty_build_logs_are_bounded_while_streaming() {
+        let mut progress = BuildProgress::default();
+        for _ in 0..100 {
+            progress.record(BuildInfo {
+                stream: Some("é".repeat(1024)),
+                ..Default::default()
+            });
+        }
+        progress.record(BuildInfo {
+            stream: Some("last build step".into()),
+            ..Default::default()
+        });
+        let (log, _) = progress.into_parts();
+        assert!(log.len() <= 16 * 1024);
+        assert!(log.ends_with("last build step"));
     }
 }

@@ -1,5 +1,35 @@
 # RSCTF load-test report
 
+## Operational readiness — 4 November 2026
+
+The v0.1.165 release candidate passed a fixed one-iteration/second, 30-second
+regression run against the KoTH organizer state, repository bindings, and
+`healthz`: **93 requests**, zero unexpected responses/5xx/dropped iterations.
+Organizer reads measured avg **22.81 ms**, p50 **11.95 ms**, p90 **62.35 ms**,
+p95 **79.77 ms**, p99 **143.38 ms**, max **231.32 ms**; the p95 gate is 200 ms.
+All health responses were exactly `ok`.
+
+The configuration/round/result hashes and repository state matched before and
+after, with no duplicate official configuration. Eight resource samples recorded
+RSCTF RSS **51.74–56.88 MiB** and process-lifetime CPU **2.3–4.9%**; PostgreSQL
+used **131.9–181.8 MiB**, with sampled CPU **2.82–10.75%**. These are observations
+from a small correctness fixture, not an optimization or capacity claim.
+
+The loopback development-role server used the normal optimized release profile,
+PostgreSQL 18.4, and Redis 7. The fixture has one event with a frozen exclusion
+and one paused, policy-blocked binding; it runs no challenge workloads. Separate
+real PostgreSQL tests cover ready-hill selection, frozen exclusions, target row
+locks, lease races, and reopening blocked scans. Fresh installation completed all
+196 migrations. Anonymous and authenticated non-manager admin reads were denied;
+the same ordinary user's profile remained accessible. Release startup and polling
+produced no warning/error logs.
+
+Retained evidence: [latency distributions](results/operational-readiness-summary.json),
+[integrity and resource samples](results/operational-readiness-integrity.json), and
+[binary/source/harness identity and limits](results/operational-readiness-metadata.json).
+The source was staged but uncommitted when built; its artifact-source patch and
+binary hashes identify this candidate independently of the base commit.
+
 ## Shutdown correctness — 28 October 2026
 
 A real `SIGTERM` during a rollout that outlived the drain budget exposed a panic:

@@ -90,6 +90,11 @@ depends on those kernel features.
 Regular Kubernetes challenges use NodePort services. Private registry credentials are not currently injected into generated challenge Pods. Bring Your Own Container (BYOC) and several build, terminal, and snapshot paths remain Docker-only or incomplete. Test your exact mode in the target cluster.
 :::
 
+For player-facing Docker challenges, use **Open** networking with
+**PlatformProxy**. Docker **Isolated** networking supports exec-only workloads;
+Docker does not publish ports on its internal-only bridge. RSCTF rejects that
+combination before creating a container and keeps the requested isolation intact.
+
 ## A&D challenge checks
 
 In addition to the container test, verify:
@@ -117,6 +122,14 @@ functional checks. The legacy `@ad_checker` / `@koth_checker` single-function
 API remains valid when variation is unnecessary.
 
 ## KotH format
+
+After warmup, official scoring starts when at least one enabled hill has a
+successful image build, a provisioned target, and a prepared checker, and the
+event's roster and lifecycle requirements are satisfied. RSCTF freezes that ready
+hill set. A broken hill no longer holds back the other hills; the operations page
+lists excluded hill IDs and their missing prerequisites. Repairing an excluded
+hill does not add it to an already-started competition. Prepare every intended
+hill before the first scoring boundary if they must all count.
 
 Choose one format before official scoring; RSCTF freezes it with the hill:
 

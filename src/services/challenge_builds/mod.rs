@@ -41,6 +41,7 @@ pub(crate) use jobs::{
 };
 mod publication;
 use publication::*;
+mod diagnostics;
 mod generator;
 mod progress;
 pub(crate) use generator::run_import_variant_generator_build;

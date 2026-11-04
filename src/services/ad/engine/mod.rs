@@ -5,8 +5,6 @@
 //! and the claim-source-aware KotH lifecycle; it intentionally exposes no legacy
 //! Attack+SLA-Defense or refresh-window implementation.
 
-use std::collections::HashSet;
-
 use chrono::{Duration, Utc};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 
