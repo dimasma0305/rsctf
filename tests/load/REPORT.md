@@ -29,6 +29,9 @@ Retained evidence: [latency distributions](results/operational-readiness-summary
 [binary/source/harness identity and limits](results/operational-readiness-metadata.json).
 The source was staged but uncommitted when built; its artifact-source patch and
 binary hashes identify this candidate independently of the base commit.
+This run predates the follow-up that makes Git branch probes inherit checkout
+transport settings; that follow-up is covered by the registered push-recovery
+test and does not change these polled read endpoints.
 
 ## Shutdown correctness — 28 October 2026
 

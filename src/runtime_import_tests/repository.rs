@@ -168,6 +168,14 @@ pub(super) async fn assert_registered_push_replay(
     // The push committed remotely, then its completion receipt was lost. A new
     // registered consumer must acknowledge the same revision without another
     // remote commit or a duplicate queue row.
+    // A preceding immutable scan can leave a detached checkout. Resolve the
+    // same remote's default branch using its local transport configuration.
+    git(&checkout, &["checkout", "--detach"]).await;
+    sqlx::query(r#"UPDATE "RepoBindings" SET git_ref = NULL WHERE id = $1"#)
+        .bind(binding)
+        .execute(state.pg())
+        .await
+        .unwrap();
     enqueue(state.pg(), binding, game, challenge, revision).await;
     drain(state, binding).await;
     assert_eq!(

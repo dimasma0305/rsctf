@@ -14,8 +14,10 @@ pub(super) async fn fetch_and_checkout(
     } else if let Some(reference) = reference.filter(|value| *value != "HEAD") {
         let name = reference.strip_prefix("refs/heads/").unwrap_or(reference);
         let exact = format!("refs/heads/{name}");
+        // Resolve and fetch with the same checkout configuration, including
+        // administrator-owned transport policy and exact remote URL rewrites.
         let advertised = run_git_with_transport(
-            None,
+            Some(dest),
             transport,
             &["ls-remote", "--heads", "--", url, &exact],
         )
@@ -26,7 +28,7 @@ pub(super) async fn fetch_and_checkout(
             .then(|| name.to_owned())
     } else {
         let advertised = run_git_with_transport(
-            None,
+            Some(dest),
             transport,
             &["ls-remote", "--symref", "--", url, "HEAD"],
         )
