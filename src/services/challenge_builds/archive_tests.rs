@@ -71,6 +71,21 @@ fn zip_entries(entries: &[(&str, &[u8])], method: zip::CompressionMethod) -> Vec
     writer.finish().unwrap().into_inner()
 }
 
+#[test]
+fn selected_build_context_accepts_bounded_large_handout_outside_subdir() {
+    let handout = vec![0x5a; 40 * 1024 * 1024];
+    let archive = zip_entries(
+        &[
+            ("src/Dockerfile", b"FROM scratch\n".as_slice()),
+            ("dist/windows-build.zip", handout.as_slice()),
+        ],
+        zip::CompressionMethod::Stored,
+    );
+
+    let tar = zip_bytes_to_tar(&archive, Some("src")).unwrap();
+    assert_eq!(tar_path(&tar, 0), "Dockerfile");
+}
+
 fn patch_uncompressed_size(archive: &mut [u8], declared_size: u32) {
     let declared_size = declared_size.to_le_bytes();
     for index in 0..archive.len().saturating_sub(4) {

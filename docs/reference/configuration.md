@@ -152,7 +152,7 @@ active account policy in the Admin UI and test it with a normal account.
 ### Repository checkout budgets
 
 Repository checkout budgets above are disk limits. They are separate from the
-per-challenge build archive expansion limits (256 MiB total, 32 MiB per entry).
+per-challenge build archive expansion limits (256 MiB total, 64 MiB per entry).
 Changing a repository budget does not disable archive validation. After raising
 a checkout budget, use **Scan** on the binding to retry a previously rejected revision.
 

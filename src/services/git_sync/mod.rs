@@ -161,7 +161,7 @@ pub struct ManifestImportResult {
 
 const MAX_REPO_ENTRIES: usize = 4_096;
 const MAX_REPO_FILES: usize = 2_048;
-const MAX_REPO_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_REPO_FILE_BYTES: u64 = 64 * 1024 * 1024;
 // Per-challenge archive expansion limits, independent of repository disk budgets.
 const MAX_REPO_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_REPO_DEPTH: usize = 32;

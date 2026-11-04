@@ -3,7 +3,7 @@
 use std::io::{Cursor, Read};
 
 const MAX_ENTRIES: usize = 2_048;
-const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 // This expansion bound is independent of the repository checkout disk budget. Kernel and
 // VM challenges often split one build input into several individually bounded
 // files, so the expanded context may legitimately exceed the compressed blob

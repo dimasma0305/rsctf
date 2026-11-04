@@ -8,7 +8,7 @@ use crate::utils::enums::FileType;
 use crate::utils::error::{AppError, AppResult};
 
 const MAX_ATTACHMENT_FILES: usize = 2_048;
-const MAX_ATTACHMENT_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_ATTACHMENT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ATTACHMENT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ATTACHMENT_DEPTH: usize = 32;
 
@@ -704,5 +704,22 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(no_dist);
+    }
+
+    #[test]
+    fn single_file_handout_between_32_and_64_mib_is_supported() {
+        let root = temp_dir("large-handout");
+        let dist = root.join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let handout = dist.join("windows-build.zip");
+        let file = std::fs::File::create(&handout).unwrap();
+        file.set_len(40 * 1024 * 1024).unwrap();
+
+        let (name, bytes) = prepare_attachment(&root, Some("./dist"))
+            .expect("a bounded release handout should attach directly");
+        assert_eq!(name, "windows-build.zip");
+        assert_eq!(bytes.len(), 40 * 1024 * 1024);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
