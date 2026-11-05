@@ -40,6 +40,10 @@ fn id(row: &Value) -> AppResult<i32> {
         .ok_or_else(|| AppError::internal("invalid maintenance challenge identity"))
 }
 
+fn checker_entrypoint(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("src").join("run.py")
+}
+
 pub(crate) async fn execute_resume(
     st: &SharedState,
     claimed: &crate::services::control_jobs::ClaimedControlJob,
@@ -178,7 +182,7 @@ async fn resume(st: &SharedState, game_id: i32, window_id: Uuid) -> AppResult<Va
                     .as_deref()
                     .filter(|path| !path.trim().is_empty())
                 {
-                    if !tokio::fs::metadata(std::path::Path::new(path).join("run.py"))
+                    if !tokio::fs::metadata(checker_entrypoint(std::path::Path::new(path)))
                         .await
                         .is_ok_and(|metadata| metadata.is_file())
                     {
@@ -426,6 +430,15 @@ async fn update_hill_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_checker_entrypoint_matches_published_layout() {
+        assert_eq!(
+            checker_entrypoint(std::path::Path::new("/data/checker/revision")),
+            std::path::Path::new("/data/checker/revision/src/run.py")
+        );
+    }
+
     #[test]
     fn presentation_changes_do_not_replace_runtimes() {
         assert!(!changed(&json!({"title":"Old"}), &json!({"title":"New"})));

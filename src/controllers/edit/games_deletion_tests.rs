@@ -917,6 +917,18 @@ async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_or
     delete_restricted_game_history(&mut tx, 1, operation_id)
         .await
         .unwrap();
+    // Legacy databases can contain the expiration table. Its rows are purged
+    // when present, while current databases omit the table entirely.
+    let legacy_expirations: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*) FROM "EventVpnOverrideExpirations""#)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(legacy_expirations, 1);
+    sqlx::query(r#"DROP TABLE "EventVpnOverrideExpirations""#)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     delete_restricted_game_history(&mut tx, 1, operation_id)
         .await
         .unwrap();
@@ -943,7 +955,6 @@ async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_or
         "AntiCheatTelemetryUsage",
         "EventVpnGateOverrides",
         "EventVpnOverrideOperations",
-        "EventVpnOverrideExpirations",
         "EventVpnPolicyAudit",
         "EventVpnUserPeers",
         "VpnDnsProviderBuckets",

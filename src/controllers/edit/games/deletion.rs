@@ -355,6 +355,22 @@ pub(super) async fn delete_restricted_game_history(
     .map_err(|error| AppError::internal(error.to_string()))?;
     // The game's telemetry usage leaves the global budget with it.
     crate::services::event_security::release_game_usage(tx, game_id).await?;
+    // Early deployments could contain this short-lived scheduling table, but
+    // it was never part of the current migration graph. Keep purge compatible
+    // with both database histories without making a missing legacy table abort
+    // the surrounding transaction.
+    let has_legacy_override_expirations: bool =
+        sqlx::query_scalar(r#"SELECT to_regclass('"EventVpnOverrideExpirations"') IS NOT NULL"#)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    if has_legacy_override_expirations {
+        sqlx::query(r#"DELETE FROM "EventVpnOverrideExpirations" WHERE game_id = $1"#)
+            .bind(game_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
     for statement in [
         r#"DELETE FROM "CheatInfo" WHERE game_id = $1"#,
         r#"DELETE FROM "SuspicionEvaluationOutbox" WHERE game_id = $1"#,
@@ -363,7 +379,6 @@ pub(super) async fn delete_restricted_game_history(
         r#"DELETE FROM "VpnFlowTelemetryBuckets" WHERE game_id = $1"#,
         r#"DELETE FROM "VpnPeerNetworkObservations" WHERE game_id = $1"#,
         r#"DELETE FROM "EventVpnOverrideOperations" WHERE game_id = $1"#,
-        r#"DELETE FROM "EventVpnOverrideExpirations" WHERE game_id = $1"#,
         r#"DELETE FROM "EventVpnGateOverrides" WHERE game_id = $1"#,
         r#"DELETE FROM "EventVpnPolicyAudit" WHERE game_id = $1"#,
         r#"DELETE FROM "EventVpnUserPeers" WHERE game_id = $1"#,
