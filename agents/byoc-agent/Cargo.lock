@@ -950,7 +950,7 @@ dependencies = [
 
 [[package]]
 name = "rsctf-byoc-agent"
-version = "0.1.167"
+version = "0.1.168"
 dependencies = [
  "bollard",
  "futures",

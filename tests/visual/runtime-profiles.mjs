@@ -25,7 +25,11 @@ const now = Date.now()
 const writes = [], errors = [], reports = []
 const { cdp, close } = await launchBrowser().catch(async error => { await server.close(); throw error })
 const evaluate = async (expression) => {
-  const result = await cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
+  // This audit runs axe over six viewport/theme combinations plus both scored
+  // maintenance modes. Shared CI runners can legitimately need more than the
+  // generic CDP deadline for one of those evaluations, while the script's own
+  // bounded wait loops still catch a stuck page.
+  const result = await cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, 120_000)
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
   return result.result?.value
 }
