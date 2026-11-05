@@ -946,6 +946,17 @@ async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_or
         .await
         .unwrap();
     delete_detached_game_history(&mut tx, 1).await.unwrap();
+    let legacy_challenge_updates: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*) FROM "ChallengeUpdateOperations""#)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(legacy_challenge_updates, 1);
+    sqlx::query(r#"DROP TABLE "ChallengeUpdateOperations""#)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    delete_detached_game_history(&mut tx, 1).await.unwrap();
 
     for table in [
         "Games",
@@ -962,7 +973,6 @@ async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_or
         "VpnFlowTelemetryBuckets",
         "VpnPeerNetworkObservations",
         "BuildRecords",
-        "ChallengeUpdateOperations",
         "GameEvents",
         "GameNotices",
         "SuspicionEvents",

@@ -337,6 +337,30 @@ pub(super) async fn delete_ad_game_data(
     Ok(())
 }
 
+/// Delete game-owned rows from a schema-history table only when that relation
+/// exists. Callers supply static identifiers and statements; no user input is
+/// interpolated into SQL.
+async fn delete_optional_game_rows(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+    relation: &'static str,
+    statement: &'static str,
+    game_id: i32,
+) -> AppResult<()> {
+    let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+        .bind(relation)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if exists {
+        sqlx::query(statement)
+            .bind(game_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Remove rows whose intentionally restrictive foreign keys protect retained
 /// competition or VPN evidence from an ordinary game cascade. This is called
 /// only by the separately authorized purge path, inside the final game-control
@@ -359,18 +383,13 @@ pub(super) async fn delete_restricted_game_history(
     // it was never part of the current migration graph. Keep purge compatible
     // with both database histories without making a missing legacy table abort
     // the surrounding transaction.
-    let has_legacy_override_expirations: bool =
-        sqlx::query_scalar(r#"SELECT to_regclass('"EventVpnOverrideExpirations"') IS NOT NULL"#)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    if has_legacy_override_expirations {
-        sqlx::query(r#"DELETE FROM "EventVpnOverrideExpirations" WHERE game_id = $1"#)
-            .bind(game_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    }
+    delete_optional_game_rows(
+        tx,
+        r#""EventVpnOverrideExpirations""#,
+        r#"DELETE FROM "EventVpnOverrideExpirations" WHERE game_id = $1"#,
+        game_id,
+    )
+    .await?;
     for statement in [
         r#"DELETE FROM "CheatInfo" WHERE game_id = $1"#,
         r#"DELETE FROM "SuspicionEvaluationOutbox" WHERE game_id = $1"#,
@@ -400,9 +419,18 @@ pub(super) async fn delete_detached_game_history(
     tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
     game_id: i32,
 ) -> AppResult<()> {
+    // This short-lived operation table is absent from the current migration
+    // graph but can remain in older databases. Purge it when present without
+    // making current installations fail after the game cascade succeeds.
+    delete_optional_game_rows(
+        tx,
+        r#""ChallengeUpdateOperations""#,
+        r#"DELETE FROM "ChallengeUpdateOperations" WHERE game_id = $1"#,
+        game_id,
+    )
+    .await?;
     for statement in [
         r#"DELETE FROM "BuildRecords" WHERE game_id = $1"#,
-        r#"DELETE FROM "ChallengeUpdateOperations" WHERE game_id = $1"#,
         r#"DELETE FROM "GameEvents" WHERE game_id = $1"#,
         r#"DELETE FROM "GameNotices" WHERE game_id = $1"#,
         r#"DELETE FROM "SuspicionEvents" WHERE game_id = $1"#,
