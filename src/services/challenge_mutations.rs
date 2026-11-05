@@ -24,6 +24,28 @@ pub(crate) async fn ad_epoch_scoring_started_locked(
     .ok_or_else(|| AppError::not_found("Game not found"))
 }
 
+fn ad_epoch_definition_is_locked(scoring_started: bool, maintenance_editing: bool) -> bool {
+    scoring_started && !maintenance_editing
+}
+
+/// Repository and editor definition changes stay frozen after engine scoring
+/// starts, except inside the exact supported maintenance editing boundary.
+pub(crate) async fn ad_epoch_definition_locked(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+) -> AppResult<bool> {
+    let scoring_started = ad_epoch_scoring_started_locked(connection, game_id).await?;
+    if !scoring_started {
+        return Ok(false);
+    }
+    let maintenance_editing =
+        crate::services::ad::maintenance::editing_allowed(connection, game_id).await?;
+    Ok(ad_epoch_definition_is_locked(
+        scoring_started,
+        maintenance_editing,
+    ))
+}
+
 pub(crate) async fn load_challenge(
     st: &SharedState,
     game_id: i32,
@@ -73,3 +95,16 @@ where
 
 pub(crate) const INSERTABLE_GAME_SQL: &str =
     r#"SELECT NOT deletion_pending FROM "Games" WHERE id = $1 FOR SHARE"#;
+
+#[cfg(test)]
+mod tests {
+    use super::ad_epoch_definition_is_locked;
+
+    #[test]
+    fn maintenance_editing_is_the_only_scored_definition_exception() {
+        assert!(!ad_epoch_definition_is_locked(false, false));
+        assert!(!ad_epoch_definition_is_locked(false, true));
+        assert!(ad_epoch_definition_is_locked(true, false));
+        assert!(!ad_epoch_definition_is_locked(true, true));
+    }
+}

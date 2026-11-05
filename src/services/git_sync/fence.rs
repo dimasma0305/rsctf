@@ -87,8 +87,7 @@ async fn game_revision(
 }
 
 async fn ensure_epoch_is_open(connection: &mut sqlx::PgConnection, game_id: i32) -> AppResult<()> {
-    if crate::services::challenge_mutations::ad_epoch_scoring_started_locked(connection, game_id)
-        .await?
+    if crate::services::challenge_mutations::ad_epoch_definition_locked(connection, game_id).await?
     {
         return Err(AppError::conflict(
             "Challenge import is locked after A&D/KotH epoch scoring has started.",

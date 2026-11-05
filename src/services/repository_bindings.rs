@@ -313,7 +313,7 @@ pub(crate) async fn execute_repo_binding_scan(
                                 let mut configuration_lock =
                                     crate::services::ad_engine::acquire_ad_game_lock(&st.db, gid)
                                         .await?;
-                                if crate::services::challenge_mutations::ad_epoch_scoring_started_locked(
+                                if crate::services::challenge_mutations::ad_epoch_definition_locked(
                                     configuration_lock.transaction_mut(),
                                     gid,
                                 )
