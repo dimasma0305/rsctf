@@ -20,6 +20,7 @@ mod construct;
 mod image;
 pub(super) mod network;
 mod retry;
+pub(super) mod storage;
 pub use construct::{
     from_env, from_env_gated, from_env_required, from_env_required_gated, select_local_backend,
 };
@@ -472,10 +473,20 @@ pub(super) fn writable_layer_storage_opt(
 pub(super) fn require_storage_quota(enforced: bool, allow_unbounded: bool) -> AppResult<()> {
     if !enforced && !allow_unbounded {
         return Err(AppError::unavailable(
-            "Docker cannot enforce this challenge's disk limit. Use a quota-capable Docker host (for overlay2, XFS with project quotas). RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE=true is only for trusted disposable development workloads.",
+            "Docker cannot enforce this challenge's disk limit and strict storage mode is enabled. Use quota-capable storage (for overlay2, XFS with project quotas), or unset RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE to use automatic mode.",
         ));
     }
     Ok(())
+}
+
+pub(super) fn allow_unbounded_storage(value: Result<&str, &std::env::VarError>) -> AppResult<bool> {
+    match value {
+        Ok("true") | Err(std::env::VarError::NotPresent) => Ok(true),
+        Ok("false") => Ok(false),
+        _ => Err(AppError::bad_request(
+            "RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE must be true or false",
+        )),
+    }
 }
 
 pub(super) fn writable_layer_storage_option(

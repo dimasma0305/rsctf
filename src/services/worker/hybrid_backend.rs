@@ -60,6 +60,14 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.backend_kind()
     }
 
+    async fn storage_quota_enforced(&self) -> Option<bool> {
+        self.local.storage_quota_enforced().await
+    }
+
+    fn storage_quota_required(&self) -> bool {
+        self.local.storage_quota_required()
+    }
+
     fn managed_callback_routing_identity(&self) -> AppResult<Option<String>> {
         self.local.managed_callback_routing_identity()
     }

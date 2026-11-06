@@ -111,19 +111,21 @@ names/CIDRs. The default derives from `RSCTF_JWT_SECRET`. Set an explicit value
 before rotating that secret so existing workloads remain owned by the same
 installation.
 
-Every challenge writable layer is capped by its `storageLimit` (512 MiB when
-unset). The local Docker backend fails closed unless the daemon storage driver
-supports Docker's per-container `size` option. For `overlay2`, put Docker's data
+RSCTF runs on Docker hosts without XFS. It automatically applies `storageLimit`
+(512 MiB when unset) when the daemon supports per-container disk quotas. For
+`overlay2`, put Docker's data
 root on XFS mounted with project quotas (`pquota`) and confirm `docker info`
 reports `Backing Filesystem: xfs`; btrfs, devicemapper, zfs, and windowsfilter
-are also recognized. An unsupported driver makes container creation unavailable
-instead of silently ignoring the author-selected limit.
+are also recognized. RSCTF verifies overlay2 project-quota support with a
+temporary container that is never started, then removes the probe resources.
 
-Upgrading from a release that allowed unbounded writable layers can therefore
-block new launches on an unsupported host; existing containers remain available.
-Move production workloads to a quota-capable host. The explicit
-`RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE=true` override is for trusted, disposable
-development only and does not enforce a disk limit.
+Without quota support, challenges still launch and Settings → Containers and
+the challenge editor warn that disk limits are not enforced. Monitor free disk
+space: a challenge can consume the host's remaining storage. Docker connection,
+permission, and other operational errors are still errors, not quota fallbacks.
+Set `RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE=false` to explicitly require quotas and
+block new launches without them. The default is `true`; it does not disable
+quotas on a capable host. Restart RSCTF after changing Docker's storage setup.
 
 Docker deliberately rejects `allowEgress: true` for every A&D and KotH
 workload. A shared external bridge cannot prevent one hostile workload from

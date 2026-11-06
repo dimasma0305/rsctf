@@ -62,6 +62,7 @@ async fn connect(
                 endpoint_kind: None,
             },
             capabilities: WorkerCapabilities {
+                storage_quota_enforced: None,
                 ensure_workload: true,
                 write_flag: true,
                 tcp_proxy: true,

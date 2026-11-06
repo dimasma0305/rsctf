@@ -622,7 +622,10 @@
           "description": "Storage (including image)",
           "label": "Storage Limit (MB)",
           "unbounded_title": "Writable-layer quota unavailable",
-          "unbounded_warning": "This Docker host cannot enforce disk limits. New launches are blocked unless an operator enables the disposable-development override. Use quota-capable storage for production. With the override, limits are not applied to instances: monitor free disk space."
+          "unbounded_warning": "This Docker host cannot enforce container disk limits. In automatic mode, challenges can still run, but storage limits are not applied to instances: monitor free disk space. RSCTF automatically enforces limits when quota-capable storage is available, such as XFS with project quotas for Docker overlay2. This status applies to this runtime; other workers or profiles may differ.",
+          "strict_warning": "Strict storage mode is enabled on this host, so new launches are blocked until disk quotas are available or automatic mode is restored.",
+          "unknown_warning": "This server could not verify challenge-host disk quotas. Check the runtime connection, worker status and server logs; disk-limit enforcement is not confirmed.",
+          "enforced": "Disk limits enforced"
         },
         "submission_limit": {
           "description": "0 = unlimited",

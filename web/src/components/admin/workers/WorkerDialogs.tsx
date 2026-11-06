@@ -192,7 +192,7 @@ export const WorkerDialogs: FC<WorkerDialogsProps> = ({
               <Text size="xs" c="dimmed" mt="sm">
                 {t(
                   'admin.workers.enrollment.linux_note',
-                  'Uses systemd when available and Docker supervision otherwise. Keep storage quota checks enabled for events.'
+                  'Uses systemd when available and Docker supervision otherwise. Disk quotas are applied when supported; otherwise the worker warns and continues.'
                 )}
               </Text>
             </Tabs.Panel>

@@ -25,10 +25,10 @@ pub(in crate::runtime) async fn run(
         ));
     }
     if let Err(error) = verify_storage_quota_support(&docker, &info).await {
-        if !allow_unbounded_storage {
+        if !allow_unbounded_storage || error.code != CommandErrorCode::Unsupported {
             return Err(error);
         }
-        tracing::warn!(%error, "Docker quota preflight bypassed for an explicitly unbounded development runtime");
+        tracing::warn!(%error, "Docker quotas are unavailable; automatic mode allows challenges without disk limits. Monitor free disk space.");
     }
     if info
         .docker_root_dir

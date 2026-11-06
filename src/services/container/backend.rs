@@ -142,6 +142,10 @@ pub trait ContainerManager: Send + Sync {
         None
     }
 
+    fn storage_quota_required(&self) -> bool {
+        false
+    }
+
     async fn profile_storage_quota_enforced(&self, profile: Option<&str>) -> Option<bool> {
         self.profile_backend_kind(profile).ok()?;
         self.storage_quota_enforced().await

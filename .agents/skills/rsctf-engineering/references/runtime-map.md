@@ -76,6 +76,14 @@ Real confinement depends on Landlock/seccomp/kernel support; a local sandbox
 startup failure is an environment limit to verify on a capable runner, never
 a reason to silently disable production confinement.
 
+Docker disk quotas use automatic mode: supported hosts enforce writable-layer
+limits; other hosts allow launches with an administrator warning. Explicit
+`RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE=false` (or the worker equivalent) requires
+quotas. The [local quota probe](../../../../src/services/container/docker/storage.rs)
+verifies overlay2 project quotas using a never-started disposable container.
+Connection/permission failures remain errors. [Storage warning browser checks](../../../../tests/visual/storage-quotas.mjs)
+cover automatic, enforced, unknown and strict settings plus worker status.
+
 ## Persistent and reconstructible state
 
 | State | Authority / ownership |

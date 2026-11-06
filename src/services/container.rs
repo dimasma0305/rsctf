@@ -66,8 +66,8 @@ use self::docker::{
     adopt_operation_container, append_snapshot_chunk, discover_operation_container,
     image_requests_restricted_profile, is_conflict, is_not_found, snapshot_export_slots,
     stamp_restricted_profile, stamp_storage_quota_policy, validate_docker_container_spec,
-    writable_layer_quota_supported, writable_layer_storage_option, LAUNCH_SPEC_LABEL,
-    MAX_SNAPSHOT_EXPORT_BYTES, SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
+    writable_layer_storage_option, LAUNCH_SPEC_LABEL, MAX_SNAPSHOT_EXPORT_BYTES,
+    SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
 };
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
@@ -300,7 +300,7 @@ pub struct DockerContainerManager {
     /// All configured Docker scopes share one host capacity budget.
     capacity_scopes: Vec<String>,
     /// Cached daemon capability used by both the create path and admin warning.
-    storage_quota_enforced: std::sync::Arc<std::sync::OnceLock<bool>>,
+    storage_quota_enforced: std::sync::Arc<tokio::sync::OnceCell<bool>>,
     allow_unbounded_storage: bool,
     /// Live Docker client handle populated by [`Self::connect`].
     docker: Option<Docker>,
@@ -322,17 +322,9 @@ impl DockerContainerManager {
             scope: docker_installation_scope(),
             capacity_scopes: profiles::config::docker_scopes(&docker_installation_scope())?,
             storage_quota_enforced: Default::default(),
-            allow_unbounded_storage: match std::env::var("RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE")
-                .as_deref()
-            {
-                Ok("true") => true,
-                Ok("false") | Err(std::env::VarError::NotPresent) => false,
-                _ => {
-                    return Err(AppError::bad_request(
-                        "RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE must be true or false",
-                    ))
-                }
-            },
+            allow_unbounded_storage: docker::allow_unbounded_storage(
+                std::env::var("RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE").as_deref(),
+            )?,
             docker: Some(docker),
         })
     }
@@ -377,9 +369,13 @@ impl DockerContainerManager {
     }
 
     async fn detect_storage_quota_enforcement(&self) -> AppResult<bool> {
-        if let Some(enforced) = self.storage_quota_enforced.get() {
-            return Ok(*enforced);
-        }
+        self.storage_quota_enforced
+            .get_or_try_init(|| self.probe_storage_quota_enforcement())
+            .await
+            .copied()
+    }
+
+    async fn probe_storage_quota_enforcement(&self) -> AppResult<bool> {
         let daemon_info = docker_admission()
             .read("info", self.client()?.info())
             .await?
@@ -388,8 +384,8 @@ impl DockerContainerManager {
                     "could not inspect Docker writable-layer quota support: {error}"
                 ))
             })?;
-        let enforced = writable_layer_quota_supported(&daemon_info);
-        if self.storage_quota_enforced.set(enforced).is_ok() && !enforced {
+        let enforced = docker::storage::probe(self.client()?, &daemon_info).await?;
+        if !enforced {
             let backing_filesystem = daemon_info
                 .driver_status
                 .as_ref()
@@ -406,10 +402,10 @@ impl DockerContainerManager {
                 driver = daemon_info.driver.as_deref().unwrap_or("unknown"),
                 backing_filesystem,
                 allow_unbounded_storage = self.allow_unbounded_storage,
-                "Docker cannot enforce writable-layer quotas; new workloads require a quota-capable host or the explicit disposable-development override"
+                "Docker cannot enforce writable-layer quotas; automatic mode allows challenges without disk limits. Monitor free disk space. Explicit strict mode blocks new launches."
             );
         }
-        Ok(*self.storage_quota_enforced.get().unwrap_or(&enforced))
+        Ok(enforced)
     }
 }
 
@@ -421,6 +417,10 @@ impl ContainerManager for DockerContainerManager {
 
     async fn storage_quota_enforced(&self) -> Option<bool> {
         self.detect_storage_quota_enforcement().await.ok()
+    }
+
+    fn storage_quota_required(&self) -> bool {
+        !self.allow_unbounded_storage
     }
 
     async fn image_exists(&self, image: &str) -> bool {

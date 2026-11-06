@@ -27,6 +27,7 @@ fn request_digest_is_stable_but_revision_and_value_sensitive() {
             traffic_capture: false,
             kubernetes_namespace: None,
             image_pull_policy: None,
+            ..Default::default()
         }),
         ..ConfigEditModel::default()
     };
@@ -73,6 +74,8 @@ fn request_digest_ignores_read_only_container_provider_summary() {
             traffic_capture: true,
             kubernetes_namespace: Some("ctf".to_string()),
             image_pull_policy: Some("Always".to_string()),
+            storage_quota_enforced: Some(true),
+            storage_quota_required: true,
         }),
         ..ConfigEditModel::default()
     };

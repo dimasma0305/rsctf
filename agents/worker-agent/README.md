@@ -43,15 +43,14 @@ on a daily-use computer or a machine containing unrelated secrets.
 Docker-supervised mode uses host networking so the agent can reach private
 challenge bridge addresses. Docker Desktop users must enable its host-networking
 feature before enrollment. Docker Desktop's Linux `overlayfs` storage normally
-does not satisfy the worker's per-container quota preflight; only a trusted,
-disposable development worker may opt out explicitly:
+does not support per-container quotas. Automatic mode warns and continues:
 
 ```sh
-(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --server-url https://ctf.example --allow-unbounded-storage)
+(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --server-url https://ctf.example)
 ```
 
-Do not use that escape hatch for an adversarial event. Use XFS with project
-quotas, Btrfs, or ZFS for a production Linux worker.
+Use XFS with project quotas, Btrfs, or ZFS when per-container disk isolation is
+needed. Without quotas, monitor free disk space; the watchdog is not a disk cap.
 
 The one-command bootstrap downloads the latest tagged release over HTTPS and
 verifies the worker archive against that release's `SHA256SUMS`. For an
@@ -248,10 +247,11 @@ Capacity is detected from Docker with host headroom. It can be pinned using
 but cannot advertise more than the detected safe CPU, memory, or isolated
 workload-network capacity. Replica capacity is advertised separately from the
 smallest detected Docker network endpoint budget.
-Placement labels use repeated `--label key=value` arguments. Production also
-requires a quota-capable writable layer (`overlay2` on XFS with `pquota` on
-Linux or `windowsfilter` on Windows); `--allow-unbounded-storage` is only for
-trusted disposable tests.
+Placement labels use repeated `--label key=value` arguments. Quota-capable
+storage (`overlay2` on XFS with `pquota` or `windowsfilter`) enforces disk limits
+automatically. Other storage warns and continues. Set
+`RSCTF_WORKER_ALLOW_UNBOUNDED_STORAGE=false` or pass
+`--allow-unbounded-storage=false` to the native agent for strict enforcement.
 
 The agent requires TLS 1.3 mutual authentication and distinct control/data ALPNs. A
 bounded control queue carries reconciliation commands. The data lane uses yamux and

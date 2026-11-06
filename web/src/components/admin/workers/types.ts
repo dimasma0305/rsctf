@@ -15,6 +15,7 @@ export interface Worker {
   architecture?: string | null
   runtimeKind?: string | null
   runtimeVersion?: string | null
+  capabilities?: { storageQuotaEnforced?: boolean | null }
   capacity: WorkerCapacity
   online: boolean
   heartbeatAt?: number | null

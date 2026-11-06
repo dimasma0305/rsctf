@@ -17,7 +17,8 @@ SERVER_URL=""
 VERSION=""
 SERVICE_MODE="auto"
 SERVICE_MODE_SET=false
-ALLOW_UNBOUNDED_STORAGE=false
+ALLOW_UNBOUNDED_STORAGE=true
+ALLOW_UNBOUNDED_STORAGE_SET=false
 TEMP_DIRECTORY=""
 ENROLLMENT_TOKEN=""
 TERMINAL_SETTINGS=""
@@ -47,9 +48,9 @@ volume, so the host does not need an init system. If an installed Docker daemon
 is stopped, the bootstrap starts and enables it through systemd or OpenRC, or
 starts it through a compatible service or runit manager.
 
---allow-unbounded-storage is a development-only escape hatch for Docker engines
-that cannot enforce per-workload writable-layer quotas. Never use it for an
-adversarial event or on a host containing unrelated data.
+Disk quotas are applied automatically when supported. Otherwise the worker
+warns and continues without disk limits; monitor free disk space.
+--allow-unbounded-storage is retained for compatibility with older releases.
 
 Uninstall refuses to continue while RSCTF-managed workloads exist, then removes
 the local service or supervised container, identity, binary/image, and dedicated
@@ -396,9 +397,10 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --allow-unbounded-storage)
-      [ "$ALLOW_UNBOUNDED_STORAGE" = false ] ||
+      [ "$ALLOW_UNBOUNDED_STORAGE_SET" = false ] ||
         die "--allow-unbounded-storage may only be specified once"
       ALLOW_UNBOUNDED_STORAGE=true
+      ALLOW_UNBOUNDED_STORAGE_SET=true
       shift
       ;;
     --uninstall)
@@ -420,7 +422,7 @@ if [ "$UNINSTALL" = true ]; then
   [ -z "$SERVER_URL" ] &&
     [ -z "$VERSION" ] &&
     [ "$SERVICE_MODE_SET" = false ] &&
-    [ "$ALLOW_UNBOUNDED_STORAGE" = false ] ||
+    [ "$ALLOW_UNBOUNDED_STORAGE_SET" = false ] ||
     die "--uninstall cannot be combined with install options"
 fi
 
@@ -437,7 +439,7 @@ if [ "$(id -u)" -ne 0 ]; then
     if [ "$SERVICE_MODE_SET" = true ]; then
       set -- "$@" --service-mode "$SERVICE_MODE"
     fi
-    if [ "$ALLOW_UNBOUNDED_STORAGE" = true ]; then
+    if [ "$ALLOW_UNBOUNDED_STORAGE_SET" = true ]; then
       set -- "$@" --allow-unbounded-storage
     fi
   fi
@@ -495,10 +497,6 @@ case "$SERVICE_MODE" in
 esac
 if [ "$SERVICE_MODE" = systemd ] && [ ! -d /run/systemd/system ]; then
   die "systemd service mode was requested but systemd is not active"
-fi
-if [ "$SERVICE_MODE" = systemd ] &&
-  [ "$ALLOW_UNBOUNDED_STORAGE" = true ]; then
-  die "--allow-unbounded-storage is supported only by Docker-supervised mode; configure quota-capable storage for a systemd worker"
 fi
 
 require_command docker
@@ -870,9 +868,6 @@ if [ "$SERVICE_MODE" = systemd ]; then
 else
   prepare_docker_supervisor
   if ! run_docker_doctor; then
-    if [ "$ALLOW_UNBOUNDED_STORAGE" = false ]; then
-      die "worker runtime preflight failed; configure quota-capable Docker storage, or use --allow-unbounded-storage only on a trusted disposable development worker"
-    fi
     die "worker runtime preflight failed before enrollment; inspect the Docker daemon configuration and rerun this command"
   fi
 fi
