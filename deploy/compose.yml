@@ -181,6 +181,7 @@ services:
       # Empty falls back to a hash of the JWT secret; set it before rotating
       # that secret or when intentionally sharing one daemon across installs.
       RSCTF_DOCKER_SCOPE: ${RSCTF_DOCKER_SCOPE:-}
+      RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE: ${RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE:-true}
       # PlatformProxy ports bind only to this private bridge gateway. rsctf is
       # attached to that bridge and stores this address as its proxy target.
       RSCTF_DOCKER_PROXY_BIND: ${RSCTF_DOCKER_PROXY_BIND:-172.31.253.1}

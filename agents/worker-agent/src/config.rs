@@ -38,11 +38,14 @@ pub struct DoctorArgs {
     /// Override the Docker endpoint (`local` or a Unix socket in v1).
     #[arg(long, env = "RSCTF_WORKER_DOCKER_ENDPOINT")]
     pub docker_endpoint: Option<String>,
-    /// Development-only escape hatch for storage drivers without layer quotas.
+    /// Allow storage without quotas when unavailable (automatic mode). Set false to require quotas.
     #[arg(
         long,
         env = "RSCTF_WORKER_ALLOW_UNBOUNDED_STORAGE",
-        default_value_t = false
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true"
     )]
     pub allow_unbounded_storage: bool,
 }
@@ -142,12 +145,15 @@ pub struct RunArgs {
         default_value_t = 5_368_709_120
     )]
     pub minimum_free_bytes: u64,
-    /// Development-only escape hatch for storage drivers without layer quotas.
-    /// The free-space watchdog remains active, but hostile workloads are unsafe.
+    /// Allow storage without quotas when unavailable (automatic mode). Set false to require quotas.
+    /// The free-space watchdog remains active; it is not a per-container disk cap.
     #[arg(
         long,
         env = "RSCTF_WORKER_ALLOW_UNBOUNDED_STORAGE",
-        default_value_t = false
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true"
     )]
     pub allow_unbounded_storage: bool,
     /// Override advertised CPU capacity in millicores.
@@ -322,6 +328,41 @@ mod tests {
             probe.run.docker_admission_limits(),
             crate::runtime::DockerAdmissionLimits::default()
         );
+    }
+
+    #[test]
+    fn storage_defaults_to_auto_and_accepts_explicit_strict_mode() {
+        assert!(
+            RunProbe::try_parse_from(["probe"])
+                .unwrap()
+                .run
+                .allow_unbounded_storage
+        );
+        assert!(
+            RunProbe::try_parse_from(["probe", "--allow-unbounded-storage"])
+                .unwrap()
+                .run
+                .allow_unbounded_storage
+        );
+        assert!(
+            !RunProbe::try_parse_from(["probe", "--allow-unbounded-storage=false"])
+                .unwrap()
+                .run
+                .allow_unbounded_storage
+        );
+        let Command::Doctor(doctor) = Cli::try_parse_from(["worker", "doctor"]).unwrap().command
+        else {
+            panic!()
+        };
+        assert!(doctor.allow_unbounded_storage);
+        let Command::Doctor(doctor) =
+            Cli::try_parse_from(["worker", "doctor", "--allow-unbounded-storage=false"])
+                .unwrap()
+                .command
+        else {
+            panic!()
+        };
+        assert!(!doctor.allow_unbounded_storage);
     }
 
     #[test]

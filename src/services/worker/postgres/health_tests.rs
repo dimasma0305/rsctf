@@ -19,6 +19,7 @@ use crate::services::worker_store::{
 
 pub(super) fn complete_capabilities() -> WorkerCapabilities {
     WorkerCapabilities {
+        storage_quota_enforced: None,
         ensure_workload: true,
         write_flag: true,
         tcp_proxy: true,

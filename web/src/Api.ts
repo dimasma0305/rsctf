@@ -535,10 +535,16 @@ export interface OAuthConfig {
 export enum ContainerProviderType {
   Docker = "Docker",
   Kubernetes = "Kubernetes",
+  Worker = "Worker",
+  None = "None",
 }
 
 /** Configured container provider and mutable Jeopardy port-mapping preference. */
 export interface ContainerProviderInfoModel {
+  /** Actual writable-layer quota support; null means unknown. Read-only. */
+  storageQuotaEnforced?: boolean | null;
+  /** Explicit strict storage mode. Read-only. */
+  storageQuotaRequired?: boolean;
   /** The active backend: Docker or Kubernetes. */
   type?: ContainerProviderType;
   /** How challenge ports are exposed (Default / PlatformProxy). */

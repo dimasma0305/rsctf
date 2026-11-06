@@ -12,7 +12,7 @@ test('container editor warns when the active backend cannot enforce storage quot
   assert.match(editor, /storage_limit\.unbounded_warning/)
 })
 
-test('quota warning explains blocked launches and the development override in both languages', () => {
+test('quota warning explains automatic fallback and explicit strict mode in both languages', () => {
   const english = JSON.parse(readFileSync('src/locales/en-US/admin.json', 'utf8'))
   const indonesian = JSON.parse(readFileSync('src/locales/id-ID/admin.json', 'utf8'))
   const englishCopy = english.content.games.challenges.storage_limit
@@ -20,10 +20,12 @@ test('quota warning explains blocked launches and the development override in bo
 
   assert.match(englishCopy.unbounded_warning, /not applied to instances/i)
   assert.match(englishCopy.unbounded_warning, /monitor free disk space/i)
-  assert.match(englishCopy.unbounded_warning, /launches are blocked/i)
+  assert.match(englishCopy.unbounded_warning, /challenges can still run/i)
+  assert.match(englishCopy.strict_warning, /launches are blocked/i)
   assert.match(indonesianCopy.unbounded_warning, /tidak diterapkan pada instance/i)
   assert.match(indonesianCopy.unbounded_warning, /pantau ruang disk kosong/i)
-  assert.match(indonesianCopy.unbounded_warning, /peluncuran baru diblokir/i)
+  assert.match(indonesianCopy.unbounded_warning, /challenge tetap dapat berjalan/i)
+  assert.match(indonesianCopy.strict_warning, /peluncuran baru diblokir/i)
 })
 
 test('generated client exposes the runtime quota capability', () => {

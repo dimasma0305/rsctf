@@ -48,13 +48,13 @@ import {
 } from '@Components/admin/workers/types'
 import { requireApiCollection } from '@Utils/ApiCollection'
 import { showErrorMsg } from '@Utils/Shared'
-import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import {
   workerInstallCommand,
   workerUninstallCommand,
   workerWindowsInstallCommand,
   workerWindowsUninstallCommand,
 } from '@Utils/WorkerInstall'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import api, { ContentType } from '@Api'
 import classes from '@Styles/AdminWorkers.module.css'
 
@@ -317,6 +317,11 @@ const Workers: FC = () => {
           {worker.runtimeKind ?? t('common.label.unknown', 'Unknown runtime')}
           {worker.runtimeVersion ? ` · ${worker.runtimeVersion}` : ''}
         </Text>
+        {worker.capabilities?.storageQuotaEnforced === false && (
+          <Text size="xs" fw={600} c="var(--mantine-color-text)">
+            {t('admin.content.games.challenges.storage_limit.unbounded_title')}
+          </Text>
+        )}
       </Stack>
     )
   }

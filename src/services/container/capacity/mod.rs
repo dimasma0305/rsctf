@@ -178,6 +178,10 @@ impl ContainerManager for CapacityGatedDockerManager {
         self.inner.storage_quota_enforced().await
     }
 
+    fn storage_quota_required(&self) -> bool {
+        self.inner.storage_quota_required()
+    }
+
     async fn image_exists(&self, image: &str) -> bool {
         self.inner.image_exists(image).await
     }

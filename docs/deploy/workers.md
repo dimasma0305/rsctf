@@ -324,13 +324,14 @@ firewall: keep secrets and unrelated services off the worker and restrict
 host-gateway traffic with the VM/host firewall. The agent never publishes
 challenge ports and never modifies the host firewall.
 
-Production startup also requires an enforceable writable-layer quota. Use
+Writable-layer quotas are detected automatically. To enforce them, use
 `overlay2` with Docker's data root on XFS mounted with project quotas (`pquota`),
 or another driver for which Docker supports the per-container `size` option.
 Confirm `docker info` reports `Storage Driver: overlay2` and `Backing Filesystem:
-xfs`. `--allow-unbounded-storage` is only for trusted disposable development
-fixtures; the free-space watchdog cannot make an unbounded hostile workload
-safe.
+xfs`. Without quota support, the worker warns and continues; the Workers page
+reports the missing quota. Set `RSCTF_WORKER_ALLOW_UNBOUNDED_STORAGE=false` or
+pass `--allow-unbounded-storage=false` to the native agent to require quotas.
+The free-space watchdog remains active but is not a per-container disk limit.
 
 The agent applies the smaller of that worker-wide ceiling and each service's
 `resources.storageBytes` request. Legacy stored workload definitions receive a
@@ -401,24 +402,23 @@ Running one without a valid 15-minute token cannot authorize a new worker. A
 repeat run upgrades the binary and preserves an existing mTLS identity instead
 of overwriting it or consuming another token. Before prompting for that token,
 the installed agent runs `doctor`, which verifies Docker connectivity, the
-daemon platform, and enforceable writable-layer storage. A failed preflight does
+daemon platform, and writable-layer quota support. Missing quota support warns
+and continues in automatic mode. A failed preflight does
 not consume the enrollment token.
 
 Docker-supervised mode uses host networking because the agent must dial private
 challenge-container bridge addresses. Docker Desktop 4.34 or newer must have
 host networking enabled in Settings before enrollment. Docker Desktop's Linux
-`overlayfs` storage normally does not provide the per-container writable-layer
-quota required for an adversarial event. Keep the safe default for production.
-Only a dedicated, disposable development worker may explicitly bypass that one
-check:
+`overlayfs` storage normally does not provide per-container writable-layer quotas.
+The default automatic mode warns and continues; no extra flag is needed:
 
 ```sh
-(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --server-url https://ctf.example --allow-unbounded-storage)
+(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --server-url https://ctf.example)
 ```
 
 The free-space floor remains active, but without a per-container quota one
-challenge can consume the daemon's shared storage. Do not use the bypass for a
-real event.
+challenge can consume the daemon's shared storage. Monitor available disk space
+and use quota-capable storage when per-challenge disk isolation is needed.
 
 ## Uninstall a worker
 

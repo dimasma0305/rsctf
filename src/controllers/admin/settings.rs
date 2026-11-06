@@ -262,6 +262,18 @@ pub struct ContainerProviderInfoModel {
     pub kubernetes_namespace: Option<String>,
     #[serde(default)]
     pub image_pull_policy: Option<String>,
+    /// Runtime-derived; never accepted as a settings override.
+    #[serde(default, deserialize_with = "ignore_runtime_status")]
+    pub storage_quota_enforced: Option<bool>,
+    #[serde(default, deserialize_with = "ignore_runtime_status")]
+    pub storage_quota_required: bool,
+}
+
+fn ignore_runtime_status<'de, D: serde::Deserializer<'de>, T: Default>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(T::default())
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -553,11 +565,13 @@ pub async fn get_config(
     let port_mapping_type =
         normalized_container_port_mapping(stored_port_mapping.as_deref()).to_string();
     let container_provider = ContainerProviderInfoModel {
-        provider_type: Some("Docker".to_string()),
+        provider_type: Some(format!("{:?}", st.containers.backend_kind())),
         port_mapping_type: Some(port_mapping_type),
         traffic_capture: false,
         kubernetes_namespace: None,
         image_pull_policy: None,
+        storage_quota_enforced: st.containers.storage_quota_enforced().await,
+        storage_quota_required: st.containers.storage_quota_required(),
     };
 
     let revision = sqlx::query_scalar::<_, i64>(
@@ -882,6 +896,25 @@ mod tests {
                 }
             }))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn storage_quota_status_cannot_be_overridden_by_settings_input() {
+        use super::ContainerProviderInfoModel;
+        let model: ContainerProviderInfoModel = serde_json::from_value(serde_json::json!({
+            "storageQuotaEnforced": true, "storageQuotaRequired": true
+        }))
+        .unwrap();
+        assert_eq!(model.storage_quota_enforced, None);
+        assert!(!model.storage_quota_required);
+        let report = ContainerProviderInfoModel {
+            storage_quota_enforced: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(report).unwrap()["storageQuotaEnforced"],
+            false
         );
     }
 

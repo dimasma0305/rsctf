@@ -985,6 +985,26 @@ const Configs: FC = () => {
               </Group>
               <Divider />
               {/* Backend type is read-only; Jeopardy port mapping is editable. */}
+              {containerProvider && containerProvider.storageQuotaEnforced == null && (
+                <Alert color="yellow" icon={<Icon path={mdiAlert} size={1} aria-hidden />}>
+                  {t('admin.content.games.challenges.storage_limit.unknown_warning')}
+                </Alert>
+              )}
+              {containerProvider?.storageQuotaEnforced === false && (
+                <Alert
+                  color="orange"
+                  icon={<Icon path={mdiAlert} size={1} aria-hidden />}
+                  title={t('admin.content.games.challenges.storage_limit.unbounded_title')}
+                  styles={{ title: { color: 'var(--mantine-color-text)' } }}
+                >
+                  {t('admin.content.games.challenges.storage_limit.unbounded_warning')}
+                  {containerProvider.storageQuotaRequired && (
+                    <Text size="sm" mt="xs">
+                      {t('admin.content.games.challenges.storage_limit.strict_warning')}
+                    </Text>
+                  )}
+                </Alert>
+              )}
               {containerProvider &&
                 (() => {
                   const cp = containerProvider
@@ -1010,6 +1030,11 @@ const Configs: FC = () => {
                           {cp.portMappingType && (
                             <Badge size="sm" variant="light" color="gray">
                               {cp.portMappingType}
+                            </Badge>
+                          )}
+                          {cp.storageQuotaEnforced === true && (
+                            <Badge color="teal" variant="light">
+                              {t('admin.content.games.challenges.storage_limit.enforced')}
                             </Badge>
                           )}
                           {cp.trafficCapture && (

@@ -103,8 +103,11 @@ impl DockerRuntime {
         }
         let writable_layer_bytes = match verify_storage_quota_support(&docker, &info).await {
             Ok(()) => Some(options.writable_layer_bytes),
-            Err(error) if options.allow_unbounded_storage => {
-                tracing::warn!(driver = ?info.driver, %error, "Docker storage quotas are unavailable; unbounded writable layers were explicitly allowed");
+            Err(error)
+                if options.allow_unbounded_storage
+                    && error.code == rsctf_worker_protocol::CommandErrorCode::Unsupported =>
+            {
+                tracing::warn!(driver = ?info.driver, %error, "Docker storage quotas are unavailable; challenges will run without disk limits. Monitor free disk space.");
                 None
             }
             Err(error) => return Err(error),
@@ -618,6 +621,7 @@ impl WorkerRuntime for DockerRuntime {
             local_image_build: false,
             max_data_lanes: 4,
             max_workload_replicas: workload_replica_capacity(self.max_network_endpoints),
+            storage_quota_enforced: Some(self.writable_layer_bytes.is_some()),
         }
     }
 

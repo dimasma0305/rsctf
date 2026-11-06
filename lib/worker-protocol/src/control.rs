@@ -48,6 +48,9 @@ pub enum RuntimeEndpointKind {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerCapabilities {
+    /// Actual runtime disk-quota support; older agents leave this unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_quota_enforced: Option<bool>,
     pub ensure_workload: bool,
     pub write_flag: bool,
     pub tcp_proxy: bool,
@@ -471,5 +474,23 @@ mod tests {
         json.as_object_mut().unwrap().remove("maxWorkloadReplicas");
         let decoded: WorkerCapabilities = serde_json::from_value(json).unwrap();
         assert_eq!(decoded.max_workload_replicas, 0);
+    }
+
+    #[test]
+    fn quota_capability_distinguishes_unsupported_from_older_agents() {
+        let mut value = serde_json::to_value(WorkerCapabilities::default()).unwrap();
+        assert_eq!(
+            serde_json::from_value::<WorkerCapabilities>(value.clone())
+                .unwrap()
+                .storage_quota_enforced,
+            None
+        );
+        value["storageQuotaEnforced"] = serde_json::json!(false);
+        assert_eq!(
+            serde_json::from_value::<WorkerCapabilities>(value)
+                .unwrap()
+                .storage_quota_enforced,
+            Some(false)
+        );
     }
 }

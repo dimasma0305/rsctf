@@ -102,9 +102,16 @@ pub(in crate::runtime::docker) async fn verify_storage_quota_support(
             )
             .await
             .map_err(|error| {
-                RuntimeError::unsupported(format!(
-                    "Docker rejected a writable-layer quota probe; verify XFS is mounted with pquota/prjquota: {error}"
-                ))
+                if quota_unavailable(&error) {
+                    RuntimeError::unsupported(format!(
+                        "Docker rejected a writable-layer quota probe; verify XFS is mounted with pquota/prjquota: {error}"
+                    ))
+                } else {
+                    RuntimeError::new(
+                        CommandErrorCode::RuntimeUnavailable,
+                        format!("Docker quota probe failed: {error}"),
+                    )
+                }
             })?;
         created_id = Some(created.id);
         Ok(())
@@ -166,7 +173,7 @@ pub(in crate::runtime::docker) fn writable_layer_storage_opt(
 
 /// The worker-wide setting is an operator safety ceiling; a workload may ask
 /// for a smaller layer but can never expand past that ceiling. `None` is kept
-/// only for the explicit development-only unbounded-storage escape hatch.
+/// when automatic mode falls back to storage without quotas.
 pub(in crate::runtime::docker) fn effective_writable_layer_limit(
     worker_maximum: Option<u64>,
     requested: u64,
@@ -174,9 +181,44 @@ pub(in crate::runtime::docker) fn effective_writable_layer_limit(
     worker_maximum.map(|maximum| maximum.min(requested))
 }
 
+fn quota_unavailable(error: &bollard::errors::Error) -> bool {
+    let bollard::errors::Error::DockerResponseServerError {
+        status_code: 500 | 400,
+        message,
+    } = error
+    else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    message.contains("storage-opt")
+        && (message.contains("project quota")
+            || message.contains("pquota")
+            || (message.contains("size") && message.contains("not supported")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quota_fallback_does_not_hide_daemon_failures() {
+        for (message, expected) in [
+            (
+                "--storage-opt is supported only for overlay over xfs with 'pquota' mount option",
+                true,
+            ),
+            ("permission denied", false),
+            ("no space left on device", false),
+        ] {
+            assert_eq!(
+                quota_unavailable(&bollard::errors::Error::DockerResponseServerError {
+                    status_code: 500,
+                    message: message.into()
+                }),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn windowsfilter_supports_per_container_writable_layer_limits() {

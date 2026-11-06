@@ -167,6 +167,9 @@ impl ContainerManager for ProfileRouter {
     async fn storage_quota_enforced(&self) -> Option<bool> {
         self.default.storage_quota_enforced().await
     }
+    fn storage_quota_required(&self) -> bool {
+        self.default.storage_quota_required()
+    }
     async fn profile_storage_quota_enforced(&self, profile: Option<&str>) -> Option<bool> {
         self.selected(profile).ok()?.storage_quota_enforced().await
     }

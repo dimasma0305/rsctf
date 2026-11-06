@@ -24,7 +24,12 @@ use super::{
 };
 
 #[test]
-fn unsupported_storage_quotas_require_explicit_disposable_development_consent() {
+fn storage_quotas_are_automatic_unless_strict_mode_is_explicit() {
+    use super::docker::allow_unbounded_storage;
+    assert!(allow_unbounded_storage(Err(&std::env::VarError::NotPresent)).unwrap());
+    assert!(allow_unbounded_storage(Ok("true")).unwrap());
+    assert!(!allow_unbounded_storage(Ok("false")).unwrap());
+    assert!(allow_unbounded_storage(Ok("invalid")).is_err());
     assert!(super::docker::require_storage_quota(true, false).is_ok());
     assert!(super::docker::require_storage_quota(false, false).is_err());
     assert!(super::docker::require_storage_quota(false, true).is_ok());

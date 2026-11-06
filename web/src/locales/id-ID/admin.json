@@ -482,7 +482,10 @@
           "description": "Termasuk gambar",
           "label": "Penyimpanan (MB)",
           "unbounded_title": "Kuota lapisan tulis tidak tersedia",
-          "unbounded_warning": "Host Docker ini tidak dapat menerapkan batas disk. Peluncuran baru diblokir kecuali operator mengaktifkan pengecualian untuk pengembangan sementara. Gunakan penyimpanan yang mendukung kuota untuk produksi. Dengan pengecualian ini, batas tidak diterapkan pada instance: pantau ruang disk kosong."
+          "unbounded_warning": "Host Docker ini tidak dapat menerapkan batas disk container. Dalam mode otomatis, challenge tetap dapat berjalan, tetapi batas penyimpanan tidak diterapkan pada instance: pantau ruang disk kosong. RSCTF otomatis menerapkan batas saat penyimpanan mendukung kuota, seperti XFS dengan kuota proyek untuk Docker overlay2. Status ini berlaku untuk runtime ini; worker atau profil lain dapat berbeda.",
+          "strict_warning": "Mode penyimpanan ketat aktif pada host ini, sehingga peluncuran baru diblokir sampai kuota disk tersedia atau mode otomatis dipulihkan.",
+          "unknown_warning": "Server ini belum dapat memverifikasi kuota disk host challenge. Periksa koneksi runtime, status worker dan log server; penerapan batas disk belum dikonfirmasi.",
+          "enforced": "Batas disk diterapkan"
         },
         "submission_limit": {
           "description": "0 = tidak terbatas",

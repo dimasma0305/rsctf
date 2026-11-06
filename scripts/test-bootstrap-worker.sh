@@ -351,6 +351,10 @@ run_docker_connection_fixture enrolled 1 1 '
     /tmp/docker.log
   grep -q -- "--restart unless-stopped" /tmp/docker.log
   grep -q -- "--network host" /tmp/docker.log
+  # Both preflight and the supervised agent must use automatic quota fallback.
+  grep -q -- "RSCTF_WORKER_ALLOW_UNBOUNDED_STORAGE=true.* doctor" /tmp/docker.log
+  grep -q -- "RSCTF_WORKER_ALLOW_UNBOUNDED_STORAGE=true.* run" /tmp/docker.log
+  ! grep -q -- "RSCTF_WORKER_ALLOW_UNBOUNDED_STORAGE=false" /tmp/docker.log
   grep -q -- "--cap-drop ALL" /tmp/docker.log
   grep -q -- "--security-opt no-new-privileges:true" /tmp/docker.log
   grep -q "src=rsctf-worker-state,dst=/var/lib/rsctf-worker" /tmp/docker.log
