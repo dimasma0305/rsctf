@@ -123,7 +123,7 @@ serde_norway = "0.9.42"
 rcgen = { version = "0.14.8", default-features = false, features = ["pem", "x509-parser", "aws_lc_rs"] }
 time = "0.3"
 rsctf-worker-protocol = { path = "lib/worker-protocol" }
-utoipa = { version = "5", features = ["chrono", "uuid", "axum_extras"] }
+utoipa = { version = "6", features = ["chrono", "uuid", "axum_extras"] }
 
 [build-dependencies]
 sha2 = "0.11"
