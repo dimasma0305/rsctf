@@ -5086,6 +5086,10 @@ export interface DonationFeed {
 
 /** Client configuration */
 export interface ClientConfig {
+  /** Public site description configured by the administrator. */
+  description?: string | null;
+  /** Canonical deployment URL, when configured. */
+  publicUrl?: string | null;
   /** Platform prefix name */
   title?: string;
   /** Platform slogan */

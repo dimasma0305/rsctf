@@ -4388,7 +4388,7 @@ dependencies = [
 
 [[package]]
 name = "rsctf"
-version = "0.1.172"
+version = "0.1.173"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
@@ -4426,6 +4426,7 @@ dependencies = [
  "object_store",
  "pcap",
  "pcap-file",
+ "percent-encoding",
  "rand 0.10.3",
  "rcgen",
  "redis",

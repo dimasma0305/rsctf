@@ -38,6 +38,20 @@ RSCTF_COOKIE_SECURE=true
 
 Do not add a trailing path. Use local HTTP only for development, with `RSCTF_COOKIE_SECURE=false`.
 
+The Rust web process uses this origin for canonical links, social preview images
+and `/sitemap.xml`; it never derives them from incoming Host or forwarded headers.
+Set the public description under **Settings → Platform → Site Description**.
+Public landing pages, visible event details and news posts receive metadata in the
+initial HTML, before JavaScript runs. Full page content still uses the React client.
+Route `/robots.txt` and `/sitemap.xml` to the web process as well as the application.
+The sitemap includes the public landing pages and up to 1,000 recent events and
+1,000 posts. Hidden events and private workspaces are excluded; HTML for private
+workspaces and missing pages carries `noindex`. Public API reads remain crawlable
+for JavaScript rendering, with `X-Robots-Tag` preventing API responses from being
+indexed separately. These directives supplement authentication, not replace it.
+Without `RSCTF_PUBLIC_URL`, HTML metadata still works, but server-rendered absolute
+links are omitted and the sitemap returns 503 until an origin is configured.
+
 ## Trusted forwarded addresses
 
 rsctf ignores forwarded client-IP headers unless the immediate proxy is inside `RSCTF_TRUSTED_PROXY_CIDRS`.

@@ -123,6 +123,8 @@ fn effective_port_mapping(configured: String, backend_requires_proxy: bool) -> S
 pub struct ClientConfig {
     pub title: String,
     pub slogan: String,
+    pub description: Option<String>,
+    pub public_url: Option<String>,
     pub footer_info: Option<String>,
     pub custom_theme: Option<String>,
     pub api_public_key: Option<String>,
@@ -205,6 +207,7 @@ pub async fn get_client_config(
     // table can override the mutable globals at runtime.
     let mut title = st.config.global.title.clone();
     let mut slogan = st.config.global.slogan.clone();
+    let mut description = None;
     let mut footer_info = st.config.global.footer_info.clone();
     let mut custom_theme: Option<String> = None;
     let mut logo_hash: Option<String> = None;
@@ -237,6 +240,7 @@ pub async fn get_client_config(
         match row.config_key.as_str() {
             "GlobalConfig:Title" => title = value,
             "GlobalConfig:Slogan" => slogan = value,
+            "GlobalConfig:Description" => description = Some(value),
             "GlobalConfig:FooterInfo" => footer_info = Some(value),
             "GlobalConfig:CustomTheme" => custom_theme = Some(value),
             "GlobalConfig:LogoHash" => logo_hash = Some(value),
@@ -299,6 +303,13 @@ pub async fn get_client_config(
         custom_theme,
         api_public_key: None,
         logo_url,
+        description,
+        public_url: st
+            .config
+            .public_url
+            .as_deref()
+            .and_then(|value| url::Url::parse(value).ok())
+            .map(|url| url.origin().ascii_serialization()),
         port_mapping,
         default_lifetime,
         extension_duration,

@@ -47,7 +47,7 @@ const Post: FC = () => {
   const authorName = post?.authorName ?? t('post.content.anonymous_author', 'Anonymous')
   const publishedAt = dayjs(post?.time)
 
-  usePageTitle(post?.title ?? 'Post')
+  usePageTitle(post?.title ?? 'Post', { description: post?.summary, indexable: Boolean(post) })
 
   return (
     <WithNavBar width="1120px" isLoading={!post} withFooter>
