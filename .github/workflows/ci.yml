@@ -677,6 +677,9 @@ jobs:
       - name: Exercise account access in Chromium
         run: node tests/visual/account-access.mjs
 
+      - name: Exercise saved logo and favicon updates in Chromium
+        run: node tests/visual/branding-favicon.mjs
+
       - name: Exercise team invites and canceled requests in Chromium
         run: node tests/visual/team-access.mjs
 

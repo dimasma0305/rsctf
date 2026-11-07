@@ -21,7 +21,7 @@ import { useLanguage } from '@Utils/I18n'
 import { readProfile } from '@Utils/ProfileRead'
 import { useCustomTheme } from '@Utils/ThemeOverride'
 import { RouteLifecycleBoundary, viewerIdentityMiddleware, ViewerIdentityProvider } from '@Utils/ViewerIdentity'
-import { useBanner } from '@Hooks/useConfig'
+import { useBanner, useFavicon } from '@Hooks/useConfig'
 import { fetcher as rawFetcher } from '@Api'
 import '@mantine/core/styles.css'
 import '@mantine/dates/styles.css'
@@ -128,6 +128,7 @@ const RoutedContent: FC = () => {
 
 const ThemedApp: FC = () => {
   useBanner()
+  useFavicon()
 
   const { t } = useTranslation()
   const { locale } = useLanguage()
