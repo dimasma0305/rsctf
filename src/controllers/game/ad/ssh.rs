@@ -557,6 +557,63 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn ssh_wire_contract_rejects_local_operation_metadata() {
+        use crate::controllers::game::credential_operations::CredentialMutationInput;
+        use axum::{body::Body, http::Request, routing::post, Json, Router};
+        use tower::ServiceExt;
+
+        async fn upload(Json(model): Json<AdSshKeyUploadModel>) -> StatusCode {
+            parse_ssh_public_key(&model.public_key).unwrap();
+            StatusCode::NO_CONTENT
+        }
+        async fn mutation(_: CredentialMutationInput) -> StatusCode {
+            StatusCode::NO_CONTENT
+        }
+        let router = Router::new()
+            .route("/key", post(upload).delete(mutation))
+            .route("/key/generate", post(mutation));
+        let key = generate_ed25519_keypair();
+        for (method, path) in [
+            ("POST", "/key"),
+            ("POST", "/key/generate"),
+            ("DELETE", "/key"),
+        ] {
+            let mut payload = serde_json::json!({
+                "operationId": uuid::Uuid::new_v4(), "expectedRevision": 7,
+            });
+            if method == "POST" && path == "/key" {
+                payload["publicKey"] = key.public_key.clone().into();
+            }
+            for extra in [
+                None,
+                Some(("createdAt", serde_json::json!(1234))),
+                Some(("intent", serde_json::json!("generate"))),
+            ] {
+                let mut body = payload.clone();
+                let expected = if let Some((field, value)) = extra {
+                    body[field] = value;
+                    StatusCode::UNPROCESSABLE_ENTITY
+                } else {
+                    StatusCode::NO_CONTENT
+                };
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(path)
+                            .header("content-type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), expected, "{method} {path}: {body}");
+            }
+        }
+    }
+
     #[derive(Debug)]
     struct TestDatabaseError {
         code: &'static str,

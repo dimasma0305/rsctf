@@ -683,6 +683,9 @@ jobs:
       - name: Exercise public SEO metadata and private page indexing in Chromium
         run: node tests/visual/seo-metadata.mjs
 
+      - name: Exercise Toolkit SSH mutations and HTTP compatibility in Chromium
+        run: node tests/visual/toolkit-ssh.mjs
+
       - name: Exercise team invites and canceled requests in Chromium
         run: node tests/visual/team-access.mjs
 

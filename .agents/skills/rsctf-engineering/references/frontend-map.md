@@ -50,6 +50,12 @@ route matching, follow Vite's configuration and React Router.
 
 ## Shared concerns
 
+Toolkit SSH mutations are owned by [AdGuideModal.tsx](../../../../web/src/components/AdGuideModal.tsx).
+It projects only operation ID/revision onto API requests; local retry metadata stays
+in [PlayerCredentialOperations.ts](../../../../web/src/utils/PlayerCredentialOperations.ts).
+[toolkit-ssh.mjs](../../../../tests/visual/toolkit-ssh.mjs) covers upload/reload retry,
+revoke/generate, strict fields, HTTP cryptography compatibility and modal accessibility.
+
 Page metadata is reset at route transitions and updated by
 [usePageTitle.ts](../../../../web/src/hooks/usePageTitle.ts), using the effective
 site description and confirmed-public event/post details.
