@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import {
   claimPlayerCredentialOperation,
@@ -6,6 +7,7 @@ import {
   ownsPlayerCredentialResult,
   PLAYER_CREDENTIAL_RECOVERY_WINDOW_MS,
   parsePlayerCredentialRevision,
+  playerCredentialIntent,
   playerCredentialOperationWasRejected,
   playerCredentialOperationStorageKey,
   playerCredentialRevisionSignalKey,
@@ -24,6 +26,16 @@ const memoryStorage = () => {
 
 const firstId = '018f0000-0000-4000-8000-000000000001'
 const secondId = '018f0000-0000-4000-8000-000000000002'
+
+test('credential intent preserves SHA-256 identities without secure-context cryptography', async (context) => {
+  context.mock.getter(globalThis, 'crypto', () => undefined)
+  for (const payload of ['', 'ssh-ed25519 fixture comment', 'Unicode comment: café 🔑', '\ud800']) {
+    assert.equal(
+      await playerCredentialIntent('upload', payload),
+      `upload:${createHash('sha256').update(payload).digest('hex')}`
+    )
+  }
+})
 
 test('an ambiguous operation survives reload and the committed revision', () => {
   const storage = memoryStorage()

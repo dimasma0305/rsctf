@@ -140,7 +140,12 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
     return withPlayerCredentialLock(key, async () => {
       const operation = claimPlayerCredentialOperation(storage, key, sshKey?.revision ?? 0, intent)
       try {
-        const result = await request(operation)
+        // TypeScript's narrower callback type does not remove local metadata.
+        // Project the wire fields so strict credential endpoints never receive it.
+        const result = await request({
+          operationId: operation.operationId,
+          expectedRevision: operation.expectedRevision,
+        })
         if (activeSshViewerScope.current !== viewerScopeAtStart) {
           throw new Error('An SSH credential response for an older account was ignored')
         }
@@ -313,6 +318,7 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
     <>
       <Modal
         size="48rem"
+        closeButtonProps={{ 'aria-label': t('common.button.close', 'Close') }}
         centered
         title={
           <Group gap="sm">
@@ -493,7 +499,7 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
                     <Text size="sm" fw={600}>
                       {t('game.content.ad.guide.ssh.connect', 'Connect')}
                     </Text>
-                    <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
+                    <Code block tabIndex={0} className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
                       {sshExample}
                     </Code>
                     <Group justify="flex-end">
@@ -889,6 +895,7 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
       {/* Generated SSH keypair reveal — private key shown ONCE */}
       <Modal
         opened={privKeyModalOpen}
+        closeButtonProps={{ 'aria-label': t('common.button.close', 'Close') }}
         size="lg"
         onClose={() => {
           closePrivKeyModal()
@@ -912,7 +919,7 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
             {t('game.content.ad.ssh_modal.private', 'Private key (PEM, OpenSSH format)')}
           </Text>
           <Box style={{ position: 'relative' }}>
-            <Code block className={misc.ffmono} style={{ maxHeight: 220, overflow: 'auto', fontSize: '0.7rem' }}>
+            <Code block tabIndex={0} className={misc.ffmono} style={{ maxHeight: 220, overflow: 'auto', fontSize: '0.7rem' }}>
               {freshPrivKey?.privateKey}
             </Code>
           </Box>

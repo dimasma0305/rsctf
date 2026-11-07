@@ -1,3 +1,4 @@
+import { sha256 } from 'js-sha256'
 import { createUuid } from './Uuid'
 
 export interface PlayerCredentialOperation {
@@ -142,9 +143,9 @@ export const claimPlayerCredentialOperation = (
 
 /** Compact a public mutation payload into non-secret operation metadata. */
 export const playerCredentialIntent = async (kind: string, payload: string = '') => {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload))
-  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
-  return `${kind}:${hash}`
+  // Public-payload identity only; keep the same SHA-256 across secure and HTTP
+  // contexts so pending operations remain recoverable without crypto.subtle.
+  return `${kind}:${sha256(new TextEncoder().encode(payload))}`
 }
 
 export const ownsPlayerCredentialResult = (
