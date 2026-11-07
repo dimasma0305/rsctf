@@ -1,6 +1,6 @@
 [package]
 name = "rsctf"
-version = "0.1.172"
+version = "0.1.173"
 autobins = false
 edition = "2021"
 license = "MIT"
@@ -69,6 +69,7 @@ hmac = "0.13"
 aho-corasick = "1"
 regex = "1"
 url = "2"
+percent-encoding = "2"
 aes-gcm = "0.11"
 hex = "0.4"
 base64 = "0.23"

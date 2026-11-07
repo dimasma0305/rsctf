@@ -117,7 +117,7 @@ const GameDetail: FC = () => {
 
   const { t } = useTranslation()
 
-  usePageTitle(game?.title)
+  usePageTitle(game?.title, { description: game?.summary, imageUrl: game?.poster, indexable: game?.hidden === false })
   const hasLoadedGame = game !== undefined
 
   useEffect(() => {

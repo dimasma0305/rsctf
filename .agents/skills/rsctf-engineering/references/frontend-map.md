@@ -50,6 +50,12 @@ route matching, follow Vite's configuration and React Router.
 
 ## Shared concerns
 
+Page metadata is reset at route transitions and updated by
+[usePageTitle.ts](../../../../web/src/hooks/usePageTitle.ts), using the effective
+site description and confirmed-public event/post details.
+[seo-metadata.mjs](../../../../tests/visual/seo-metadata.mjs) checks previews,
+canonical links, Back navigation and private-page noindex in Chromium.
+
 The app-wide `useFavicon` hook in [useConfig.ts](../../../../web/src/hooks/useConfig.ts)
 follows the saved platform logo. [branding-favicon.mjs](../../../../tests/visual/branding-favicon.mjs)
 checks upload, replacement, reset, unsaved previews and reloads through the settings UI.

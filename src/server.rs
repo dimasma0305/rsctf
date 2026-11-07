@@ -16,6 +16,8 @@ use tower_http::trace::{MakeSpan, TraceLayer};
 use crate::app_state::SharedState;
 use crate::{controllers, hubs};
 
+mod seo;
+
 const UNMATCHED_TRACE_ROUTE: &str = "<unmatched>";
 const REQUEST_ID_HEADER: &str = "x-rsctf-request-id";
 
@@ -160,6 +162,16 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
     // Reserve API and hub namespaces before the SPA/static fallback is attached.
     // A miss there must remain a typed transport failure, never HTTP 200 HTML.
     let app = app.merge(typed_namespace_fallbacks());
+    let app = if serve_frontend {
+        app.route("/robots.txt", get(seo::robots))
+            .route("/sitemap.xml", get(seo::sitemap))
+            .route(
+                "/index.html",
+                get(|| async { axum::response::Redirect::permanent("/") }),
+            )
+    } else {
+        app
+    };
     // Serve the built React frontend. When a static directory exists, unmatched
     // routes fall back to its index document so client-side deep links also work
     // after a browser refresh. The web/ client builds to web/build via pnpm.
@@ -177,10 +189,13 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
             .ok()
             .map(|html| inject_head(&html, ANTI_AUTOFILL_TAG));
         let spa: axum::routing::MethodRouter = match injected {
-            Some(html) => axum::routing::get(move || {
-                let html = html.clone();
-                async move { axum::response::Html(html) }
-            }),
+            Some(html) => {
+                let html = std::sync::Arc::new(html);
+                let state = state.clone();
+                axum::routing::get(move |uri: axum::http::Uri| {
+                    seo::page(state.clone(), html.clone(), uri)
+                })
+            }
             None => axum::routing::get_service(ServeFile::new(index.clone())),
         };
         app.fallback_service(
@@ -195,49 +210,50 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
     // Apply cross-cutting layers after registering the SPA fallback. Axum layers
     // only routes that exist at the time `layer` is called, so this ordering keeps
     // HSTS, frame denial, and the CSP on the HTML shell as well as API responses.
-    app.layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        crate::middlewares::event_vpn::middleware,
-    ))
-    // A per-field size limit does not stop a slow client from retaining an
-    // almost-complete multipart buffer forever. Cap total body transfer time;
-    // buffered upload handlers also take weighted admission permits.
-    .layer(RequestBodyDeadlineLayer::new(
-        crate::utils::upload::REQUEST_BODY_DEADLINE,
-    ))
-    // Per-request user-activity stamp (RSCTF's UserInfo.UpdateByHttpContext) —
-    // inside the rate limiter, so activity is not stamped for throttled 429s.
-    .layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        crate::middlewares::user_activity::middleware,
-    ))
-    // Public bait paths bypass the ordinary `/api` limiter. Admit them before
-    // handler authentication and silently return the same 404 on saturation.
-    .layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        crate::controllers::honeypot::admission_middleware,
-    ))
-    .layer(TraceLayer::new_for_http().make_span_with(RedactedHttpMakeSpan))
-    .layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        crate::middlewares::rate_limiter::global_middleware,
-    ))
-    .layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        crate::middlewares::request_security::csrf_middleware,
-    ))
-    .layer(axum::middleware::from_fn(
-        crate::middlewares::request_security::security_headers,
-    ))
-    .layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        crate::services::health::reject_new_work_while_draining,
-    ))
-    // Echo wraps admission/draining so even an early 429/503 retains the safe
-    // browser reference. Admitted requests record the same value in their
-    // redacted trace span above.
-    .layer(axum::middleware::from_fn(echo_request_id))
-    .with_state(state)
+    app.layer(axum::middleware::from_fn(seo::exclude_api_indexing))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middlewares::event_vpn::middleware,
+        ))
+        // A per-field size limit does not stop a slow client from retaining an
+        // almost-complete multipart buffer forever. Cap total body transfer time;
+        // buffered upload handlers also take weighted admission permits.
+        .layer(RequestBodyDeadlineLayer::new(
+            crate::utils::upload::REQUEST_BODY_DEADLINE,
+        ))
+        // Per-request user-activity stamp (RSCTF's UserInfo.UpdateByHttpContext) —
+        // inside the rate limiter, so activity is not stamped for throttled 429s.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middlewares::user_activity::middleware,
+        ))
+        // Public bait paths bypass the ordinary `/api` limiter. Admit them before
+        // handler authentication and silently return the same 404 on saturation.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::controllers::honeypot::admission_middleware,
+        ))
+        .layer(TraceLayer::new_for_http().make_span_with(RedactedHttpMakeSpan))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middlewares::rate_limiter::global_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middlewares::request_security::csrf_middleware,
+        ))
+        .layer(axum::middleware::from_fn(
+            crate::middlewares::request_security::security_headers,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::services::health::reject_new_work_while_draining,
+        ))
+        // Echo wraps admission/draining so even an early 429/503 retains the safe
+        // browser reference. Admitted requests record the same value in their
+        // redacted trace span above.
+        .layer(axum::middleware::from_fn(echo_request_id))
+        .with_state(state)
 }
 
 fn typed_namespace_fallbacks<S>() -> Router<S>

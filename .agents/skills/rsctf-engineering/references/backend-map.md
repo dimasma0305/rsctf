@@ -81,6 +81,11 @@ alone does not cover it.
 
 ## Additional boundary owners
 
+Public-page HTML metadata, robots policy and the bounded sitemap live in
+[server/seo.rs](../../../../src/server/seo.rs). Its sibling
+[PostgreSQL/HTTP tests](../../../../src/server/seo/tests.rs) cover hidden-event
+removal, escaping, canonical origins, missing pages and private-route noindex.
+
 Public avatars, posters and branding share bounded byte-based validation in
 [public_image.rs](../../../../src/utils/public_image.rs). Extensionless public
 downloads detect their passive image type through
