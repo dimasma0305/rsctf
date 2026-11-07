@@ -57,6 +57,27 @@ test("entrance waits for the actual CSS transition but later transitions remain 
     "popup resized or moved after entrance",
   ]);
 });
+test("delayed About modal entrance is not mistaken for post-entrance movement", () => {
+  // CI trace: first paint at 178ms, declared 180ms transition, finished at
+  // 451ms. A fixed 300ms cutoff sampled the still-running entrance animation.
+  const frames = [
+    frame(0),
+    { ...frame(178, { ...rect, y: 62 }), popupTransitionMs: 180 },
+    { ...frame(338, { ...rect, y: 58.3 }), popupAnimating: true },
+    { ...frame(400, { ...rect, y: 54.2 }), popupAnimating: true },
+    frame(451, { ...rect, y: 54 }),
+    frame(900, { ...rect, y: 54 }),
+  ];
+  const options = { popup: true, entranceFromFirstPaint: true };
+  assert.deepEqual(surfaceFailures(frames, { popup: true }), [
+    "popup resized or moved after entrance",
+  ]);
+  assert.deepEqual(surfaceFailures(frames, options), []);
+  frames.push(frame(1200, { ...rect, y: 58 }));
+  assert.deepEqual(surfaceFailures(frames, options), [
+    "popup resized or moved after entrance",
+  ]);
+});
 test("late popup growth, missing surfaces and lost scroll fail", () => {
   assert.deepEqual(
     surfaceFailures(

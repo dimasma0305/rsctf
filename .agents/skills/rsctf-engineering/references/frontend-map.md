@@ -50,6 +50,10 @@ route matching, follow Vite's configuration and React Router.
 
 ## Shared concerns
 
+The app-wide `useFavicon` hook in [useConfig.ts](../../../../web/src/hooks/useConfig.ts)
+follows the saved platform logo. [branding-favicon.mjs](../../../../tests/visual/branding-favicon.mjs)
+checks upload, replacement, reset, unsaved previews and reloads through the settings UI.
+
 Live round layout stability is owned by
 [CompetitionStatus.tsx](../../../../web/src/components/competition/CompetitionStatus.tsx)
 and its CSS module: reserve the epoch/tick cells and keep notices in one persistent

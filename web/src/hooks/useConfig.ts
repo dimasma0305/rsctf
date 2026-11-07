@@ -53,6 +53,21 @@ export const useConfig = () => {
   }
 }
 
+export const useFavicon = () => {
+  const { config } = useConfig()
+
+  useEffect(() => {
+    const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
+    if (!icon) return
+
+    // Uploaded logos have content-addressed URLs and their own image MIME type.
+    // Do not retain the default SVG hint for PNG/JPEG/WebP uploads.
+    if (config.logoUrl) icon.removeAttribute('type')
+    else icon.type = 'image/svg+xml'
+    icon.href = config.logoUrl || '/favicon.svg'
+  }, [config.logoUrl])
+}
+
 export const useCaptchaConfig = () => {
   const query = api.info.useInfoGetClientCaptchaInfo({
     refreshInterval: 0,

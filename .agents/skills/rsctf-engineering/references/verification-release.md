@@ -54,6 +54,11 @@ runner failure.
 
 ## Immutable production release
 
+Publish completed fixes automatically after the required checks pass; do not stop
+at an open pull request or ask for release confirmation again. Release publication
+and production deployment are separate actions: honor any explicit user instruction
+to skip production, and report that scope in the handoff.
+
 Any completed change that can affect a built/deployed artifact—Rust, React, agents,
 installers, migrations, compose/release configuration, or tooling shipped in the
 image—must be built and deployed to `https://tcp.1pc.tf`. Prose, comments, and tests
