@@ -69,6 +69,12 @@ end-to-end evidence tracked in TODO.md.
 | VPN owner session, firewall and route policy | [src/services/ad/vpn/](../../../../src/services/ad/vpn/), [src/services/ad/ssh.rs](../../../../src/services/ad/ssh.rs), [scripts/check-event-vpn.mjs](../../../../scripts/check-event-vpn.mjs) |
 | Capture ownership, evidence and inventory | [src/services/traffic/capture/](../../../../src/services/traffic/capture/), [src/services/traffic/inventory/](../../../../src/services/traffic/inventory/), [src/services/capture_safety.rs](../../../../src/services/capture_safety.rs) |
 
+Same-origin VPN SSH advertises the hub address through
+[SSH endpoint selection](../../../../src/services/ad/ssh/endpoint.rs), separate
+from the private HTTPS ingress. The VPN INPUT planner permits only the configured
+SSH port for current peers after quarantine/capture fences; the firewall audit
+rebuilds older DNS-only INPUT rules during reconciliation.
+
 Trusted workers use outbound mTLS and execute supported platform-owned workloads;
 participant BYOC is a separate, untrusted boundary using outbound WSS/yamux.
 Follow [docs/deploy/workers.md](../../../../docs/deploy/workers.md) for supported backend combinations.

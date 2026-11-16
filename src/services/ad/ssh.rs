@@ -153,26 +153,9 @@ fn ssh_admission_workload(participation_id: i32, challenge_id: i32) -> uuid::Uui
 
 const HOST_KEY_CFG: &str = "Ad:Ssh:HostKey";
 
-fn listen_port() -> u16 {
-    std::env::var("RSCTF_AD_SSH_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2222)
-}
-
-/// `host:port` a player SSHes to — shown in the A&D panel. Defaults to the public
-/// entry host on the bastion port.
-pub fn jump_host() -> Option<String> {
-    let host = std::env::var("RSCTF_AD_SSH_PUBLIC_HOST")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::env::var("RSCTF_DOCKER_PUBLIC_ENTRY")
-                .ok()
-                .filter(|s| !s.is_empty())
-        })?;
-    Some(format!("{host}:{}", listen_port()))
-}
+mod endpoint;
+pub use endpoint::jump_host;
+pub(crate) use endpoint::listen_port;
 
 /// Spawn the best-effort bastion listener as a shutdown-aware background task.
 ///

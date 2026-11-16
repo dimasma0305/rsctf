@@ -176,6 +176,19 @@ The VPN override adds:
 
 It requires rootful Docker on Linux, WireGuard/ipset kernel support, non-overlapping network ranges, and a reachable public endpoint. `NET_RAW` stays on the singleton VPN owner; public web replicas receive neither VPN capability. Test this mode on the production host before the event.
 
+With the bundled Caddy + event VPN ingress, connect your personal VPN before
+using the Toolkit's SSH command. SSH uses the VPN hub address (normally
+`10.13.0.1:2222`); the website hostname resolves to a separate HTTPS-only proxy
+inside the VPN. The hub admits SSH only from current VPN peers, and SSH still
+requires a registered key and access to the selected challenge.
+
+Upgrades need both the server image and updated Compose files: older
+`compose.ad-vpn.yml` files explicitly advertised the website hostname for SSH.
+Recreate the application with the updated bundle and reload the Toolkit; existing
+SSH keys and VPN profiles remain usable. `RSCTF_AD_SSH_PUBLIC_HOST` can override
+the advertised address when using a separately configured SSH endpoint. Keep it
+empty for the bundled private SSH route.
+
 For opt-in event security, configure the independent event secrets and the
 HTTPS proof route in `deploy/.env`, then add `event-sensor` to
 `COMPOSE_PROFILES`. The sensor service in `compose.ad-vpn.yml` shares the VPN

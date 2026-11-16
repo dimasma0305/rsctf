@@ -500,12 +500,12 @@ fn same_origin_rule_text_installed(
     let peer_set = "--match-set rsv_a_";
     let dns = format!("{}/32", access.dns);
     let ingress = format!("{}/32", access.ingress);
-    let input_has = |protocol: &str| {
+    let input_has = |protocol: &str, port: &str| {
         input.lines().any(|rule| {
             rule.contains(&format!("-i {IFNAME} -p {protocol}"))
                 && rule.contains(peer_set)
                 && has_pair(rule, "-d", &dns)
-                && has_pair(rule, "--dport", "53")
+                && has_pair(rule, "--dport", port)
                 && rule.ends_with("-j ACCEPT")
         })
     };
@@ -525,7 +525,11 @@ fn same_origin_rule_text_installed(
             && has_pair(rule, "--ctstate", "RELATED,ESTABLISHED")
             && rule.ends_with("-j ACCEPT")
     });
-    input_has("udp") && input_has("tcp") && request && reply
+    input_has("udp", "53")
+        && input_has("tcp", "53")
+        && input_has("tcp", &access.ssh_port.to_string())
+        && request
+        && reply
 }
 
 fn same_origin_rules_installed(access: super::SameOriginAccess) -> Result<bool, String> {

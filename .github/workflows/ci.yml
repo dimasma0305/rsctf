@@ -1047,7 +1047,7 @@ jobs:
           submodules: recursive
 
       - name: Install runtime test dependencies
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev iptables python3-venv postgresql-client
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev iptables ipset iproute2 python3-venv postgresql-client
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -1069,6 +1069,9 @@ jobs:
         run: |
           sudo env RSCTF_SANDBOX_TEST_BINARY=/usr/local/bin/rsctf-architecture \
             ./ci-artifacts/checker-sandbox-tests --test-threads=1 --nocapture
+
+      - name: Verify private VPN SSH routing and peer fences
+        run: sudo ./ci-artifacts/rsctf-tests same_origin_ssh_kernel_regression --ignored --test-threads=1 --nocapture
 
       - name: Recover imports, checker publication and Docker snapshots
         run: |

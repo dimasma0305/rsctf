@@ -474,4 +474,27 @@ same_origin=(
 "${compose[@]}" "${same_origin[@]}" config --format json \
   | assert_same_origin_event_ingress
 
+assert_ssh_advertisement() {
+  python3 -c '
+import json, sys
+document = json.load(sys.stdin)
+host, port, *services = sys.argv[1:]
+for service in services:
+    env = document["services"][service]["environment"]
+    assert env["RSCTF_AD_SSH_PUBLIC_HOST"] == host, (service, env["RSCTF_AD_SSH_PUBLIC_HOST"])
+    assert env["RSCTF_AD_SSH_PORT"] == port, (service, env["RSCTF_AD_SSH_PORT"])
+' "$@"
+}
+# Empty means the backend selects the private VPN hub, not the split-DNS web
+# hostname. A deliberate external SSH override must survive Compose rendering.
+RSCTF_AD_SSH_PUBLIC_HOST= RSCTF_AD_SSH_PORT=2222 \
+  "${compose[@]}" "${same_origin[@]}" config --format json \
+  | assert_ssh_advertisement '' 2222 rsctf
+RSCTF_AD_SSH_PUBLIC_HOST=ssh.example.test RSCTF_AD_SSH_PORT=2223 \
+  "${compose[@]}" "${same_origin[@]}" config --format json \
+  | assert_ssh_advertisement ssh.example.test 2223 rsctf
+RSCTF_AD_SSH_PUBLIC_HOST=ssh.example.test RSCTF_AD_SSH_PORT=2223 \
+  "${compose[@]}" "${split[@]}" config --format json \
+  | assert_ssh_advertisement ssh.example.test 2223 rsctf rsctf-control
+
 echo "Compose capability ownership and log bounds are valid."

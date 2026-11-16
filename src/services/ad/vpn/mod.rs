@@ -73,6 +73,7 @@ struct VpnBackendConfig {
 pub(crate) struct SameOriginAccess {
     pub(crate) dns: Ipv4Addr,
     pub(crate) ingress: Ipv4Addr,
+    pub(crate) ssh_port: u16,
 }
 
 pub fn sync_is_dirty() -> bool {
@@ -258,7 +259,11 @@ pub(crate) fn same_origin_access() -> Result<Option<SameOriginAccess>, String> {
     let dns = hub_address()
         .parse::<Ipv4Addr>()
         .map_err(|_| "the A&D VPN hub address is not valid IPv4".to_string())?;
-    Ok(Some(SameOriginAccess { dns, ingress }))
+    Ok(Some(SameOriginAccess {
+        dns,
+        ingress,
+        ssh_port: crate::services::ad_ssh::listen_port(),
+    }))
 }
 
 /// A custom checker gets only exact target permissions inside these routes.
