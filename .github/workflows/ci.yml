@@ -827,28 +827,30 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
 
-      - name: Reject reachable RSA timing vulnerability
+      - name: Reject vulnerable optional SQL drivers in the compiled graph
         shell: bash
         run: |
           set -euo pipefail
-          tree="$(cargo tree --target all --locked --prefix none)"
-          reachable_rsa="$(awk '$1 == "rsa" { print }' <<<"$tree")"
-          if [[ -n "$reachable_rsa" ]]; then
-            echo "::error::RUSTSEC-2023-0071 is reachable in the compiled dependency graph."
-            echo "$reachable_rsa"
+          tree="$(cargo tree --all-features --target all --locked --prefix none)"
+          reachable="$(awk '$1 == "rsa" || $1 == "libsqlite3-sys" { print }' <<<"$tree")"
+          if [[ -n "$reachable" ]]; then
+            echo "::error::A vulnerable optional SQL driver is reachable in the compiled dependency graph."
+            echo "$reachable"
             exit 1
           fi
-          echo "rsa is lockfile-only through disabled sqlx-mysql features."
+          echo "rsa and libsqlite3-sys are lockfile-only through disabled sqlx-mysql/sqlx-sqlite features."
 
       - name: Audit Rust workspace lockfiles
-        # rsa 0.9.10 is retained only in Cargo.lock metadata through sqlx-mysql.
-        # The preceding graph check fails if that advisory ever becomes reachable.
+        # These entries are retained only in Cargo.lock through disabled SQLx
+        # drivers. The all-feature/all-target graph check above fails if either
+        # becomes compiled. No exception applies to any other workspace lockfile.
         run: |
-          cargo audit --ignore RUSTSEC-2023-0071
+          cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0459
           cargo audit --file agents/byoc-agent/Cargo.lock
           cargo audit --file agents/worker-agent/Cargo.lock
           cargo audit --file lib/worker-protocol/Cargo.lock
           cargo audit --file tests/load/retention-audit/Cargo.lock
+          cargo audit --file tests/load/storage-audit/Cargo.lock
 
   load-harness-contracts:
     name: Load harness contracts

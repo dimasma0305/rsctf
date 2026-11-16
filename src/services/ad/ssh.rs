@@ -20,8 +20,8 @@ use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecResults};
 use bollard::Docker;
 use futures::StreamExt;
 use russh::keys::ssh_key::private::{Ed25519Keypair, KeypairData};
-use russh::keys::{HashAlg, PrivateKey, PublicKey};
-use russh::server::{Auth, Handler, Msg, Session};
+use russh::keys::{HashAlg, PrivateKey};
+use russh::server::{Auth, Handler, Msg, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId, Disconnect, MethodKind, MethodSet};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -747,7 +747,7 @@ impl Handler for BastionHandler {
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &PublicKey,
+        public_key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
         let rejected = || Auth::Reject {
             proceed_with_methods: None,
@@ -756,7 +756,10 @@ impl Handler for BastionHandler {
         let Ok(challenge_id) = user.trim().parse::<i32>() else {
             return Ok(rejected());
         };
-        let fingerprint = public_key.fingerprint(HashAlg::Sha256).to_string();
+        let fingerprint = public_key
+            .public_key
+            .fingerprint(HashAlg::Sha256)
+            .to_string();
         let key = {
             let Some(_permit) = crate::services::authorization_lease::try_query_permit() else {
                 return Ok(rejected());
