@@ -66,7 +66,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Restore lint metadata cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           # Check-only metadata must not race the executable job's cache save.
           shared-key: server-lint
@@ -126,7 +126,7 @@ jobs:
           toolchain: 1.98.0
 
       - name: Restore Rust build cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: server
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -264,7 +264,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Restore coverage build cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: coverage
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -363,7 +363,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Restore BYOC agent build cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: agents/byoc-agent -> target
           shared-key: byoc-agent
@@ -402,7 +402,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
 
       - name: Restore worker build cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: |
             lib/worker-protocol -> target
@@ -465,7 +465,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Restore Windows worker build cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: |
             lib/worker-protocol -> target
@@ -641,7 +641,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.8.0
           package_json_file: web/package.json
@@ -737,7 +737,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.8.0
           package_json_file: web/package.json
@@ -775,7 +775,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.8.0
           package_json_file: web/package.json
@@ -816,7 +816,7 @@ jobs:
           toolchain: 1.98.0
 
       - name: Restore pinned audit tool
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: audit-0.22.2
           cache-targets: false
