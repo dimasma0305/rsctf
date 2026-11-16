@@ -20,8 +20,8 @@ use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecResults};
 use bollard::Docker;
 use futures::StreamExt;
 use russh::keys::ssh_key::private::{Ed25519Keypair, KeypairData};
-use russh::keys::{HashAlg, PrivateKey, PublicKey};
-use russh::server::{Auth, Handler, Msg, Session};
+use russh::keys::{HashAlg, PrivateKey};
+use russh::server::{Auth, Handler, Msg, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId, Disconnect, MethodKind, MethodSet};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -153,26 +153,9 @@ fn ssh_admission_workload(participation_id: i32, challenge_id: i32) -> uuid::Uui
 
 const HOST_KEY_CFG: &str = "Ad:Ssh:HostKey";
 
-fn listen_port() -> u16 {
-    std::env::var("RSCTF_AD_SSH_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2222)
-}
-
-/// `host:port` a player SSHes to — shown in the A&D panel. Defaults to the public
-/// entry host on the bastion port.
-pub fn jump_host() -> Option<String> {
-    let host = std::env::var("RSCTF_AD_SSH_PUBLIC_HOST")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::env::var("RSCTF_DOCKER_PUBLIC_ENTRY")
-                .ok()
-                .filter(|s| !s.is_empty())
-        })?;
-    Some(format!("{host}:{}", listen_port()))
-}
+mod endpoint;
+pub use endpoint::jump_host;
+pub(crate) use endpoint::listen_port;
 
 /// Spawn the best-effort bastion listener as a shutdown-aware background task.
 ///
@@ -764,7 +747,7 @@ impl Handler for BastionHandler {
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &PublicKey,
+        public_key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
         let rejected = || Auth::Reject {
             proceed_with_methods: None,
@@ -773,7 +756,10 @@ impl Handler for BastionHandler {
         let Ok(challenge_id) = user.trim().parse::<i32>() else {
             return Ok(rejected());
         };
-        let fingerprint = public_key.fingerprint(HashAlg::Sha256).to_string();
+        let fingerprint = public_key
+            .public_key
+            .fingerprint(HashAlg::Sha256)
+            .to_string();
         let key = {
             let Some(_permit) = crate::services::authorization_lease::try_query_permit() else {
                 return Ok(rejected());

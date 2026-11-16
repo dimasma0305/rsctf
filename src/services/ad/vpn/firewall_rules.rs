@@ -224,7 +224,9 @@ pub(super) fn input_rule_plan(
         ],
     ];
     if let Some(access) = same_origin {
-        for protocol in ["udp", "tcp"] {
+        // SSH terminates on the hub, not on the HTTPS ingress. Only current
+        // peers on wg0 may reach this exact port; all earlier fences still win.
+        for (protocol, port) in [("udp", 53), ("tcp", 53), ("tcp", access.ssh_port)] {
             rules.push(vec![
                 "-i".into(),
                 IFNAME.into(),
@@ -238,7 +240,7 @@ pub(super) fn input_rule_plan(
                 "-d".into(),
                 access.dns.to_string(),
                 "--dport".into(),
-                "53".into(),
+                port.to_string(),
                 "-j".into(),
                 "ACCEPT".into(),
             ]);

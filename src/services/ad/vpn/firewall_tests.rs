@@ -1,5 +1,23 @@
 use super::*;
 
+#[test]
+#[ignore = "requires isolated Linux network namespaces, root, iptables/ipset and Python"]
+fn same_origin_ssh_kernel_regression() {
+    let access = super::super::SameOriginAccess {
+        dns: "10.13.42.1".parse().unwrap(),
+        ingress: "10.13.41.253".parse().unwrap(),
+        ssh_port: 2223,
+    };
+    let rules = input_rule_plan("rsv_a_test", &[], &[], false, Some(access));
+    let mut child = Command::new("unshare")
+        .args(["-n", "python3", "scripts/test-event-vpn-ssh.py"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("start isolated VPN INPUT regression");
+    serde_json::to_writer(child.stdin.take().unwrap(), &rules).unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
 fn policy_sets(game: i32) -> PolicySets {
     PolicySets {
         peers: format!("rsv_p_{game}"),
@@ -133,10 +151,11 @@ fn quarantine_precedes_every_allow_rule() {
 }
 
 #[test]
-fn same_origin_portal_opens_only_dns_and_https_for_live_peers() {
+fn same_origin_portal_opens_dns_ssh_and_https_for_live_peers() {
     let access = super::super::SameOriginAccess {
         dns: "10.13.42.1".parse().unwrap(),
         ingress: "10.13.41.253".parse().unwrap(),
+        ssh_port: 2223,
     };
     let input = input_rule_plan("rsv_a_test", &[], &[], false, Some(access))
         .into_iter()
@@ -154,6 +173,26 @@ fn same_origin_portal_opens_only_dns_and_https_for_live_peers() {
             && rule.contains("-d 10.13.42.1 --dport 53")
             && rule.ends_with("-j ACCEPT")
     }));
+    let ssh = input
+        .iter()
+        .position(|rule| {
+            rule.contains("-i wg0 -p tcp")
+                && rule.contains("rsv_a_test src")
+                && rule.contains("-d 10.13.42.1 --dport 2223")
+                && rule.ends_with("-j ACCEPT")
+        })
+        .unwrap();
+    assert!(input[..ssh]
+        .iter()
+        .any(|rule| rule.contains("rsv_quarantine src -j DROP")));
+    assert!(input[..ssh]
+        .iter()
+        .any(|rule| rule.contains("rsv_transition src,dst,dst -j DROP")));
+    assert!(!input.iter().any(|rule| rule.contains("--dport 2222")));
+    let without_portal = input_rule_plan("rsv_a_test", &[], &[], false, None);
+    assert!(!without_portal
+        .iter()
+        .any(|rule| rule.iter().any(|arg| arg == "2223")));
 
     let forward = forwarding_rule_plan("rsv_a_test", &[], Some(access))
         .into_iter()
@@ -178,16 +217,33 @@ fn installed_same_origin_rules_accept_iptables_canonical_argument_order() {
     let access = super::super::SameOriginAccess {
         dns: "10.13.42.1".parse().unwrap(),
         ingress: "10.13.41.253".parse().unwrap(),
+        ssh_port: 2223,
     };
     let input = r#"
 -A RSCTF_VPN_INPUT -d 10.13.42.1/32 -i wg0 -p udp -m set --match-set rsv_a_generation src -m udp --dport 53 -j ACCEPT
 -A RSCTF_VPN_INPUT -d 10.13.42.1/32 -i wg0 -p tcp -m set --match-set rsv_a_generation src -m tcp --dport 53 -j ACCEPT
+-A RSCTF_VPN_INPUT -d 10.13.42.1/32 -i wg0 -p tcp -m set --match-set rsv_a_generation src -m tcp --dport 2223 -j ACCEPT
 "#;
     let forward = r#"
 -A RSCTF_VPN_FORWARD -d 10.13.41.253/32 -i wg0 -p tcp -m set --match-set rsv_a_generation src -m tcp --dport 443 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
 -A RSCTF_VPN_FORWARD -s 10.13.41.253/32 -o wg0 -p tcp -m tcp --sport 443 -m set --match-set rsv_a_generation dst -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 "#;
     assert!(same_origin_rule_text_installed(input, forward, access));
+    // Existing installations must rebuild their old DNS/HTTPS-only firewall.
+    assert!(!same_origin_rule_text_installed(
+        &input
+            .lines()
+            .filter(|rule| !rule.contains("--dport 2223"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        forward,
+        access,
+    ));
+    assert!(!same_origin_rule_text_installed(
+        &input.replace("--dport 2223", "--dport 2222"),
+        forward,
+        access,
+    ));
 
     assert!(!same_origin_rule_text_installed(
         &input.replace("--dport 53", "--dport 5353"),

@@ -32,6 +32,15 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 
 ## Discover the smallest meaningful check
 
+Same-origin SSH address selection is tested in
+[endpoint.rs](../../../../src/services/ad/ssh/endpoint.rs). The ignored
+`same_origin_ssh_kernel_regression` runs the production INPUT rules through
+[a disposable network namespace](../../../../scripts/test-event-vpn-ssh.py):
+old-rule timeout, configured-port reachability, and unknown/quarantined/revoked
+peer rejection. Run the library test as root with Linux NET_ADMIN/SYS_ADMIN,
+Python, iproute2, iptables and ipset; CI's runtime job runs it explicitly.
+It models decrypted traffic with a veth interface, not real WireGuard handshakes.
+
 Local Docker admission defaults and optional caps are covered by
 [capacity tests](../../../../src/services/container/capacity/tests.rs): run
 `test --lib services::container::capacity -- --include-ignored` against disposable
