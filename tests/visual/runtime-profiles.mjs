@@ -61,7 +61,10 @@ const typeField = async (label, value) => {
   await evaluate(`(() => { const input=${field(label)}; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)}); input.dispatchEvent(new Event('input',{bubbles:true})); })()`)
 }
 const audit = async (name, selector) => {
-  await evaluate('Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().endTime !== Infinity).map(a => a.finished.catch(() => {})))')
+  // Re-read the active animations: Chrome can retire a modal transition without
+  // settling an earlier captured `finished` promise. Still wait for every live
+  // finite animation; a stuck/paused transition fails the bounded wait below.
+  await wait(`document.getAnimations().filter(a => a.effect?.getComputedTiming().endTime !== Infinity).every(a => a.playState === 'finished' || a.playState === 'idle')`)
   await evaluate(readFileSync(resolve(repositoryRoot, 'web/node_modules/axe-core/axe.min.js'), 'utf8'))
   const report = await evaluate(`(async () => ({overflow: document.documentElement.scrollWidth > innerWidth + 1, violations: (await axe.run(document.querySelector(${JSON.stringify(selector)}), {runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.map(v => ({id:v.id, nodes:v.nodes.map(n=>({target:n.target,html:n.html,summary:n.failureSummary}))}))}))()`)
   reports.push({ name, ...report })
