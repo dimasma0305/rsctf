@@ -106,6 +106,7 @@ test('coverage keeps the established environment-only exclusions and complete in
   const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8')
   const job = workflow.split('  coverage:\n')[1].split('\n  byoc-agent:\n')[0]
   assert.deepEqual(databaseExclusions, [
+    'native_client_profiles_keep_teammates_independent',
     'same_origin_ssh_kernel_regression',
     's3_round_trip',
     'stale_conditional_delete_cannot_destroy_a_real_replacement_runtime',

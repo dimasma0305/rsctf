@@ -44,6 +44,9 @@ mod lease;
 mod reconcile;
 
 #[cfg(test)]
+mod client_tests;
+
+#[cfg(test)]
 use reconcile::retry_operation;
 pub use reconcile::{
     audit_owner_state, enforce_cycle_cooldown, ensure_hub_and_sync, reconcile_pending_for_owner,

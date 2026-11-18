@@ -32,6 +32,13 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 
 ## Discover the smallest meaningful check
 
+Native VPN compatibility uses [tests/vpn-clients/](../../../../tests/vpn-clients/README.md).
+The required Linux fixture gate obtains two personal teammate profiles from the
+real A&D/KoTH download route and verifies their kernel peers. Windows WireGuardNT
+and macOS utun jobs consume those profiles and check concurrent TCP/UDP, native DNS
+and reconnects. The macOS App Store Network Extension and external NAT are outside
+this gate; see the harness README for topology, local commands and limitations.
+
 Same-origin SSH address selection is tested in
 [endpoint.rs](../../../../src/services/ad/ssh/endpoint.rs). The ignored
 `same_origin_ssh_kernel_regression` runs the production INPUT rules through
