@@ -29,6 +29,7 @@ function verifyResults(text, expected) {
 // Exactly the current coverage job's environment-only exclusions, not a new
 // classification of which database or authorization regressions are important.
 export const databaseExclusions = Object.freeze([
+  'native_client_profiles_keep_teammates_independent', // Privileged native-vpn fixture CI gate.
   'same_origin_ssh_kernel_regression', // Privileged network namespace gate runs in runtime CI.
   's3_round_trip',
   'stale_conditional_delete_cannot_destroy_a_real_replacement_runtime',

@@ -35,6 +35,8 @@ export const jobComponents = {
   coverage: 'server',
   'cheat-acceptance': 'server',
   'architecture-runtime': 'server',
+  'vpn-client-profiles': 'server',
+  'vpn-native-clients': 'server',
   'kubernetes-callback': 'server',
   'byoc-agent': 'byoc',
   'worker-plane-linux': 'worker',
