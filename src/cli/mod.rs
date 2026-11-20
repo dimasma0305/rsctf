@@ -1,5 +1,6 @@
 mod challenge;
 mod healthcheck;
+mod patch_preview;
 
 /// Run a public CLI command before application configuration or runtime startup.
 /// Returns `None` when the process should continue into the server entry point.

@@ -20,6 +20,21 @@ pub(super) fn zip_bytes_to_tar(
     zip_bytes: &[u8],
     context_subdir: Option<&str>,
 ) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    visit_build_files(zip_bytes, context_subdir, |name, mode, data| {
+        write_tar_entry(&mut out, name, mode, data)
+    })?;
+    out.extend_from_slice(&[0u8; 1024]);
+    Ok(out)
+}
+
+/// Visit regular files in canonical path order. Discard the accumulated result
+/// on error: final validation (including the required Dockerfile) may still fail.
+pub(crate) fn visit_build_files(
+    zip_bytes: &[u8],
+    context_subdir: Option<&str>,
+    mut visit: impl FnMut(&str, u32, &[u8]) -> Result<(), String>,
+) -> Result<(), String> {
     if zip_bytes.len() > super::MAX_BUILD_ARCHIVE_BLOB_BYTES {
         return Err("compressed archive is too large".to_string());
     }
@@ -49,8 +64,10 @@ pub(super) fn zip_bytes_to_tar(
     if archive.len() > MAX_ENTRIES {
         return Err("too many entries".to_string());
     }
+    archive
+        .validate_header_consistency()
+        .map_err(|error| format!("inconsistent ZIP headers: {error}"))?;
 
-    let mut out = Vec::new();
     let mut total = 0u64;
     let mut directories_by_path = std::collections::BTreeMap::new();
     let mut has_dockerfile = false;
@@ -160,13 +177,13 @@ pub(super) fn zip_bytes_to_tar(
         } else {
             0o644
         };
-        write_tar_entry(&mut out, &name, mode, &data)?;
+        split_ustar_path(&name)?;
+        visit(&name, mode, &data)?;
     }
     if !has_dockerfile {
         return Err("selected build context is missing Dockerfile".to_string());
     }
-    out.extend_from_slice(&[0u8; 1024]);
-    Ok(out)
+    Ok(())
 }
 
 fn write_tar_entry(out: &mut Vec<u8>, name: &str, mode: u32, data: &[u8]) -> Result<(), String> {

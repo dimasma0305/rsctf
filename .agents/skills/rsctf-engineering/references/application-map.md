@@ -50,6 +50,11 @@ For every row, continue to [frontend-map.md](frontend-map.md),
 
 ## Start from a symptom
 
+For a local A&D source ZIP comparison, [patch-preview](../../../../src/cli/patch_preview.rs)
+uses the [patch manifest](../../../../src/services/ad/patches.rs) and the same validated
+archive reader as Docker builds. The [archive tests](../../../../src/services/challenge_builds/archive_tests.rs)
+cover Git tree compatibility, mode changes, and equivalent repackaging.
+
 For security-sensitive changes, use the initial
 [route → policy → regression index](security-boundaries.md). Its scope and missing
 end-to-end evidence are explicit.

@@ -288,10 +288,90 @@ fn repacking_source_does_not_change_the_build_context() {
     ];
     let first = zip_entries(&files, zip::CompressionMethod::Stored);
     let second = zip_entries(&[files[1], files[0]], zip::CompressionMethod::Deflated);
+    use crate::services::ad::patches::PatchManifest;
+    assert!(PatchManifest::from_zip(&second)
+        .unwrap()
+        .changes_from(&PatchManifest::from_zip(&first).unwrap())
+        .is_empty());
     assert_eq!(
         zip_bytes_to_tar(&first, None).unwrap(),
         zip_bytes_to_tar(&second, None).unwrap(),
     );
+}
+
+fn patch_zip(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for &(name, bytes, mode) in entries {
+        writer
+            .start_file(
+                name,
+                zip::write::SimpleFileOptions::default().unix_permissions(mode),
+            )
+            .unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+#[test]
+fn patch_tree_matches_git_sha256_for_nested_sources_and_executable_files() {
+    use crate::services::ad::patches::PatchManifest;
+    let zip = patch_zip(&[
+        ("Dockerfile", b"FROM scratch\n", 0o644),
+        ("app.js", b"flat", 0o644),
+        ("app/run", b"script", 0o755),
+        ("app/src/data", &[255, 0], 0o644),
+    ]);
+    // git init --object-format=sha256; git add .; git write-tree
+    assert_eq!(
+        PatchManifest::from_zip(&zip).unwrap().tree_id(),
+        "2c69ab533fd523a0c51608033d1b32442978ea011d98d3f9862ea890277d4ab9"
+    );
+}
+
+#[test]
+fn patch_preview_reports_source_and_mode_changes_without_returning_file_contents() {
+    use crate::services::ad::patches::{ChangeKind, PatchChange, PatchManifest};
+    let current = patch_zip(&[
+        ("Dockerfile", b"FROM scratch", 0o644),
+        ("run", b"script", 0o644),
+        ("old", b"", 0o644),
+    ]);
+    let candidate = patch_zip(&[
+        ("run", b"script", 0o755),
+        ("new", b"", 0o644),
+        ("Dockerfile", b"FROM scratch\n", 0o644),
+    ]);
+    let changes = PatchManifest::from_zip(&candidate)
+        .unwrap()
+        .changes_from(&PatchManifest::from_zip(&current).unwrap());
+    assert_eq!(
+        changes,
+        vec![
+            PatchChange {
+                path: "Dockerfile".into(),
+                kind: ChangeKind::Modified
+            },
+            PatchChange {
+                path: "new".into(),
+                kind: ChangeKind::Added
+            },
+            PatchChange {
+                path: "old".into(),
+                kind: ChangeKind::Deleted
+            },
+            PatchChange {
+                path: "run".into(),
+                kind: ChangeKind::Modified
+            },
+        ]
+    );
+    assert!(PatchManifest::from_zip(&patch_zip(&[("missing", b"no Dockerfile", 0o644)])).is_err());
+    assert!(PatchManifest::from_zip(&patch_zip(&[
+        ("Dockerfile", b"FROM scratch", 0o644),
+        ("src/.git/config", b"private metadata", 0o644)
+    ]))
+    .is_err());
 }
 
 #[test]

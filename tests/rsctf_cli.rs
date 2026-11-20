@@ -136,3 +136,67 @@ fn challenge_matrix_refuses_an_invalid_repository() {
         .contains("repository contains no .gzevent manifest"));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn patch_preview_compares_two_archives_locally_and_rejects_invalid_input() {
+    use std::io::Write;
+    let dir = test_root();
+    std::fs::create_dir(&dir).unwrap();
+    let current = dir.join("current.zip");
+    let candidate = dir.join("candidate.zip");
+    for path in [&current, &candidate] {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("Dockerfile", options).unwrap();
+        zip.write_all(b"FROM scratch\n").unwrap();
+        if path == &candidate {
+            zip.start_file("src/config", options).unwrap();
+            zip.write_all(b"private source").unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    let preview = || {
+        rsctf()
+            .args(["challenge", "patch-preview"])
+            .arg(&current)
+            .arg(&candidate)
+            .env_clear()
+            .output()
+            .unwrap()
+    };
+    let result = preview();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(
+        report["changes"],
+        serde_json::json!([{"path":"src/config","kind":"Added"}])
+    );
+    assert_ne!(report["currentTree"], report["candidateTree"]);
+    // The ZIP writer enforces unique names. Rename the second member in both
+    // headers to model archives written by clients that permit duplicate paths.
+    let mut bytes = std::fs::read(&candidate).unwrap();
+    let offsets: Vec<_> = bytes
+        .windows(b"src/config".len())
+        .enumerate()
+        .filter_map(|(index, name)| (name == b"src/config").then_some(index))
+        .collect();
+    assert_eq!(offsets.len(), 2);
+    for offset in offsets {
+        bytes[offset..offset + b"Dockerfile".len()].copy_from_slice(b"Dockerfile");
+    }
+    std::fs::write(&candidate, bytes).unwrap();
+    let duplicate = preview();
+    assert_eq!(duplicate.status.code(), Some(1));
+    assert!(duplicate.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("duplicate"));
+    std::fs::write(&candidate, b"invalid ZIP").unwrap();
+    let invalid = preview();
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(invalid.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("candidate archive"));
+    std::fs::remove_dir_all(dir).unwrap();
+}

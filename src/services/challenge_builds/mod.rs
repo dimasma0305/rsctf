@@ -19,6 +19,7 @@ pub(crate) struct BuildOutcome {
 }
 
 mod archive;
+pub(crate) use archive::visit_build_files;
 mod docker_io;
 use archive::zip_bytes_to_tar;
 use docker_io::{build_from_context, pull_image};

@@ -22,15 +22,18 @@ enum ChallengeCommand {
     Version,
     Check(CheckOptions),
     Matrix(PathBuf),
+    PatchPreview(PathBuf, PathBuf),
 }
 
 fn usage() -> &'static str {
     "Usage:\n\
        rsctf challenge check [--github] [--deny-warnings] [REPOSITORY]\n\
        rsctf challenge matrix [REPOSITORY]\n\
+       rsctf challenge patch-preview CURRENT.zip CANDIDATE.zip\n\
      \n\
      Validates .gzevent and challenge.yaml files without importing or executing them.\n\
      matrix           Print a dynamic GitHub container-build matrix as JSON\n\
+     patch-preview    Compare file contents and executable bits in two build ZIPs\n\
      --github         Emit GitHub Actions workflow annotations\n\
      --deny-warnings  Return failure when warnings are present\n\
      -h, --help       Show this help\n\
@@ -92,6 +95,19 @@ where
     match arguments.next().as_deref() {
         Some("check") => parse_check_options(arguments),
         Some("matrix") => parse_matrix_options(arguments),
+        Some("patch-preview") => match (arguments.next(), arguments.next(), arguments.next()) {
+            (Some(flag), None, None) if flag == "--help" || flag == "-h" => {
+                Ok(ChallengeCommand::Help)
+            }
+            (Some(current), Some(candidate), None) => Ok(ChallengeCommand::PatchPreview(
+                current.into(),
+                candidate.into(),
+            )),
+            _ => Err(format!(
+                "expected CURRENT.zip and CANDIDATE.zip\n\n{}",
+                usage()
+            )),
+        },
         Some("-h" | "--help") => Ok(ChallengeCommand::Help),
         Some(command) => Err(format!(
             "unknown challenge command {command:?}\n\n{}",
@@ -216,6 +232,15 @@ where
         }
         Ok(ChallengeCommand::Check(options)) => run_check(options),
         Ok(ChallengeCommand::Matrix(root)) => run_matrix(root),
+        Ok(ChallengeCommand::PatchPreview(current, candidate)) => {
+            match super::patch_preview::run(&current, &candidate) {
+                Ok(()) => SUCCESS,
+                Err(error) => {
+                    eprintln!("{error:#}");
+                    VALIDATION_FAILED
+                }
+            }
+        }
         Err(error) => {
             eprintln!("{error}");
             USAGE_ERROR

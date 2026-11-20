@@ -13,6 +13,16 @@ Choose the simplest challenge type that delivers the intended experience. Every 
 | Attack & Defense | Every team defends a service and attacks targets | Container backend, checker, and event networking |
 | King of the Hill | Teams compete for a shared controlled service | Container backend and working control checks |
 
+## Compare two A&D source ZIPs
+
+Run `rsctf challenge patch-preview current.zip candidate.zip` to review the
+files added, modified, or deleted in a candidate patch. Both ZIPs need a
+`Dockerfile` at the root. The command runs locally and prints JSON with the
+two Git SHA-256 tree IDs and the changed paths. It reads one archive at a time
+and does not run the Dockerfile. A change to the executable bit is a modification.
+Identical tree IDs mean the two archives supply identical source inputs. When
+reusing a built image, also check the base image digest and external dependencies.
+
 ## Required content
 
 Write the description for someone who has not seen the challenge source. State:
