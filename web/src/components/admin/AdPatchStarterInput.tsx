@@ -58,6 +58,7 @@ export function AdPatchStarterInput({ gameId, challengeId, started, disabled }: 
         description={t('admin.ad.patch_starter.help', 'Choose the source teams may see, with a Dockerfile at the root.')}
         accept=".zip,application/zip"
         clearable
+        clearButtonProps={{ 'aria-label': t('admin.ad.patch_starter.clear', 'Clear selected starter ZIP') }}
         value={file}
         onChange={setFile}
         error={tooLarge && t('admin.ad.patch_starter.size', 'Choose a ZIP of 72 MiB or smaller.')}

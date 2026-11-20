@@ -22,6 +22,11 @@ You can replace the starter before the game begins. RSCTF keeps one ZIP per
 challenge in PostgreSQL, up to 72 MiB, shared across all teams. Saving a starter
 prepares the original source for comparison and leaves running services in place.
 
+During the game, an accepted teammate can open their hosted challenge and use
+**Download starter ZIP**. After editing, they can choose their ZIP and click
+**Compare files** to see additions, modifications, and deletions. Preview reads
+the submitted ZIP in memory and compares it with the registered original.
+
 Run `rsctf challenge patch-preview current.zip candidate.zip` to review the
 files added, modified, or deleted in a candidate patch. Both ZIPs need a
 `Dockerfile` at the root. The command runs locally and prints JSON with the

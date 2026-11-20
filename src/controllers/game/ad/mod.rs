@@ -50,6 +50,19 @@ use crate::utils::shared::RequestResponse;
 
 fn common_router() -> Router<SharedState> {
     Router::new()
+        .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-preview",
+            get(patch_preview::info).merge(limited(
+                Policy::Query,
+                post(patch_preview::preview).layer(DefaultBodyLimit::max(
+                    crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES,
+                )),
+            )),
+        )
+        .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-starter",
+            limited(Policy::Query, get(patch_preview::download)),
+        )
         .route("/api/game/{id}/ad/scoreboard", get(scoreboard))
         .route("/api/Game/{id}/Ad/Scoreboard", get(scoreboard))
         .route(
@@ -515,6 +528,7 @@ fn fill_random(buf: &mut [u8]) {
 
 mod byoc;
 mod byoc_authorization;
+mod patch_preview;
 mod scoreboard;
 pub(crate) mod snapshot_download;
 mod ssh;

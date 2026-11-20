@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next'
 import useSWR, { type KeyedMutator } from 'swr'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { FlagDeliveryNotice } from '@Components/competition/FlagDeliveryNotice'
+import { AdPatchPreviewPanel } from '@Components/competition/AdPatchPreviewPanel'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
@@ -633,6 +634,10 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
       {/* SSH-jump reaches the RSCTF-hosted container; for self-hosted (BYOC) there
           is none (the team's service is on their own machine), so hide the hint. */}
       {!isSelfHosted && renderSshHint()}
+
+      {active && !isSelfHosted && !stateFailure && (
+        <AdPatchPreviewPanel key={`${gameId}:${service.adTeamServiceId}`} gameId={gameId} challengeId={challengeId} />
+      )}
 
       {snapshotDownload}
     </Stack>

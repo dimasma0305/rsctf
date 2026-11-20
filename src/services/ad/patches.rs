@@ -13,6 +13,13 @@ struct FileIdentity {
 
 pub struct PatchManifest(BTreeMap<String, FileIdentity>);
 
+#[derive(Debug, Eq, PartialEq, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct Starter {
+    pub tree_id: String,
+    pub archive_bytes: i32,
+}
+
 // Git SHA-256 repositories hash the object type and byte count before the payload.
 fn git_object(kind: &str, bytes: &[u8]) -> [u8; 32] {
     let mut digest = Sha256::new();
@@ -37,18 +44,30 @@ pub struct PatchChange {
 impl PatchManifest {
     pub fn from_zip(zip: &[u8]) -> Result<Self, String> {
         let mut files = BTreeMap::new();
-        visit_build_files(zip, None, |name, mode, bytes| {
+        let mut buffer = [0u8; 32 * 1024];
+        visit_build_files(zip, None, |name, mode, size, bytes| {
             if name
                 .split('/')
                 .any(|part| part.eq_ignore_ascii_case(".git"))
             {
                 return Err("a patch archive cannot contain Git repository metadata".into());
             }
+            let mut hash = Sha256::new();
+            hash.update(format!("blob {size}\0"));
+            loop {
+                let count = bytes
+                    .read(&mut buffer)
+                    .map_err(|e| format!("ZIP read error: {e}"))?;
+                if count == 0 {
+                    break;
+                }
+                hash.update(&buffer[..count]);
+            }
             files.insert(
                 name.to_owned(),
                 FileIdentity {
                     mode,
-                    digest: git_object("blob", bytes),
+                    digest: hash.finalize().into(),
                 },
             );
             Ok(())

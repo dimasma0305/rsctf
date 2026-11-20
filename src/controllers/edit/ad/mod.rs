@@ -7,8 +7,8 @@ use base64::Engine as _;
 use super::*;
 
 mod inspector;
-pub(super) mod patch_starter;
 pub(crate) mod maintenance;
+pub(super) mod patch_starter;
 mod provision;
 mod provision_recovery;
 mod state;

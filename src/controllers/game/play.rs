@@ -4,6 +4,7 @@ use super::*;
 
 #[path = "play_final_policy.rs"]
 mod final_policy;
+pub(super) use final_policy::lock_visible_challenge_on;
 
 #[path = "play_participant.rs"]
 mod participant;

@@ -21,8 +21,8 @@ pub(super) fn zip_bytes_to_tar(
     context_subdir: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    visit_build_files(zip_bytes, context_subdir, |name, mode, data| {
-        write_tar_entry(&mut out, name, mode, data)
+    visit_build_files(zip_bytes, context_subdir, |name, mode, size, data| {
+        write_tar_entry(&mut out, name, mode, size, data)
     })?;
     out.extend_from_slice(&[0u8; 1024]);
     Ok(out)
@@ -33,7 +33,7 @@ pub(super) fn zip_bytes_to_tar(
 pub(crate) fn visit_build_files(
     zip_bytes: &[u8],
     context_subdir: Option<&str>,
-    mut visit: impl FnMut(&str, u32, &[u8]) -> Result<(), String>,
+    mut visit: impl FnMut(&str, u32, u64, &mut dyn Read) -> Result<(), String>,
 ) -> Result<(), String> {
     if zip_bytes.len() > super::MAX_BUILD_ARCHIVE_BLOB_BYTES {
         return Err("compressed archive is too large".to_string());
@@ -153,32 +153,28 @@ pub(crate) fn visit_build_files(
         };
         let name = output_components.join("/");
         has_dockerfile |= name == "Dockerfile";
-        let remaining = MAX_TOTAL_BYTES.saturating_sub(total);
-        let max_read = remaining.min(MAX_FILE_BYTES);
-        let mut data = Vec::new();
-        entry
-            .by_ref()
-            .take(max_read + 1)
-            .read_to_end(&mut data)
-            .map_err(|error| format!("ZIP read error: {error}"))?;
-        if data.len() as u64 > max_read {
+        let size = entry.size();
+        if size > MAX_TOTAL_BYTES - total {
             return Err("archive expands beyond the size limit".to_string());
         }
-        let actual_size = data.len() as u64;
-        if actual_size != entry.size() {
-            return Err("entry size does not match ZIP metadata".to_string());
-        }
-        if actual_size > compressed.saturating_mul(MAX_COMPRESSION_RATIO) {
-            return Err("entry compression ratio is too high".to_string());
-        }
-        total = total.saturating_add(actual_size);
+        total += size;
         let mode = if unix_mode.unwrap_or_default() & 0o111 != 0 {
             0o755
         } else {
             0o644
         };
         split_ustar_path(&name)?;
-        visit(&name, mode, &data)?;
+        let mut body = entry.by_ref().take(size);
+        visit(&name, mode, size, &mut body)?;
+        // Read through EOF so size and CRC are verified even for empty members.
+        if body.limit() != 0
+            || entry
+                .read(&mut [0u8; 1])
+                .map_err(|e| format!("ZIP read error: {e}"))?
+                != 0
+        {
+            return Err("entry size does not match ZIP metadata".into());
+        }
     }
     if !has_dockerfile {
         return Err("selected build context is missing Dockerfile".to_string());
@@ -186,7 +182,13 @@ pub(crate) fn visit_build_files(
     Ok(())
 }
 
-fn write_tar_entry(out: &mut Vec<u8>, name: &str, mode: u32, data: &[u8]) -> Result<(), String> {
+fn write_tar_entry(
+    out: &mut Vec<u8>,
+    name: &str,
+    mode: u32,
+    size: u64,
+    data: &mut dyn Read,
+) -> Result<(), String> {
     let mut header = [0u8; 512];
     let put = |header: &mut [u8; 512], offset: usize, value: &str| {
         let bytes = value.as_bytes();
@@ -201,7 +203,7 @@ fn write_tar_entry(out: &mut Vec<u8>, name: &str, mode: u32, data: &[u8]) -> Res
     put(&mut header, 100, &format!("{mode:07o}\0"));
     put(&mut header, 108, "0000000\0");
     put(&mut header, 116, "0000000\0");
-    put(&mut header, 124, &format!("{:011o}\0", data.len()));
+    put(&mut header, 124, &format!("{size:011o}\0"));
     put(&mut header, 136, "00000000000\0");
     header[156] = b'0';
     put(&mut header, 257, "ustar\0");
@@ -211,8 +213,8 @@ fn write_tar_entry(out: &mut Vec<u8>, name: &str, mode: u32, data: &[u8]) -> Res
     put(&mut header, 148, &format!("{checksum:06o}\0 "));
 
     out.extend_from_slice(&header);
-    out.extend_from_slice(data);
-    let remainder = data.len() % 512;
+    std::io::copy(data, out).map_err(|e| format!("ZIP read error: {e}"))?;
+    let remainder = size as usize % 512;
     if remainder != 0 {
         out.extend(std::iter::repeat_n(0u8, 512 - remainder));
     }

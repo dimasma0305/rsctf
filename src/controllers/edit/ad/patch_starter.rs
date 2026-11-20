@@ -2,24 +2,15 @@
 use super::{
     manager_or_admin, AppError, AppResult, ChallengeType, CurrentUser, Path, SharedState, State,
 };
-use crate::services::ad::patches::PatchManifest;
-use crate::utils::upload::{reserve_buffered, REQUEST_BODY_DEADLINE, SOURCE_ARCHIVE_BLOB_BYTES};
-use axum::body::Bytes;
-use axum::extract::{FromRequest, Request};
-use axum::http::{header, HeaderMap, StatusCode};
+use crate::services::ad::patches::{PatchManifest, Starter};
+use crate::utils::upload::read_patch_zip;
+use axum::extract::Request;
+use axum::http::HeaderMap;
 use axum::Json;
-use serde::Serialize;
 use sqlx::PgPool;
 
 #[cfg(test)]
 mod tests;
-
-#[derive(Debug, Serialize, sqlx::FromRow)]
-#[serde(rename_all = "camelCase")]
-pub struct Starter {
-    tree_id: String,
-    archive_bytes: i32,
-}
 
 fn db_error(error: sqlx::Error) -> AppError {
     AppError::internal(error.to_string())
@@ -79,28 +70,7 @@ pub async fn put(
 ) -> AppResult<Json<Starter>> {
     manager_or_admin(&st, &user, game_id).await?;
     let expected = expected_tree(request.headers())?;
-    if request
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|h| h.to_str().ok())
-        != Some("application/zip")
-    {
-        return Err(AppError::bad_request(
-            "Send the starter ZIP with Content-Type application/zip",
-        ));
-    }
-    // Budget for the request, a decompressed member, and the SQL driver's bind buffer.
-    let permit = reserve_buffered(3 * SOURCE_ARCHIVE_BLOB_BYTES)?;
-    let archive = tokio::time::timeout(REQUEST_BODY_DEADLINE, Bytes::from_request(request, &st))
-        .await
-        .map_err(|_| AppError::bad_request("Starter upload timed out"))?
-        .map_err(|e| {
-            if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                AppError::payload_too_large("Starter ZIP exceeds 72 MiB")
-            } else {
-                AppError::bad_request("Could not read starter ZIP")
-            }
-        })?;
+    let (archive, permit) = read_patch_zip(request, 0).await?;
     let (archive, tree_id, _permit) = tokio::task::spawn_blocking(move || {
         let tree = PatchManifest::from_zip(&archive)?.tree_id();
         Ok::<_, String>((archive, tree, permit))

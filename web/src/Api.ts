@@ -4581,6 +4581,12 @@ export interface AdPatchStarter {
   archiveBytes: number
 }
 
+export interface AdPatchPreview {
+  starterTree: string
+  candidateTree: string
+  changes: { path: string; kind: 'Added' | 'Modified' | 'Deleted' }[]
+}
+
 /** Parsed audit metadata for a pending/imported challenge */
 export interface ChallengeAuditModel {
   yamlText?: string | null
@@ -11823,6 +11829,22 @@ export class Api<
      */
     gameAdDownloadSnapshotUrl: (id: number, adTeamServiceId: number) =>
       `/api/Game/${id}/Ad/Services/${adTeamServiceId}/Snapshot`,
+
+    getAdPatchPreviewInfo: (id: number, challenge: number, params: RequestParams = {}) =>
+      this.request<AdPatchStarter | null, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-preview`, method: "GET", format: "json", ...params,
+      }),
+
+    previewAdPatch: (id: number, challenge: number, zip: File, params: RequestParams = {}) =>
+      this.request<AdPatchPreview, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-preview`, method: "POST", format: "json", body: zip,
+        ...params, headers: { ...params.headers, "Content-Type": "application/zip" },
+      }),
+
+    downloadAdPatchStarter: (id: number, challenge: number, params: RequestParams = {}) =>
+      this.request<Blob, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-starter`, method: "GET", format: "blob", ...params,
+      }),
 
     /**
      * @description Downloads the game scoreboard; requires Monitor permission

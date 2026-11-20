@@ -58,6 +58,11 @@ The [starter ZIP editor](../../../../web/src/components/admin/AdPatchStarterInpu
 sends an explicitly selected source archive to the [hosted challenge endpoint](../../../../src/controllers/edit/ad/patch_starter.rs).
 Its [HTTP and PostgreSQL regression](../../../../src/controllers/edit/ad/patch_starter/tests.rs)
 exercises replay, replacement, simultaneous registration, and game ownership.
+The [player preview panel](../../../../web/src/components/competition/AdPatchPreviewPanel.tsx) and
+[player routes](../../../../src/controllers/game/ad/patch_preview.rs) handle the download
+and comparison against the starter. The [PostgreSQL test](../../../../src/controllers/game/ad/patch_preview/tests.rs)
+covers revocation during upload and division access. The [browser test](../../../../web/e2e/ad-patch-starter.spec.mjs)
+exercises the organizer and player flows.
 
 For security-sensitive changes, use the initial
 [route → policy → regression index](security-boundaries.md). Its scope and missing

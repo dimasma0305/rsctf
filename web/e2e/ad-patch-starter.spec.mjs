@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import JSZip from 'jszip'
 import { serveAccountBuild } from '../../tests/visual/account-access-fixtures.mjs'
 import { fixture } from '../../tests/visual/admin-navigation-fixtures.mjs'
+import { createCompetitionFixture } from '../../tests/visual/competition-fixtures.mjs'
 import { repositoryRoot } from '../../tests/visual/route-catalog.mjs'
 
 let server
@@ -45,6 +46,7 @@ test('organizer registers a starter and sees the original after the event starts
   const input = panel.locator('input[type=file]')
   await expect(panel.getByRole('button', { name: 'Starter ZIP for team patches' })).toBeEnabled()
   await input.setInputFiles(file)
+  await expect(panel.getByRole('button', { name: 'Clear selected starter ZIP' })).toBeVisible()
   expect(writes).toHaveLength(0)
   await panel.getByRole('button', { name: 'Save starter ZIP' }).click()
   await expect(panel.getByRole('status')).toContainText('aaaaaaaaaaaa')
@@ -72,4 +74,59 @@ test('organizer registers a starter and sees the original after the event starts
   await expect(page.getByText('Self-hosted / Bring Your Own Container (BYOC)', { exact: true })).toBeVisible()
   await expect(panel).toHaveCount(0)
   expect(errors).toEqual([])
+})
+
+test('player downloads the original and compares a private patch from the challenge', async ({ page }) => {
+  const game = createCompetitionFixture()
+  const challenge = '/api/game/901/challenges/9001'
+  game.challenges[0].type = 'AttackDefense'
+  Object.assign(game.responses[challenge], { type: 'AttackDefense', adSelfHosted: false })
+  const base = new JSZip().file('Dockerfile', 'FROM scratch\n')
+  const starter = await base.generateAsync({ type: 'nodebuffer' })
+  const candidate = await base.file('src/version.txt', 'candidate').generateAsync({ type: 'nodebuffer' })
+  const root = '/api/game/901/ad/challenges/9001'
+  const writes = []
+  await page.route('**/*', async route => {
+    const req = route.request()
+    const url = new URL(req.url())
+    if (url.origin !== server.origin) return route.abort()
+    const path = url.pathname.toLowerCase()
+    if (!path.startsWith('/api/') && !path.startsWith('/hub')) return route.continue()
+    if (path === root + '/patch-starter') return route.fulfill({
+      headers: { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="starter.zip"' },
+      body: starter,
+    })
+    if (path === root + '/patch-preview') {
+      if (req.method() === 'GET') return route.fulfill({ json: { treeId: 'a'.repeat(64), archiveBytes: starter.length } })
+      writes.push(req.postDataBuffer())
+      return route.fulfill({ json: { starterTree: 'a'.repeat(64), candidateTree: 'b'.repeat(64), changes: [{ path: 'src/version.txt', kind: 'Added' }] } })
+    }
+    if (path === '/api/game/901/ad/state') return route.fulfill({ json: {
+      currentRound: 1, epochTicks: 12, flagsReady: true, flagDeliveryFailures: 0, scoringPaused: false,
+      services: [{ adTeamServiceId: 91, challengeId: 9001, deliveryState: 'Managed', canReset: false, snapshotAvailable: false }],
+    } })
+    if (path === '/api/game/901/ad/ssh/key') return route.fulfill({ json: { exists: false } })
+    const result = game.fixture(url.pathname + url.search, req.method())
+    return route.fulfill({ status: result.status ?? 200, json: result.body ?? null })
+  })
+  await page.goto(server.origin + '/games/901/challenges#9001')
+  const panel = page.locator('[data-ad-patch-preview]')
+  await expect(panel).toBeVisible()
+  const downloaded = page.waitForEvent('download')
+  await panel.getByRole('button', { name: 'Download starter ZIP' }).click()
+  expect((await downloaded).suggestedFilename()).toBe('starter.zip')
+  const input = panel.locator('input[type=file]')
+  await input.setInputFiles({ name: 'candidate.zip', mimeType: 'application/zip', buffer: candidate })
+  await expect(panel.getByRole('button', { name: 'Clear selected patch ZIP' })).toBeVisible()
+  expect(writes).toHaveLength(0)
+  await panel.getByRole('button', { name: 'Compare files' }).click()
+  await expect(panel.getByRole('status')).toContainText('Files changed: 1')
+  await expect(panel.getByRole('listitem')).toHaveText('Added · src/version.txt')
+  expect(writes).toHaveLength(1)
+  expect(writes[0].equals(candidate)).toBe(true)
+  await page.addScriptTag({ path: resolve(repositoryRoot, 'web/node_modules/axe-core/axe.min.js') })
+  expect(await panel.evaluate(async element => (await window.axe.run(element, {
+    runOnly: { type: 'tag', values: ['wcag2a','wcag2aa','wcag21aa'] },
+  })).violations.map(item => item.id))).toEqual([])
+  expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
 })
