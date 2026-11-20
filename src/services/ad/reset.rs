@@ -41,6 +41,23 @@ fn backend_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
     actual.filter(|value| !value.is_empty()) == expected.filter(|value| !value.is_empty())
 }
 
+impl ResetJobInput {
+    fn can_resume(&self, host: &str, port: i32, backend_id: Option<&str>) -> bool {
+        if !self.reset_prepared && self.replacement_backend_id.is_none() {
+            return backend_matches(backend_id, self.expected_backend_id.as_deref());
+        }
+        // Teardown clears the old identity before the replacement is retained.
+        // A checkpoint can span both states, but never a newly published endpoint.
+        let expected = self
+            .replacement_backend_id
+            .as_deref()
+            .or(self.retired_backend_id.as_deref());
+        host.is_empty()
+            && port == 0
+            && (backend_matches(backend_id, None) || backend_matches(backend_id, expected))
+    }
+}
+
 pub async fn execute_job(
     st: &SharedState,
     claimed: &crate::services::control_jobs::ClaimedControlJob,
@@ -55,33 +72,18 @@ pub async fn execute_job(
             service.game_id == job.game_id && service.participation_id == input.participation_id
         })
         .ok_or_else(|| AppError::not_found("Service not found"))?;
-    let replacement_checkpointed = input.replacement_backend_id.is_some();
-    let replacement_published = input
-        .replacement_backend_id
-        .as_deref()
-        .is_some_and(|replacement| initial.container_id.as_deref() == Some(replacement));
-    let recovering_preparation = input.reset_prepared && input.replacement_backend_id.is_none();
-    if replacement_published && !initial.host.trim().is_empty() && initial.port > 0 {
-        return Ok(json!({ "reset": true, "alreadyReplaced": true }));
-    }
-    if !replacement_checkpointed
-        && !recovering_preparation
-        && !backend_matches(
-            initial.container_id.as_deref(),
-            input.expected_backend_id.as_deref(),
-        )
-    {
-        return Ok(json!({ "reset": false, "alreadyReplaced": true }));
-    }
-
-    let lock_key = format!(
-        "ad-service:{}:{}",
-        initial.participation_id, initial.challenge_id
+    let lock_key = crate::services::ad::service_lifecycle::service_lock_key(
+        initial.participation_id,
+        initial.challenge_id,
     );
     let _local = crate::utils::single_flight::coalesce(&lock_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &lock_key)
-            .await?;
+    let distributed = crate::services::ad::service_lifecycle::acquire_publication_lock(
+        st.pg(),
+        job.game_id,
+        initial.participation_id,
+        initial.challenge_id,
+    )
+    .await?;
 
     let service = ad_team_service::Entity::find_by_id(input.service_id)
         .one(&st.db)
@@ -91,21 +93,17 @@ pub async fn execute_job(
         })
         .ok_or_else(|| AppError::not_found("Service not found"))?;
     let replacement_checkpointed = input.replacement_backend_id.is_some();
-    let replacement_published = input
+    let published = input
         .replacement_backend_id
         .as_deref()
-        .is_some_and(|replacement| service.container_id.as_deref() == Some(replacement));
+        .filter(|&replacement| {
+            service.container_id.as_deref() == Some(replacement)
+                && !service.host.trim().is_empty()
+                && service.port > 0
+        });
     let recovering_preparation = input.reset_prepared && input.replacement_backend_id.is_none();
-    if replacement_published && !service.host.trim().is_empty() && service.port > 0 {
-        distributed.release().await?;
-        return Ok(json!({ "reset": true, "alreadyReplaced": true }));
-    }
-    if !replacement_checkpointed
-        && !recovering_preparation
-        && !backend_matches(
-            service.container_id.as_deref(),
-            input.expected_backend_id.as_deref(),
-        )
+    if published.is_none()
+        && !input.can_resume(&service.host, service.port, service.container_id.as_deref())
     {
         distributed.release().await?;
         return Ok(json!({ "reset": false, "alreadyReplaced": true }));
@@ -145,6 +143,13 @@ pub async fn execute_job(
             "Service reset is only available while the game is running",
         ));
     }
+    if let Some(backend_id) = published {
+        // The database publication can survive a process exit before the
+        // capture owner or the VPN has acknowledged the new endpoint.
+        distributed.release().await?;
+        finish_publication(st, backend_id, challenge.enable_traffic_capture).await?;
+        return Ok(json!({ "reset": true, "alreadyReplaced": true }));
+    }
     if input.player_policy && !replacement_checkpointed && !recovering_preparation {
         let cooldown = game
             .ad_reset_cooldown_minutes
@@ -176,7 +181,7 @@ pub async fn execute_job(
             None => None,
         };
         if recovering_preparation {
-            crate::services::ad_vpn::deactivate_team_service(&st.db, service.id).await?;
+            crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
             if let Some(retired_backend_id) = input
                 .retired_backend_id
                 .as_deref()
@@ -200,21 +205,13 @@ pub async fn execute_job(
             &st.db,
             job.game_id,
             service.id,
+            input.expected_backend_id.as_deref(),
+            job.id,
+            claimed.lease_token,
             reason,
         )
         .await?;
-        crate::services::control_jobs::checkpoint_input(
-            st.pg(),
-            job.id,
-            claimed.lease_token,
-            json!({
-                "resetPrepared": true,
-                "preparedRoundId": replacement.prepared_round_id,
-                "retiredBackendId": replacement.retired_container_id.clone(),
-            }),
-        )
-        .await?;
-        crate::services::ad_vpn::deactivate_team_service(&st.db, service.id).await?;
+        crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
         if let Some(container_id) = &replacement.retired_container_id {
             crate::services::traffic::destroy_container_after_capture_fence(st, container_id)
                 .await?;
@@ -313,11 +310,15 @@ pub async fn execute_job(
         }
     }
     distributed.release().await?;
-    if challenge.enable_traffic_capture {
-        crate::services::traffic::start_container_capture(st, &backend_id).await?;
-    }
-    crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
+    finish_publication(st, &backend_id, challenge.enable_traffic_capture).await?;
     Ok(json!({ "reset": true, "alreadyReplaced": false }))
+}
+
+async fn finish_publication(st: &SharedState, backend_id: &str, capture: bool) -> AppResult<()> {
+    if capture {
+        crate::services::traffic::start_container_capture(st, backend_id).await?;
+    }
+    crate::services::ad_vpn::reconcile_for_deployment(&st.db).await
 }
 
 #[cfg(test)]
@@ -346,5 +347,18 @@ mod tests {
         assert!(input.reset_prepared);
         assert_eq!(input.prepared_round_id, None);
         assert_eq!(input.retired_backend_id.as_deref(), Some("old"));
+        assert!(input.can_resume("", 0, Some("old")));
+        assert!(input.can_resume("", 0, None));
+        assert!(!input.can_resume("replacement", 8080, Some("other")));
+        assert!(!input.can_resume("", 0, Some("other")));
+        assert!(!input.can_resume("byoc", 8080, None));
+        let launched = ResetJobInput {
+            replacement_backend_id: Some("new".into()),
+            ..input
+        };
+        assert!(launched.can_resume("", 0, Some("new")));
+        assert!(launched.can_resume("", 0, None));
+        assert!(!launched.can_resume("", 0, Some("old")));
+        assert!(!launched.can_resume("other", 8080, Some("other")));
     }
 }

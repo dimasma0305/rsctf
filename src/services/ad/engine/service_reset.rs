@@ -24,6 +24,7 @@ const PUBLISH_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices" service
        AND challenge.id = service.challenge_id
        AND challenge.game_id = service.game_id
        AND challenge.is_enabled = TRUE
+       AND challenge.ad_self_hosted = FALSE
        AND challenge.deletion_pending = FALSE
        AND challenge.review_status = $7
        AND challenge."Type" = $9
@@ -70,6 +71,9 @@ pub(crate) async fn prepare_service_reset(
     db: &DatabaseConnection,
     game_id: i32,
     service_id: i32,
+    expected_backend_id: Option<&str>,
+    job_id: uuid::Uuid,
+    lease_token: uuid::Uuid,
     reason: &str,
 ) -> AppResult<ServiceResetPreparation> {
     let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
@@ -107,10 +111,14 @@ pub(crate) async fn prepare_service_reset(
               AND flag.team_service_id = service.id
             WHERE service.id = $1
               AND service.game_id = $2
+              AND NULLIF(service.container_id, '') IS NOT DISTINCT FROM NULLIF($6, '')
               AND participation.status = $3
               AND team.deletion_pending = FALSE
               AND game.deletion_pending = FALSE
+              AND game.start_time_utc <= clock_timestamp()
+              AND clock_timestamp() < game.end_time_utc
               AND challenge.is_enabled = TRUE
+              AND challenge.ad_self_hosted = FALSE
               AND challenge.deletion_pending = FALSE
               AND challenge.review_status = $4
               AND challenge."Type" = $5
@@ -121,6 +129,7 @@ pub(crate) async fn prepare_service_reset(
     .bind(ParticipationStatus::Accepted as i16)
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(ChallengeType::AttackDefense as i16)
+    .bind(expected_backend_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -182,6 +191,19 @@ pub(crate) async fn prepare_service_reset(
             "A&D service changed while replacement was starting",
         ));
     }
+    // A reclaimed job must never commit downtime without the exact round
+    // and backend needed to resume. A lost job lease rolls back all three writes.
+    crate::services::control_jobs::checkpoint_input(
+        &mut **tx,
+        job_id,
+        lease_token,
+        serde_json::json!({
+            "resetPrepared": true,
+            "preparedRoundId": round_id,
+            "retiredBackendId": retired_container_id,
+        }),
+    )
+    .await?;
     control
         .release()
         .await
@@ -236,6 +258,10 @@ pub(crate) async fn publish_service_reset(
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(published)
 }
+
+#[cfg(test)]
+#[path = "service_reset_pg_tests.rs"]
+mod pg_tests;
 
 #[cfg(test)]
 mod tests {
