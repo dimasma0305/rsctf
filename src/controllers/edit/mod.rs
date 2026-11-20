@@ -816,6 +816,15 @@ pub fn router() -> Router<SharedState> {
             post(reject_challenge),
         )
         .route(
+            "/api/edit/games/{id}/challenges/{cId}/patch-starter",
+            get(ad::patch_starter::get).merge(limited(
+                Policy::Query,
+                put(ad::patch_starter::put).layer(DefaultBodyLimit::max(
+                    crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES,
+                )),
+            )),
+        )
+        .route(
             "/api/edit/games/{id}/challenges/{cId}/attachment",
             post(update_attachment),
         )

@@ -15,6 +15,13 @@ Choose the simplest challenge type that delivers the intended experience. Every 
 
 ## Compare two A&D source ZIPs
 
+In the hosted A&D challenge editor, choose **Starter ZIP for team patches**,
+select the source archive intended for teams, and click **Save starter ZIP**.
+Put the Dockerfile at the root. The editor displays the saved Git tree ID.
+You can replace the starter before the game begins. RSCTF keeps one ZIP per
+challenge in PostgreSQL, up to 72 MiB, shared across all teams. Saving a starter
+prepares the original source for comparison and leaves running services in place.
+
 Run `rsctf challenge patch-preview current.zip candidate.zip` to review the
 files added, modified, or deleted in a candidate patch. Both ZIPs need a
 `Dockerfile` at the root. The command runs locally and prints JSON with the

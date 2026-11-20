@@ -4575,6 +4575,12 @@ export interface ChallengeAuditFile {
   size: number
 }
 
+/** Stored ZIP for the original source of a hosted A&D challenge. */
+export interface AdPatchStarter {
+  treeId: string
+  archiveBytes: number
+}
+
 /** Parsed audit metadata for a pending/imported challenge */
 export interface ChallengeAuditModel {
   yamlText?: string | null
@@ -9475,6 +9481,24 @@ export class Api<
         data,
         options,
       ),
+
+    getAdPatchStarter: (id: number, challengeId: number, params: RequestParams = {}) =>
+      this.request<AdPatchStarter | null, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${challengeId}/patch-starter`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    putAdPatchStarter: (id: number, challengeId: number, zip: File, expected: string | null, params: RequestParams = {}) =>
+      this.request<AdPatchStarter, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${challengeId}/patch-starter`,
+        method: "PUT",
+        body: zip,
+        format: "json",
+        ...params,
+        headers: { ...params.headers, "Content-Type": "application/zip", ...(expected ? { "X-RSCTF-Expected-Tree": expected } : {}) },
+      }),
 
     /**
      * @description Get parsed audit metadata (YAML, file tree, previews) for a pending challenge.

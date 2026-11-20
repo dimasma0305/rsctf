@@ -44,6 +44,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { HintList } from '@Components/HintList'
 import { InstanceEntry } from '@Components/InstanceEntry'
 import { ChallengePreviewModal } from '@Components/admin/ChallengePreviewModal'
+import { AdPatchStarterInput } from '@Components/admin/AdPatchStarterInput'
 import { CompetitionMaintenancePanel } from '@Components/admin/CompetitionMaintenancePanel'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { RuntimeProfileSelect } from '@Components/admin/RuntimeProfileSelect'
@@ -1642,6 +1643,11 @@ const GameChallengeEdit: FC = () => {
                       )}
                       onChange={(e) => setChallengeInfo({ ...challengeInfo, adSshRequiresFlag: e.target.checked })}
                     />
+                  </Grid.Col>
+                )}
+                {challenge?.type === ChallengeType.AttackDefense && !challenge.adSelfHosted && !challengeInfo.adSelfHosted && !isKoth && (
+                  <Grid.Col span={12}>
+                    <AdPatchStarterInput key={`${numId}:${numCId}`} gameId={numId} challengeId={numCId} started={eventSecurityFrozen} disabled={disabled || dirty} />
                   </Grid.Col>
                 )}
                 {/* Bring-your-own-container: the team runs the service on their own
