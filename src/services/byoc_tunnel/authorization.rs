@@ -43,8 +43,8 @@ struct AuthorizationSecrets {
     team_secret: String,
 }
 
-async fn load_authorization_snapshot(
-    pool: &sqlx::PgPool,
+async fn load_authorization_snapshot<'e>(
+    pool: impl sqlx::PgExecutor<'e>,
     game_id: i32,
     participation_id: i32,
     challenge_id: i32,
@@ -61,16 +61,13 @@ async fn load_authorization_snapshot(
         .await
 }
 
-async fn live_tunnel_authorized_on(
-    pool: &sqlx::PgPool,
+pub(super) async fn live_tunnel_authorized_on<'e>(
+    pool: impl sqlx::PgExecutor<'e>,
     game_id: i32,
     participation_id: i32,
     challenge_id: i32,
     token: &str,
 ) -> bool {
-    let Some(_permit) = crate::services::authorization_lease::try_query_permit() else {
-        return false;
-    };
     let Ok(Ok(Some(secrets))) = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         load_authorization_snapshot(pool, game_id, participation_id, challenge_id),
@@ -99,6 +96,9 @@ pub(super) async fn live_tunnel_authorized(
     challenge_id: i32,
     token: &str,
 ) -> bool {
+    let Some(_permit) = crate::services::authorization_lease::try_query_permit() else {
+        return false;
+    };
     live_tunnel_authorized_on(st.pg(), game_id, participation_id, challenge_id, token).await
 }
 

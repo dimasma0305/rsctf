@@ -41,11 +41,14 @@ use yamux::{Connection, Mode, Stream as YamuxStream};
 
 use crate::{
     env, must_env, yamux_config, AGENT_PROTOCOL, AGENT_PROTOCOL_HEADER, STREAM_EXEC, STREAM_FLAG,
-    STREAM_SERVICE,
+    STREAM_SERVICE, STREAM_SOURCE,
 };
 
 #[path = "agent_handshake.rs"]
 mod handshake;
+#[cfg(test)]
+#[path = "agent_source_test.rs"]
+mod source_test;
 use handshake::handshake_failure;
 
 // ---------------------------------------------------------------------------
@@ -323,7 +326,7 @@ impl FlagSink {
     }
 }
 
-pub async fn run_agent() {
+pub async fn run_agent(reports: crate::source::Reports) {
     let tunnel_url = must_env("RSCTF_BYOC_TUNNEL_URL"); // wss://rsctf/api/Ad/Byoc/Agent/<token>
     let service = must_env("RSCTF_BYOC_SERVICE"); // host:port of the team's service
     let flag_file = env("RSCTF_BYOC_FLAG_FILE", "/flag"); // where to write the rotating flag
@@ -344,6 +347,7 @@ pub async fn run_agent() {
                 &service_container,
                 flag_sink.clone(),
                 generation,
+                &reports,
             )
             .await
             .expect_err("a tunnel session only returns after it closes"),
@@ -378,6 +382,7 @@ async fn connect_once(
     service_container: &str,
     flag_sink: Arc<FlagSink>,
     generation: u64,
+    reports: &crate::source::Reports,
 ) -> Result<(), ConnectFailure> {
     let request =
         tunnel_request(tunnel_url).map_err(|error| ConnectFailure::transport(error.to_string()))?;
@@ -411,6 +416,7 @@ async fn connect_once(
                     service_container,
                     sink,
                     generation,
+                    reports.clone(),
                 ));
             }
             Some(Err(error)) => {
@@ -441,6 +447,10 @@ fn tunnel_request(
         HeaderName::from_static(AGENT_PROTOCOL_HEADER),
         HeaderValue::from_static(AGENT_PROTOCOL),
     );
+    request.headers_mut().insert(
+        HeaderName::from_static("x-rsctf-byoc-source"),
+        HeaderValue::from_static("v1"),
+    );
     Ok(request)
 }
 
@@ -452,6 +462,7 @@ async fn handle_stream(
     service_container: String,
     sink: Arc<FlagSink>,
     generation: u64,
+    reports: crate::source::Reports,
 ) {
     let mut hdr = [0u8; 1];
     if stream.read_exact(&mut hdr).await.is_err() {
@@ -461,6 +472,7 @@ async fn handle_stream(
         STREAM_SERVICE => dial_and_pipe(stream, &service).await,
         STREAM_FLAG => write_flag(stream, &flag_file, sink, generation).await,
         STREAM_EXEC => exec_shell(stream, &service_container).await,
+        STREAM_SOURCE => crate::source::send(stream, &reports).await,
         other => warn!("unknown stream type {:?}", other as char),
     }
     // Dropping `stream` here closes it (the Go `defer stream.Close()`).

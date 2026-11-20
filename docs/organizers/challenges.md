@@ -44,6 +44,27 @@ and does not run the Dockerfile. A change to the executable bit is a modificatio
 Identical tree IDs mean the two archives supply identical source inputs. When
 reusing a built image, also check the base image digest and external dependencies.
 
+## BYOC source history
+
+A team can register files from the source directory it uses for its service. Put
+their relative paths in `.rsctf-files`, one per line. For example, a team can
+list `Dockerfile` and `src/app.py`. Enable the read-only `/rsctf-source` mount
+in the generated Compose file, point its host side at that directory, and run
+`docker compose -f docker-compose.yml up -d rsctf-agent` from the bundle directory.
+
+The agent checks the list every minute and hashes files whose metadata changed.
+It reports paths, Git SHA-256 blob IDs, executable permissions, and missing files.
+File contents stay with the team. Each service supports up to 128 registered
+paths, 8 MiB per file and 64 MiB in total. An unreadable file or unsafe link
+makes the sample unavailable. Source history records what the agent observed
+between samples. Changes made and reverted inside one interval can go unseen.
+
+Teams can open **Source history** on their BYOC challenge during the game.
+Platform admins can open it on the team's service in **A&D Operations**.
+RSCTF retains the last 128 distinct reports per service and displays the time
+of the latest report. Existing v2 agents continue serving traffic and flags and
+show a legacy-agent status. The team controls its deployed image and rollbacks.
+
 ## Required content
 
 Write the description for someone who has not seen the challenge source. State:

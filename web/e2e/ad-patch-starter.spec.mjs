@@ -3,12 +3,76 @@ import { resolve } from 'node:path'
 import JSZip from 'jszip'
 import { serveAccountBuild } from '../../tests/visual/account-access-fixtures.mjs'
 import { fixture } from '../../tests/visual/admin-navigation-fixtures.mjs'
+import { fixture as operations } from '../../tests/visual/ad-operations-fixtures.mjs'
 import { createCompetitionFixture } from '../../tests/visual/competition-fixtures.mjs'
 import { repositoryRoot } from '../../tests/visual/route-catalog.mjs'
 
 let server
 test.beforeAll(async () => { server = await serveAccountBuild(resolve(repositoryRoot, 'web/build')) })
 test.afterAll(async () => { await server?.close() })
+
+test('team opens private BYOC source history and pages back to the legacy agent', async ({ page }) => {
+  const game = createCompetitionFixture()
+  game.challenges[0].type = 'AttackDefense'
+  Object.assign(game.responses['/api/game/901/challenges/9001'], { type: 'AttackDefense', adSelfHosted: true })
+  const reads = []
+  await page.route('**/*', async route => {
+    const req = route.request()
+    const url = new URL(req.url())
+    if (url.origin !== server.origin) return route.abort()
+    const path = url.pathname.toLowerCase()
+    if (!path.startsWith('/api/') && !path.startsWith('/hub')) return route.continue()
+    if (path === '/api/game/901/ad/state') return route.fulfill({ json: {
+      flagsReady: true, currentRound: 1, services: [{ adTeamServiceId: 91, challengeId: 9001, selfHosted: true }],
+    } })
+    if (path === '/api/game/901/ad/byoc/source/9001') {
+      const before = url.searchParams.get('before')
+      reads.push(before)
+      return route.fulfill({ json: { before: before ? null : 2, events: [{
+        revision: before ? 1 : 2, firstSeen: Date.now(), lastSeen: Date.now(),
+        status: before ? 'legacyAgent' : 'observed', changes: before ? [] : [{ path: 'src/app.py', kind: 'modified' }],
+      }] } })
+    }
+    const result = game.fixture(url.pathname + url.search, req.method())
+    return route.fulfill({ status: result.status ?? 200, json: result.body ?? null })
+  })
+  await page.goto(server.origin + '/games/901/challenges#9001')
+  const open = page.getByRole('button', { name: 'Source history', exact: true })
+  await expect(open).toBeVisible()
+  expect(reads).toHaveLength(0)
+  await open.click()
+  const dialog = page.getByRole('dialog', { name: 'Source history' })
+  await expect(dialog.getByText('Registered files observed')).toBeVisible()
+  await dialog.locator('summary').click()
+  await expect(dialog.getByText('src/app.py')).toBeVisible()
+  await dialog.getByRole('button', { name: 'Older reports' }).click()
+  await expect(dialog.getByText('Agent version does not report source')).toBeVisible()
+  expect(reads).toContain('2')
+})
+
+test('admin opens the selected team’s BYOC reports from the operations table', async ({ page }) => {
+  const reads = []
+  await page.route('**/*', async route => {
+    const req = route.request()
+    const url = new URL(req.url())
+    if (url.origin !== server.origin) return route.abort()
+    if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/hub')) return route.continue()
+    if (url.pathname.endsWith('/ByocSource')) {
+      reads.push(url.pathname)
+      return route.fulfill({ json: { events: [], before: null } })
+    }
+    const result = operations(url.pathname + url.search, req.method())
+    return route.fulfill({ status: result.status ?? 200, contentType: 'application/json', body: JSON.stringify(result.body ?? null) })
+  })
+  await page.goto(server.origin + '/admin/games/19/adops')
+  const open = page.locator('[data-ad-team="2"]').getByRole('button', { name: 'Source history' })
+  await expect(open).toBeVisible()
+  expect(reads).toEqual([])
+  await open.click()
+  const dialog = page.getByRole('dialog', { name: 'Source history' })
+  await expect(dialog.getByText('No agent reports received yet.')).toBeVisible()
+  expect(reads).toEqual(['/api/ad/admin/19/Services/11/ByocSource'])
+})
 
 test('organizer registers a starter and sees the original after the event starts', async ({ page }) => {
   const challenge = '/api/edit/games/19/challenges/74'

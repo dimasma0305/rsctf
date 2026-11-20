@@ -43,6 +43,36 @@ use super::*;
 mod agent_image;
 mod compose;
 mod setup_script;
+pub(super) async fn byoc_source_history(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((game, challenge)): Path<(i32, i32)>,
+    axum::extract::Query(page): axum::extract::Query<crate::services::byoc_tunnel::source::Page>,
+) -> AppResult<Response> {
+    let part = resolve_participation(&st, &user, game).await?;
+    let mut roster = crate::services::live_roster::try_acquire_participation_fence(
+        st.pg(),
+        user.id,
+        &user.security_stamp,
+        game,
+        part.team_id,
+        part.id,
+        true,
+    )
+    .await?
+    .ok_or(AppError::Forbidden)?;
+    let db = &mut **roster.transaction_mut();
+    super::super::play::lock_visible_challenge_on(db, game, part.team_id, part.id, challenge)
+        .await?;
+    let service=sqlx::query_scalar::<_,Option<i32>>(r#"SELECT s.id FROM "Games" g JOIN "GameChallenges" c ON c.game_id=g.id AND c.id=$3
+        LEFT JOIN "AdTeamServices" s ON s.game_id=g.id AND s.challenge_id=c.id AND s.participation_id=$2
+        WHERE g.id=$1 AND c.ad_self_hosted AND c."Type"=$4 AND g.start_time_utc<=clock_timestamp() AND clock_timestamp()<g.end_time_utc"#)
+        .bind(game).bind(part.id).bind(challenge).bind(ChallengeType::AttackDefense as i16).fetch_optional(&mut *db).await
+        .map_err(|e|AppError::internal(e.to_string()))?.ok_or_else(||AppError::not_found("Active self-hosted challenge not found"))?;
+    let response = crate::services::byoc_tunnel::source::history(db, service, page).await?;
+    roster.release().await?;
+    Ok(response)
+}
 use agent_image::{default_byoc_agent_image, immutable_agent_image};
 use compose::{build_compose, build_setup_compose};
 use setup_script::build_setup_script;
@@ -696,6 +726,9 @@ pub async fn byoc_agent(
         }
     };
     let authorization_generation = st.byoc.authorization_generation(pid, cid).await;
+    let source_reports = headers
+        .get("x-rsctf-byoc-source")
+        .is_some_and(|v| v == "v1");
     ws.max_frame_size(1024 * 1024)
         .max_message_size(1024 * 1024)
         .on_upgrade(move |socket| async move {
@@ -716,6 +749,7 @@ pub async fn byoc_agent(
                 cid,
                 token,
                 authorization_generation,
+                source_reports,
                 socket,
             )
             .await;

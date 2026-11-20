@@ -3054,7 +3054,7 @@ export interface AdTeamCellModel {
   snapshotAvailable: boolean;
   /** Number of files the team changed vs the baseline image (docker diff), if captured. */
   changedFileCount?: number | null;
-  /** True for self-hosted (BYOC) challenges — no RSCTF-hosted container to shell/snapshot/inspect; only SLA status is meaningful. */
+  /** Self-hosted (BYOC) service with SLA status and private agent-reported source history. */
   selfHosted?: boolean;
 }
 
@@ -4596,6 +4596,17 @@ export interface AdPatchRevision {
   createdAt: number
 }
 
+export interface ByocSourceHistoryPage {
+  before: number | null;
+  events: {
+    revision: number;
+    status: "observed" | "notRegistered" | "unavailable" | "legacyAgent";
+    firstSeen: number;
+    lastSeen: number;
+    changes: { path: string; kind: "registered" | "unregistered" | "created" | "deleted" | "modified" | "present" | "missing" }[];
+  }[];
+}
+
 /** Parsed audit metadata for a pending/imported challenge */
 export interface ChallengeAuditModel {
   yamlText?: string | null
@@ -5720,6 +5731,10 @@ export class Api<
       }),
   };
   admin = {
+    byocSourceHistory: (game: number, service: number, before?: number, params: RequestParams = {}) =>
+      this.request<ByocSourceHistoryPage, RequestResponse>({
+        path: `/api/ad/admin/${game}/Services/${service}/ByocSource`, method: "GET", query: { before }, format: "json", ...params,
+      }),
     /**
      * @description Get admin dashboard stats
      *
@@ -11870,6 +11885,11 @@ export class Api<
       this.request<Blob, RequestResponse>({
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/source.zip`,
         method: "GET", query: { commit }, format: "blob", ...params,
+      }),
+
+    byocSourceHistory: (game: number, challenge: number, before?: number, params: RequestParams = {}) =>
+      this.request<ByocSourceHistoryPage, RequestResponse>({
+        path: `/api/Game/${game}/Ad/Byoc/Source/${challenge}`, method: "GET", query: { before }, format: "json", ...params,
       }),
 
     saveAdPatchRevision: (id: number, challenge: number, service: number, zip: File, expected: number, params: RequestParams = {}) =>

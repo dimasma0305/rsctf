@@ -8,6 +8,7 @@ import useSWR, { type KeyedMutator } from 'swr'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { FlagDeliveryNotice } from '@Components/competition/FlagDeliveryNotice'
 import { AdPatchPreviewPanel } from '@Components/competition/AdPatchPreviewPanel'
+import { ByocSourceHistory } from '@Components/competition/ByocSourceHistory'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
@@ -176,6 +177,7 @@ const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state })
               {t('game.button.ad.byoc.byo', 'Bring your own service')}
             </Button>
           </Tooltip>
+          <ByocSourceHistory gameId={gameId} challengeId={challengeId} />
         </Group>
       </Stack>
     </Alert>

@@ -157,6 +157,10 @@ fn common_router() -> Router<SharedState> {
         )
         .route("/api/Game/{id}/Ad/Vpn/Config", get(download_vpn_config))
         .route(
+            "/api/Game/{id}/Ad/Byoc/Source/{challengeId}",
+            limited(Policy::Query, get(byoc::byoc_source_history)),
+        )
+        .route(
             "/api/Game/{id}/Ad/Byoc/Setup/{challengeId}",
             get(byoc_setup),
         )

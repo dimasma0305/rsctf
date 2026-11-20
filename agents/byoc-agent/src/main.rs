@@ -4,10 +4,12 @@
 //! rotating flags, and optional interactive container shells over yamux streams.
 
 mod agent;
+mod source;
 
 pub(crate) const STREAM_SERVICE: u8 = b'S';
 pub(crate) const STREAM_FLAG: u8 = b'F';
 pub(crate) const STREAM_EXEC: u8 = b'E';
+pub(crate) const STREAM_SOURCE: u8 = b'P';
 pub(crate) const AGENT_PROTOCOL: &str = "rsctf-byoc-v2";
 pub(crate) const AGENT_PROTOCOL_HEADER: &str = "x-rsctf-byoc-protocol";
 
@@ -61,7 +63,13 @@ async fn main() {
         std::process::exit(2);
     }
 
-    agent::run_agent().await;
+    let (sender, reports) = tokio::sync::watch::channel(source::CachedReport::new(
+        tokio_tungstenite::tungstenite::Bytes::from_static(br#"{"status":"pending"}"#),
+    ));
+    tokio::select! {
+        _ = source::monitor(sender) => {},
+        _ = agent::run_agent(reports) => {},
+    }
 }
 
 #[cfg(test)]
