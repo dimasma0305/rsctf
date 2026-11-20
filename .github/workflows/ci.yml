@@ -140,6 +140,13 @@ jobs:
       - name: Build a verified defensive patch context
         run: python3 scripts/test-ad-patch-context.py ./target/debug/rsctf
 
+      - name: Test offline defensive patch VM
+        run: |
+          python3 scripts/ad-patch-builder/test_result.py
+          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios
+          docker buildx build --platform linux/amd64 --output "type=local,dest=$RUNNER_TEMP/patch-guest" scripts/ad-patch-builder
+          python3 scripts/test-ad-patch-context.py ./target/debug/rsctf --guest "$RUNNER_TEMP/patch-guest"
+
       - name: Build test targets
         run: cargo build --all-targets --all-features --locked
 

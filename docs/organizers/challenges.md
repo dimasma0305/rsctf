@@ -56,6 +56,44 @@ Use the tar only if the command succeeds. It contains the reviewed files and
 their executable bits. A damaged ZIP or a different revision fails before any
 source is written. The command only prepares the input for a build.
 
+### Build a revision on an offline worker
+
+On a Linux x86-64 worker, build the guest kernel and initramfs once. The
+packaging step needs Docker Buildx and network access to fetch the guest tools.
+
+```sh
+docker buildx build --platform linux/amd64 --output type=local,dest=patch-guest scripts/ad-patch-builder
+```
+
+For each revision, run the following command as an unprivileged worker
+account with Python 3, QEMU (`qemu-system-x86_64` with seccomp support), and
+the RSCTF CLI on its path. Use the saved revision's full `treeId`.
+
+```sh
+python3 scripts/ad-patch-builder/build.py revision.zip "$tree_id" \
+  --guest patch-guest --output candidate.oci.tar
+```
+
+Each job gets a fresh VM with two virtual CPUs, 1.5 GiB RAM, and only a
+loopback network interface. The worker allows five minutes for emulation and a 256 MiB OCI
+archive. Add `--kvm` on workers with KVM access. A successful command prints
+the archive's SHA-256 and creates an owner-readable file at the requested path.
+Use a new path for each candidate. The running team service keeps its current
+image throughout the build. Use a local output filesystem that supports Linux
+unnamed temporary files (`O_TMPFILE`), such as ext4 or XFS. Interrupted jobs
+release their scratch files when the worker exits.
+
+A self-contained Dockerfile can use `FROM scratch`. For an application
+with dependencies, prepare an approved Linux amd64 OCI image containing them,
+use `FROM rsctf-starter` in the challenge Dockerfile, and pass
+`--base-oci starter.oci.tar --base-manifest "sha256:$manifest_digest"`.
+The digest identifies the manifest **inside** the OCI archive. The guest
+reads this base from a separate read-only disk. Package downloads and remote
+image pulls require preparing the dependencies before the event.
+
+This worker command produces a candidate for inspection. Toolkit activation
+and rollback across hosted runtimes are still in development.
+
 ## BYOC source history
 
 A team can register files from the source directory it uses for its service. Put
