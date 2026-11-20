@@ -215,13 +215,18 @@ stopped container and every challenge image whose exact archive, context,
 managed tag, and published digest cannot prove that it can be rebuilt. It also
 never treats A&D/checker images as disposable. Outside storage pressure, only
 unused build cache older than its configured retention is pruned. Below the
-configured free-space floor, rsctf first prunes all unused build cache and
-dangling images, then applies the same expired-and-rebuildable image rule; it
-does not force-delete recent or active images merely to satisfy the floor.
+configured free-space floor, RSCTF prunes unused build cache. Each pass can
+also retire up to 32 untagged archive images built by this installation
+whose creation time is older than the configured retention period. The sweep checks the immutable image IDs
+used by challenges, checkers, and generators as well as running and stopped
+containers. An in-progress build keeps its output while it publishes its tag.
+Operators manage untagged images from other tools and installations.
 
 The Builds page shows free storage, private/reclaimable Docker build-cache
 bytes, image leases, and container use. **Clean storage now** runs the same
-bounded sweep and returns the actual reclaimed-byte report. These controls
+bounded sweep. The report counts removed images and their logical sizes
+separately from build-cache bytes Docker actually reclaimed. Image layers can
+be shared. These controls
 require the Docker backend and a local Unix Docker socket; Kubernetes and
 remote-daemon installations must use their registry/runtime retention policy.
 

@@ -422,6 +422,10 @@ mod tests {
         .unwrap();
         let scope = crate::services::container::docker_installation_scope();
         let canonical = "docker.io/rsctf/game/durable:latest";
+        sqlx::raw_sql(crate::migrations::m0369_anonymous_image_cleanup::UP_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
         let resource_key = image_build_lock_key(Some(canonical));
         let cleanup_token = Uuid::new_v4();
         sqlx::query(
@@ -477,6 +481,33 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(leaked, 0);
+
+        sqlx::query(r#"DELETE FROM "BuildImageOwnerships""#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "AnonymousImageCleanupClaims" VALUES ($1,$2,$3,clock_timestamp()+interval '2 minutes')"#)
+            .bind(&scope).bind(canonical).bind(cleanup_token).execute(&pool).await.unwrap();
+        assert!(try_acquire_durable_build_resource(
+            &pool,
+            Some(canonical),
+            &resource_key,
+            blocked_job
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("cleanup is finalizing"));
+        sqlx::query(r#"UPDATE "AnonymousImageCleanupClaims" SET expires_at=clock_timestamp()-interval '1 second'"#)
+            .execute(&pool).await.unwrap();
+        assert!(try_acquire_durable_build_resource(
+            &pool,
+            Some(canonical),
+            &resource_key,
+            blocked_job
+        )
+        .await
+        .unwrap());
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

@@ -1100,6 +1100,7 @@ jobs:
             player_download_preview_and_revocation_during_upload
             buildkit_accepts_checked_out_patch_revision
             buildkit_failed_patch_candidate_preserves_active_image_and_service
+            pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_outputs
             byoc_source_history_coalesces_samples_and_bounds_private_retention
             resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically
             stale_conditional_delete_cannot_destroy_a_real_replacement_runtime

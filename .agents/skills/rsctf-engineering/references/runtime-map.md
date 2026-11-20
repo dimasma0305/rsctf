@@ -104,6 +104,10 @@ cover automatic, enforced, unknown and strict settings plus worker status.
 | Docker images, writable layers, logs, final snapshots | Runtime adapter plus [src/services/image_storage.rs](../../../../src/services/image_storage.rs), [src/services/ad/snapshots.rs](../../../../src/services/ad/snapshots.rs) |
 
 Trace which owner retains/deletes data before proposing storage savings.
+The [anonymous image collector](../../../../src/services/image_storage/dangling.rs)
+shares a per-destination build fence with image publication. Its
+[Docker and PostgreSQL test](../../../../src/services/image_storage/dangling_tests.rs)
+exercises pressure cleanup with pinned image IDs and an interrupted sweep.
 S3 blobs alone do not eliminate filesystem rename/flock or shared mounts.
 PostgreSQL session advisory-lock users require a direct or session-preserving
 connection; inspect the actual lease and pooling setup rather than assuming

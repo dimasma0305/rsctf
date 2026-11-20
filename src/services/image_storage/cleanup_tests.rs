@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "dangling_tests.rs"]
+mod dangling_tests;
+
 const ID: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 fn reference() -> ChallengeReference {
@@ -64,6 +67,23 @@ fn reference_snapshot_indexes_aliases_and_managed_generators_once() {
     assert!(matching
         .iter()
         .any(|reference| managed_generator_matches(reference, &owned)));
+}
+
+#[test]
+fn immutable_runtime_and_checker_ids_protect_images_across_tag_changes() {
+    let owned = ownership();
+    let mut runtime = reference();
+    runtime.challenge_type = ChallengeType::AttackDefense as i16;
+    runtime.container_image = Some("rsctf/game/new-name:v2".into());
+    let mut checker = reference();
+    checker.ad_checker_image = Some(ID.into());
+    let mut direct = reference();
+    direct.container_image = Some(ID.into());
+    direct.build_image_digest = None;
+    let snapshot = ReferenceSnapshot::new(vec![runtime, checker, direct]);
+    let matches = snapshot.matching(&owned);
+    assert_eq!(matches.len(), 3);
+    assert!(matches.iter().all(|r| !reference_is_rebuildable(r, &owned)));
 }
 
 #[test]

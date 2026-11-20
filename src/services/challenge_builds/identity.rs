@@ -10,6 +10,10 @@ pub(super) const FINALIZING_IMAGE_CLAIM_SQL: &str = r#"SELECT EXISTS (
      WHERE installation_scope = $1 AND canonical_ref = $2
        AND cleanup_removal_started = TRUE
        AND cleanup_claim_until > clock_timestamp()
+    UNION ALL
+    SELECT 1 FROM "AnonymousImageCleanupClaims"
+     WHERE installation_scope = $1 AND canonical_ref = $2
+       AND expires_at > clock_timestamp()
 )"#;
 
 pub(crate) fn canonical_image_reference(image: Option<&str>) -> String {

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use bollard::container::ListContainersOptions;
 use bollard::errors::Error as DockerError;
-use bollard::image::{PruneImagesOptions, RemoveImageOptions};
+use bollard::image::RemoveImageOptions;
 use bollard::models::BuildPruneResponse;
 use bollard::Docker;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -28,6 +28,9 @@ use crate::services::container_policy::ContainerPolicy;
 use crate::services::docker_admission::{docker_admission, DockerOperationClass};
 use crate::utils::enums::{ChallengeBuildStatus, ChallengeType};
 use crate::utils::error::{AppError, AppResult};
+
+#[path = "dangling.rs"]
+mod dangling;
 
 const DOCKER_API_VERSION: &str = "v1.45";
 const CLEANUP_BATCH_SIZE: i64 = 32;
@@ -46,6 +49,7 @@ const CHALLENGE_REFERENCES_SQL: &str = r#"SELECT id, title, "Type" AS challenge_
   FROM "GameChallenges"
  WHERE (container_image IS NOT NULL AND BTRIM(container_image) <> '')
     OR (ad_checker_image IS NOT NULL AND BTRIM(ad_checker_image) <> '')
+    OR BTRIM(build_image_digest) LIKE 'sha256:%'
     OR (variant_generator_build_context_subdir = 'generator'
         AND variant_generator_build_status = 1
         AND variant_generator_image IS NOT NULL
@@ -146,10 +150,17 @@ struct ReferenceSnapshot {
     rows: Vec<ChallengeReference>,
     by_canonical_ref: HashMap<String, Vec<usize>>,
     by_image_id: HashMap<String, Vec<usize>>,
+    live_image_ids: HashSet<String>,
     truncated: bool,
 }
 
 impl ReferenceSnapshot {
+    fn used_by_container(&self, image: &str) -> bool {
+        self.live_image_ids
+            .iter()
+            .any(|id| image_id_may_match(id, image))
+    }
+
     fn new(mut rows: Vec<ChallengeReference>) -> Self {
         let truncated = rows.len() > MAX_REFERENCE_SNAPSHOT as usize;
         rows.truncate(MAX_REFERENCE_SNAPSHOT as usize);
@@ -162,10 +173,19 @@ impl ReferenceSnapshot {
             for image in [
                 reference.container_image.as_deref(),
                 reference.ad_checker_image.as_deref(),
+                reference.build_image_digest.as_deref(),
             ]
             .into_iter()
             .flatten()
             {
+                if crate::services::challenge_images::is_local_image_id(image) {
+                    snapshot
+                        .by_image_id
+                        .entry(image.trim().to_ascii_lowercase())
+                        .or_default()
+                        .push(index);
+                    continue;
+                }
                 let canonical =
                     crate::services::challenge_builds::canonical_image_reference(Some(image));
                 snapshot
@@ -273,7 +293,12 @@ fn managed_generator_matches(reference: &ChallengeReference, ownership: &ImageOw
 }
 
 fn reference_is_rebuildable(reference: &ChallengeReference, ownership: &ImageOwnership) -> bool {
-    if managed_generator_matches(reference, ownership) {
+    if managed_generator_matches(reference, ownership)
+        || reference
+            .ad_checker_image
+            .as_deref()
+            .is_some_and(|image| image.trim().eq_ignore_ascii_case(&ownership.image_id))
+    {
         return false;
     }
     reference_matches(
@@ -568,7 +593,6 @@ async fn evict_candidate(
     docker: Docker,
     scope: Arc<str>,
     references: Arc<ReferenceSnapshot>,
-    live_image_ids: Arc<HashSet<String>>,
     candidate: CleanupCandidate,
     cutoff: DateTime<Utc>,
     pressure: bool,
@@ -587,10 +611,7 @@ async fn evict_candidate(
         release_claim(&st, &scope, &candidate).await;
         return CandidateOutcome::default();
     }
-    if live_image_ids
-        .iter()
-        .any(|live| image_id_may_match(live, &candidate.image_id))
-    {
+    if references.used_by_container(&candidate.image_id) {
         release_claim(&st, &scope, &candidate).await;
         return CandidateOutcome::default();
     }
@@ -690,7 +711,7 @@ async fn evict_candidate(
             &candidate.image_id,
             Some(RemoveImageOptions {
                 force: false,
-                noprune: false,
+                noprune: true,
             }),
             None,
         ),
@@ -804,29 +825,7 @@ pub(crate) async fn cleanup_with_deadline(
             .messages
             .push(format!("build-cache cleanup skipped: {error}")),
     }
-    if before.low_storage {
-        let filters = HashMap::from([("dangling".to_string(), vec!["true".to_string()])]);
-        match docker_call(
-            DockerOperationClass::Lifecycle,
-            deadline,
-            "dangling-image prune",
-            docker.prune_images(Some(PruneImagesOptions { filters })),
-        )
-        .await
-        {
-            Ok(result) => {
-                report.dangling_bytes_reclaimed = result
-                    .space_reclaimed
-                    .and_then(|bytes| u64::try_from(bytes).ok())
-                    .unwrap_or_default();
-            }
-            Err(error) => report
-                .messages
-                .push(format!("dangling-image cleanup skipped: {error}")),
-        }
-    }
-
-    let references = Arc::new(load_references(st).await?);
+    let mut references = load_references(st).await?;
     let containers = docker_call(
         DockerOperationClass::Read,
         deadline,
@@ -837,12 +836,8 @@ pub(crate) async fn cleanup_with_deadline(
         })),
     )
     .await?;
-    let live_image_ids = Arc::new(
-        containers
-            .into_iter()
-            .filter_map(|container| container.image_id)
-            .collect::<HashSet<_>>(),
-    );
+    references.live_image_ids = containers.into_iter().filter_map(|c| c.image_id).collect();
+    let references = Arc::new(references);
     let cutoff = Utc::now() - ChronoDuration::hours(i64::from(policy.image_idle_retention_hours));
     let scope: Arc<str> = crate::services::container::docker_installation_scope().into();
     let token = Uuid::new_v4();
@@ -867,13 +862,29 @@ pub(crate) async fn cleanup_with_deadline(
         });
     }
 
+    if before.low_storage {
+        if let Err(error) = dangling::collect(
+            &docker,
+            st.pg(),
+            &scope,
+            &references,
+            cutoff,
+            deadline,
+            &mut report,
+        )
+        .await
+        {
+            report
+                .messages
+                .push(format!("dangling-image cleanup skipped: {error}"));
+        }
+    }
     let outcomes = futures::stream::iter(candidates.into_iter().map(|candidate| {
         evict_candidate(
             st.clone(),
             docker.clone(),
             scope.clone(),
             references.clone(),
-            live_image_ids.clone(),
             candidate,
             cutoff,
             before.low_storage,
