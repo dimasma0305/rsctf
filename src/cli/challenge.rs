@@ -23,6 +23,7 @@ enum ChallengeCommand {
     Check(CheckOptions),
     Matrix(PathBuf),
     PatchPreview(PathBuf, PathBuf),
+    PatchContext(PathBuf, String),
 }
 
 fn usage() -> &'static str {
@@ -30,10 +31,12 @@ fn usage() -> &'static str {
        rsctf challenge check [--github] [--deny-warnings] [REPOSITORY]\n\
        rsctf challenge matrix [REPOSITORY]\n\
        rsctf challenge patch-preview CURRENT.zip CANDIDATE.zip\n\
+       rsctf challenge patch-context REVISION.zip EXPECTED_TREE > context.tar\n\
      \n\
      Validates .gzevent and challenge.yaml files without importing or executing them.\n\
      matrix           Print a dynamic GitHub container-build matrix as JSON\n\
      patch-preview    Compare file contents and executable bits in two build ZIPs\n\
+     patch-context    Write a build context verified against a saved Git tree\n\
      --github         Emit GitHub Actions workflow annotations\n\
      --deny-warnings  Return failure when warnings are present\n\
      -h, --help       Show this help\n\
@@ -95,6 +98,16 @@ where
     match arguments.next().as_deref() {
         Some("check") => parse_check_options(arguments),
         Some("matrix") => parse_matrix_options(arguments),
+        Some("patch-context") => match (arguments.next(), arguments.next(), arguments.next()) {
+            (Some(flag), None, None) if flag == "--help" || flag == "-h" => {
+                Ok(ChallengeCommand::Help)
+            }
+            (Some(path), Some(tree), None) => Ok(ChallengeCommand::PatchContext(path.into(), tree)),
+            _ => Err(format!(
+                "expected REVISION.zip and EXPECTED_TREE\n\n{}",
+                usage()
+            )),
+        },
         Some("patch-preview") => match (arguments.next(), arguments.next(), arguments.next()) {
             (Some(flag), None, None) if flag == "--help" || flag == "-h" => {
                 Ok(ChallengeCommand::Help)
@@ -232,18 +245,25 @@ where
         }
         Ok(ChallengeCommand::Check(options)) => run_check(options),
         Ok(ChallengeCommand::Matrix(root)) => run_matrix(root),
+        Ok(ChallengeCommand::PatchContext(path, tree)) => {
+            patch_status(super::patch_preview::context(&path, &tree))
+        }
         Ok(ChallengeCommand::PatchPreview(current, candidate)) => {
-            match super::patch_preview::run(&current, &candidate) {
-                Ok(()) => SUCCESS,
-                Err(error) => {
-                    eprintln!("{error:#}");
-                    VALIDATION_FAILED
-                }
-            }
+            patch_status(super::patch_preview::run(&current, &candidate))
         }
         Err(error) => {
             eprintln!("{error}");
             USAGE_ERROR
+        }
+    }
+}
+
+fn patch_status(result: anyhow::Result<()>) -> i32 {
+    match result {
+        Ok(()) => SUCCESS,
+        Err(error) => {
+            eprintln!("{error:#}");
+            VALIDATION_FAILED
         }
     }
 }

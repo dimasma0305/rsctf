@@ -150,7 +150,8 @@ fn patch_preview_compares_two_archives_locally_and_rejects_invalid_input() {
         zip.start_file("Dockerfile", options).unwrap();
         zip.write_all(b"FROM scratch\n").unwrap();
         if path == &candidate {
-            zip.start_file("src/config", options).unwrap();
+            zip.start_file("src/config", options.unix_permissions(0o755))
+                .unwrap();
             zip.write_all(b"private source").unwrap();
         }
         zip.finish().unwrap();
@@ -176,6 +177,32 @@ fn patch_preview_compares_two_archives_locally_and_rejects_invalid_input() {
         serde_json::json!([{"path":"src/config","kind":"Added"}])
     );
     assert_ne!(report["currentTree"], report["candidateTree"]);
+    let context = |tree: &str| {
+        rsctf()
+            .args(["challenge", "patch-context"])
+            .arg(&candidate)
+            .arg(tree)
+            .env_clear()
+            .output()
+            .unwrap()
+    };
+    let candidate_tree = report["candidateTree"].as_str().unwrap();
+    let exported = context(candidate_tree);
+    assert!(exported.status.success(), "{:?}", exported.stderr);
+    let mut tar = tar::Archive::new(exported.stdout.as_slice());
+    let mut entries = tar.entries().unwrap();
+    let dockerfile = entries.next().unwrap().unwrap();
+    assert_eq!(dockerfile.path_bytes().as_ref(), b"Dockerfile");
+    drop(dockerfile);
+    let mut config = entries.next().unwrap().unwrap();
+    assert_eq!(config.path_bytes().as_ref(), b"src/config");
+    assert_eq!(config.header().mode().unwrap(), 0o755);
+    let mut content = String::new();
+    std::io::Read::read_to_string(&mut config, &mut content).unwrap();
+    assert_eq!(content, "private source");
+    assert!(entries.next().is_none());
+    let stale = context(report["currentTree"].as_str().unwrap());
+    assert!(!stale.status.success() && stale.stdout.is_empty());
     // The ZIP writer enforces unique names. Rename the second member in both
     // headers to model archives written by clients that permit duplicate paths.
     let mut bytes = std::fs::read(&candidate).unwrap();
@@ -190,6 +217,8 @@ fn patch_preview_compares_two_archives_locally_and_rejects_invalid_input() {
     }
     std::fs::write(&candidate, bytes).unwrap();
     let duplicate = preview();
+    let rejected = context(candidate_tree);
+    assert!(!rejected.status.success() && rejected.stdout.is_empty());
     assert_eq!(duplicate.status.code(), Some(1));
     assert!(duplicate.stdout.is_empty());
     assert!(String::from_utf8_lossy(&duplicate.stderr).contains("duplicate"));

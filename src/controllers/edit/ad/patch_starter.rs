@@ -2,15 +2,26 @@
 use super::{
     manager_or_admin, AppError, AppResult, ChallengeType, CurrentUser, Path, SharedState, State,
 };
+use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::services::ad::patches::{PatchManifest, Starter};
-use crate::utils::upload::read_patch_zip;
-use axum::extract::Request;
+use crate::utils::upload::{read_patch_zip, SOURCE_ARCHIVE_BLOB_BYTES};
+use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::HeaderMap;
-use axum::Json;
+use axum::{routing, Json, Router};
 use sqlx::PgPool;
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn router() -> Router<SharedState> {
+    Router::new().route(
+        "/api/edit/games/{id}/challenges/{cId}/patch-starter",
+        routing::get(get).merge(limited(
+            Policy::Query,
+            routing::put(put).layer(DefaultBodyLimit::max(SOURCE_ARCHIVE_BLOB_BYTES)),
+        )),
+    )
+}
 
 fn db_error(error: sqlx::Error) -> AppError {
     AppError::internal(error.to_string())

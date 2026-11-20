@@ -49,6 +49,13 @@ and does not run the Dockerfile. A change to the executable bit is a modificatio
 Identical tree IDs mean the two archives supply identical source inputs. When
 reusing a built image, also check the base image digest and external dependencies.
 
+To prepare a saved revision for an isolated builder, download its ZIP and use
+the full `treeId` from that revision in the team's patch history API. Run
+`rsctf challenge patch-context revision.zip "$tree_id" > context.tar`.
+Use the tar only if the command succeeds. It contains the reviewed files and
+their executable bits. A damaged ZIP or a different revision fails before any
+source is written. The command only prepares the input for a build.
+
 ## BYOC source history
 
 A team can register files from the source directory it uses for its service. Put

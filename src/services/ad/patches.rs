@@ -16,6 +16,19 @@ struct FileIdentity {
 
 pub struct PatchManifest(BTreeMap<String, FileIdentity>);
 
+/// Check the entire immutable input before sending any source to the builder.
+/// A second streaming pass emits ustar without retaining the expanded context.
+pub fn write_verified_context(
+    zip: &[u8],
+    expected_tree: &str,
+    out: &mut dyn std::io::Write,
+) -> Result<(), String> {
+    if PatchManifest::from_zip(zip)?.tree_id() != expected_tree {
+        return Err("patch ZIP does not match the expected Git tree".into());
+    }
+    crate::services::challenge_builds::write_build_context(zip, None, out)
+}
+
 #[derive(Debug, Eq, PartialEq, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Starter {

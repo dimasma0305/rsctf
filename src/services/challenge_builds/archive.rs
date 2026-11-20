@@ -1,6 +1,6 @@
 //! Validated ZIP-to-tar conversion for Docker build contexts.
 
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 
 pub(crate) const MAX_ENTRIES: usize = 2_048;
 pub(crate) const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -21,11 +21,19 @@ pub(super) fn zip_bytes_to_tar(
     context_subdir: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    visit_build_files(zip_bytes, context_subdir, |name, mode, size, data| {
-        write_tar_entry(&mut out, name, mode, size, data)
-    })?;
-    out.extend_from_slice(&[0u8; 1024]);
+    write_build_context(zip_bytes, context_subdir, &mut out)?;
     Ok(out)
+}
+
+pub(crate) fn write_build_context(
+    zip_bytes: &[u8],
+    context_subdir: Option<&str>,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    visit_build_files(zip_bytes, context_subdir, |name, mode, size, data| {
+        write_tar_entry(out, name, mode, size, data)
+    })?;
+    out.write_all(&[0; 1024]).map_err(|e| e.to_string())
 }
 
 /// Visit regular files in canonical path order. Discard the accumulated result
@@ -183,7 +191,7 @@ pub(crate) fn visit_build_files(
 }
 
 fn write_tar_entry(
-    out: &mut Vec<u8>,
+    out: &mut dyn Write,
     name: &str,
     mode: u32,
     size: u64,
@@ -212,11 +220,12 @@ fn write_tar_entry(
     let checksum: u32 = header.iter().map(|&byte| byte as u32).sum();
     put(&mut header, 148, &format!("{checksum:06o}\0 "));
 
-    out.extend_from_slice(&header);
-    std::io::copy(data, out).map_err(|e| format!("ZIP read error: {e}"))?;
+    out.write_all(&header).map_err(|e| e.to_string())?;
+    std::io::copy(data, out).map_err(|e| format!("cannot copy ZIP entry: {e}"))?;
     let remainder = size as usize % 512;
     if remainder != 0 {
-        out.extend(std::iter::repeat_n(0u8, 512 - remainder));
+        out.write_all(&[0; 512][..512 - remainder])
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

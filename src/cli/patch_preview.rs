@@ -1,10 +1,10 @@
 use rsctf::services::ad::patches::PatchManifest;
 use rsctf::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
-fn manifest(path: &Path) -> anyhow::Result<PatchManifest> {
+fn archive(path: &Path) -> anyhow::Result<Vec<u8>> {
     let file = File::open(path)?;
     let metadata = file.metadata()?;
     anyhow::ensure!(metadata.is_file(), "expected a regular ZIP file");
@@ -12,7 +12,23 @@ fn manifest(path: &Path) -> anyhow::Result<PatchManifest> {
     anyhow::ensure!(metadata.len() <= limit, "compressed archive is too large");
     let mut bytes = Vec::new();
     file.take(limit + 1).read_to_end(&mut bytes)?;
-    PatchManifest::from_zip(&bytes).map_err(anyhow::Error::msg)
+    anyhow::ensure!(
+        bytes.len() as u64 <= limit,
+        "compressed archive is too large"
+    );
+    Ok(bytes)
+}
+
+fn manifest(path: &Path) -> anyhow::Result<PatchManifest> {
+    PatchManifest::from_zip(&archive(path)?).map_err(anyhow::Error::msg)
+}
+
+pub(super) fn context(path: &Path, tree: &str) -> anyhow::Result<()> {
+    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+    rsctf::services::ad::patches::write_verified_context(&archive(path)?, tree, &mut out)
+        .map_err(anyhow::Error::msg)?;
+    out.flush()?;
+    Ok(())
 }
 
 pub(super) fn run(current: &Path, candidate: &Path) -> anyhow::Result<()> {
