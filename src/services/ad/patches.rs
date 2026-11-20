@@ -5,6 +5,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) mod checkout;
 pub(crate) mod revisions;
 
 #[derive(Debug, PartialEq, Eq)]

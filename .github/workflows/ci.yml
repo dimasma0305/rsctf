@@ -1094,6 +1094,9 @@ jobs:
             readiness_rechecks_ownership_and_shutdown_after_waiting_for_dependencies
             docker_bootstrap_reuses_pending_code_and_stops_after_registration
             simple_challenge_create_is_atomic_authorized_and_retryable
+            starter_http_scope_replay_and_concurrent_registration
+            player_download_preview_and_revocation_during_upload
+            buildkit_accepts_checked_out_patch_revision
             stale_conditional_delete_cannot_destroy_a_real_replacement_runtime
             newly_issued_sessions_work_immediately_after_a_cached_credential_rotation
             exact_replay_and_stale_phase_recovery_are_durable

@@ -113,6 +113,10 @@ test('player downloads the original and compares a private patch from the challe
     if (path === root + '/patch-revisions/1/changes') return route.fulfill({
       json: [{ path: 'src/version.txt', kind: 'Added' }],
     })
+    if (path === root + '/patch-revisions/1/source.zip') {
+      expect(url.searchParams.get('commit')).toBe(revisions[0].commitId)
+      return route.fulfill({ contentType: 'application/zip', body: candidate })
+    }
     if (path === '/api/game/901/ad/state') return route.fulfill({ json: {
       currentRound: 1, epochTicks: 12, flagsReady: true, flagDeliveryFailures: 0, scoringPaused: false,
       services: [{ adTeamServiceId: 91, challengeId: 9001, deliveryState: 'Managed', canReset: false, snapshotAvailable: false }],
@@ -143,6 +147,9 @@ test('player downloads the original and compares a private patch from the challe
   await expect(panel.getByText('111111111111')).toBeVisible()
   await panel.getByRole('button', { name: 'Changes in revision 1' }).click()
   await expect(panel.locator('details').getByRole('listitem')).toHaveText('Added · src/version.txt')
+  const revisionDownload = page.waitForEvent('download')
+  await panel.getByRole('button', { name: 'Download revision 1 ZIP' }).click()
+  expect((await revisionDownload).suggestedFilename()).toBe('patch-revision-1.zip')
   await expect(panel.getByRole('button', { name: 'Save private revision' })).toHaveCount(0)
   await page.addScriptTag({ path: resolve(repositoryRoot, 'web/node_modules/axe-core/axe.min.js') })
   expect(await panel.evaluate(async element => (await window.axe.run(element, {

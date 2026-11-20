@@ -5,6 +5,7 @@ import api, { type AdPatchPreview } from '@Api'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { showErrorMsg } from '@Utils/Shared'
+import { downloadBlob } from '@Utils/ApiHelper'
 import { AdPatchChangeList } from './AdPatchChangeList'
 
 interface Props {
@@ -71,7 +72,7 @@ export function AdPatchHistory({ gameId, challengeId, serviceId, file, report, s
             </Button>
             <Text size="sm"><code>{r.commitId.slice(0, 12)}</code> · <time dateTime={new Date(r.createdAt).toISOString()}>{new Date(r.createdAt).toLocaleString()}</time></Text>
           </Group>
-          {selected === r.revision && <RevisionChanges gameId={gameId} challengeId={challengeId} serviceId={serviceId} revision={r.revision} />}
+          {selected === r.revision && <RevisionChanges gameId={gameId} challengeId={challengeId} serviceId={serviceId} revision={r.revision} commitId={r.commitId} />}
         </Stack>)}
         <Group gap="xs">
           {before && <Button size="xs" variant="subtle" onClick={() => setBefore(undefined)}>{t('game.ad.patch.latest', 'Latest revisions')}</Button>}
@@ -82,8 +83,9 @@ export function AdPatchHistory({ gameId, challengeId, serviceId, file, report, s
   )
 }
 
-function RevisionChanges({ gameId, challengeId, serviceId, revision }: Pick<Props, 'gameId' | 'challengeId' | 'serviceId'> & { revision: number }) {
+function RevisionChanges({ gameId, challengeId, serviceId, revision, commitId }: Pick<Props, 'gameId' | 'challengeId' | 'serviceId'> & { revision: number; commitId: string }) {
   const { t } = useTranslation()
+  const [downloading, setDownloading] = useState(false)
   const request = useCallback(async (signal: AbortSignal) =>
     assertJsonResponse(await api.game.getAdPatchRevisionChanges(gameId, challengeId, revision, { signal })), [gameId, challengeId, revision])
   const { data, error, mutate } = useChallengePolling({
@@ -92,5 +94,11 @@ function RevisionChanges({ gameId, challengeId, serviceId, revision }: Pick<Prop
   })
   if (error) return <Button size="xs" variant="subtle" onClick={() => void mutate().catch(() => {})}>{t('game.ad.patch.changes_retry', 'Reload file changes')}</Button>
   if (!data) return <Text size="sm" role="status">{t('game.ad.patch.loading_changes', 'Loading file changes…')}</Text>
-  return <AdPatchChangeList changes={data} />
+  return <>
+    <AdPatchChangeList changes={data} />
+    <Group><Button size="xs" variant="light" loading={downloading} onClick={() => void downloadBlob(
+      `patch-revision:${serviceId}:${commitId}`, () => api.game.downloadAdPatchRevision(gameId, challengeId, revision, commitId),
+      setDownloading, t, `patch-revision-${revision}.zip`
+    )}>{t('game.ad.patch.download_revision', 'Download revision {{number}} ZIP', { number: revision })}</Button></Group>
+  </>
 }

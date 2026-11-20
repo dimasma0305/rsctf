@@ -2,13 +2,13 @@
 
 use std::io::{Cursor, Read};
 
-const MAX_ENTRIES: usize = 2_048;
-const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_ENTRIES: usize = 2_048;
+pub(crate) const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 // This expansion bound is independent of the repository checkout disk budget. Kernel and
 // VM challenges often split one build input into several individually bounded
 // files, so the expanded context may legitimately exceed the compressed blob
 // cap while every entry remains below MAX_FILE_BYTES.
-const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_COMPRESSION_RATIO: u64 = 200;
 const MAX_PATH_COMPONENTS: usize = 32;
 

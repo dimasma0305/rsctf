@@ -185,6 +185,40 @@ pub(super) async fn check(
             StatusCode::NOT_FOUND
         );
     }
+    let route = format!(
+        "patch-revisions/1/source.zip?commit={}",
+        first["commitId"].as_str().unwrap()
+    );
+    let response = request(router, "GET", 10, &route, Some(&member), Body::empty()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    let bytes = to_bytes(response.into_body(), 8192).await.unwrap();
+    assert_eq!(
+        PatchManifest::from_zip(&bytes).unwrap().tree_id(),
+        first["treeId"]
+    );
+    assert_eq!(
+        request(router, "GET", 10, &route, Some(&other), Body::empty())
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(router, "GET", 10, &route, None, Body::empty())
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let stale = route.replace("/1/source", "/2/source");
+    assert_eq!(
+        request(router, "GET", 10, &stale, Some(&member), Body::empty())
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
     let rejected = request(
         router,
         "GET",

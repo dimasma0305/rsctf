@@ -11866,6 +11866,12 @@ export class Api<
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/changes`, method: "GET", format: "json", ...params,
       }),
 
+    downloadAdPatchRevision: (id: number, challenge: number, revision: number, commit: string, params: RequestParams = {}) =>
+      this.request<Blob, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/source.zip`,
+        method: "GET", query: { commit }, format: "blob", ...params,
+      }),
+
     saveAdPatchRevision: (id: number, challenge: number, service: number, zip: File, expected: number, params: RequestParams = {}) =>
       this.request<AdPatchRevision, RequestResponse>({
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions`, method: "POST", format: "json", body: zip,

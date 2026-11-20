@@ -249,8 +249,8 @@ async fn store_tree(db: &mut PgConnection, service: i32, tree: &SourceTree) -> A
         return Ok(());
     }
     let ids: Vec<_> = tree.blobs.iter().map(|blob| &blob.oid[..]).collect();
-    let saved: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
-        r#"SELECT oid FROM "AdPatchSourceBlobs" WHERE service_id=$1 AND oid=ANY($2)"#,
+    let saved: std::collections::BTreeMap<String,i32> = sqlx::query_as(
+        r#"SELECT oid,octet_length(payload) FROM "AdPatchSourceBlobs" WHERE service_id=$1 AND oid=ANY($2)"#,
     )
     .bind(service)
     .bind(&ids)
@@ -259,26 +259,24 @@ async fn store_tree(db: &mut PgConnection, service: i32, tree: &SourceTree) -> A
     .map_err(db_error)?
     .into_iter()
     .collect();
-    let missing: Vec<_> = tree
-        .blobs
-        .iter()
-        .filter(|blob| !saved.contains(&blob.oid))
-        .collect();
+    let missing = tree.storage_plan(&saved, crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES);
     // Charge only new bytes. The fixed allowance covers the keys and row
     // metadata of tiny files. This counter rolls back with the objects.
-    let charge = tree.manifest.len()
+    let charge = tree.manifest.len() as i64
         + 192
         + missing
             .iter()
-            .map(|blob| blob.data.len() + 192)
-            .sum::<usize>();
+            .map(|blob| {
+                blob.data.len() as i64 + saved.get(&blob.oid).map_or(192, |old| -i64::from(*old))
+            })
+            .sum::<i64>();
+    sqlx::query(r#"INSERT INTO "AdPatchSourceUsage" (service_id,used_bytes) VALUES ($1,0) ON CONFLICT (service_id) DO NOTHING"#)
+        .bind(service).execute(&mut *db).await.map_err(db_error)?;
     let admitted = sqlx::query(
-        r#"INSERT INTO "AdPatchSourceUsage" AS u (service_id,used_bytes) VALUES ($1,$2)
-        ON CONFLICT (service_id) DO UPDATE SET used_bytes = u.used_bytes + EXCLUDED.used_bytes
-        WHERE u.used_bytes + EXCLUDED.used_bytes <= 536870912"#,
+        r#"UPDATE "AdPatchSourceUsage" SET used_bytes=used_bytes+$2 WHERE service_id=$1 AND used_bytes+$2<=536870912"#,
     )
     .bind(service)
-    .bind(charge as i64)
+    .bind(charge)
     .execute(&mut *db)
     .await
     .map_err(db_error)?;
@@ -299,7 +297,7 @@ async fn store_tree(db: &mut PgConnection, service: i32, tree: &SourceTree) -> A
                     .push_bind(blob.raw_size)
                     .push_bind(&blob.data[..]);
             })
-            .push(" ON CONFLICT (service_id,oid) DO NOTHING");
+            .push(" ON CONFLICT (service_id,oid) DO UPDATE SET deflated=EXCLUDED.deflated, payload=EXCLUDED.payload");
         query.build().execute(&mut *db).await.map_err(db_error)?;
     }
     Ok(())

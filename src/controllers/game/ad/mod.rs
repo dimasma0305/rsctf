@@ -58,6 +58,10 @@ fn common_router() -> Router<SharedState> {
             ),
         )
         .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions/{revision}/source.zip",
+            limited(Policy::Query, get(patch_preview::source::download)),
+        )
+        .route(
             "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions/{revision}/changes",
             limited(Policy::Query, get(patch_preview::revisions::changes)),
         )

@@ -60,6 +60,8 @@ Its [HTTP and PostgreSQL regression](../../../../src/controllers/edit/ad/patch_s
 exercises replay, replacement, simultaneous registration, and game ownership.
 The [private revision history](../../../../src/controllers/game/ad/patch_preview/revisions.rs)
 stores [content-addressed source](../../../../src/services/ad/patches/revisions.rs) for one hosted team service.
+The [revision download](../../../../src/controllers/game/ad/patch_preview/source.rs) checks team access
+and [reconstructs the ZIP](../../../../src/services/ad/patches/checkout.rs) from the pinned starter and verified file contents.
 The [player preview panel](../../../../web/src/components/competition/AdPatchPreviewPanel.tsx) and
 [player routes](../../../../src/controllers/game/ad/patch_preview.rs) handle the download
 and comparison against the starter. The [PostgreSQL test](../../../../src/controllers/game/ad/patch_preview/tests.rs)

@@ -29,7 +29,8 @@ the submitted ZIP in memory and compares it with the registered original.
 
 After comparing, a teammate can choose **Save private revision**. Open **Team
 revision history** to see the time and Git commit ID of each saved ZIP. Select
-a revision to see which files changed since the previous save. Saving
+a revision to see which files changed since the previous save. Choose **Download
+revision N ZIP** to recover that version, including executable permissions. Saving
 records source only. The service continues running its current version.
 RSCTF shares the starter across teams and stores each additional file's
 contents once per team service, even when the file is renamed. Each service

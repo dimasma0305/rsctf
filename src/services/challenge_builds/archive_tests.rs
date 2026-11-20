@@ -16,11 +16,6 @@ fn archive_builds_use_buildkit_dockerfiles() {
 #[tokio::test]
 #[ignore = "requires a local Docker daemon with BuildKit"]
 async fn buildkit_archive_transport_accepts_copy_chmod() {
-    let docker = Docker::connect_with_local_defaults().expect("local Docker client");
-    let image = format!(
-        "rsctf/diagnostic/buildkit-progress-test-{}:latest",
-        uuid::Uuid::new_v4()
-    );
     let archive = zip_entries(
         &[
             (
@@ -32,6 +27,59 @@ async fn buildkit_archive_transport_accepts_copy_chmod() {
         zip::CompressionMethod::Stored,
     );
 
+    verify_buildkit_archive(archive).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a local Docker daemon with BuildKit"]
+async fn buildkit_accepts_checked_out_patch_revision() {
+    use crate::services::ad::patches::{checkout::Checkout, revisions::SourceTree, PatchManifest};
+    use std::collections::BTreeMap;
+    use std::io::Read;
+
+    let dockerfile = b"FROM scratch\nCOPY --chmod=0555 updated /payload\n";
+    let original = zip_entry("Dockerfile", dockerfile);
+    let candidate = zip_entries(
+        &[("Dockerfile", dockerfile), ("updated", b"recovered source")],
+        zip::CompressionMethod::Deflated,
+    );
+    let tree = SourceTree::prepare(&original, candidate.into()).unwrap();
+    let mut checkout = Checkout::start(
+        PatchManifest::from_record(&tree.manifest).unwrap(),
+        &tree.oid,
+        &original,
+        &PatchManifest::from_zip(&original).unwrap().tree_id(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let rows = tree
+        .storage_plan(&BTreeMap::new(), usize::MAX)
+        .into_iter()
+        .map(|blob| {
+            (
+                blob.oid.clone(),
+                blob.deflated,
+                blob.raw_size,
+                blob.data.to_vec(),
+            )
+        })
+        .collect();
+    checkout.append_blobs(rows).unwrap();
+    let mut archive = Vec::new();
+    checkout
+        .finish()
+        .unwrap()
+        .read_to_end(&mut archive)
+        .unwrap();
+    verify_buildkit_archive(archive).await;
+}
+
+async fn verify_buildkit_archive(archive: Vec<u8>) {
+    let docker = Docker::connect_with_local_defaults().expect("local Docker client");
+    let image = format!(
+        "rsctf/diagnostic/buildkit-progress-test-{}:latest",
+        uuid::Uuid::new_v4()
+    );
     let outcome = build_from_context(&docker, &image, archive, None).await;
     let cleanup = docker
         .remove_image(
