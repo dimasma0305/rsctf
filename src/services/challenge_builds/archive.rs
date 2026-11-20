@@ -52,17 +52,21 @@ pub(super) fn zip_bytes_to_tar(
 
     let mut out = Vec::new();
     let mut total = 0u64;
-    let mut source_names = std::collections::BTreeSet::new();
-    let mut output_names = std::collections::BTreeSet::new();
+    let mut directories_by_path = std::collections::BTreeMap::new();
     let mut has_dockerfile = false;
-    for index in 0..archive.len() {
+    // ZIP entry order is exporter metadata. Feed Docker the same bytes for
+    // the same paths, modes and contents, regardless of how a team packed them.
+    let mut order = archive
+        .file_names()
+        .enumerate()
+        .map(|(index, name)| name.map(|name| (name.into_owned(), index)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("invalid ZIP entry name: {error}"))?;
+    order.sort_unstable();
+    for (raw_name, index) in order {
         let mut entry = archive
             .by_index(index)
             .map_err(|error| format!("ZIP read error: {error}"))?;
-        let raw_name = entry
-            .name()
-            .map_err(|error| format!("invalid ZIP entry name: {error}"))?
-            .into_owned();
         if raw_name.contains('\\') {
             return Err("entry path contains a backslash".to_string());
         }
@@ -93,8 +97,20 @@ pub(super) fn zip_bytes_to_tar(
         if raw_name != canonical_name {
             return Err("entry path is not canonical".to_string());
         }
-        if !source_names.insert(source_name) {
+        if directories_by_path
+            .insert(source_name, is_directory)
+            .is_some()
+        {
             return Err("duplicate entry path".to_string());
+        }
+        // A regular file sorts before any of its descendants. Without this
+        // check the context could not represent a single filesystem tree.
+        if raw_name
+            .match_indices('/')
+            .filter(|(end, _)| *end + 1 < raw_name.len())
+            .any(|(end, _)| directories_by_path.get(&raw_name[..end]) == Some(&false))
+        {
+            return Err("archive uses a file as a parent directory".to_string());
         }
         let unix_mode = entry.unix_mode();
         if unix_mode.is_some_and(|mode| mode & 0o170000 == 0o120000) {
@@ -119,9 +135,6 @@ pub(super) fn zip_bytes_to_tar(
             &components[..]
         };
         let name = output_components.join("/");
-        if !output_names.insert(name.clone()) {
-            return Err("duplicate build-context entry path".to_string());
-        }
         has_dockerfile |= name == "Dockerfile";
         let remaining = MAX_TOTAL_BYTES.saturating_sub(total);
         let max_read = remaining.min(MAX_FILE_BYTES);

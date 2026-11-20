@@ -9,9 +9,20 @@ pub(super) async fn build_from_context(
     archive: Vec<u8>,
     context_subdir: Option<&str>,
 ) -> BuildOutcome {
-    let tar = match zip_bytes_to_tar(&archive, context_subdir) {
-        Ok(tar) => tar,
-        Err(error) => {
+    let context_subdir = context_subdir.map(str::to_owned);
+    let prepared =
+        tokio::task::spawn_blocking(move || zip_bytes_to_tar(&archive, context_subdir.as_deref()))
+            .await;
+    let tar = match prepared {
+        Err(_) => {
+            return BuildOutcome {
+                status: ChallengeBuildStatus::Failed,
+                log: Some("Build context preparation interrupted".to_string()),
+                image_digest: None,
+            };
+        }
+        Ok(Ok(tar)) => tar,
+        Ok(Err(error)) => {
             return BuildOutcome {
                 status: ChallengeBuildStatus::Failed,
                 log: Some(format!("Rejected unsafe build archive: {error}")),

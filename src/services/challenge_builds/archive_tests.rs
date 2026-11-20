@@ -281,6 +281,33 @@ fn build_archive_accepts_a_small_safe_zip() {
 }
 
 #[test]
+fn repacking_source_does_not_change_the_build_context() {
+    let files = [
+        ("src/app", b"version 1".as_slice()),
+        ("Dockerfile", b"FROM scratch"),
+    ];
+    let first = zip_entries(&files, zip::CompressionMethod::Stored);
+    let second = zip_entries(&[files[1], files[0]], zip::CompressionMethod::Deflated);
+    assert_eq!(
+        zip_bytes_to_tar(&first, None).unwrap(),
+        zip_bytes_to_tar(&second, None).unwrap(),
+    );
+}
+
+#[test]
+fn build_archive_rejects_a_file_also_used_as_a_parent_directory() {
+    let archive = zip_entries(
+        &[
+            ("src/app", b"source"),
+            ("src", b"conflict"),
+            ("Dockerfile", b"FROM scratch"),
+        ],
+        zip::CompressionMethod::Stored,
+    );
+    assert!(zip_bytes_to_tar(&archive, None).is_err());
+}
+
+#[test]
 fn build_archive_selects_reviewed_context_subdirectory() {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for (name, data, mode) in [
