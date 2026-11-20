@@ -33,6 +33,9 @@ export function AdPatchHistory({ gameId, challengeId, serviceId, file, report, s
   })
   const head = data?.[0]
   const outdated = !!report && (head?.revision ?? 0) > report.baseRevision
+  const changed = report && (report.comparisonRevision !== undefined && !outdated
+    ? report.changes.length > 0
+    : report.candidateTree !== (head?.treeId ?? report.starterTree))
   const save = async () => {
     if (!file || !report || !data || before || error || outdated || pending.current) return
     const controller = new AbortController()
@@ -58,7 +61,7 @@ export function AdPatchHistory({ gameId, challengeId, serviceId, file, report, s
   if (!data) return null
   return (
     <Stack gap="xs">
-      {file && report && !before && report.candidateTree !== (head?.treeId ?? report.starterTree) && (outdated
+      {file && changed && !before && (outdated
         ? <Text size="sm" role="status">{t('game.ad.patch.recompare', 'A teammate saved a revision. Compare files again before saving.')}</Text>
         : <Group><Button size="xs" loading={saving} onClick={() => void save()}>{t('game.ad.patch.save_revision', 'Save private revision')}</Button></Group>)}
       {notice && <Text size="sm" role="status">{notice}</Text>}

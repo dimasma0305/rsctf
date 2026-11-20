@@ -57,6 +57,7 @@ import {
   withPlayerCredentialLock,
 } from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
+import { eventChallengeHash } from '@Utils/ChallengeLinks'
 import { useViewerIdentity } from '@Utils/ViewerIdentity'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api from '@Api'
@@ -65,6 +66,7 @@ import misc from '@Styles/Misc.module.css'
 interface AdToolkitModalProps extends ModalProps {
   gameId: number
   tokenOwner: AdTokenOwner
+  patchChallenges?: { id: number; title: string }[]
 }
 
 /**
@@ -74,7 +76,7 @@ interface AdToolkitModalProps extends ModalProps {
  * from "Player Guide" because half the content is interactive rather than
  * read-only.
  */
-export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...modalProps }) => {
+export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, patchChallenges = [], ...modalProps }) => {
   const { t } = useTranslation()
   const { scope } = useViewerIdentity()
   const activeSshViewerScope = useRef(scope)
@@ -340,6 +342,16 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
             </Text>
 
             <Accordion variant="separated" defaultValue={['token', 'vpn']} radius="md" chevronPosition="left" multiple>
+              {patchChallenges.length > 0 && <Accordion.Item value="patch-service">
+                <Accordion.Control>{t('game.ad.patch.open_service', 'Patch your service')}</Accordion.Control>
+                <Accordion.Panel>
+                  <Stack align="flex-start" gap="xs">
+                    {patchChallenges.map(challenge => <Anchor key={challenge.id}
+                      href={eventChallengeHash(challenge.id, challenge.title, typeof window === 'undefined' ? '' : window.location.hash)}
+                      onClick={modalProps.onClose}>{challenge.title}</Anchor>)}
+                  </Stack>
+                </Accordion.Panel>
+              </Accordion.Item>}
               {/* TOKEN — shared with KotH (see AdToolkitSections) */}
               <AdTokenSection
                 hint={adTokenHint}

@@ -140,10 +140,11 @@ test('organizer registers a starter and sees the original after the event starts
   expect(errors).toEqual([])
 })
 
-test('player downloads the original and compares a private patch from the challenge', async ({ page }) => {
+test('player opens a hosted challenge from the Toolkit and compares a private patch', async ({ page }) => {
   const game = createCompetitionFixture()
   const challenge = '/api/game/901/challenges/9001'
   game.challenges[0].type = 'AttackDefense'
+  game.challenges[1].type = 'AttackDefense'
   Object.assign(game.responses[challenge], { type: 'AttackDefense', adSelfHosted: false })
   const base = new JSZip().file('Dockerfile', 'FROM scratch\n')
   const starter = await base.generateAsync({ type: 'nodebuffer' })
@@ -164,7 +165,11 @@ test('player downloads the original and compares a private patch from the challe
     if (path === root + '/patch-preview') {
       if (req.method() === 'GET') return route.fulfill({ json: { treeId: 'a'.repeat(64), archiveBytes: starter.length } })
       writes.push(req.postDataBuffer())
-      return route.fulfill({ json: { starterTree: 'a'.repeat(64), candidateTree: 'b'.repeat(64), baseRevision: 0, changes: [{ path: 'src/version.txt', kind: 'Added' }] } })
+      const base = url.searchParams.get('base')
+      expect(base).toBe(writes.length > 2 ? 'starter' : 'latest')
+      const same = base === 'latest' && revisions.length > 0
+      return route.fulfill({ json: { starterTree: 'a'.repeat(64), candidateTree: 'b'.repeat(64), baseRevision: revisions.length,
+        comparisonRevision: base === 'latest' ? revisions.length : undefined, changes: same ? [] : [{ path: 'src/version.txt', kind: 'Added' }] } })
     }
     if (path === root + '/patch-revisions') {
       if (req.method() === 'GET') return route.fulfill({ json: revisions })
@@ -183,13 +188,24 @@ test('player downloads the original and compares a private patch from the challe
     }
     if (path === '/api/game/901/ad/state') return route.fulfill({ json: {
       currentRound: 1, epochTicks: 12, flagsReady: true, flagDeliveryFailures: 0, scoringPaused: false,
-      services: [{ adTeamServiceId: 91, challengeId: 9001, deliveryState: 'Managed', canReset: false, snapshotAvailable: false }],
+      services: [
+        { adTeamServiceId: 91, challengeId: 9001, deliveryState: 'Managed', canReset: false, snapshotAvailable: false },
+        { adTeamServiceId: 93, challengeId: game.challenges[1].id, selfHosted: true, deliveryState: 'ByocHealthy' },
+        { adTeamServiceId: 92, challengeId: 98765, challengeTitle: 'Hidden service', deliveryState: 'Managed' },
+      ],
     } })
     if (path === '/api/game/901/ad/ssh/key') return route.fulfill({ json: { exists: false } })
     const result = game.fixture(url.pathname + url.search, req.method())
     return route.fulfill({ status: result.status ?? 200, json: result.body ?? null })
   })
-  await page.goto(server.origin + '/games/901/challenges#9001')
+  await page.goto(server.origin + '/games/901/challenges')
+  await page.getByRole('button', { name: 'A&D Toolkit' }).click()
+  const toolkit = page.getByRole('dialog')
+  await toolkit.getByRole('button', { name: 'Patch your service' }).click()
+  await expect(toolkit.getByRole('link', { name: 'Hidden service' })).toHaveCount(0)
+  await expect(toolkit.getByRole('link', { name: game.challenges[1].title, exact: true })).toHaveCount(0)
+  await toolkit.getByRole('link', { name: game.challenges[0].title, exact: true }).click()
+  await expect(page).toHaveURL(/#9001-/)
   const panel = page.locator('[data-ad-patch-preview]')
   await expect(panel).toBeVisible()
   const downloaded = page.waitForEvent('download')
@@ -215,6 +231,12 @@ test('player downloads the original and compares a private patch from the challe
   await panel.getByRole('button', { name: 'Download revision 1 ZIP' }).click()
   expect((await revisionDownload).suggestedFilename()).toBe('patch-revision-1.zip')
   await expect(panel.getByRole('button', { name: 'Save private revision' })).toHaveCount(0)
+  await panel.getByRole('button', { name: 'Compare files' }).click()
+  await expect(panel.getByText(/Compared with revision 1\.\s*No files changed\./)).toBeVisible()
+  await panel.getByRole('combobox', { name: 'Compare with' }).selectOption('starter')
+  await expect(panel.getByText(/Compared with revision 1\./)).toHaveCount(0)
+  await panel.getByRole('button', { name: 'Compare files' }).click()
+  await expect(panel.getByText(/Compared with the starter ZIP\.\s*Files changed: 1/)).toBeVisible()
   await page.addScriptTag({ path: resolve(repositoryRoot, 'web/node_modules/axe-core/axe.min.js') })
   expect(await panel.evaluate(async element => (await window.axe.run(element, {
     runOnly: { type: 'tag', values: ['wcag2a','wcag2aa','wcag21aa'] },

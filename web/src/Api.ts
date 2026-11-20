@@ -4585,6 +4585,7 @@ export interface AdPatchPreview {
   starterTree: string
   candidateTree: string
   baseRevision: number
+  comparisonRevision?: number
   changes: { path: string; kind: 'Added' | 'Modified' | 'Deleted' }[]
 }
 
@@ -11859,9 +11860,9 @@ export class Api<
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-preview`, method: "GET", format: "json", ...params,
       }),
 
-    previewAdPatch: (id: number, challenge: number, zip: File, params: RequestParams = {}) =>
+    previewAdPatch: (id: number, challenge: number, zip: File, { base, ...params }: RequestParams & { base?: 'latest' | 'starter' } = {}) =>
       this.request<AdPatchPreview, RequestResponse>({
-        path: `/api/game/${id}/ad/challenges/${challenge}/patch-preview`, method: "POST", format: "json", body: zip,
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-preview`, method: "POST", format: "json", body: zip, query: { base },
         ...params, headers: { ...params.headers, "Content-Type": "application/zip" },
       }),
 

@@ -1,4 +1,21 @@
 {
+  "ad": {
+    "patch": {
+      "open_service": "Patch your service",
+      "label": "Preview a patch ZIP",
+      "compare_with": "Compare with",
+      "latest_team_source": "Latest team revision",
+      "original": "Starter ZIP",
+      "compared_revision": "Compared with revision {{number}}.",
+      "compared_starter": "Compared with the starter ZIP.",
+      "no_changes": "No files changed.",
+      "count": "Files changed: {{count}}",
+      "compare": "Compare files",
+      "download": "Download starter ZIP",
+      "clear": "Clear selected patch ZIP",
+      "size": "Choose a ZIP of 72 MiB or smaller."
+    }
+  },
   "timeline": {
     "empty_title": "No score history yet",
     "empty_description": "Score history will appear here when it is available. Current standings are listed below."

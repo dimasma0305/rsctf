@@ -22,10 +22,15 @@ You can replace the starter before the game begins. RSCTF keeps one ZIP per
 challenge in PostgreSQL, up to 72 MiB, shared across all teams. Saving a starter
 prepares the original source for comparison and leaves running services in place.
 
-During the game, an accepted teammate can open their hosted challenge and use
-**Download starter ZIP**. After editing, they can choose their ZIP and click
+During the game, an accepted teammate can open **A&D Toolkit → Patch your
+service**, choose their hosted challenge, and use **Download starter ZIP**.
+After editing, they can choose their ZIP and click
 **Compare files** to see additions, modifications, and deletions. Preview reads
-the submitted ZIP in memory and compares it with the registered original.
+the submitted ZIP in memory. By default it compares against the team's latest
+private revision, or the starter ZIP for a team's first save. Choose **Starter
+ZIP** under **Compare with** to see all changes since the original. If a
+teammate saves while a latest-revision preview is uploading, compare again
+to see the new baseline before saving.
 
 After comparing, a teammate can choose **Save private revision**. Open **Team
 revision history** to see the time and Git commit ID of each saved ZIP. Select

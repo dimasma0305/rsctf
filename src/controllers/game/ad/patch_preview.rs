@@ -30,6 +30,8 @@ struct Preview {
     starter_tree: String,
     candidate_tree: String,
     base_revision: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comparison_revision: Option<i32>,
     changes: Vec<PatchChange>,
 }
 
@@ -203,23 +205,50 @@ pub async fn preview(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((game, challenge)): Path<(i32, i32)>,
+    axum::extract::Query(query): axum::extract::Query<PreviewQuery>,
     request: Request,
 ) -> AppResult<Response> {
     let who = caller(&st, &user, game).await?;
-    let (roster, service, starter) = lock_source(st.pg(), who, challenge).await?;
+    let (mut roster, service, starter) = lock_source(st.pg(), who, challenge).await?;
     let starter = starter.ok_or_else(missing)?;
+    let comparison_revision = match query.base {
+        ComparisonBase::Latest => Some(head(roster.transaction_mut(), service).await?),
+        ComparisonBase::Starter => None,
+    };
     roster.release().await?;
-    let (bytes, permit) = read_patch_zip(request, starter.archive_bytes as usize).await?;
+    let uses_saved_tree = comparison_revision.is_some_and(|revision| revision > 0);
+    let starter_bytes = if uses_saved_tree {
+        0
+    } else {
+        starter.archive_bytes as usize
+    };
+    let (bytes, permit) = read_patch_zip(request, starter_bytes).await?;
     let (candidate, permit) = tokio::task::spawn_blocking(move || {
         PatchManifest::from_zip(&bytes).map(|manifest| (manifest, permit))
     })
     .await
     .map_err(|e| AppError::internal(e.to_string()))?
     .map_err(AppError::bad_request)?;
-    let original = load(st.pg(), challenge, &starter).await?;
+    let baseline = match comparison_revision {
+        Some(revision) if revision > 0 => {
+            let (tree, record) = sqlx::query_as::<_, (String, String)>(
+                r#"SELECT r.tree_id, t.manifest FROM "AdPatchRevisions" r
+                   JOIN "AdPatchSourceTrees" t USING (service_id,tree_id)
+                   WHERE r.service_id=$1 AND r.revision=$2"#,
+            )
+            .bind(service)
+            .bind(revision)
+            .fetch_optional(st.pg())
+            .await
+            .map_err(|e| AppError::internal(e.to_string()))?
+            .ok_or_else(|| AppError::conflict("The team revision changed. Compare files again."))?;
+            Baseline::Saved { tree, record }
+        }
+        _ => Baseline::Starter(load(st.pg(), challenge, &starter).await?),
+    };
     let (candidate_tree, changes) = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let baseline = PatchManifest::from_zip(&original)?;
+        let baseline = baseline.manifest()?;
         Ok::<_, String>((candidate.tree_id(), candidate.changes_from(&baseline)))
     })
     .await
@@ -232,15 +261,12 @@ pub async fn preview(
             "Service or starter changed. Reopen the challenge.",
         ));
     }
-    let base_revision = sqlx::query_scalar::<_, i32>(
-        r#"SELECT revision FROM "AdPatchRevisions"
-        WHERE service_id=$1 ORDER BY revision DESC LIMIT 1"#,
-    )
-    .bind(service)
-    .fetch_optional(&mut **roster.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .unwrap_or(0);
+    let base_revision = head(roster.transaction_mut(), service).await?;
+    if comparison_revision.is_some_and(|revision| revision != base_revision) {
+        return Err(AppError::conflict(
+            "A teammate saved a revision. Compare files again.",
+        ));
+    }
     roster.release().await?;
     Ok((
         [(header::CACHE_CONTROL, "private, no-store")],
@@ -248,8 +274,54 @@ pub async fn preview(
             starter_tree: starter.tree_id,
             candidate_tree,
             base_revision,
+            comparison_revision,
             changes,
         }),
     )
         .into_response())
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct PreviewQuery {
+    #[serde(default)]
+    base: ComparisonBase,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ComparisonBase {
+    #[default]
+    Starter,
+    Latest,
+}
+
+enum Baseline {
+    Starter(Vec<u8>),
+    Saved { tree: String, record: String },
+}
+
+impl Baseline {
+    fn manifest(self) -> Result<PatchManifest, String> {
+        match self {
+            Self::Starter(bytes) => PatchManifest::from_zip(&bytes),
+            Self::Saved { tree, record } => {
+                let manifest = PatchManifest::from_record(&record).map_err(|e| e.to_string())?;
+                if manifest.tree_id() != tree {
+                    return Err("Saved patch manifest does not match its Git tree".into());
+                }
+                Ok(manifest)
+            }
+        }
+    }
+}
+
+async fn head(db: &mut sqlx::PgConnection, service: i32) -> AppResult<i32> {
+    sqlx::query_scalar::<_, i32>(
+        r#"SELECT revision FROM "AdPatchRevisions" WHERE service_id=$1 ORDER BY revision DESC LIMIT 1"#,
+    )
+    .bind(service)
+    .fetch_optional(db)
+    .await
+    .map(|revision| revision.unwrap_or(0))
+    .map_err(|e| AppError::internal(e.to_string()))
 }

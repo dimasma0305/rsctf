@@ -101,10 +101,6 @@ pub(super) async fn check(
         PatchManifest::from_zip(candidate).unwrap().tree_id()
     );
     assert_eq!(json(list(&other).await).await, serde_json::json!([]));
-    assert_eq!(
-        save(router, user, 0, starter).await.status(),
-        StatusCode::CONFLICT
-    );
     let member = CurrentUser {
         id: Uuid::new_v4(),
         ..user.clone()
@@ -121,7 +117,67 @@ pub(super) async fn check(
             .await
             .unwrap();
     }
-    let second = json(save(router, &member, 1, starter).await).await;
+    for (actor, revision, changes) in [(&member, 1, 0), (&other, 0, 1)] {
+        let preview = json(
+            request(
+                router,
+                "POST",
+                10,
+                "patch-preview?base=latest",
+                Some(actor),
+                Body::from(candidate.to_vec()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(preview["comparisonRevision"], revision);
+        assert_eq!(preview["baseRevision"], revision);
+        assert_eq!(preview["changes"].as_array().unwrap().len(), changes);
+    }
+    let revert = json(
+        request(
+            router,
+            "POST",
+            10,
+            "patch-preview?base=latest",
+            Some(&member),
+            Body::from(starter.to_vec()),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        revert["changes"],
+        serde_json::json!([{"path":"src/version.txt","kind":"Deleted"}])
+    );
+    assert_eq!(
+        save(router, &member, 0, starter).await.status(),
+        StatusCode::CONFLICT
+    );
+    // A teammate saves after the preview has selected revision 1 but before
+    // its ZIP finishes uploading. The response must not authorize revision 2
+    // as the parent of a comparison against revision 1.
+    let teammate = member.clone();
+    let routes = router.clone();
+    let original = starter.to_vec();
+    let upload = futures::stream::once(async move {
+        assert_eq!(
+            save(&routes, &teammate, 1, &original).await.status(),
+            StatusCode::OK
+        );
+        Ok::<_, std::io::Error>(bytes::Bytes::from(original))
+    });
+    let raced = request(
+        router,
+        "POST",
+        10,
+        "patch-preview?base=latest",
+        Some(user),
+        Body::from_stream(upload),
+    )
+    .await;
+    assert_eq!(raced.status(), StatusCode::CONFLICT);
+    let second = json(list(&member).await).await[0].clone();
     assert_eq!(second["parentId"], first["commitId"]);
     assert_eq!(json(save(router, user, 0, candidate).await).await, first);
     let (a, b) = tokio::join!(

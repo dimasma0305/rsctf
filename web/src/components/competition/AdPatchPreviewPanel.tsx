@@ -1,4 +1,4 @@
-import { Button, FileInput, Group, Stack, Text } from '@mantine/core'
+import { Button, FileInput, Group, NativeSelect, Stack, Text } from '@mantine/core'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import api, { type AdPatchPreview } from '@Api'
@@ -19,6 +19,7 @@ export function AdPatchPreviewPanel({ gameId, challengeId, serviceId }: { gameId
     active: true, refreshInterval: 0, request,
   })
   const [file, setFile] = useState<File | null>(null)
+  const [base, setBase] = useState<'latest' | 'starter'>('latest')
   const [report, setReport] = useState<AdPatchPreview | null>(null)
   const [busy, setBusy] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -40,7 +41,7 @@ export function AdPatchPreviewPanel({ gameId, challengeId, serviceId }: { gameId
     setReport(null)
     setBusy(true)
     try {
-      const response = await api.game.previewAdPatch(gameId, challengeId, file, { signal: controller.signal })
+      const response = await api.game.previewAdPatch(gameId, challengeId, file, { base, signal: controller.signal })
       if (!controller.signal.aborted) {
         setReport(assertJsonResponse(response))
       }
@@ -55,12 +56,19 @@ export function AdPatchPreviewPanel({ gameId, challengeId, serviceId }: { gameId
     <Stack gap="xs" data-ad-patch-preview>
       <FileInput
         label={t('game.ad.patch.label', 'Preview a patch ZIP')}
-        description={t('game.ad.patch.help', 'Compare files with the original starter ZIP. Your service keeps running.')}
         accept=".zip,application/zip" clearable disabled={busy || saving} value={file}
         clearButtonProps={{ 'aria-label': t('game.ad.patch.clear', 'Clear selected patch ZIP') }}
         error={tooLarge && t('game.ad.patch.size', 'Choose a ZIP of 72 MiB or smaller.')}
         onChange={next => { setFile(next); setReport(null) }}
       />
+      {file && <NativeSelect size="xs" label={t('game.ad.patch.compare_with', 'Compare with')} value={base}
+        disabled={busy || saving} data={[
+          { value: 'latest', label: t('game.ad.patch.latest_team_source', 'Latest team revision') },
+          { value: 'starter', label: t('game.ad.patch.original', 'Starter ZIP') },
+        ]} onChange={event => {
+          setBase(event.currentTarget.value === 'starter' ? 'starter' : 'latest')
+          setReport(null)
+        }} />}
       <Group gap="xs">
         <Button size="xs" variant="light" loading={downloading} onClick={() => void downloadBlob(
           `patch-starter:${gameId}:${challengeId}`, () => api.game.downloadAdPatchStarter(gameId, challengeId), setDownloading, t, 'starter.zip'
@@ -69,9 +77,12 @@ export function AdPatchPreviewPanel({ gameId, challengeId, serviceId }: { gameId
       </Group>
       {report && (
         <>
-          <Text size="sm" role="status">{report.changes.length
-            ? t('game.ad.patch.count', 'Files changed: {{count}}', { count: report.changes.length })
-            : t('game.ad.patch.identical', 'Matches the starter ZIP.')}</Text>
+          <Text size="sm" role="status">{report.comparisonRevision
+            ? t('game.ad.patch.compared_revision', 'Compared with revision {{number}}.', { number: report.comparisonRevision })
+            : t('game.ad.patch.compared_starter', 'Compared with the starter ZIP.')} {' '}
+            {report.changes.length
+              ? t('game.ad.patch.count', 'Files changed: {{count}}', { count: report.changes.length })
+              : t('game.ad.patch.no_changes', 'No files changed.')}</Text>
           <AdPatchChangeList changes={report.changes} />
         </>
       )}

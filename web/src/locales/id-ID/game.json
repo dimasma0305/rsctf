@@ -1,4 +1,21 @@
 {
+  "ad": {
+    "patch": {
+      "open_service": "Patch layanan tim",
+      "label": "Pratinjau ZIP patch",
+      "compare_with": "Bandingkan dengan",
+      "latest_team_source": "Revisi terakhir tim",
+      "original": "ZIP awal",
+      "compared_revision": "Dibandingkan dengan revisi {{number}}.",
+      "compared_starter": "Dibandingkan dengan ZIP awal.",
+      "no_changes": "Tidak ada berkas yang berubah.",
+      "count": "{{count}} berkas berubah.",
+      "compare": "Bandingkan berkas",
+      "download": "Unduh ZIP awal",
+      "clear": "Hapus pilihan ZIP patch",
+      "size": "Pilih ZIP berukuran maksimal 72 MiB."
+    }
+  },
   "timeline": {
     "empty_title": "Belum ada riwayat skor",
     "empty_description": "Riwayat skor akan ditampilkan di sini saat tersedia. Peringkat saat ini ada di bawah."

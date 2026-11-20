@@ -67,9 +67,11 @@ stores [content-addressed source](../../../../src/services/ad/patches/revisions.
 The [revision download](../../../../src/controllers/game/ad/patch_preview/source.rs) checks team access
 and [reconstructs the ZIP](../../../../src/services/ad/patches/checkout.rs) from the pinned starter and verified file contents.
 The [player preview panel](../../../../web/src/components/competition/AdPatchPreviewPanel.tsx) and
+the [A&D Toolkit](../../../../web/src/components/AdGuideModal.tsx) share the same challenge entry point. The
 [player routes](../../../../src/controllers/game/ad/patch_preview.rs) handle the download
 and comparison against the starter. The [PostgreSQL test](../../../../src/controllers/game/ad/patch_preview/tests.rs)
-covers revocation during upload and division access. The [browser test](../../../../web/e2e/ad-patch-starter.spec.mjs)
+covers revocation during upload and division access. The [revision tests](../../../../src/controllers/game/ad/patch_preview/tests/history.rs)
+also cover private comparison baselines and a teammate saving during an upload. The [browser test](../../../../web/e2e/ad-patch-starter.spec.mjs)
 exercises the organizer and player flows.
 
 For security-sensitive changes, use the initial
