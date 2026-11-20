@@ -58,11 +58,16 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
         CREATE TABLE "GameManagers" (id SERIAL PRIMARY KEY, game_id INTEGER, user_id UUID);
         CREATE TABLE "Games" (id INTEGER PRIMARY KEY, start_time_utc TIMESTAMPTZ, deletion_pending BOOLEAN);
         CREATE TABLE "GameChallenges" (id INTEGER PRIMARY KEY, game_id INTEGER, "Type" SMALLINT, ad_self_hosted BOOLEAN, deletion_pending BOOLEAN);
+        CREATE TABLE "AdTeamServices" (id INTEGER PRIMARY KEY, game_id INTEGER, challenge_id INTEGER);
         INSERT INTO "Games" VALUES (1, now()+interval '1 day', false), (2, now()+interval '1 day', false);
         INSERT INTO "GameChallenges" VALUES (10,1,4,false,false),(11,1,4,true,false),(12,2,4,false,false),(13,1,0,false,false),(14,1,4,false,false);
     "#).execute(&db.pool).await.unwrap();
     for _ in 0..2 {
         sqlx::raw_sql(crate::migrations::m0366_ad_patch_starters::UP_SQL)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(crate::migrations::m0367_ad_patch_revisions::UP_SQL)
             .execute(&db.pool)
             .await
             .unwrap();
@@ -171,7 +176,7 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
         .await
         .unwrap();
     assert_eq!(
-        request(&router, "PUT", 10, Some(&user), v1, Some(&second))
+        request(&router, "PUT", 10, Some(&user), v1.clone(), Some(&second))
             .await
             .0,
         StatusCode::CONFLICT
@@ -181,6 +186,22 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
             .await
             .1["treeId"],
         second
+    );
+    // Rescheduling an event must not invalidate the shared original behind
+    // a team's persisted source manifests.
+    sqlx::raw_sql(
+        r#"UPDATE "Games" SET start_time_utc=now()+interval '1 hour' WHERE id=1;
+        INSERT INTO "AdTeamServices" VALUES (42,1,10);
+        INSERT INTO "AdPatchSourceUsage" VALUES (42,512);"#,
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        request(&router, "PUT", 10, Some(&user), v1, Some(&second))
+            .await
+            .0,
+        StatusCode::CONFLICT
     );
     sqlx::query(r#"DELETE FROM "GameChallenges" WHERE id=10"#)
         .execute(&db.pool)

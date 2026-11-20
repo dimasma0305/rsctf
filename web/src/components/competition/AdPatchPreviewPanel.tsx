@@ -7,8 +7,10 @@ import { downloadBlob } from '@Utils/ApiHelper'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
 import { showErrorMsg } from '@Utils/Shared'
+import { AdPatchHistory } from './AdPatchHistory'
+import { AdPatchChangeList } from './AdPatchChangeList'
 
-export function AdPatchPreviewPanel({ gameId, challengeId }: { gameId: number; challengeId: number }) {
+export function AdPatchPreviewPanel({ gameId, challengeId, serviceId }: { gameId: number; challengeId: number; serviceId: number }) {
   const { t } = useTranslation()
   const request = useCallback(async (signal: AbortSignal) =>
     assertJsonResponse(await api.game.getAdPatchPreviewInfo(gameId, challengeId, { signal })), [gameId, challengeId])
@@ -18,8 +20,8 @@ export function AdPatchPreviewPanel({ gameId, challengeId }: { gameId: number; c
   })
   const [file, setFile] = useState<File | null>(null)
   const [report, setReport] = useState<AdPatchPreview | null>(null)
-  const [limit, setLimit] = useState(50)
   const [busy, setBusy] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const pending = useRef<AbortController | null>(null)
   useEffect(() => () => pending.current?.abort(), [])
@@ -41,7 +43,6 @@ export function AdPatchPreviewPanel({ gameId, challengeId }: { gameId: number; c
       const response = await api.game.previewAdPatch(gameId, challengeId, file, { signal: controller.signal })
       if (!controller.signal.aborted) {
         setReport(assertJsonResponse(response))
-        setLimit(50)
       }
     } catch (cause) {
       if (!controller.signal.aborted) showErrorMsg(cause, t)
@@ -55,7 +56,7 @@ export function AdPatchPreviewPanel({ gameId, challengeId }: { gameId: number; c
       <FileInput
         label={t('game.ad.patch.label', 'Preview a patch ZIP')}
         description={t('game.ad.patch.help', 'Compare files with the original starter ZIP. Your service keeps running.')}
-        accept=".zip,application/zip" clearable disabled={busy} value={file}
+        accept=".zip,application/zip" clearable disabled={busy || saving} value={file}
         clearButtonProps={{ 'aria-label': t('game.ad.patch.clear', 'Clear selected patch ZIP') }}
         error={tooLarge && t('game.ad.patch.size', 'Choose a ZIP of 72 MiB or smaller.')}
         onChange={next => { setFile(next); setReport(null) }}
@@ -64,23 +65,18 @@ export function AdPatchPreviewPanel({ gameId, challengeId }: { gameId: number; c
         <Button size="xs" variant="light" loading={downloading} onClick={() => void downloadBlob(
           `patch-starter:${gameId}:${challengeId}`, () => api.game.downloadAdPatchStarter(gameId, challengeId), setDownloading, t, 'starter.zip'
         )}>{t('game.ad.patch.download', 'Download starter ZIP')}</Button>
-        {file && <Button size="xs" loading={busy} disabled={tooLarge} onClick={() => void preview()}>{t('game.ad.patch.compare', 'Compare files')}</Button>}
+        {file && <Button size="xs" loading={busy} disabled={tooLarge || saving} onClick={() => void preview()}>{t('game.ad.patch.compare', 'Compare files')}</Button>}
       </Group>
       {report && (
         <>
           <Text size="sm" role="status">{report.changes.length
             ? t('game.ad.patch.count', 'Files changed: {{count}}', { count: report.changes.length })
             : t('game.ad.patch.identical', 'Matches the starter ZIP.')}</Text>
-          {report.changes.length > 0 && (
-            <ul style={{ overflowWrap: 'anywhere', margin: 0, paddingInlineStart: '1.25rem' }}>
-              {report.changes.slice(0, limit).map(change => (
-                <li key={change.path}><Text size="sm" span>{t(`game.ad.patch.kind.${change.kind}`, change.kind)} · <code>{change.path}</code></Text></li>
-              ))}
-            </ul>
-          )}
-          {report.changes.length > limit && <Button variant="subtle" size="xs" onClick={() => setLimit(limit + 50)}>{t('game.ad.patch.more', 'Show more files')}</Button>}
+          <AdPatchChangeList changes={report.changes} />
         </>
       )}
+      <AdPatchHistory gameId={gameId} challengeId={challengeId} serviceId={serviceId} file={file}
+        report={report} saving={saving} setSaving={setSaving} />
     </Stack>
   )
 }

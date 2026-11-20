@@ -5,6 +5,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) mod revisions;
+
 #[derive(Debug, PartialEq, Eq)]
 struct FileIdentity {
     mode: u32,

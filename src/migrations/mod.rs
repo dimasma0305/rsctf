@@ -221,6 +221,7 @@ mod m0363_challenge_runtime_profiles;
 pub(crate) mod m0364_bootstrap_setup;
 pub(crate) mod m0365_operational_readiness;
 pub(crate) mod m0366_ad_patch_starters;
+pub(crate) mod m0367_ad_patch_revisions;
 
 #[cfg(test)]
 pub(crate) use m0261_control_plane_jobs::UP_SQL as CONTROL_JOBS_SQL;
@@ -473,6 +474,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0364_bootstrap_setup::Migration),
             Box::new(m0365_operational_readiness::Migration),
             Box::new(m0366_ad_patch_starters::Migration),
+            Box::new(m0367_ad_patch_revisions::Migration),
         ]
     }
 }
@@ -617,7 +619,7 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 197);
+        assert_eq!(names.len(), 198);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         let recent = [
             "m0108_koth_observer_rotation_operations",
@@ -710,6 +712,7 @@ mod tests {
             "m0364_bootstrap_setup",
             "m0365_operational_readiness",
             "m0366_ad_patch_starters",
+            "m0367_ad_patch_revisions",
         ];
         assert_eq!(&names[names.len() - recent.len()..], recent);
     }

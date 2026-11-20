@@ -9,6 +9,23 @@ use std::io::{Cursor, Write};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+mod history;
+
+fn signed_in(req: &mut Request, user: &CurrentUser) {
+    use crate::middlewares::privilege_authentication::VerifiedSessionClaims;
+    use crate::services::token::Claims;
+    let now = chrono::Utc::now().timestamp();
+    req.extensions_mut().insert(VerifiedSessionClaims(Claims {
+        sub: user.id.to_string(),
+        name: user.name.clone(),
+        stamp: user.security_stamp.clone(),
+        role: user.role as i16,
+        iat: now,
+        exp: now + 3600,
+    }));
+    req.extensions_mut().insert(user.clone());
+}
+
 fn zip(extra: bool) -> Vec<u8> {
     let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let opts = zip::write::SimpleFileOptions::default();
@@ -36,7 +53,7 @@ async fn request(
         .body(body)
         .unwrap();
     if let Some(user) = user {
-        req.extensions_mut().insert(user.clone());
+        signed_in(&mut req, user);
     }
     router.clone().oneshot(req).await.unwrap()
 }
@@ -64,6 +81,10 @@ async fn player_download_preview_and_revocation_during_upload() {
         INSERT INTO "AdTeamServices" VALUES (20,1,3,10),(21,1,3,11),(22,1,6,12),(23,1,3,13);
     "#).execute(&db.pool).await.unwrap();
     sqlx::raw_sql(crate::migrations::m0366_ad_patch_starters::UP_SQL)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(crate::migrations::m0367_ad_patch_revisions::UP_SQL)
         .execute(&db.pool)
         .await
         .unwrap();
@@ -128,6 +149,7 @@ async fn player_download_preview_and_revocation_during_upload() {
     );
     let candidate = zip(true);
     simultaneous_team_uploads(&db.pool, &router, &user, &candidate).await;
+    history::check(&db.pool, &router, &user, &source, &candidate).await;
     let report = request(
         &router,
         "POST",
@@ -142,7 +164,7 @@ async fn player_download_preview_and_revocation_during_upload() {
         serde_json::from_slice(&to_bytes(report.into_body(), 8192).await.unwrap()).unwrap();
     assert_eq!(
         json,
-        serde_json::json!({"starterTree":original,"candidateTree":PatchManifest::from_zip(&candidate).unwrap().tree_id(),"changes":[{"path":"src/version.txt","kind":"Added"}]})
+        serde_json::json!({"starterTree":original,"candidateTree":PatchManifest::from_zip(&candidate).unwrap().tree_id(),"baseRevision":3,"changes":[{"path":"src/version.txt","kind":"Added"}]})
     );
     for cid in [11, 12] {
         assert_eq!(
@@ -268,7 +290,7 @@ async fn simultaneous_team_uploads(
                 .header(header::CONTENT_LENGTH, len)
                 .body(Body::from_stream(stream))
                 .unwrap();
-            req.extensions_mut().insert(user.clone());
+            signed_in(&mut req, user);
             assert_eq!(
                 router.clone().oneshot(req).await.unwrap().status(),
                 StatusCode::OK

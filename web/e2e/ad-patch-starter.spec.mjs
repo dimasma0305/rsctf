@@ -86,6 +86,7 @@ test('player downloads the original and compares a private patch from the challe
   const candidate = await base.file('src/version.txt', 'candidate').generateAsync({ type: 'nodebuffer' })
   const root = '/api/game/901/ad/challenges/9001'
   const writes = []
+  const revisions = []
   await page.route('**/*', async route => {
     const req = route.request()
     const url = new URL(req.url())
@@ -99,8 +100,19 @@ test('player downloads the original and compares a private patch from the challe
     if (path === root + '/patch-preview') {
       if (req.method() === 'GET') return route.fulfill({ json: { treeId: 'a'.repeat(64), archiveBytes: starter.length } })
       writes.push(req.postDataBuffer())
-      return route.fulfill({ json: { starterTree: 'a'.repeat(64), candidateTree: 'b'.repeat(64), changes: [{ path: 'src/version.txt', kind: 'Added' }] } })
+      return route.fulfill({ json: { starterTree: 'a'.repeat(64), candidateTree: 'b'.repeat(64), baseRevision: 0, changes: [{ path: 'src/version.txt', kind: 'Added' }] } })
     }
+    if (path === root + '/patch-revisions') {
+      if (req.method() === 'GET') return route.fulfill({ json: revisions })
+      expect(req.headers()['x-rsctf-expected-revision']).toBe('0')
+      expect(req.headers()['x-rsctf-expected-service']).toBe('91')
+      expect(req.postDataBuffer().equals(candidate)).toBe(true)
+      revisions.push({ revision: 1, commitId: '1'.repeat(64), parentId: '2'.repeat(64), treeId: 'b'.repeat(64), createdAt: 1700000000000 })
+      return route.fulfill({ json: revisions[0] })
+    }
+    if (path === root + '/patch-revisions/1/changes') return route.fulfill({
+      json: [{ path: 'src/version.txt', kind: 'Added' }],
+    })
     if (path === '/api/game/901/ad/state') return route.fulfill({ json: {
       currentRound: 1, epochTicks: 12, flagsReady: true, flagDeliveryFailures: 0, scoringPaused: false,
       services: [{ adTeamServiceId: 91, challengeId: 9001, deliveryState: 'Managed', canReset: false, snapshotAvailable: false }],
@@ -124,6 +136,14 @@ test('player downloads the original and compares a private patch from the challe
   await expect(panel.getByRole('listitem')).toHaveText('Added · src/version.txt')
   expect(writes).toHaveLength(1)
   expect(writes[0].equals(candidate)).toBe(true)
+  expect(revisions).toHaveLength(0)
+  await panel.getByRole('button', { name: 'Save private revision' }).click()
+  await expect(panel.getByText('Revision 1 saved. Your service keeps running.')).toBeVisible()
+  await panel.getByText('Team revision history').click()
+  await expect(panel.getByText('111111111111')).toBeVisible()
+  await panel.getByRole('button', { name: 'Changes in revision 1' }).click()
+  await expect(panel.locator('details').getByRole('listitem')).toHaveText('Added · src/version.txt')
+  await expect(panel.getByRole('button', { name: 'Save private revision' })).toHaveCount(0)
   await page.addScriptTag({ path: resolve(repositoryRoot, 'web/node_modules/axe-core/axe.min.js') })
   expect(await panel.evaluate(async element => (await window.axe.run(element, {
     runOnly: { type: 'tag', values: ['wcag2a','wcag2aa','wcag21aa'] },

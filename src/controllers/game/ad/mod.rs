@@ -51,6 +51,17 @@ use crate::utils::shared::RequestResponse;
 fn common_router() -> Router<SharedState> {
     Router::new()
         .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions",
+            limited(
+                Policy::Query,
+                get(patch_preview::revisions::list).post(patch_preview::revisions::save),
+            ),
+        )
+        .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions/{revision}/changes",
+            limited(Policy::Query, get(patch_preview::revisions::changes)),
+        )
+        .route(
             "/api/game/{id}/ad/challenges/{challengeId}/patch-preview",
             get(patch_preview::info).merge(limited(
                 Policy::Query,

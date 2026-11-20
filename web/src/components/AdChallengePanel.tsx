@@ -636,7 +636,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
       {!isSelfHosted && renderSshHint()}
 
       {active && !isSelfHosted && !stateFailure && (
-        <AdPatchPreviewPanel key={`${gameId}:${service.adTeamServiceId}`} gameId={gameId} challengeId={challengeId} />
+        <AdPatchPreviewPanel key={`${gameId}:${service.adTeamServiceId}`} gameId={gameId} challengeId={challengeId} serviceId={service.adTeamServiceId} />
       )}
 
       {snapshotDownload}

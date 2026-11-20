@@ -27,6 +27,14 @@ During the game, an accepted teammate can open their hosted challenge and use
 **Compare files** to see additions, modifications, and deletions. Preview reads
 the submitted ZIP in memory and compares it with the registered original.
 
+After comparing, a teammate can choose **Save private revision**. Open **Team
+revision history** to see the time and Git commit ID of each saved ZIP. Select
+a revision to see which files changed since the previous save. Saving
+records source only. The service continues running its current version.
+RSCTF shares the starter across teams and stores each additional file's
+contents once per team service, even when the file is renamed. Each service
+can keep up to 4096 revisions and 512 MiB of source blobs and manifests.
+
 Run `rsctf challenge patch-preview current.zip candidate.zip` to review the
 files added, modified, or deleted in a candidate patch. Both ZIPs need a
 `Dockerfile` at the root. The command runs locally and prints JSON with the

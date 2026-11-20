@@ -4584,7 +4584,16 @@ export interface AdPatchStarter {
 export interface AdPatchPreview {
   starterTree: string
   candidateTree: string
+  baseRevision: number
   changes: { path: string; kind: 'Added' | 'Modified' | 'Deleted' }[]
+}
+
+export interface AdPatchRevision {
+  revision: number
+  treeId: string
+  commitId: string
+  parentId: string
+  createdAt: number
 }
 
 /** Parsed audit metadata for a pending/imported challenge */
@@ -11844,6 +11853,23 @@ export class Api<
     downloadAdPatchStarter: (id: number, challenge: number, params: RequestParams = {}) =>
       this.request<Blob, RequestResponse>({
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-starter`, method: "GET", format: "blob", ...params,
+      }),
+
+    listAdPatchRevisions: (id: number, challenge: number, before?: number, params: RequestParams = {}) =>
+      this.request<AdPatchRevision[], RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions`, method: "GET", format: "json",
+        query: { before }, ...params,
+      }),
+
+    getAdPatchRevisionChanges: (id: number, challenge: number, revision: number, params: RequestParams = {}) =>
+      this.request<AdPatchPreview['changes'], RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/changes`, method: "GET", format: "json", ...params,
+      }),
+
+    saveAdPatchRevision: (id: number, challenge: number, service: number, zip: File, expected: number, params: RequestParams = {}) =>
+      this.request<AdPatchRevision, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions`, method: "POST", format: "json", body: zip,
+        ...params, headers: { ...params.headers, "Content-Type": "application/zip", "X-RSCTF-Expected-Revision": String(expected), "X-RSCTF-Expected-Service": String(service) },
       }),
 
     /**

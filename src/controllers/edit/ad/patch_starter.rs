@@ -157,6 +157,8 @@ async fn register(
         r#"INSERT INTO "AdPatchStarters" (challenge_id, tree_id, archive) VALUES ($1,$2,$3)
            ON CONFLICT (challenge_id) DO UPDATE SET tree_id=EXCLUDED.tree_id, archive=EXCLUDED.archive
            WHERE EXISTS (SELECT 1 FROM "Games" WHERE id=$4 AND start_time_utc > clock_timestamp())
+             AND NOT EXISTS (SELECT 1 FROM "AdTeamServices" s JOIN "AdPatchSourceUsage" u ON u.service_id=s.id
+                             WHERE s.game_id=$4 AND s.challenge_id=$1)
            RETURNING tree_id, archive_bytes"#,
     )
     .bind(challenge_id)

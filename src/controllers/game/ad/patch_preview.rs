@@ -19,6 +19,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 
+pub(super) mod revisions;
 #[cfg(test)]
 mod tests;
 
@@ -27,6 +28,7 @@ mod tests;
 struct Preview {
     starter_tree: String,
     candidate_tree: String,
+    base_revision: i32,
     changes: Vec<PatchChange>,
 }
 
@@ -52,6 +54,20 @@ async fn authorized_starter(
     who: LiveParticipationIdentity<'_>,
     challenge: i32,
 ) -> AppResult<Option<Starter>> {
+    let (roster, _, starter) = lock_source(pool, who, challenge).await?;
+    roster.release().await?;
+    Ok(starter)
+}
+
+async fn lock_source(
+    pool: &PgPool,
+    who: LiveParticipationIdentity<'_>,
+    challenge: i32,
+) -> AppResult<(
+    crate::utils::single_flight::PgAdvisoryLock,
+    i32,
+    Option<Starter>,
+)> {
     let mut roster = live_roster::try_acquire_participation_fence(
         pool,
         who.user_id,
@@ -72,7 +88,7 @@ async fn authorized_starter(
         challenge,
     )
     .await?;
-    sqlx::query_scalar::<_, i32>(
+    let service = sqlx::query_scalar::<_, i32>(
         r#"SELECT s.id FROM "AdTeamServices" s JOIN "GameChallenges" c
              ON c.id = s.challenge_id AND c.game_id = s.game_id
             WHERE s.game_id = $1 AND s.participation_id = $2 AND c.id = $3
@@ -95,11 +111,14 @@ async fn authorized_starter(
             WHERE g.id = $1 AND g.start_time_utc <= clock_timestamp() AND clock_timestamp() < g.end_time_utc"#,
     ).bind(who.game_id).bind(challenge).fetch_optional(&mut *db).await.map_err(|e| AppError::internal(e.to_string()))?
         .ok_or_else(|| AppError::not_found("Patch source is available during the game"))?;
-    roster.release().await?;
-    Ok(tree.zip(size).map(|(tree_id, archive_bytes)| Starter {
-        tree_id,
-        archive_bytes,
-    }))
+    Ok((
+        roster,
+        service,
+        tree.zip(size).map(|(tree_id, archive_bytes)| Starter {
+            tree_id,
+            archive_bytes,
+        }),
+    ))
 }
 
 fn missing() -> AppError {
@@ -186,9 +205,9 @@ pub async fn preview(
     request: Request,
 ) -> AppResult<Response> {
     let who = caller(&st, &user, game).await?;
-    let starter = authorized_starter(st.pg(), who, challenge)
-        .await?
-        .ok_or_else(missing)?;
+    let (roster, service, starter) = lock_source(st.pg(), who, challenge).await?;
+    let starter = starter.ok_or_else(missing)?;
+    roster.release().await?;
     let (bytes, permit) = read_patch_zip(request, starter.archive_bytes as usize).await?;
     let (candidate, permit) = tokio::task::spawn_blocking(move || {
         PatchManifest::from_zip(&bytes).map(|manifest| (manifest, permit))
@@ -205,12 +224,29 @@ pub async fn preview(
     .await
     .map_err(|e| AppError::internal(e.to_string()))?
     .map_err(AppError::internal)?;
-    recheck(st.pg(), who, challenge, &starter).await?;
+    let (mut roster, current_service, current_starter) =
+        lock_source(st.pg(), who, challenge).await?;
+    if service != current_service || current_starter.as_ref() != Some(&starter) {
+        return Err(AppError::conflict(
+            "Service or starter changed. Reopen the challenge.",
+        ));
+    }
+    let base_revision = sqlx::query_scalar::<_, i32>(
+        r#"SELECT revision FROM "AdPatchRevisions"
+        WHERE service_id=$1 ORDER BY revision DESC LIMIT 1"#,
+    )
+    .bind(service)
+    .fetch_optional(&mut **roster.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .unwrap_or(0);
+    roster.release().await?;
     Ok((
         [(header::CACHE_CONTROL, "private, no-store")],
         Json(Preview {
             starter_tree: starter.tree_id,
             candidate_tree,
+            base_revision,
             changes,
         }),
     )
