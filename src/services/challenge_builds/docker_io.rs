@@ -69,10 +69,31 @@ pub(super) async fn build_from_context(
             }
         }
     }
-    let (mut log, failed) = progress.into_parts();
+    finish_archive_build(docker, image, progress).await
+}
 
-    match failed {
-        Some(err) => {
+pub(super) async fn finish_archive_build(
+    docker: &Docker,
+    image: &str,
+    progress: progress::BuildProgress,
+) -> BuildOutcome {
+    let (mut log, result) = progress.into_parts();
+    // A tag may already exist from the previous build. Inspect alone cannot
+    // establish that this attempt produced it, even when the stream ended cleanly.
+    let result = match result {
+        Ok(built) => inspect_immutable_image(docker, image, ImageOperation::ArchiveBuild, false)
+            .await
+            .and_then(|current| {
+                if current == built {
+                    Ok(current)
+                } else {
+                    Err("Docker tag no longer refers to the image produced by this build".into())
+                }
+            }),
+        Err(error) => Err(error),
+    };
+    match result {
+        Err(err) => {
             log.push_str(&diagnostics::explain(&err));
             BuildOutcome {
                 status: ChallengeBuildStatus::Failed,
@@ -80,22 +101,10 @@ pub(super) async fn build_from_context(
                 image_digest: None,
             }
         }
-        None => match inspect_immutable_image(docker, image, ImageOperation::ArchiveBuild, false)
-            .await
-        {
-            Ok(reference) => BuildOutcome {
-                status: ChallengeBuildStatus::Success,
-                log: cap_build_log(log),
-                image_digest: Some(reference),
-            },
-            Err(error) => {
-                log.push_str(&format!("\nimmutable image resolution failed: {error}"));
-                BuildOutcome {
-                    status: ChallengeBuildStatus::Failed,
-                    log: cap_build_log(log),
-                    image_digest: None,
-                }
-            }
+        Ok(reference) => BuildOutcome {
+            status: ChallengeBuildStatus::Success,
+            log: cap_build_log(log),
+            image_digest: Some(reference),
         },
     }
 }

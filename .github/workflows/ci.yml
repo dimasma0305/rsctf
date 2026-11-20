@@ -247,6 +247,7 @@ jobs:
     env:
       RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test
       RSCTF_TEST_REDIS_URL: redis://127.0.0.1:6379
+      RSCTF_PATCH_TEST_REDIS_IMAGE: redis:8-alpine
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1083,6 +1084,7 @@ jobs:
           export RSCTF_TEST_CONTAINER_IMAGE="$RSCTF_REAL_DOCKER_RETRY_IMAGE"
           export RSCTF_DOCKER_PROXY_BIND="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
           export RSCTF_DOCKER_SCOPE=ci-architecture
+          export RSCTF_PATCH_TEST_REDIS_IMAGE=redis:8-alpine
           filters=(
             registered_import_roles_recover_committed_side_effects_and_replay_http_receipts
             repository_update_preserves_challenge_solves_and_refreshes_content
@@ -1097,6 +1099,7 @@ jobs:
             starter_http_scope_replay_and_concurrent_registration
             player_download_preview_and_revocation_during_upload
             buildkit_accepts_checked_out_patch_revision
+            buildkit_failed_patch_candidate_preserves_active_image_and_service
             stale_conditional_delete_cannot_destroy_a_real_replacement_runtime
             newly_issued_sessions_work_immediately_after_a_cached_credential_rotation
             exact_replay_and_stale_phase_recovery_are_durable

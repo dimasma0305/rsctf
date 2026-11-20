@@ -5,6 +5,8 @@ use std::io::Write;
 use crate::models::internal::configs::RuntimeRole;
 use crate::services::container::ContainerBackendKind;
 
+mod failed_candidate;
+
 #[test]
 fn archive_builds_use_buildkit_dockerfiles() {
     assert_eq!(

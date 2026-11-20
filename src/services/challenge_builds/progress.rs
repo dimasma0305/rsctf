@@ -7,6 +7,7 @@ use bollard::models::{BuildInfo, BuildInfoAux};
 pub(super) struct BuildProgress {
     log: String,
     failed: Option<String>,
+    image_id: Option<String>,
 }
 
 impl BuildProgress {
@@ -14,14 +15,39 @@ impl BuildProgress {
         if let Some(stream) = info.stream {
             self.log.push_str(&stream);
         }
-        if let Some(error) = info.error {
+        if let Some(error) = info
+            .error
+            .or_else(|| info.error_detail.and_then(|e| e.message))
+        {
             self.fail(error);
         }
 
-        let Some(BuildInfoAux::BuildKit(status)) = info.aux else {
-            self.trim_log();
-            return;
-        };
+        match info.aux {
+            Some(BuildInfoAux::BuildKit(status)) => self.record_status(status),
+            Some(BuildInfoAux::Default(image))
+                if info.id.as_deref().is_none_or(|id| id == "moby.image.id") =>
+            {
+                match image.id {
+                    Some(id) if crate::services::challenge_images::is_local_image_id(&id) => {
+                        if self
+                            .image_id
+                            .as_ref()
+                            .is_some_and(|previous| previous != &id)
+                        {
+                            self.fail("Docker reported conflicting build image IDs".into());
+                        } else {
+                            self.image_id = Some(id);
+                        }
+                    }
+                    _ => self.fail("Docker reported an invalid build image ID".into()),
+                }
+            }
+            _ => {}
+        }
+        self.trim_log();
+    }
+
+    fn record_status(&mut self, status: bollard::moby::buildkit::v1::StatusResponse) {
         for entry in status.logs {
             self.log.push_str(&String::from_utf8_lossy(&entry.msg));
         }
@@ -44,7 +70,6 @@ impl BuildProgress {
                 });
             }
         }
-        self.trim_log();
     }
 
     fn trim_log(&mut self) {
@@ -59,8 +84,14 @@ impl BuildProgress {
         }
     }
 
-    pub(super) fn into_parts(self) -> (String, Option<String>) {
-        (self.log, self.failed)
+    pub(super) fn into_parts(self) -> (String, Result<String, String>) {
+        let result = match self.failed {
+            Some(error) => Err(error),
+            None => self
+                .image_id
+                .ok_or_else(|| "Docker build stream ended without an image ID".into()),
+        };
+        (self.log, result)
     }
 }
 
@@ -79,6 +110,40 @@ mod tests {
     }
 
     #[test]
+    fn build_receipt_must_identify_one_output_and_cannot_override_a_failure() {
+        let image = format!("sha256:{}", "a".repeat(64));
+        let other = format!("sha256:{}", "b".repeat(64));
+        let receipt = |id: &str| serde_json::json!({"id":"moby.image.id","aux":{"ID":id}});
+        let read = |frames: Vec<serde_json::Value>| {
+            let mut progress = BuildProgress::default();
+            for frame in frames {
+                progress.record(serde_json::from_value(frame).unwrap());
+            }
+            progress.into_parts().1
+        };
+        assert!(read(vec![]).is_err());
+        assert!(read(vec![
+            serde_json::json!({"stream":format!("Successfully built {image}")})
+        ])
+        .is_err());
+        assert!(read(vec![
+            serde_json::json!({"id":"different-result","aux":{"ID":image}})
+        ])
+        .is_err());
+        assert!(read(vec![receipt("invalid")]).is_err());
+        assert!(read(vec![receipt(&image), receipt(&other)]).is_err());
+        assert_eq!(read(vec![receipt(&image), receipt(&image)]).unwrap(), image);
+        assert_eq!(
+            read(vec![
+                receipt(&image),
+                serde_json::json!({"errorDetail":{"message":"export failed"}})
+            ])
+            .unwrap_err(),
+            "export failed"
+        );
+    }
+
+    #[test]
     fn buildkit_logs_and_vertex_errors_are_preserved() {
         let mut status = bollard::moby::buildkit::v1::StatusResponse::default();
         status.logs.push(bollard::moby::buildkit::v1::VertexLog {
@@ -94,9 +159,9 @@ mod tests {
             aux: Some(BuildInfoAux::BuildKit(status)),
             ..Default::default()
         });
-        let (log, failed) = progress.into_parts();
+        let (log, result) = progress.into_parts();
         assert_eq!(log, "compiler output\n");
-        assert_eq!(failed.as_deref(), Some("Dockerfile step failed"));
+        assert_eq!(result.unwrap_err(), "Dockerfile step failed");
     }
 
     #[test]
