@@ -130,6 +130,11 @@ used as build input on a Docker-backed installation, but rsctf resolves and
 provisions its immutable digest. Changing the tag clears that pin and requires a
 new successful build/pull.
 
+For a Docker build from a source ZIP, RSCTF applies the configured tag after
+BuildKit finishes and RSCTF verifies the resulting image ID. If the build fails
+or the build response is interrupted, the previous tag stays available. You can
+retry the build while existing instances continue serving their current image.
+
 Docker images that do not need setuid, Linux capabilities, or writes outside
 `/tmp` may opt into the restricted runtime profile with the image label
 `org.rsctf.security-profile=restricted-v1`. RSCTF then drops every capability,

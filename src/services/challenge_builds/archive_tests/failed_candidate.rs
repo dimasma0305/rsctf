@@ -4,6 +4,7 @@ use std::process::Command;
 struct TestService {
     name: String,
     image: String,
+    candidate: Option<String>,
 }
 
 impl Drop for TestService {
@@ -14,6 +15,9 @@ impl Drop for TestService {
         let _ = Command::new("docker")
             .args(["image", "rm", &self.image])
             .output();
+        if let Some(id) = &self.candidate {
+            let _ = Command::new("docker").args(["image", "rm", id]).output();
+        }
     }
 }
 
@@ -32,9 +36,10 @@ fn docker_cli(args: &[&str]) -> String {
 async fn buildkit_failed_patch_candidate_preserves_active_image_and_service() {
     let docker = Docker::connect_with_local_defaults().unwrap();
     let name = format!("rsctf-revision-test-{}", uuid::Uuid::new_v4());
-    let service = TestService {
+    let mut service = TestService {
         image: format!("rsctf/diagnostic/{name}:active"),
         name,
+        candidate: None,
     };
     let redis =
         std::env::var("RSCTF_PATCH_TEST_REDIS_IMAGE").unwrap_or_else(|_| "redis:7-alpine".into());
@@ -95,22 +100,89 @@ async fn buildkit_failed_patch_candidate_preserves_active_image_and_service() {
     assert_eq!(failure.status, ChallengeBuildStatus::Failed);
     assert!(failure.image_digest.is_none());
 
-    // Also exercise an interrupted response at a frame boundary, and an image
-    // tag replaced between the final Docker frame and the subsequent inspect.
-    let mut mismatched = progress::BuildProgress::default();
-    mismatched.record(
-        serde_json::from_value(serde_json::json!({
-            "id":"moby.image.id","aux":{"ID":format!("sha256:{}","0".repeat(64))}
-        }))
-        .unwrap(),
+    let archive = zip_entries(
+        &[
+            ("Dockerfile", b"FROM scratch\nCOPY source /source\n"),
+            ("source", service.name.as_bytes()),
+        ],
+        zip::CompressionMethod::Stored,
     );
-    for progress in [progress::BuildProgress::default(), mismatched] {
-        let result = docker_io::finish_archive_build(&docker, &service.image, progress).await;
+    let tar = zip_bytes_to_tar(&archive, None).unwrap();
+    let complete = docker_io::build_candidate(&docker, &service.image, tar).await;
+    let (log, receipt) = complete.into_parts();
+    let built = receipt.unwrap_or_else(|e| panic!("{e}: {log}"));
+    service.candidate = Some(built.clone());
+    assert_ne!(built, active_id);
+    let inspected = docker.inspect_image(&built).await.unwrap();
+    assert!(inspected.repo_tags.unwrap_or_default().is_empty());
+    assert_eq!(
+        docker_cli(&["image", "inspect", "-f", "{{.Id}}", &service.image]),
+        active_id
+    );
+
+    let receipt = |id: &str| {
+        let mut progress = progress::BuildProgress::default();
+        progress.record(
+            serde_json::from_value(serde_json::json!({
+                "id":"moby.image.id","aux":{"ID":id}
+            }))
+            .unwrap(),
+        );
+        progress
+    };
+    let mut interrupted = receipt(&built);
+    interrupted.fail("transport interrupted after export".into());
+    for (previous, progress) in [
+        (Some(active_id.as_str()), progress::BuildProgress::default()),
+        (Some(active_id.as_str()), interrupted),
+        (Some(active_id.as_str()), receipt(&active_id)), // different owner's image
+        (None, receipt(&built)),                         // a destination appeared during the build
+    ] {
+        let result =
+            docker_io::finish_archive_build(&docker, &service.image, previous, progress).await;
         assert_eq!(result.status, ChallengeBuildStatus::Failed);
         assert!(result.image_digest.is_none());
     }
     assert_eq!(
         docker_cli(&["image", "inspect", "--format", "{{.Id}}", &service.image]),
+        active_id
+    );
+    // Simulate reclaiming precisely this abandoned output. A stale receipt
+    // cannot publish a collected image or displace the existing tag.
+    docker
+        .remove_image(
+            &built,
+            Some(bollard::image::RemoveImageOptions {
+                force: false,
+                noprune: true,
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+    let collected =
+        docker_io::finish_archive_build(&docker, &service.image, Some(&active_id), receipt(&built))
+            .await;
+    assert_eq!(collected.status, ChallengeBuildStatus::Failed);
+    assert_eq!(
+        docker_cli(&["image", "inspect", "-f", "{{.Id}}", &service.image]),
+        active_id
+    );
+    let retry = build_from_context(&docker, &service.image, archive, None).await;
+    assert_eq!(
+        retry.status,
+        ChallengeBuildStatus::Success,
+        "{:?}",
+        retry.log
+    );
+    let published = retry.image_digest.unwrap();
+    assert_ne!(published, active_id);
+    assert_eq!(
+        docker_cli(&["image", "inspect", "-f", "{{.Id}}", &service.image]),
+        published
+    );
+    assert_eq!(
+        docker_cli(&["inspect", "-f", "{{.Image}}", &service.name]),
         active_id
     );
     assert_eq!(state(), before);

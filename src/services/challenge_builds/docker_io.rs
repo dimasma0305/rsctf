@@ -1,5 +1,28 @@
 //! Docker build and pull transport with bounded log capture.
 use super::*;
+use bollard::errors::Error;
+use bollard::image::TagImageOptions;
+
+// Bollard 0.17's generic build options always serialize the tag. Docker
+// accepts an absent tag for an anonymous build but rejects an empty one.
+#[derive(Default, Eq, Hash, PartialEq)]
+struct BuildValue(String);
+
+impl serde::Serialize for BuildValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.0.is_empty() {
+            serializer.serialize_none()
+        } else {
+            serializer.serialize_str(&self.0)
+        }
+    }
+}
+
+impl From<BuildValue> for String {
+    fn from(value: BuildValue) -> Self {
+        value.0
+    }
+}
 
 /// Repack a validated ZIP archive as Docker's tar build context. Reject opaque
 /// legacy blobs before passing input to the privileged daemon.
@@ -9,6 +32,20 @@ pub(super) async fn build_from_context(
     archive: Vec<u8>,
     context_subdir: Option<&str>,
 ) -> BuildOutcome {
+    if image.is_empty()
+        || image.contains('@')
+        || image.contains("://")
+        || crate::services::challenge_images::is_local_image_id(image)
+    {
+        return BuildOutcome {
+            status: ChallengeBuildStatus::Failed,
+            log: Some("A Docker archive build requires a mutable destination tag".into()),
+            image_digest: None,
+        };
+    }
+    // Resolve the implicit latest tag for inspect as well as publish. Otherwise
+    // Docker may interpret a short hexadecimal repository name as an image ID.
+    let destination = canonical_image_reference(Some(image));
     let context_subdir = context_subdir.map(str::to_owned);
     let prepared =
         tokio::task::spawn_blocking(move || zip_bytes_to_tar(&archive, context_subdir.as_deref()))
@@ -31,23 +68,41 @@ pub(super) async fn build_from_context(
         }
     };
 
+    let previous = match current_tag(docker, &destination).await {
+        Ok(previous) => previous,
+        Err(error) => {
+            return BuildOutcome {
+                status: ChallengeBuildStatus::Failed,
+                log: Some(error),
+                image_digest: None,
+            }
+        }
+    };
+    let progress = build_candidate(docker, &destination, tar).await;
+    finish_archive_build(docker, &destination, previous.as_deref(), progress).await
+}
+
+pub(super) async fn build_candidate(
+    docker: &Docker,
+    image: &str,
+    tar: Vec<u8>,
+) -> progress::BuildProgress {
     let labels = canonical_managed_image_tag(image)
         .map(|reference| {
             std::collections::HashMap::from([
                 (
-                    crate::services::container::IMAGE_SCOPE_LABEL.to_string(),
-                    crate::services::container::docker_installation_scope(),
+                    BuildValue(crate::services::container::IMAGE_SCOPE_LABEL.into()),
+                    BuildValue(crate::services::container::docker_installation_scope()),
                 ),
                 (
-                    crate::services::container::IMAGE_REFERENCE_LABEL.to_string(),
-                    reference,
+                    BuildValue(crate::services::container::IMAGE_REFERENCE_LABEL.into()),
+                    BuildValue(reference),
                 ),
             ])
         })
         .unwrap_or_default();
-    let options = BuildImageOptions::<String> {
-        t: image.to_string(),
-        dockerfile: "Dockerfile".to_string(),
+    let options = BuildImageOptions::<BuildValue> {
+        dockerfile: BuildValue("Dockerfile".into()),
         rm: true,
         labels,
         version: ARCHIVE_BUILDER_VERSION,
@@ -69,27 +124,84 @@ pub(super) async fn build_from_context(
             }
         }
     }
-    finish_archive_build(docker, image, progress).await
+    progress
+}
+
+async fn current_tag(docker: &Docker, name: &str) -> Result<Option<String>, String> {
+    match docker.inspect_image(name).await {
+        Ok(image) => image
+            .id
+            .filter(|id| crate::services::challenge_images::is_local_image_id(id))
+            .map(Some)
+            .ok_or_else(|| "Docker returned an invalid local image ID".into()),
+        Err(Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(None),
+        Err(e) => Err(format!("Could not inspect build destination: {e}")),
+    }
+}
+
+async fn publish_candidate(
+    docker: &Docker,
+    image: &str,
+    previous: Option<&str>,
+    built: &str,
+) -> Result<String, String> {
+    let candidate = docker
+        .inspect_image(built)
+        .await
+        .map_err(|e| format!("Could not verify built image: {e}"))?;
+    if candidate.id.as_deref() != Some(built) {
+        return Err("Docker inspection disagrees with the build image ID".into());
+    }
+    if let Some(reference) = canonical_managed_image_tag(image) {
+        crate::services::challenge_images::validate_image_ownership_labels(
+            &candidate,
+            &crate::services::container::docker_installation_scope(),
+            &reference,
+            true,
+        )?;
+    }
+    let current = current_tag(docker, image).await?;
+    if current.as_deref() == Some(built) {
+        return Ok(built.to_owned());
+    }
+    if current.as_deref() != previous {
+        return Err("Docker build destination changed while the build was running".into());
+    }
+    // The caller holds the destination's image lock across build and publish.
+    // Use the verified ID as the source, including when recovering a lost tag response.
+    let update = docker
+        .tag_image(
+            built,
+            Some(TagImageOptions {
+                repo: image,
+                tag: "",
+            }),
+        )
+        .await;
+    let actual =
+        inspect_immutable_image(docker, image, ImageOperation::ArchiveBuild, false).await?;
+    if actual != built {
+        return Err(update.err().map_or_else(
+            || "Docker tag no longer refers to the image produced by this build".into(),
+            |e| format!("Could not tag the verified build: {e}"),
+        ));
+    }
+    Ok(actual)
 }
 
 pub(super) async fn finish_archive_build(
     docker: &Docker,
     image: &str,
+    previous: Option<&str>,
     progress: progress::BuildProgress,
 ) -> BuildOutcome {
     let (mut log, result) = progress.into_parts();
     // A tag may already exist from the previous build. Inspect alone cannot
     // establish that this attempt produced it, even when the stream ended cleanly.
     let result = match result {
-        Ok(built) => inspect_immutable_image(docker, image, ImageOperation::ArchiveBuild, false)
-            .await
-            .and_then(|current| {
-                if current == built {
-                    Ok(current)
-                } else {
-                    Err("Docker tag no longer refers to the image produced by this build".into())
-                }
-            }),
+        Ok(built) => publish_candidate(docker, image, previous, &built).await,
         Err(error) => Err(error),
     };
     match result {
