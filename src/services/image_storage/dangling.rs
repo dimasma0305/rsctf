@@ -131,7 +131,8 @@ async fn claim(
            WHERE NOT EXISTS (
                SELECT 1 FROM "ControlPlaneResourceLeases"
                 WHERE resource_key = $5 AND lease_expires_at_utc > clock_timestamp()
-           ) AND NOT EXISTS (
+           ) AND NOT EXISTS (SELECT 1 FROM "AdProtectedLocalImages" WHERE image_id=lower($6))
+           AND NOT EXISTS (
                SELECT 1 FROM "GameChallenges" WHERE $6 IN (
                    lower(btrim(container_image)), lower(btrim(build_image_digest)),
                    lower(btrim(ad_checker_image)), lower(btrim(variant_generator_image)))

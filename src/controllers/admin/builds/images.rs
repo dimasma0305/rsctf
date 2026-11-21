@@ -25,6 +25,8 @@ const INVENTORY_OWNERSHIPS_SQL: &str = r#"SELECT canonical_ref, image_id, update
 const OWNERSHIP_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc, last_used_at_utc
  FROM "BuildImageOwnerships" WHERE installation_scope=$1 AND canonical_ref=$2"#;
 const REFERENCES_SQL: &str = r#"
+ SELECT c.title,p.image_id AS image_ref FROM "AdProtectedLocalImages" p JOIN "GameChallenges" c ON c.id=p.challenge_id
+ UNION ALL
  SELECT title, container_image AS image_ref FROM "GameChallenges"
  WHERE container_image IS NOT NULL AND BTRIM(container_image)<>''
  UNION ALL
@@ -38,6 +40,8 @@ const REFERENCES_SQL: &str = r#"
    AND variant_generator_image IS NOT NULL
    AND variant_generator_image = variant_generator_digest"#;
 const INVENTORY_REFERENCES_SQL: &str = r#"SELECT title, image_ref FROM (
+ SELECT c.title,p.image_id AS image_ref FROM "AdProtectedLocalImages" p JOIN "GameChallenges" c ON c.id=p.challenge_id
+ UNION ALL
  SELECT title, container_image AS image_ref FROM "GameChallenges"
  WHERE container_image IS NOT NULL AND BTRIM(container_image)<>''
  UNION ALL
@@ -56,6 +60,7 @@ const CLAIM_MANUAL_REMOVAL_SQL: &str = r#"UPDATE "BuildImageOwnerships"
        cleanup_removal_started=TRUE
  WHERE installation_scope=$1 AND canonical_ref=$2 AND image_id=$3
    AND (cleanup_claim_until IS NULL OR cleanup_claim_until <= clock_timestamp())
+   AND NOT EXISTS (SELECT 1 FROM "AdProtectedLocalImages" WHERE image_id=lower($3))
    AND NOT EXISTS (
        SELECT 1 FROM "ControlPlaneResourceLeases"
         WHERE resource_key=$6
@@ -67,6 +72,7 @@ const FINALIZE_MANUAL_CLAIM_SQL: &str = r#"UPDATE "BuildImageOwnerships"
  WHERE installation_scope=$1 AND canonical_ref=$2 AND image_id=$3
    AND cleanup_claim_token=$4
    AND cleanup_claim_until > clock_timestamp()
+   AND NOT EXISTS (SELECT 1 FROM "AdProtectedLocalImages" WHERE image_id=lower($3))
    AND NOT EXISTS (
        SELECT 1 FROM "ControlPlaneResourceLeases"
         WHERE resource_key=$6

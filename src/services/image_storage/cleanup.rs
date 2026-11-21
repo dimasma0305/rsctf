@@ -91,6 +91,7 @@ const RENEW_CLAIM_SQL: &str = r#"UPDATE "BuildImageOwnerships"
  WHERE installation_scope = $1 AND canonical_ref = $2
    AND image_id = $3 AND cleanup_claim_token = $4
    AND cleanup_claim_until > clock_timestamp()
+   AND NOT EXISTS (SELECT 1 FROM "AdProtectedLocalImages" WHERE image_id=lower($3))
    AND NOT EXISTS (
        SELECT 1 FROM "ControlPlaneResourceLeases"
         WHERE resource_key = $6

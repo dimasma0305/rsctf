@@ -76,6 +76,8 @@ candidate cleanup, and retry. The [Docker transport](../../../../src/services/ch
 builds an untagged image and publishes the tag after verifying the build receipt.
 The [starter ZIP editor](../../../../web/src/components/admin/AdPatchStarterInput.tsx)
 sends an explicitly selected source archive to the [hosted challenge endpoint](../../../../src/controllers/edit/ad/patch_starter.rs).
+The [starter image migration](../../../../src/migrations/m0371_ad_patch_starter_images.rs)
+pairs the source with the organizer's pregame build and protects local images during cleanup.
 Its [HTTP and PostgreSQL regression](../../../../src/controllers/edit/ad/patch_starter/tests.rs)
 exercises replay, replacement, simultaneous registration, and game ownership.
 The [private revision history](../../../../src/controllers/game/ad/patch_preview/revisions.rs)

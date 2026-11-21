@@ -22,6 +22,19 @@ You can replace the starter before the game begins. RSCTF keeps one ZIP per
 challenge in PostgreSQL, up to 72 MiB, shared across all teams. Saving a starter
 prepares the original source for comparison and leaves running services in place.
 
+When you save a starter before the game, the editor also records the challenge's
+successful build by its immutable image reference. If you upload the ZIP first,
+the editor shows **Build the challenge image** until the first successful build
+before kickoff. Later image rebuilds keep the recorded original. Replacing
+the starter ZIP before kickoff pairs the new source with the current build.
+For older starters and ZIPs first uploaded during play, the editor shows when
+the original image is unknown.
+
+RSCTF's Docker cleanup keeps the recorded local image until the game ends.
+All teams share that image. Saving a starter adds one database reference per
+challenge. For registry images, retain the manifest and layers at the recorded
+digest in your registry for the duration of the event.
+
 During the game, an accepted teammate can open **A&D Toolkit → Patch your
 service**, choose their hosted challenge, and use **Download starter ZIP**.
 After editing, they can choose their ZIP and click

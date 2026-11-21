@@ -99,7 +99,7 @@ test('organizer registers a starter and sees the original after the event starts
     if (url.pathname === challenge + '/patch-starter') {
       if (req.method() === 'PUT') {
         writes.push({ expected: req.headers()['x-rsctf-expected-tree'], type: req.headers()['content-type'], body: req.postDataBuffer() })
-        starter = { treeId: 'a'.repeat(64), archiveBytes: bytes.length }
+        starter = { treeId: 'a'.repeat(64), archiveBytes: bytes.length, runtimeImageRef: null, awaitingImageBuild: true }
       }
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(starter) })
     }
@@ -117,6 +117,10 @@ test('organizer registers a starter and sees the original after the event starts
   await input.setInputFiles(file)
   await panel.getByRole('button', { name: 'Replace starter ZIP' }).click()
   await expect.poll(() => writes.length).toBe(2)
+  await expect(panel.getByText('Build the challenge image before the game starts')).toBeVisible()
+  const image = 'private.example/event/service@sha256:' + 'b'.repeat(64)
+  starter = { ...starter, runtimeImageRef: image, awaitingImageBuild: false }
+  await expect(panel.getByText('Original image · ' + image)).toBeVisible({ timeout: 30000 })
   expect(writes.map(r => r.expected)).toEqual([undefined, starter.treeId])
   for (const write of writes) {
     expect(write.type).toBe('application/zip')
@@ -132,6 +136,7 @@ test('organizer registers a starter and sees the original after the event starts
   started = true
   await page.reload()
   await expect(panel.getByRole('status')).toContainText('Game started')
+  await expect(panel.getByText('Original image · ' + image)).toBeVisible()
   await expect(panel.getByRole('button', { name: 'Starter ZIP for team patches' })).toBeDisabled()
   byoc = true
   await page.reload()

@@ -4576,6 +4576,11 @@ export interface ChallengeAuditFile {
 }
 
 /** Stored ZIP for the original source of a hosted A&D challenge. */
+export interface RegisteredAdPatchStarter extends AdPatchStarter {
+  runtimeImageRef: string | null;
+  awaitingImageBuild: boolean;
+}
+
 export interface AdPatchStarter {
   treeId: string
   archiveBytes: number
@@ -9521,7 +9526,7 @@ export class Api<
       ),
 
     getAdPatchStarter: (id: number, challengeId: number, params: RequestParams = {}) =>
-      this.request<AdPatchStarter | null, RequestResponse>({
+      this.request<RegisteredAdPatchStarter | null, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${challengeId}/patch-starter`,
         method: "GET",
         format: "json",
@@ -9529,7 +9534,7 @@ export class Api<
       }),
 
     putAdPatchStarter: (id: number, challengeId: number, zip: File, expected: string | null, params: RequestParams = {}) =>
-      this.request<AdPatchStarter, RequestResponse>({
+      this.request<RegisteredAdPatchStarter, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${challengeId}/patch-starter`,
         method: "PUT",
         body: zip,

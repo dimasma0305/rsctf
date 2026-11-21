@@ -13,6 +13,16 @@ use sqlx::PgPool;
 #[cfg(test)]
 mod tests;
 
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RegisteredStarter {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    source: Starter,
+    runtime_image_ref: Option<String>,
+    awaiting_image_build: bool,
+}
+
 pub(crate) fn router() -> Router<SharedState> {
     Router::new().route(
         "/api/edit/games/{id}/challenges/{cId}/patch-starter",
@@ -31,26 +41,32 @@ pub async fn get(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((game_id, challenge_id)): Path<(i32, i32)>,
-) -> AppResult<Json<Option<Starter>>> {
+) -> AppResult<Json<Option<RegisteredStarter>>> {
     manager_or_admin(&st, &user, game_id).await?;
-    let (tree, size) = sqlx::query_as::<_, (Option<String>, Option<i32>)>(
-        r#"SELECT starter.tree_id, starter.archive_bytes
+    let (tree, size, runtime_image_ref, awaiting_image_build) =
+        sqlx::query_as::<_, (Option<String>, Option<i32>, Option<String>, bool)>(
+            r#"SELECT starter.tree_id, starter.archive_bytes, starter.runtime_image_ref,
+                  COALESCE(starter.awaiting_image_build,FALSE)
              FROM "GameChallenges" c JOIN "Games" g ON g.id = c.game_id
              LEFT JOIN "AdPatchStarters" starter ON starter.challenge_id = c.id
             WHERE c.id = $1 AND c.game_id = $2 AND c."Type" = $3
               AND NOT c.ad_self_hosted AND NOT c.deletion_pending AND NOT g.deletion_pending"#,
-    )
-    .bind(challenge_id)
-    .bind(game_id)
-    .bind(ChallengeType::AttackDefense as i16)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(db_error)?
-    .ok_or_else(|| AppError::not_found("Hosted A&D challenge not found"))?;
+        )
+        .bind(challenge_id)
+        .bind(game_id)
+        .bind(ChallengeType::AttackDefense as i16)
+        .fetch_optional(st.pg())
+        .await
+        .map_err(db_error)?
+        .ok_or_else(|| AppError::not_found("Hosted A&D challenge not found"))?;
     Ok(Json(tree.zip(size).map(|(tree_id, archive_bytes)| {
-        Starter {
-            tree_id,
-            archive_bytes,
+        RegisteredStarter {
+            source: Starter {
+                tree_id,
+                archive_bytes,
+            },
+            runtime_image_ref,
+            awaiting_image_build,
         }
     })))
 }
@@ -78,7 +94,7 @@ pub async fn put(
     user: CurrentUser,
     Path((game_id, challenge_id)): Path<(i32, i32)>,
     request: Request,
-) -> AppResult<Json<Starter>> {
+) -> AppResult<Json<RegisteredStarter>> {
     manager_or_admin(&st, &user, game_id).await?;
     let expected = expected_tree(request.headers())?;
     let (archive, permit) = read_patch_zip(request, 0).await?;
@@ -111,7 +127,7 @@ async fn register(
     archive: &[u8],
     tree_id: &str,
     expected: Option<&str>,
-) -> AppResult<Starter> {
+) -> AppResult<RegisteredStarter> {
     let mut tx = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(db_error)?;
@@ -144,8 +160,8 @@ async fn register(
     .await
     .map_err(db_error)?
     .ok_or_else(|| AppError::not_found("Hosted A&D challenge not found"))?;
-    let current = sqlx::query_as::<_, Starter>(
-        r#"SELECT tree_id, archive_bytes FROM "AdPatchStarters" WHERE challenge_id=$1"#,
+    let current = sqlx::query_as::<_, RegisteredStarter>(
+        r#"SELECT tree_id, archive_bytes, runtime_image_ref, awaiting_image_build FROM "AdPatchStarters" WHERE challenge_id=$1"#,
     )
     .bind(challenge_id)
     .fetch_optional(&mut *tx)
@@ -153,10 +169,10 @@ async fn register(
     .map_err(db_error)?;
     if let Some(current) = current {
         // A lost-response retry (including a repacked archive) retains the original bytes.
-        if current.tree_id == tree_id {
+        if current.source.tree_id == tree_id {
             return Ok(current);
         }
-        if expected != Some(&current.tree_id) {
+        if expected != Some(&current.source.tree_id) {
             return Err(AppError::conflict(
                 "Starter changed. Reload its tree ID before replacing it.",
             ));
@@ -164,13 +180,13 @@ async fn register(
     } else if expected.is_some() {
         return Err(AppError::conflict("There is no saved starter to replace"));
     }
-    let starter = sqlx::query_as::<_, Starter>(
-        r#"INSERT INTO "AdPatchStarters" (challenge_id, tree_id, archive) VALUES ($1,$2,$3)
+    let starter = sqlx::query_as::<_, RegisteredStarter>(
+        r#"INSERT INTO "AdPatchStarters" (challenge_id,tree_id,archive) VALUES ($1,$2,$3)
            ON CONFLICT (challenge_id) DO UPDATE SET tree_id=EXCLUDED.tree_id, archive=EXCLUDED.archive
            WHERE EXISTS (SELECT 1 FROM "Games" WHERE id=$4 AND start_time_utc > clock_timestamp())
              AND NOT EXISTS (SELECT 1 FROM "AdTeamServices" s JOIN "AdPatchSourceUsage" u ON u.service_id=s.id
                              WHERE s.game_id=$4 AND s.challenge_id=$1)
-           RETURNING tree_id, archive_bytes"#,
+           RETURNING tree_id, archive_bytes, runtime_image_ref, awaiting_image_build"#,
     )
     .bind(challenge_id)
     .bind(tree_id)

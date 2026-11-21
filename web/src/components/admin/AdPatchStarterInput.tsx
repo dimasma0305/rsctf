@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
 import api from '@Api'
-import { OnceSWRConfig } from '@Hooks/useConfig'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import { showErrorMsg } from '@Utils/Shared'
 
 interface Props {
@@ -15,11 +15,22 @@ interface Props {
 
 export function AdPatchStarterInput({ gameId, challengeId, started, disabled }: Props) {
   const { t } = useTranslation()
-  const { data, error, mutate } = useSWR(
-    `/api/edit/games/${gameId}/challenges/${challengeId}/patch-starter`,
+  const key = `/api/edit/games/${gameId}/challenges/${challengeId}/patch-starter`
+  const { data, error, isValidating, mutate } = useSWR(
+    key,
     async () => (await api.edit.getAdPatchStarter(gameId, challengeId)).data,
-    OnceSWRConfig
+    CompletionPollSWRConfig
   )
+  useCompletionPolling({
+    key,
+    phase: 'starter-image',
+    enabled: !!data?.awaitingImageBuild && !started,
+    data,
+    error,
+    isValidating,
+    mutate,
+    successDelay: () => 15_000,
+  })
   const [file, setFile] = useState<File | null>(null)
   const [saving, setSaving] = useState(false)
   const pending = useRef<AbortController | null>(null)
@@ -69,6 +80,15 @@ export function AdPatchStarterInput({ gameId, challengeId, started, disabled }: 
           {locked
             ? t('admin.ad.patch_starter.pinned', 'Game started · original tree {{tree}}', { tree: data.treeId.slice(0, 12) })
             : t('admin.ad.patch_starter.saved', 'Saved starter · tree {{tree}}', { tree: data.treeId.slice(0, 12) })}
+        </Text>
+      )}
+      {data && (
+        <Text size="sm" c="dimmed" style={{ overflowWrap: 'anywhere' }}>
+          {data.runtimeImageRef
+            ? t('admin.ad.patch_starter.image', 'Original image · {{image}}', { image: data.runtimeImageRef })
+            : data.awaitingImageBuild && !started
+              ? t('admin.ad.patch_starter.waiting_image', 'Build the challenge image before the game starts to save it as the original.')
+              : t('admin.ad.patch_starter.no_image', 'An original runtime image was never recorded for this ZIP.')}
         </Text>
       )}
       {error ? (

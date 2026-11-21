@@ -79,6 +79,10 @@ async fn pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_o
         .unwrap();
     sqlx::raw_sql(r#"CREATE TABLE "ControlPlaneResourceLeases" (resource_key TEXT PRIMARY KEY, lease_expires_at_utc TIMESTAMPTZ NOT NULL)"#).execute(&db.pool).await.unwrap();
     sqlx::raw_sql(r#"CREATE TABLE "GameChallenges" (container_image TEXT, build_image_digest TEXT, ad_checker_image TEXT, variant_generator_image TEXT)"#).execute(&db.pool).await.unwrap();
+    sqlx::raw_sql(r#"CREATE TABLE "AdProtectedLocalImages" (image_id TEXT PRIMARY KEY)"#)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     let daemon = Docker::connect_with_local_defaults().unwrap();
     let scope = Uuid::new_v4().simple().to_string();
     let mut fixture = Fixture::default();
@@ -87,6 +91,7 @@ async fn pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_o
     let active = fixture.build(&scope, "active");
     let obsolete = fixture.build(&scope, "obsolete");
     let late_pin = fixture.build(&scope, "pin committed after reference inventory");
+    let original_patch_image = fixture.build(&scope, "original image after organizer rebuild");
     let published = fixture.build(&scope, "published after mark");
     let foreign = fixture.build(
         &Uuid::new_v4().simple().to_string(),
@@ -110,6 +115,11 @@ async fn pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_o
         .await
         .unwrap();
     references.live_image_ids.insert(active.clone());
+    sqlx::query(r#"INSERT INTO "AdProtectedLocalImages" VALUES($1)"#)
+        .bind(&original_patch_image)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     let mut report = ImageCleanupReport::default();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     // Nothing is old enough on the first sweep. Advance only the fixture cutoff.
@@ -184,7 +194,15 @@ async fn pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_o
         assert_eq!(report.images_removed, 1);
         assert!(matches!(daemon.inspect_image(&obsolete).await, Err(ref e) if docker_not_found(e)));
         assert!(matches!(daemon.inspect_image(&marker).await, Err(ref e) if docker_not_found(e)));
-        for id in [&starter, &checker, &active, &foreign, &published, &late_pin] {
+        for id in [
+            &starter,
+            &checker,
+            &active,
+            &foreign,
+            &published,
+            &late_pin,
+            &original_patch_image,
+        ] {
             daemon.inspect_image(id).await.unwrap();
         }
         assert_eq!(
@@ -192,5 +210,23 @@ async fn pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_o
             published
         );
     }
+    sqlx::query(r#"DELETE FROM "AdProtectedLocalImages""#)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    dangling::collect(
+        &daemon,
+        &db.pool,
+        &scope,
+        &references,
+        Utc::now() + ChronoDuration::days(1),
+        deadline,
+        &mut report,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(daemon.inspect_image(&original_patch_image).await, Err(ref e) if docker_not_found(e))
+    );
     db.close().await;
 }

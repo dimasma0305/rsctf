@@ -61,6 +61,11 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
         CREATE TABLE "AdTeamServices" (id INTEGER PRIMARY KEY, game_id INTEGER, challenge_id INTEGER);
         INSERT INTO "Games" VALUES (1, now()+interval '1 day', false), (2, now()+interval '1 day', false);
         INSERT INTO "GameChallenges" VALUES (10,1,4,false,false),(11,1,4,true,false),(12,2,4,false,false),(13,1,0,false,false),(14,1,4,false,false);
+        ALTER TABLE "Games" ADD COLUMN end_time_utc TIMESTAMPTZ DEFAULT now()+interval '2 days';
+        ALTER TABLE "GameChallenges" ADD COLUMN build_status SMALLINT NOT NULL DEFAULT 0,
+            ADD COLUMN build_image_digest TEXT;
+        INSERT INTO "GameChallenges" (id,game_id,"Type",ad_self_hosted,deletion_pending)
+            VALUES (15,1,4,false,false);
     "#).execute(&db.pool).await.unwrap();
     for _ in 0..2 {
         sqlx::raw_sql(crate::migrations::m0366_ad_patch_starters::UP_SQL)
@@ -68,6 +73,17 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
             .await
             .unwrap();
         sqlx::raw_sql(crate::migrations::m0367_ad_patch_revisions::UP_SQL)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "AdPatchStarters"(challenge_id,tree_id,archive)
+            VALUES(15,repeat('f',64),'legacy') ON CONFLICT DO NOTHING"#,
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(crate::migrations::m0371_ad_patch_starter_images::UP_SQL)
             .execute(&db.pool)
             .await
             .unwrap();
@@ -132,14 +148,59 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
     let (ok, original) = request(&router, "PUT", 10, Some(&user), v1.clone(), None).await;
     assert_eq!(ok, StatusCode::OK, "{original}");
     let tree = PatchManifest::from_zip(&v1).unwrap().tree_id();
+    let starter_ref = || {
+        sqlx::query_as::<_, (Option<String>, bool)>(
+            r#"SELECT runtime_image_ref,awaiting_image_build FROM "AdPatchStarters" WHERE challenge_id=10"#,
+        ).fetch_one(&db.pool)
+    };
+    assert_eq!(starter_ref().await.unwrap(), (None, true));
+    let first_image = format!("sha256:{}", "a".repeat(64));
+    let next_image = format!("sha256:{}", "b".repeat(64));
+    sqlx::query(r#"UPDATE "GameChallenges" SET build_status=1,build_image_digest=$1 WHERE id=15"#)
+        .bind(&first_image)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let legacy = request(&router, "GET", 15, Some(&user), vec![], None).await;
+    assert_eq!(legacy.0, StatusCode::OK);
+    assert!(legacy.1["runtimeImageRef"].is_null());
+    assert_eq!(legacy.1["awaitingImageBuild"], false);
+    sqlx::query(r#"DELETE FROM "GameChallenges" WHERE id=15"#)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    for image in [&first_image, &next_image] {
+        sqlx::query(
+            r#"UPDATE "GameChallenges" SET build_status=1,build_image_digest=$1 WHERE id=10"#,
+        )
+        .bind(image)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            starter_ref().await.unwrap(),
+            (Some(first_image.clone()), false)
+        );
+    }
+    let protected = |image: String| {
+        sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(SELECT 1 FROM "AdProtectedLocalImages" WHERE image_id=$1)"#,
+        )
+        .bind(image)
+        .fetch_one(&db.pool)
+    };
+    assert!(protected(first_image.clone()).await.unwrap());
     assert_eq!(
         original,
-        serde_json::json!({"treeId":tree, "archiveBytes":v1.len()})
+        serde_json::json!({"treeId":tree, "archiveBytes":v1.len(),"runtimeImageRef":null,"awaitingImageBuild":true})
     );
     let repacked = zip(b"FROM scratch\n", zip::CompressionMethod::Deflated);
     assert_eq!(
         request(&router, "PUT", 10, Some(&user), repacked, None).await,
-        (StatusCode::OK, original.clone())
+        (
+            StatusCode::OK,
+            serde_json::json!({"treeId":tree, "archiveBytes":v1.len(),"runtimeImageRef":first_image,"awaitingImageBuild":false})
+        )
     );
     let stored: Vec<u8> =
         sqlx::query_scalar(r#"SELECT archive FROM "AdPatchStarters" WHERE challenge_id=10"#)
@@ -163,6 +224,12 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
         StatusCode::OK
     );
     let second = PatchManifest::from_zip(&v2).unwrap().tree_id();
+    assert_eq!(
+        starter_ref().await.unwrap(),
+        (Some(next_image.clone()), false)
+    );
+    assert!(!protected(first_image.clone()).await.unwrap());
+    assert!(protected(next_image.clone()).await.unwrap());
     let (a, b) = tokio::join!(
         register(&db.pool, &user, 1, 14, &v1, &tree, None),
         register(&db.pool, &user, 1, 14, &v2, &second, None),
@@ -175,6 +242,14 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
         .execute(&db.pool)
         .await
         .unwrap();
+    sqlx::query(r#"UPDATE "GameChallenges" SET build_status=1,build_image_digest=$1 WHERE id=14"#)
+        .bind(&first_image)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(sqlx::query_as::<_,(Option<String>,bool)>(
+        r#"SELECT runtime_image_ref,awaiting_image_build FROM "AdPatchStarters" WHERE challenge_id=14"#,
+    ).fetch_one(&db.pool).await.unwrap(), (None,false));
     assert_eq!(
         request(&router, "PUT", 10, Some(&user), v1.clone(), Some(&second))
             .await
@@ -203,6 +278,13 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
             .0,
         StatusCode::CONFLICT
     );
+    sqlx::query(
+        r#"UPDATE "Games" SET end_time_utc=clock_timestamp()-interval '1 second' WHERE id=1"#,
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert!(!protected(next_image).await.unwrap());
     sqlx::query(r#"DELETE FROM "GameChallenges" WHERE id=10"#)
         .execute(&db.pool)
         .await
