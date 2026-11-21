@@ -530,7 +530,7 @@ pub(crate) async fn ensure_ad_containers(
                 distributed.release().await?;
                 continue;
             };
-            let mut existing = ad_team_service::Entity::find()
+            let existing = ad_team_service::Entity::find()
                 .filter(ad_team_service::Column::ParticipationId.eq(p.id))
                 .filter(ad_team_service::Column::ChallengeId.eq(c.id))
                 .one(&st.db)
@@ -546,12 +546,13 @@ pub(crate) async fn ensure_ad_containers(
             }
             // A published address can be reused once a workload stops. Only
             // retire it on positive evidence from the owning runtime.
-            if let Some(cid) = existing.as_ref().and_then(|s| s.container_id.clone()) {
+            let retired_backend = existing.as_ref().and_then(|s| s.container_id.as_deref());
+            if let Some(cid) = retired_backend {
                 let endpoint_is_published = existing
                     .as_ref()
                     .is_some_and(|service| !service.host.trim().is_empty() && service.port > 0);
                 if endpoint_is_published {
-                    match st.containers.inspect_liveness(&cid).await {
+                    match st.containers.inspect_liveness(cid).await {
                         Ok(ContainerLiveness::Stopped) => {}
                         Ok(ContainerLiveness::Running) => {
                             distributed.release().await?;
@@ -584,13 +585,6 @@ pub(crate) async fn ensure_ad_containers(
                     distributed.release().await?;
                     continue;
                 }
-                crate::services::traffic::destroy_container_after_capture_fence(st, &cid).await?;
-                if let Some(row) = existing.as_mut() {
-                    row.host.clear();
-                    row.port = 0;
-                    row.container_id = None;
-                    row.status = crate::utils::enums::AdCheckStatus::Offline as i16;
-                }
             }
             let team_hash =
                 crate::utils::flag_generator::team_challenge_hash(&salt, c.id, &p.token);
@@ -617,6 +611,10 @@ pub(crate) async fn ensure_ad_containers(
                     continue;
                 }
             };
+            if let Some(cid) = retired_backend {
+                // Keep the team's files if an invalid stored flag prevents repair.
+                crate::services::traffic::destroy_container_after_capture_fence(st, cid).await?;
+            }
             let mut spec = ContainerSpec::ad_service(
                 image.clone(),
                 ContainerResourceLimits {

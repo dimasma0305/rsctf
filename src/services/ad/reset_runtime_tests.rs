@@ -312,6 +312,38 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
     assert_eq!(stopped["port"], 0);
     assert_eq!(stopped["container_id"], starting.0);
     assert_eq!(row(900042).await.unwrap(), unrelated);
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL rsctf.maintenance_writer='on'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(r#"UPDATE "GameChallenges" SET build_image_digest=$1 WHERE id=900031"#)
+        .bind(&image)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // The production guard is NOT VALID so a legacy row can still be invalid.
+    // Seed that state only in this test's disposable schema.
+    let valid_flag: String = sqlx::query_scalar(
+        r#"SELECT flag FROM "AdFlags" WHERE round_id=900108 AND team_service_id=900041"#,
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::raw_sql(r#"ALTER TABLE "AdFlags" DROP CONSTRAINT ck_adflags_canonical_flag;
+        UPDATE "AdFlags" SET flag='invalid-fixture' WHERE round_id=900108 AND team_service_id=900041"#)
+        .execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let error = reconcile().await.unwrap_err();
+    assert!(
+        matches!(error, AppError::ServiceUnavailable(message) if message.contains("flag is invalid"))
+    );
+    assert_eq!(row(900041).await.unwrap(), stopped);
+    assert_eq!(row(900042).await.unwrap(), unrelated);
+    assert_eq!(
+        docker(&["inspect", "--format", "{{.State.Status}}", &starting.0]),
+        "exited"
+    );
     let note = std::env::temp_dir().join(format!("rsctf-repair-note-{}", Uuid::new_v4()));
     docker(&[
         "cp",
@@ -326,8 +358,8 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query(r#"UPDATE "GameChallenges" SET build_image_digest=$1 WHERE id=900031"#)
-        .bind(&image)
+    sqlx::query(r#"UPDATE "AdFlags" SET flag=$1 WHERE round_id=900108 AND team_service_id=900041"#)
+        .bind(valid_flag)
         .execute(&mut *tx)
         .await
         .unwrap();
