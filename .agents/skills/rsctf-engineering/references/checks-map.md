@@ -34,8 +34,11 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 
 The [BYOC Compose regression](../../../../scripts/test-byoc-source-compose.py)
 installs the real generated bundle with a local service image and the current
-agent. It checks the agent's read-only mount, observes a source edit without a
-manifest, and recreates the service to verify that the patch persists.
+agent. The [live tunnel test](../../../../src/controllers/game/ad/byoc_live_source_tests.rs)
+waits for the baseline and an in-container edit to appear in the owning
+service's PostgreSQL-backed history. It checks the other team's history too.
+The Compose harness verifies the read-only agent mount, patch persistence
+after recreation, and discovery from a standalone Compose download.
 
 Same-origin SSH address selection is tested in
 [endpoint.rs](../../../../src/services/ad/ssh/endpoint.rs). The ignored

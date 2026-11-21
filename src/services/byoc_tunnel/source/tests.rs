@@ -1,5 +1,52 @@
 use super::*;
 
+#[tokio::test]
+async fn due_reports_wait_their_turn_without_skipping_a_sampling_period() {
+    use futures::{stream::FuturesUnordered, StreamExt};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let collectors = tokio::sync::Semaphore::new(4);
+    let occupied = collectors.acquire_many(4).await.unwrap();
+    let (seen, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let active = AtomicUsize::new(0);
+    let peak = AtomicUsize::new(0);
+    let mut tasks = FuturesUnordered::new();
+    for service in 0..26 {
+        let (active, peak, seen) = (&active, &peak, &seen);
+        let mut task = Box::pin(poll_reports(
+            &collectors,
+            Duration::from_secs(60),
+            move || async move {
+                let running = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(running, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                seen.send(service).unwrap();
+            },
+        ));
+        assert!(futures::poll!(task.as_mut()).is_pending());
+        // One agent disconnects while waiting. It must never publish a report.
+        if service != 0 {
+            tasks.push(task);
+        }
+    }
+    drop(occupied);
+    let mut reported = std::collections::BTreeSet::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while reported.len() < 25 {
+            tokio::select! {
+                _ = tasks.next() => panic!("active source session exited"),
+                Some(service) = received.recv() => assert!(reported.insert(service)),
+            }
+        }
+    })
+    .await
+    .expect("available slots should serve all due reports before the next minute");
+    assert_eq!(reported, (1..=25).collect());
+    assert_eq!(peak.load(Ordering::SeqCst), 4);
+    assert_eq!(collectors.available_permits(), 4);
+}
+
 #[test]
 fn private_report_accepts_only_bounded_registered_metadata() {
     assert!(Snapshot::decode(br#"{"status":"observed","files":{}}"#).is_some());

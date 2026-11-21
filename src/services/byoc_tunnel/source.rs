@@ -15,6 +15,22 @@ pub(crate) use history::{history, Page};
 mod tests;
 static COLLECTORS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
+async fn poll_reports<F: std::future::Future<Output = ()>>(
+    collectors: &tokio::sync::Semaphore,
+    interval: Duration,
+    mut collect: impl FnMut() -> F,
+) {
+    loop {
+        // One waiter per connected session. Disconnecting cancels its waiter.
+        let Ok(permit) = collectors.acquire().await else {
+            return;
+        };
+        collect().await;
+        drop(permit);
+        tokio::time::sleep(interval).await;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FileIdentity {
@@ -118,25 +134,22 @@ impl Session<'_> {
             + u64::from(self.challenge.unsigned_abs()) * 101)
             % 5000;
         tokio::time::sleep(Duration::from_millis(1000 + offset)).await;
-        loop {
-            if let Ok(_permit) = COLLECTORS.try_acquire() {
-                let snapshot = if self.supported {
-                    tokio::time::timeout(Duration::from_secs(5), read_report(self.handle))
-                        .await
-                        .ok()
-                        .flatten()
-                        .unwrap_or_else(|| Snapshot::empty("unavailable"))
-                } else {
-                    Snapshot::empty("legacyAgent")
-                };
-                if let Ok(Err(error)) =
-                    tokio::time::timeout(Duration::from_secs(3), self.save(snapshot)).await
-                {
-                    tracing::debug!(challenge=self.challenge,participation=self.participation,%error,"BYOC source observation deferred");
-                }
+        poll_reports(&COLLECTORS, Duration::from_millis(60000 + offset), || async {
+            let snapshot = if self.supported {
+                tokio::time::timeout(Duration::from_secs(5), read_report(self.handle))
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| Snapshot::empty("unavailable"))
+            } else {
+                Snapshot::empty("legacyAgent")
+            };
+            if let Ok(Err(error)) =
+                tokio::time::timeout(Duration::from_secs(3), self.save(snapshot)).await
+            {
+                tracing::debug!(challenge=self.challenge,participation=self.participation,%error,"BYOC source observation deferred");
             }
-            tokio::time::sleep(Duration::from_millis(60000 + offset)).await;
-        }
+        }).await;
     }
 
     async fn save(&self, snapshot: Snapshot) -> AppResult<()> {

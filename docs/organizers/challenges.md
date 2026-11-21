@@ -186,6 +186,8 @@ It skips hidden paths and dependency directories such as `node_modules` and
 `vendor`. To select exact paths, put a `.rsctf-files` list in the watched
 directory, one relative path per line. An empty list disables observation.
 Existing bundles with an explicit list retain that behavior.
+The server collects up to four reports at a time. Connected agents waiting
+for a slot are served in order.
 
 Only paths, Git SHA-256 blob IDs and executable permissions are reported.
 Contents stay with the team. The agent reuses hashes for unchanged files.

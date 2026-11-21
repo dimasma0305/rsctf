@@ -66,7 +66,10 @@ def check(args, root, stack):
             docker("image", "rm", alias)
 
     stack.callback(clean_bundle)
-    env = {**os.environ, "RSCTF_TEST_BYOC_GAME": str(game), "RSCTF_TEST_BYOC_IMAGE_ID": service,
+    bridge = json.loads(docker("network", "inspect", "bridge"))[0]["IPAM"]["Config"]
+    ipv4 = next(net for net in bridge if ":" not in net["Subnet"])
+    env = {**os.environ, "RSCTF_AD_VPN_ENABLED": "false", "RSCTF_AD_VPN_SERVICES_CIDR": ipv4["Subnet"],
+           "RSCTF_TEST_BYOC_BIND": ipv4["Gateway"], "RSCTF_TEST_BYOC_GAME": str(game), "RSCTF_TEST_BYOC_IMAGE_ID": service,
            "RSCTF_TEST_BYOC_BUNDLE": str(root)}
     subprocess.run(args.test_command, check=True, env=env, timeout=600)
     standalone = json.loads(docker("compose", "-f", root / "standalone.yml", "config", "--format", "json"))
@@ -79,8 +82,6 @@ def check(args, root, stack):
     assert any(v["Destination"] == "/rsctf-source" and not v["RW"] for v in mounts)
     assert all(v["Destination"] != "/var/run/docker.sock" for v in mounts)
     wait_for_report(agent, "source baseline recorded")
-    docker(*compose, "exec", "-T", "service", "sh", "-ec",
-           'test "$(cat /app/main.py)" = original; test ! -e /app/.rsctf-files; echo patched >/app/main.py')
     wait_for_report(agent, "source changed", "main.py", "modified")
     # A network/export failure on reinstall must leave both the team's files
     # and the existing service identity intact.
