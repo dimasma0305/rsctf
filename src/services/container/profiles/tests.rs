@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 struct Runtime {
+    kind: Option<ContainerBackendKind>,
     destroyed: Mutex<Vec<String>>,
     created: Mutex<Vec<ContainerSpec>>,
 }
@@ -15,7 +16,7 @@ struct Runtime {
 #[async_trait]
 impl ContainerManager for Runtime {
     fn backend_kind(&self) -> ContainerBackendKind {
-        ContainerBackendKind::Docker
+        self.kind.unwrap_or(ContainerBackendKind::Docker)
     }
     async fn image_exists(&self, image: &str) -> bool {
         image == "present-on-selected-daemon"
@@ -159,7 +160,10 @@ fn checker_routes_cover_both_backends_and_retired_instances_without_a_fallback_c
 async fn switching_profiles_keeps_old_instances_owned_by_their_original_runtime() {
     let default = Arc::new(Runtime::default());
     let docker = Arc::new(Runtime::default());
-    let kube = Arc::new(Runtime::default());
+    let kube = Arc::new(Runtime {
+        kind: Some(ContainerBackendKind::Kubernetes),
+        ..Runtime::default()
+    });
     let profiles = config::parse(r#"[
         {"id":"docker","name":"Docker","backend":"docker","isolation":"container"},
         {"id":"vm","name":"MicroVM","backend":"kubernetes","isolation":"microvm","runtimeClass":"kata"}
@@ -174,6 +178,10 @@ async fn switching_profiles_keeps_old_instances_owned_by_their_original_runtime(
     .unwrap();
     let old = router.create(spec(Some("docker"))).await.unwrap();
     let new = router.create(spec(Some("vm"))).await.unwrap();
+    assert!(router.supports_ad_patch_activation(Some("docker"), Some(&old.id)));
+    assert!(!router.supports_ad_patch_activation(Some("docker"), Some(&new.id)));
+    assert!(!router.supports_ad_patch_activation(Some("vm"), Some(&old.id)));
+    assert!(!router.supports_ad_patch_activation(Some("docker"), None));
     assert_ne!(old.id, new.id);
     router.destroy(&old.id).await.unwrap();
     assert_eq!(*docker.destroyed.lock().unwrap(), vec!["same-native-id"]);

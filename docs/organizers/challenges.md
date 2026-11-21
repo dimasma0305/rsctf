@@ -228,7 +228,10 @@ Staging leaves the active service running. On Docker with player resets enabled,
 owning team can open **Team revision history**, select the build and choose
 **Deploy revision** after its cooldown. The service must already have a
 recorded running image and a registered starter image. Before replacing it,
-RSCTF rechecks the selected build attempt and its registry digest.
+RSCTF rechecks the selected build attempt and its registry digest. If you
+change the runtime profile, a team can deploy a ZIP only when both its
+running service and the selected profile use Docker. Services still on
+Kubernetes keep serving while the organizer manages their migration.
 Keep active, previous and starter
 digests available when applying your registry's retention policy. A transfer
 that loses eligibility can leave unreferenced data for registry garbage collection.

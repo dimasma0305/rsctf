@@ -26,6 +26,8 @@ struct CurrentBuild {
     profile: Option<String>,
     #[serde(skip)]
     runtime_profile: Option<String>,
+    #[serde(skip)]
+    container_id: Option<String>,
     staged: bool,
     can_activate: bool,
     active: bool,
@@ -57,7 +59,7 @@ pub async fn build(
     }
     let mut build = sqlx::query_as::<_, CurrentBuild>(r#"
         SELECT b.status,b.attempt,(SELECT profile FROM "AdPatchOnlineBuilders" WHERE challenge_id=$4) AS profile,
-               ch.runtime_profile,
+               ch.runtime_profile,s.container_id,
                (c.registry_image_ref IS NOT NULL AND b.status='Ready') AS staged,
                EXISTS(SELECT 1 FROM "AdPatchActivationTargets" t
                       WHERE t.service_id=r.service_id AND t.revision=r.revision AND t.attempt=b.attempt) AS can_activate,
@@ -92,9 +94,9 @@ pub async fn build(
         build.active = false;
     }
     roster.release().await?;
-    build.can_activate &= crate::services::ad::reset::supports_patch_activation(
-        &st,
+    build.can_activate &= st.containers.supports_ad_patch_activation(
         build.runtime_profile.as_deref(),
+        build.container_id.as_deref(),
     );
     Ok((
         [(header::CACHE_CONTROL, "private, no-store")],

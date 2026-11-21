@@ -20,15 +20,6 @@ use crate::utils::error::{AppError, AppResult};
 const DEFAULT_PLAYER_COOLDOWN_SECONDS: i64 = 300;
 const INFRASTRUCTURE_RESET_FLOOR_SECONDS: i64 = 30;
 
-// Docker transfers declared team data volumes. The Kubernetes launch path
-// currently creates fresh pods, and remote workers only provision Jeopardy.
-pub(crate) fn supports_patch_activation(st: &SharedState, profile: Option<&str>) -> bool {
-    matches!(
-        st.containers.profile_backend_kind(profile),
-        Ok(crate::services::container::ContainerBackendKind::Docker)
-    )
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ResetJobInput {
@@ -190,7 +181,10 @@ pub async fn execute_job(
     }
     if activation
         && (input.candidate_runtime_profile != challenge.runtime_profile
-            || !supports_patch_activation(st, challenge.runtime_profile.as_deref()))
+            || !st.containers.supports_ad_patch_activation(
+                challenge.runtime_profile.as_deref(),
+                input.expected_backend_id.as_deref(),
+            ))
     {
         return Err(AppError::conflict(
             "This runtime cannot transfer a hosted service to a patch image",

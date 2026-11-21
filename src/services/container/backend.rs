@@ -109,6 +109,20 @@ pub trait ContainerManager: Send + Sync {
         Ok(self.backend_kind())
     }
 
+    /// A profile edit can leave the current team service on its original backend.
+    /// Docker is currently the only runtime that transfers team data during ZIP deployment.
+    fn supports_ad_patch_activation(&self, profile: Option<&str>, donor: Option<&str>) -> bool {
+        matches!(
+            self.profile_backend_kind(profile),
+            Ok(ContainerBackendKind::Docker)
+        ) && donor.filter(|id| !id.is_empty()).is_some_and(|id| {
+            matches!(
+                self.runtime_backend_kind(id),
+                Ok(ContainerBackendKind::Docker)
+            )
+        })
+    }
+
     fn profile_requires_proxy(&self, profile: Option<&str>) -> AppResult<bool> {
         self.profile_backend_kind(profile)?;
         Ok(self.requires_proxy())
