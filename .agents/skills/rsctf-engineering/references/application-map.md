@@ -72,6 +72,7 @@ revision and build attempt. Its [PostgreSQL regressions](../../../../scripts/ad-
 cover corruption, replacement during transfer and competing output files.
 The [registry staging command](../../../../scripts/ad-patch-builder/stage.py)
 transfers the same build to its private service repository and records the verified digest.
+Its challenge watcher resumes pending transfers using the same eligibility and receipt checks.
 The [TLS registry test](../../../../scripts/ad-patch-builder/test_stage_registry.py) uses a real VM output and PostgreSQL.
 The [team activation endpoint](../../../../src/controllers/game/ad/patch_preview/activation.rs)
 pins a staged candidate to the current service. The [real Docker regression](../../../../src/controllers/game/ad/player_activation_tests.rs)

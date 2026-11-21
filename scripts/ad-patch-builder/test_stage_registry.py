@@ -70,7 +70,26 @@ def check(archive, manifest, config, docker_pull=False):
                     with fixture.assertRaises(subprocess.CalledProcessError):
                         stage_candidate(*args)
                     assert db.execute('SELECT registry_image_ref FROM "AdPatchCandidates"').fetchone() == (None,)
-                    ref = stage_candidate(*args, trust)
+                    schema = db.execute("SELECT current_schema()").fetchone()[0]
+                    env = {**os.environ, "RSCTF_DATABASE_URL": os.environ["RSCTF_TEST_DATABASE_URL"],
+                           "PGOPTIONS": f"-c search_path={schema}"}
+                    command = [sys.executable, str(Path(__file__).with_name("stage.py")),
+                               "--watch-challenge", "11", "--repository", host + "/rsctf",
+                               "--cert-dir", str(trust), "--authfile", str(auth)]
+                    watcher = subprocess.Popen(command, env=env)
+                    try:
+                        deadline = time.monotonic() + 60
+                        while time.monotonic() < deadline:
+                            ref = db.execute('SELECT registry_image_ref FROM "AdPatchCandidates"').fetchone()[0]
+                            if ref:
+                                break
+                            assert watcher.poll() is None, "registry watcher exited before staging"
+                            time.sleep(.2)
+                        duplicate = subprocess.run(command, env=env, capture_output=True, timeout=5)
+                        assert duplicate.returncode and b"another registry watcher" in duplicate.stderr
+                    finally:
+                        watcher.terminate()
+                        watcher.wait(timeout=5)
                     assert ref == host + "/rsctf/service-1@" + manifest
                     assert stage_candidate(*args, trust) == ref
                     assert db.execute('SELECT registry_image_ref FROM "AdPatchCandidates"').fetchone() == (ref,)

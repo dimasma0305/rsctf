@@ -18,7 +18,7 @@ from psycopg import sql
 
 from build import ImageReceipt, private_archive
 from export import export_candidate
-from stage import service_repository, stage_candidate
+from stage import service_repository, stage_candidate, stage_pending
 
 
 class CandidateFixture(unittest.TestCase):
@@ -38,7 +38,7 @@ class CandidateFixture(unittest.TestCase):
                                              manifest_digest text, config_digest text);
             CREATE TABLE "AdPatchCandidateChunks"(service_id int, part int, payload bytea, PRIMARY KEY(service_id,part));
             CREATE TABLE "AdPatchBuilds"(service_id int, revision int, attempt uuid, status text);
-            CREATE TABLE "AdPatchBuildEligibleServices"(service_id int PRIMARY KEY);
+            CREATE TABLE "AdPatchBuildEligibleServices"(service_id int PRIMARY KEY, challenge_id int);
         ''')
         migration = Path(__file__).resolve().parents[2] / "src/migrations/m0375_ad_patch_registry_receipt.rs"
         self.db.execute(migration.read_text().split('r#"', 1)[1].split('"#;', 1)[0])
@@ -46,7 +46,7 @@ class CandidateFixture(unittest.TestCase):
         self.first = b"a" * 1048576
         self.data = self.first + b"tail"
         self.digest = hashlib.sha256(self.data).hexdigest()
-        self.db.execute('INSERT INTO "AdPatchBuildEligibleServices" VALUES (1), (2)')
+        self.db.execute('INSERT INTO "AdPatchBuildEligibleServices" VALUES (1,11), (2,11)')
         self.db.execute('INSERT INTO "AdPatchBuilds" VALUES (1,4,%s,\'Ready\')', (self.attempt,))
         self.db.execute('INSERT INTO "AdPatchCandidates" VALUES (1,4,%s,%s)', (self.digest, len(self.data)))
         self.db.execute('INSERT INTO "AdPatchCandidateChunks" VALUES (1,1,%s),(1,0,%s)', (b"tail", self.first))
@@ -178,6 +178,32 @@ class StagingTests(CandidateFixture):
             self.other.execute('DELETE FROM "AdPatchBuildEligibleServices" WHERE service_id=1')
         with patch("stage.push_candidate", side_effect=revoke), self.assertRaisesRegex(ValueError, "eligibility"):
             self.stage()
+        self.assertIsNone(self.stored_ref())
+
+    def test_watcher_retries_after_restart_and_one_bad_transfer_does_not_block_a_team(self):
+        self.db.execute('''INSERT INTO "AdPatchBuilds" VALUES (2,4,%s,'Ready')''', (uuid.uuid4(),))
+        self.db.execute('''INSERT INTO "AdPatchCandidates" SELECT 2,revision,digest,archive_bytes,
+            manifest_digest,config_digest,NULL FROM "AdPatchCandidates" WHERE service_id=1''')
+        self.db.execute('INSERT INTO "AdPatchCandidateChunks" SELECT 2,part,payload FROM "AdPatchCandidateChunks"')
+        with patch("stage.push_candidate", side_effect=[OSError("offline"), None]) as push:
+            stage_pending(self.db, 12, self.prefix)
+            push.assert_not_called()
+            stage_pending(self.db, 11, self.prefix)
+            self.assertEqual([c.args[1] for c in push.call_args_list],
+                             [self.prefix + "/service-1", self.prefix + "/service-2"])
+        with patch("stage.push_candidate") as push:
+            stage_pending(self.other, 11, self.prefix)
+            stage_pending(self.other, 11, self.prefix)
+            self.assertEqual([c.args[1] for c in push.call_args_list], [self.prefix + "/service-1"])
+
+    def test_watcher_rechecks_challenge_at_export_and_publication(self):
+        with patch("stage.push_candidate") as push, self.assertRaisesRegex(ValueError, "ready candidate"):
+            stage_candidate(self.db, 1, 4, self.attempt, self.prefix, challenge=12)
+        push.assert_not_called()
+        def move(*args):
+            self.other.execute('UPDATE "AdPatchBuildEligibleServices" SET challenge_id=12 WHERE service_id=1')
+        with patch("stage.push_candidate", side_effect=move):
+            stage_pending(self.db, 11, self.prefix)
         self.assertIsNone(self.stored_ref())
 
     def test_reject_other_service_stale_attempt_and_legacy_guest_before_upload(self):

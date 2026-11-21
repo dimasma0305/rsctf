@@ -193,9 +193,24 @@ When updating an existing builder, migrate the server database first, then
 update the worker and rebuild its guest for new jobs.
 Exporting leaves the team's running service on its current revision.
 
-To put one selected build in your private runtime registry, install `skopeo`
-on the trusted worker and grant its account push access to the event namespace.
-Configure that namespace to allow pulls only by the appropriate runtime. Run:
+To prepare ZIP builds for **Deploy revision** automatically, install `skopeo`
+on a trusted host, give its account push access to a private event namespace,
+and grant the runtime pull access. Set `RSCTF_DATABASE_URL` on that host.
+Run one registry watcher per hosted challenge alongside the build worker:
+
+```sh
+patch-worker/bin/python scripts/ad-patch-builder/stage.py \
+  --watch-challenge "$challenge_id" \
+  --repository registry.example.org/private-event --authfile "$registry_authfile"
+```
+
+The watcher checks for eligible builds on startup and waits 30 seconds between
+passes. It transfers one team's latest ready candidate at a time. A failed
+transfer is retried on a later pass while other teams can continue. On restart
+it skips builds with a recorded registry digest. Configure a process supervisor
+to restart it if the database connection drops. The team chooses when to deploy.
+
+To transfer a single build manually, specify its service, revision and attempt:
 
 ```sh
 patch-worker/bin/python scripts/ad-patch-builder/stage.py \

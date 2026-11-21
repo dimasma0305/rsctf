@@ -19,13 +19,17 @@ READY = '''SELECT c.digest,c.archive_bytes,c.manifest_digest,c.config_digest FRO
     WHERE c.service_id=%s AND c.revision=%s AND b.attempt=%s AND b.status='Ready' '''
 
 
-def export_candidate(db, service, revision, attempt, path):
+def export_candidate(db, service, revision, attempt, path, challenge=None):
     identity = (service, revision, attempt)
+    query = READY
+    if challenge is not None:
+        query += " AND e.challenge_id=%s"
+        identity += (challenge,)
     with db.transaction():
         # Each statement sees a fresh snapshot. The read cursor stays on one
         # snapshot while the final check detects replacement during the copy.
         db.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
-        header = db.execute(READY, identity).fetchone()
+        header = db.execute(query, identity).fetchone()
         if header is None:
             raise ValueError("this build is not the eligible service's ready candidate")
         digest, size, manifest, config = header
@@ -49,7 +53,7 @@ def export_candidate(db, service, revision, attempt, path):
                 raise ValueError("candidate archive size or digest mismatch")
             # Keep a replacement writer from retiring this candidate between
             # the identity check and publication of the verified local file.
-            if db.execute(READY + " FOR SHARE OF c", identity).fetchone() != header:
+            if db.execute(query + " FOR SHARE OF c", identity).fetchone() != header:
                 raise ValueError("candidate changed during export")
     return ImageReceipt(digest, manifest, config)
 
