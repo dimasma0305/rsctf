@@ -18,7 +18,8 @@ const PUBLISH_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices" service
        AND service.host = ''
        AND service.port = 0
        AND service.container_id = $13
-       AND (NOT $14 OR (challenge.ad_allow_self_reset AND EXISTS (
+       AND (NOT $14 OR (challenge.ad_allow_self_reset
+           AND challenge.runtime_profile IS NOT DISTINCT FROM $15 AND EXISTS (
            SELECT 1 FROM "AdPatchBuildEligibleServices" e WHERE e.service_id=service.id)))
        AND participation.id = service.participation_id
        AND participation.game_id = service.game_id
@@ -122,6 +123,17 @@ pub(crate) async fn prepare_service_reset(
               AND (NOT EXISTS (SELECT 1 FROM "ControlPlaneJobs" j WHERE j.id=$7 AND j.kind='AdRollback')
                    OR EXISTS (SELECT 1 FROM "AdPreviousImageTargets" t WHERE t.service_id=service.id
                                 AND t.previous_image_ref=$8))
+              AND NOT EXISTS (
+                  SELECT 1 FROM "ControlPlaneJobs" j WHERE j.id=$7 AND j.kind='AdActivate'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM "AdPatchActivationTargets" t
+                        JOIN "AdPatchBuilds" b USING(service_id,revision,attempt)
+                        JOIN "AdPatchCandidates" c USING(service_id,revision)
+                        WHERE t.service_id=service.id AND t.registry_image_ref=$8
+                          AND t.runtime_profile IS NOT DISTINCT FROM (j.input->>'candidateRuntimeProfile')
+                          AND t.attempt::text=j.input->>'candidateAttempt'
+                          AND t.revision::text=j.input->>'candidateRevision'
+                        FOR SHARE OF b,c))
               AND participation.status = $3
               AND team.deletion_pending = FALSE
               AND game.deletion_pending = FALSE
@@ -287,7 +299,8 @@ pub(crate) async fn publish_service_reset(
     prepared_round_id: Option<i32>,
     require_running_game: bool,
     image_ref: Option<&str>,
-    rollback: bool,
+    require_patch_access: bool,
+    runtime_profile: Option<&str>,
     volume_transfer: Option<ResetVolumeTransfer<'_>>,
 ) -> AppResult<bool> {
     if !valid_replacement_endpoint(host, port, container_id) {
@@ -311,7 +324,8 @@ pub(crate) async fn publish_service_reset(
         .bind(prepared_round_id)
         .bind(image_ref)
         .bind(volume_transfer.map_or(container_id, |transfer| transfer.donor))
-        .bind(rollback)
+        .bind(require_patch_access)
+        .bind(runtime_profile)
         .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?

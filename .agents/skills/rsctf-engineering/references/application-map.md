@@ -73,6 +73,9 @@ cover corruption, replacement during transfer and competing output files.
 The [registry staging command](../../../../scripts/ad-patch-builder/stage.py)
 transfers the same build to its private service repository and records the verified digest.
 The [TLS registry test](../../../../scripts/ad-patch-builder/test_stage_registry.py) uses a real VM output and PostgreSQL.
+The [team activation endpoint](../../../../src/controllers/game/ad/patch_preview/activation.rs)
+pins a staged candidate to the current service. The [real Docker regression](../../../../src/controllers/game/ad/player_activation_tests.rs)
+checks withdrawal before retirement, request replay, flag delivery and registry identity.
 The [failed-build regression](../../../../src/services/challenge_builds/archive_tests/failed_candidate.rs)
 checks the Docker tag and the running service's data across an interrupted build,
 candidate cleanup, and retry. The [Docker transport](../../../../src/services/challenge_builds/docker_io.rs)

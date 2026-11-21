@@ -14,6 +14,9 @@ use uuid::Uuid;
 
 struct TestImage(String);
 
+#[path = "player_activation_tests.rs"]
+mod activation;
+
 impl Drop for TestImage {
     fn drop(&mut self) {
         let _ = Command::new("docker")
@@ -392,6 +395,10 @@ async fn player_reset_restores_the_registered_starter_after_an_organizer_rebuild
             .is_none()
     );
     assert_eq!(row(900042).await.unwrap(), other_team);
+    if let Ok(registry) = std::env::var("RSCTF_TEST_PATCH_REGISTRY") {
+        activation::check(&app, &state, captain, &token, &registry, &original, &flag).await;
+        assert_eq!(row(900042).await.unwrap(), other_team);
+    }
     shutdown.send_replace(true);
     capture.await.unwrap();
     runtime_pool.close().await;

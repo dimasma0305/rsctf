@@ -13,17 +13,22 @@ pub(crate) struct BuildQuery {
 #[serde(rename_all = "camelCase")]
 struct BuildStatus {
     available: bool,
-    status: Option<String>,
-    attempt: Option<Uuid>,
-    staged: bool,
+    #[serde(flatten)]
+    build: CurrentBuild,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CurrentBuild {
     status: Option<String>,
     attempt: Option<Uuid>,
+    #[serde(skip)]
     profile: Option<String>,
+    #[serde(skip)]
+    runtime_profile: Option<String>,
     staged: bool,
+    can_activate: bool,
+    active: bool,
 }
 
 pub async fn build(
@@ -50,19 +55,27 @@ pub async fn build(
             .await
             .map_err(super::revisions::db_error)?;
     }
-    let CurrentBuild { mut status, mut attempt, profile, mut staged } = sqlx::query_as::<_, CurrentBuild>(r#"
+    let mut build = sqlx::query_as::<_, CurrentBuild>(r#"
         SELECT b.status,b.attempt,(SELECT profile FROM "AdPatchOnlineBuilders" WHERE challenge_id=$4) AS profile,
-               (c.registry_image_ref IS NOT NULL AND b.status='Ready') AS staged
+               ch.runtime_profile,
+               (c.registry_image_ref IS NOT NULL AND b.status='Ready') AS staged,
+               EXISTS(SELECT 1 FROM "AdPatchActivationTargets" t
+                      WHERE t.service_id=r.service_id AND t.revision=r.revision AND t.attempt=b.attempt) AS can_activate,
+               COALESCE(c.registry_image_ref=s.published_image_ref AND s.published_image_backend=s.container_id
+                        AND s.host<>'' AND s.port BETWEEN 1 AND 65535,false) AS active
         FROM "AdPatchRevisions" r LEFT JOIN "AdPatchBuilds" b USING(service_id,revision)
+        JOIN "AdTeamServices" s ON s.id=r.service_id
+        JOIN "GameChallenges" ch ON ch.id=s.challenge_id
         LEFT JOIN "AdPatchCandidates" c ON c.service_id=r.service_id AND c.revision=r.revision
         WHERE r.service_id=$1 AND r.revision=$2 AND r.commit_id=$3"#)
         .bind(service).bind(revision).bind(query.commit).bind(challenge)
         .fetch_optional(&mut *db).await.map_err(super::revisions::db_error)?
         .ok_or_else(|| AppError::not_found("Private revision not found"))?;
-    let retry = matches!(status.as_deref(), Some("Failed" | "Replaced"))
-        && query.previous_attempt == attempt;
-    if mutate && (status.is_none() || retry) {
-        let profile = profile
+    let retry = matches!(build.status.as_deref(), Some("Failed" | "Replaced"))
+        && query.previous_attempt == build.attempt;
+    if mutate && (build.status.is_none() || retry) {
+        let profile = build
+            .profile
             .as_ref()
             .ok_or_else(|| AppError::unavailable("Patch builder is offline"))?;
         let new = Uuid::new_v4();
@@ -70,22 +83,24 @@ pub async fn build(
           VALUES($1,$2,$3,'Queued',$4) ON CONFLICT(service_id,revision) DO UPDATE
           SET attempt=excluded.attempt,status='Queued',profile=excluded.profile,claim=NULL,claimed_by=NULL,queued_at=clock_timestamp()
           WHERE "AdPatchBuilds".status IN ('Failed','Replaced') AND "AdPatchBuilds".attempt=$5"#)
-          .bind(service).bind(revision).bind(new).bind(profile).bind(attempt)
+          .bind(service).bind(revision).bind(new).bind(profile).bind(build.attempt)
           .execute(&mut *db).await.map_err(|e| if crate::utils::error::is_unique_violation(&e) {
               AppError::conflict("Another revision is building for this service")
           } else { super::revisions::db_error(e) })?;
-        status = Some("Queued".into());
-        attempt = Some(new);
-        staged = false;
+        build.status = Some("Queued".into());
+        build.attempt = Some(new);
+        build.active = false;
     }
     roster.release().await?;
+    build.can_activate &= crate::services::ad::reset::supports_patch_activation(
+        &st,
+        build.runtime_profile.as_deref(),
+    );
     Ok((
         [(header::CACHE_CONTROL, "private, no-store")],
         Json(BuildStatus {
-            available: profile.is_some(),
-            status,
-            attempt,
-            staged,
+            available: build.profile.is_some(),
+            build,
         }),
     )
         .into_response())

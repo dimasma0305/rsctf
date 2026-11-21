@@ -4606,6 +4606,8 @@ export interface AdPatchRevision {
 export interface AdPatchBuild {
   available: boolean
   staged?: boolean
+  canActivate?: boolean
+  active?: boolean
   status: 'Queued' | 'Building' | 'Ready' | 'Failed' | 'Replaced' | null
   attempt: string | null
 }
@@ -11915,6 +11917,14 @@ export class Api<
       this.request<AdPatchBuild, RequestResponse>({
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/build`,
         method, query: { service, commit, previousAttempt }, format: "json", ...params,
+      }),
+
+    activateAdPatch: (game: number, challenge: number, revision: number, service: number, attempt: string,
+      operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/game/${game}/ad/challenges/${challenge}/patch-revisions/${revision}/activate`,
+        method: "POST", body: { service, attempt }, type: ContentType.Json, format: "json",
+        ...params, headers: { ...params.headers, "Idempotency-Key": operationId },
       }),
 
     byocSourceHistory: (game: number, challenge: number, before?: number, params: RequestParams = {}) =>

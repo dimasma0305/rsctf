@@ -49,6 +49,16 @@ pub(super) async fn check(
     owner: &CurrentUser,
     outsider: &CurrentUser,
 ) {
+    sqlx::raw_sql(r#"ALTER TABLE "Games" ADD COLUMN ad_reset_cooldown_minutes integer;
+        ALTER TABLE "GameChallenges" ADD COLUMN ad_allow_self_reset boolean DEFAULT false, ADD COLUMN runtime_profile text;
+        ALTER TABLE "AdTeamServices" ADD COLUMN host text, ADD COLUMN port integer, ADD COLUMN container_id text,
+          ADD COLUMN published_image_backend text, ADD COLUMN published_image_ref text, ADD COLUMN last_reset_at timestamptz;
+        ALTER TABLE "AdPatchStarters" ADD COLUMN runtime_image_ref text"#)
+        .execute(pool).await.unwrap();
+    sqlx::raw_sql(crate::migrations::CONTROL_JOBS_SQL)
+        .execute(pool)
+        .await
+        .unwrap();
     for _ in 0..2 {
         sqlx::raw_sql(crate::migrations::m0370_ad_patch_build_queue::UP_SQL)
             .execute(pool)
@@ -59,6 +69,10 @@ pub(super) async fn check(
             .await
             .unwrap();
         sqlx::raw_sql(crate::migrations::m0375_ad_patch_registry_receipt::UP_SQL)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(crate::migrations::m0376_ad_patch_activation::UP_SQL)
             .execute(pool)
             .await
             .unwrap();

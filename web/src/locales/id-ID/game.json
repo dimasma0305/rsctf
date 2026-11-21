@@ -2,6 +2,8 @@
   "ad": {
     "patch": {
       "build_revision": "Build revisi {{number}}",
+      "activate": "Jalankan revisi {{number}}",
+      "active": "Layanan timmu sedang menjalankan image ini.",
       "reload_build": "Muat ulang status build",
       "queued": "Build masuk antrean",
       "building": "Build sedang berjalan di VM terisolasi…",

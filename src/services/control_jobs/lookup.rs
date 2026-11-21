@@ -14,7 +14,7 @@ pub async fn get_ad_reset_for_participation(
 ) -> AppResult<Option<ControlJobModel>> {
     let sql = format!(
         r#"SELECT {JOB_COLUMNS_QUALIFIED} FROM "ControlPlaneJobs" job
-            WHERE job.kind IN ('AdReset','AdRollback') AND job.game_id = $1
+            WHERE job.kind IN ('AdReset','AdRollback','AdActivate') AND job.game_id = $1
               AND (job.input->>'participationId')::integer = $2
               AND ($3::uuid IS NULL OR job.id = $3)
               AND ($4::uuid IS NULL OR EXISTS (

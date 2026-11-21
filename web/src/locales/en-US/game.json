@@ -2,6 +2,8 @@
   "ad": {
     "patch": {
       "build_revision": "Build revision {{number}}",
+      "activate": "Deploy revision {{number}}",
+      "active": "Your service is running this image.",
       "reload_build": "Reload build status",
       "queued": "Build queued",
       "building": "Building in an isolated VM…",

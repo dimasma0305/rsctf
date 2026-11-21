@@ -1055,6 +1055,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
+      patchregistry:
+        image: registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - "127.0.0.1::5000"
       postgres:
         image: postgres:18-alpine
         env:
@@ -1110,6 +1114,8 @@ jobs:
         run: sudo ./ci-artifacts/rsctf-tests same_origin_ssh_kernel_regression --ignored --test-threads=1 --nocapture
 
       - name: Recover imports, checker publication and Docker snapshots
+        env:
+          RSCTF_TEST_PATCH_REGISTRY: 127.0.0.1:${{ job.services.patchregistry.ports['5000'] }}
         run: |
           docker build --tag rsctf-architecture-smoke:ci \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src

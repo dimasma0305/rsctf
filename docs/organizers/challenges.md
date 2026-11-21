@@ -172,8 +172,8 @@ For a hosted challenge with player resets enabled, **Restore previous image**
 selects the last different image that actually served that team. The platform
 pins the selection in its rollback job and verifies the current service before
 retiring it. The starter and previous image actions share one cooldown and
-one active replacement per service. ZIP candidate activation and verification
-on all hosted runtimes are still in development.
+one active replacement per service. Deploying a staged ZIP revision uses
+the same cooldown and replacement queue.
 
 On the trusted worker host, an organizer can export a ready build to a new
 private file. Use the team's service ID, revision number, and attempt UUID
@@ -206,7 +206,12 @@ patch-worker/bin/python scripts/ad-patch-builder/stage.py \
 For a private CA, add `--cert-dir "$registry_cert_dir"`. The command verifies
 TLS and the manifest and config digests, then records the immutable reference
 under `private-event/service-<id>`. Retrying the same transfer is safe.
-Staging leaves the active service running. Keep active, previous and starter
+Staging leaves the active service running. On Docker with player resets enabled, the
+owning team can open **Team revision history**, select the build and choose
+**Deploy revision** after its cooldown. The service must already have a
+recorded running image and a registered starter image. Before replacing it,
+RSCTF rechecks the selected build attempt and its registry digest.
+Keep active, previous and starter
 digests available when applying your registry's retention policy. A transfer
 that loses eligibility can leave unreferenced data for registry garbage collection.
 

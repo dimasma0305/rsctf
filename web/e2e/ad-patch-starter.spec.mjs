@@ -212,6 +212,7 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
   let buildAttempt = null
   let builderReconnected = false
   let staged = false
+  let deployed = false
   await page.route('**/*', async route => {
     const req = route.request()
     const url = new URL(req.url())
@@ -254,7 +255,18 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
         builderReconnected = true
         return route.fulfill({ json: { available: false, status: 'Building', attempt: buildAttempt } })
       }
-      return route.fulfill({ json: { available: true, status: buildAttempt ? 'Ready' : null, attempt: buildAttempt, staged } })
+      return route.fulfill({ json: { available: true, status: buildAttempt ? 'Ready' : null, attempt: buildAttempt, staged,
+        canActivate: staged && !deployed, active: deployed } })
+    }
+    if (path === root + '/patch-revisions/1/activate') {
+      expect(req.method()).toBe('POST')
+      expect(req.postDataJSON()).toEqual({ service: 91, attempt: buildAttempt })
+      expect(req.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/)
+      return route.fulfill({ status: 202, json: { id: 'deployment', status: 'Queued' } })
+    }
+    if (path === '/api/game/901/ad/resetjobs/deployment') {
+      deployed = true
+      return route.fulfill({ json: { id: 'deployment', status: 'Succeeded' } })
     }
     if (path === root + '/patch-revisions/1/source.zip') {
       expect(url.searchParams.get('commit')).toBe(revisions[0].commitId)
@@ -307,6 +319,9 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
   staged = true
   await panel.getByRole('button', { name: 'Reload build status' }).click()
   await expect(panel.getByText(/^Image verified in the registry\./)).toBeVisible()
+  await panel.getByRole('button', { name: 'Deploy revision 1' }).click()
+  await expect(panel.getByText('Your service is running this image.')).toBeVisible()
+  await expect(panel.getByRole('button', { name: 'Deploy revision 1' })).toHaveCount(0)
   await expect(panel.locator('details').getByRole('listitem')).toHaveText('Added · src/version.txt')
   const revisionDownload = page.waitForEvent('download')
   await panel.getByRole('button', { name: 'Download revision 1 ZIP' }).click()

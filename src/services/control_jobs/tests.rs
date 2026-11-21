@@ -21,6 +21,7 @@ fn immutable_jobs_never_coalesce_different_revisions() {
         ControlJobKind::BuildBatch,
         ControlJobKind::VariantGeneration,
         ControlJobKind::WorkloadRollout,
+        ControlJobKind::AdActivate,
     ] {
         assert!(can_coalesce_active(kind, "same", "same"));
         assert!(!can_coalesce_active(kind, "old", "new"));

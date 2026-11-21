@@ -19,6 +19,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 
+pub(super) mod activation;
 pub(super) mod builds;
 pub(super) mod revisions;
 pub(super) mod source;

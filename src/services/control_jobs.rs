@@ -66,6 +66,7 @@ pub enum ControlJobKind {
     AdReconcile,
     AdReset,
     AdRollback,
+    AdActivate,
     ImagePreflight,
     CompetitionResume,
 }
@@ -81,6 +82,7 @@ impl ControlJobKind {
             Self::AdReconcile => "AdReconcile",
             Self::AdReset => "AdReset",
             Self::AdRollback => "AdRollback",
+            Self::AdActivate => "AdActivate",
             Self::ImagePreflight => "ImagePreflight",
             Self::CompetitionResume => "CompetitionResume",
         }
@@ -330,7 +332,7 @@ pub async fn enqueue(
 
     let active_sql = format!(
         r#"SELECT {JOB_COLUMNS} FROM "ControlPlaneJobs"
-            WHERE (kind = $1 OR ($1 IN ('AdReset','AdRollback') AND kind IN ('AdReset','AdRollback')))
+            WHERE (kind = $1 OR ($1 IN ('AdReset','AdRollback','AdActivate') AND kind IN ('AdReset','AdRollback','AdActivate')))
               AND scope_key = $2 AND status IN (0, 1)
             ORDER BY created_at_utc, id LIMIT 1
             FOR UPDATE"#
@@ -395,10 +397,13 @@ pub async fn enqueue(
             2,
         ));
     }
-    if matches!(kind, ControlJobKind::AdReset | ControlJobKind::AdRollback) {
+    if matches!(
+        kind,
+        ControlJobKind::AdReset | ControlJobKind::AdRollback | ControlJobKind::AdActivate
+    ) {
         let game_active: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*) FROM "ControlPlaneJobs"
-                WHERE kind IN ('AdReset','AdRollback') AND game_id = $1 AND status IN (0, 1)"#,
+                WHERE kind IN ('AdReset','AdRollback','AdActivate') AND game_id = $1 AND status IN (0, 1)"#,
         )
         .bind(game_id)
         .fetch_one(&mut *transaction)
@@ -418,7 +423,7 @@ pub async fn enqueue(
         {
             let participation_active: i64 = sqlx::query_scalar(
                 r#"SELECT COUNT(*) FROM "ControlPlaneJobs"
-                    WHERE kind IN ('AdReset','AdRollback') AND game_id = $1
+                    WHERE kind IN ('AdReset','AdRollback','AdActivate') AND game_id = $1
                       AND status IN (0, 1)
                       AND (input->>'participationId')::integer = $2"#,
             )

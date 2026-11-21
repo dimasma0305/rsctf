@@ -6,7 +6,7 @@ use std::{
 };
 use tokio::sync::watch;
 
-pub(super) const JOB_KINDS: [&str; 9] = [
+pub(super) const JOB_KINDS: [&str; 10] = [
     "AdReset",
     "AdReconcile",
     "ChallengeBuild",
@@ -16,6 +16,7 @@ pub(super) const JOB_KINDS: [&str; 9] = [
     "VariantGeneration",
     "SecurityDerivation",
     "AdRollback",
+    "AdActivate",
 ];
 pub(super) static QUEUED: [AtomicU64; JOB_KINDS.len()] =
     [const { AtomicU64::new(0) }; JOB_KINDS.len()];

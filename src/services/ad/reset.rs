@@ -20,6 +20,15 @@ use crate::utils::error::{AppError, AppResult};
 const DEFAULT_PLAYER_COOLDOWN_SECONDS: i64 = 300;
 const INFRASTRUCTURE_RESET_FLOOR_SECONDS: i64 = 30;
 
+// Docker transfers declared team data volumes. The Kubernetes launch path
+// currently creates fresh pods, and remote workers only provision Jeopardy.
+pub(crate) fn supports_patch_activation(st: &SharedState, profile: Option<&str>) -> bool {
+    matches!(
+        st.containers.profile_backend_kind(profile),
+        Ok(crate::services::container::ContainerBackendKind::Docker)
+    )
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ResetJobInput {
@@ -40,6 +49,10 @@ struct ResetJobInput {
     #[serde(default)]
     preserve_data_volumes: bool,
     previous_image_ref: Option<String>,
+    candidate_image_ref: Option<String>,
+    candidate_revision: Option<i32>,
+    candidate_attempt: Option<uuid::Uuid>,
+    candidate_runtime_profile: Option<String>,
 }
 
 fn backend_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
@@ -72,7 +85,7 @@ pub(super) async fn owns_unpublished_service(
 ) -> AppResult<bool> {
     sqlx::query_scalar(
         r#"SELECT EXISTS (SELECT 1 FROM "ControlPlaneJobs"
-            WHERE kind IN ('AdReset','AdRollback') AND scope_key=$1 AND status IN (0,1)
+            WHERE kind IN ('AdReset','AdRollback','AdActivate') AND scope_key=$1 AND status IN (0,1)
               AND game_id=$2 AND challenge_id=$3 AND input @> $4)"#,
     )
     .bind(format!("ad-service:{}", service.id))
@@ -92,6 +105,20 @@ pub async fn execute_job(
     let input: ResetJobInput = serde_json::from_value(claimed.input.clone())
         .map_err(|error| AppError::internal(format!("invalid reset job input: {error}")))?;
     let rollback = job.kind == "AdRollback";
+    let activation = job.kind == "AdActivate";
+    if activation
+        && (!input.player_policy
+            || input.candidate_revision.is_none()
+            || input.candidate_attempt.is_none()
+            || !input
+                .candidate_image_ref
+                .as_deref()
+                .is_some_and(crate::services::challenge_images::is_repository_digest))
+    {
+        return Err(AppError::conflict(
+            "The activation has no verified player build",
+        ));
+    }
     if rollback && (!input.player_policy || input.previous_image_ref.is_none()) {
         return Err(AppError::conflict(
             "The rollback has no player image receipt",
@@ -161,6 +188,14 @@ pub async fn execute_job(
             "Self-hosted services cannot be reset from the platform",
         ));
     }
+    if activation
+        && (input.candidate_runtime_profile != challenge.runtime_profile
+            || !supports_patch_activation(st, challenge.runtime_profile.as_deref()))
+    {
+        return Err(AppError::conflict(
+            "This runtime cannot transfer a hosted service to a patch image",
+        ));
+    }
     if input.player_policy && !challenge.ad_allow_self_reset {
         return Err(AppError::bad_request(
             "Self-reset is not allowed for this service",
@@ -199,7 +234,7 @@ pub async fn execute_job(
     }
 
     let resuming = replacement_checkpointed || recovering_preparation;
-    if rollback && resuming {
+    if (rollback || activation) && resuming {
         // Recovery may be claimed after a division lost challenge access.
         let eligible = sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(SELECT 1 FROM "AdPatchBuildEligibleServices" WHERE service_id=$1)"#,
@@ -219,7 +254,12 @@ pub async fn execute_job(
         if rollback && input.prepared_image_ref != input.previous_image_ref {
             return Err(AppError::conflict("The prepared rollback image changed"));
         }
+        if activation && input.prepared_image_ref != input.candidate_image_ref {
+            return Err(AppError::conflict("The prepared patch image changed"));
+        }
         input.prepared_image_ref
+    } else if activation {
+        input.candidate_image_ref
     } else if rollback {
         input.previous_image_ref
     } else if input.player_policy {
@@ -408,7 +448,8 @@ pub async fn execute_job(
             // A worker from before image checkpointing may already have launched
             // its replacement against a different organizer build.
             (!resuming || pinned.is_some()).then_some(image.as_str()),
-            rollback,
+            rollback || activation,
+            challenge.runtime_profile.as_deref(),
             volume_donor.map(|donor| crate::services::ad_engine::ResetVolumeTransfer {
                 donor,
                 job: job.id,
