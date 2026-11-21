@@ -18,9 +18,10 @@ from psycopg import sql
 
 from build import ImageReceipt, private_archive
 from export import export_candidate
+from stage import service_repository, stage_candidate
 
 
-class ExportTests(unittest.TestCase):
+class CandidateFixture(unittest.TestCase):
     def setUp(self):
         url = os.environ["RSCTF_TEST_DATABASE_URL"]
         self.db = psycopg.connect(url, autocommit=True)
@@ -39,6 +40,8 @@ class ExportTests(unittest.TestCase):
             CREATE TABLE "AdPatchBuilds"(service_id int, revision int, attempt uuid, status text);
             CREATE TABLE "AdPatchBuildEligibleServices"(service_id int PRIMARY KEY);
         ''')
+        migration = Path(__file__).resolve().parents[2] / "src/migrations/m0375_ad_patch_registry_receipt.rs"
+        self.db.execute(migration.read_text().split('r#"', 1)[1].split('"#;', 1)[0])
         self.attempt = uuid.uuid4()
         self.first = b"a" * 1048576
         self.data = self.first + b"tail"
@@ -51,6 +54,8 @@ class ExportTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.path = Path(tmp.name) / "candidate.oci.tar"
 
+
+class ExportTests(CandidateFixture):
     def export(self):
         return export_candidate(self.db, 1, 4, self.attempt, self.path)
 
@@ -126,6 +131,65 @@ class ExportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed during export"):
                 self.export()
         self.assertEqual(list(self.path.parent.iterdir()), [])
+
+
+class StagingTests(CandidateFixture):
+    def setUp(self):
+        super().setUp()
+        self.prefix = "registry.example/private"
+        self.manifest, self.config = ("sha256:" + c * 64 for c in "ab")
+        self.db.execute('UPDATE "AdPatchCandidates" SET manifest_digest=%s, config_digest=%s',
+                        (self.manifest, self.config))
+
+    def stage(self, db=None, prefix=None):
+        return stage_candidate(db or self.db, 1, 4, self.attempt, prefix or self.prefix)
+
+    def stored_ref(self):
+        return self.db.execute('SELECT registry_image_ref FROM "AdPatchCandidates"').fetchone()[0]
+
+    def test_repository_scope(self):
+        for prefix in ("unqualified/project", "registry.example", "registry.example/p:tag",
+                       "https://registry.example/p", "user@registry.example/p", "registry.example/a/../b",
+                       "registry.example:65536/project", "registry.example/p@sha256:abc"):
+            with self.subTest(prefix=prefix), self.assertRaises(ValueError):
+                service_repository(prefix, 1)
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            self.db.execute('UPDATE "AdPatchCandidates" SET registry_image_ref=%s',
+                            (f"{self.prefix}/service-2@{self.manifest}",))
+
+    def test_idempotent_scoped_receipt_and_single_registry_writer(self):
+        def concurrent(*args):
+            with self.assertRaisesRegex(ValueError, "another registry transfer"):
+                self.stage(self.other, "registry.example/other")
+        with patch("stage.push_candidate", side_effect=concurrent) as push:
+            ref = self.stage()
+            self.assertEqual(ref, f"{self.prefix}/service-1@{self.manifest}")
+            self.assertEqual(self.stored_ref(), ref)
+            self.assertEqual(self.stage(), ref)
+            with self.assertRaisesRegex(ValueError, "different repository"):
+                self.stage(prefix="registry.example/other")
+            self.assertEqual(push.call_count, 2)
+
+    def test_revocation_during_upload_and_transport_failure(self):
+        with patch("stage.push_candidate", side_effect=OSError("offline")), self.assertRaises(OSError):
+            self.stage()
+        self.assertIsNone(self.stored_ref())
+        def revoke(*args):
+            self.other.execute('DELETE FROM "AdPatchBuildEligibleServices" WHERE service_id=1')
+        with patch("stage.push_candidate", side_effect=revoke), self.assertRaisesRegex(ValueError, "eligibility"):
+            self.stage()
+        self.assertIsNone(self.stored_ref())
+
+    def test_reject_other_service_stale_attempt_and_legacy_guest_before_upload(self):
+        with patch("stage.push_candidate") as push:
+            for identity in ((2, 4, self.attempt), (1, 5, self.attempt), (1, 4, uuid.uuid4())):
+                with self.subTest(identity=identity), self.assertRaisesRegex(ValueError, "ready candidate"):
+                    stage_candidate(self.db, *identity, self.prefix)
+            self.db.execute('UPDATE "AdPatchCandidates" SET config_digest=NULL,manifest_digest=NULL')
+            with self.assertRaisesRegex(ValueError, "rebuild"):
+                self.stage()
+            push.assert_not_called()
+        self.assertIsNone(self.stored_ref())
 
 
 if __name__ == "__main__":

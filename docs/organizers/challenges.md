@@ -193,6 +193,23 @@ When updating an existing builder, migrate the server database first, then
 update the worker and rebuild its guest for new jobs.
 Exporting leaves the team's running service on its current revision.
 
+To put one selected build in your private runtime registry, install `skopeo`
+on the trusted worker and grant its account push access to the event namespace.
+Configure that namespace to allow pulls only by the appropriate runtime. Run:
+
+```sh
+patch-worker/bin/python scripts/ad-patch-builder/stage.py \
+  --service "$service_id" --revision "$revision" --attempt "$attempt" \
+  --repository registry.example.org/private-event --authfile "$registry_authfile"
+```
+
+For a private CA, add `--cert-dir "$registry_cert_dir"`. The command verifies
+TLS and the manifest and config digests, then records the immutable reference
+under `private-event/service-<id>`. Retrying the same transfer is safe.
+Staging leaves the active service running. Keep active, previous and starter
+digests available when applying your registry's retention policy. A transfer
+that loses eligibility can leave unreferenced data for registry garbage collection.
+
 To rehearse with five hosted services, generate a separate hidden event from
 the bundled example repository. Each service includes a starter ZIP, two
 working patch revisions, a ZIP that fails to build, and a checker. Record the

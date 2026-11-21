@@ -147,12 +147,12 @@ jobs:
       - name: Test offline defensive patch VM
         run: |
           python3 scripts/ad-patch-builder/test_result.py
-          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios python3-venv skopeo
+          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios python3-venv skopeo docker-registry
           docker buildx build --platform linux/amd64 --output "type=local,dest=$RUNNER_TEMP/patch-guest" scripts/ad-patch-builder
-          python3 scripts/test-ad-patch-context.py ./target/debug/rsctf --guest "$RUNNER_TEMP/patch-guest" --docker-load \
-            --registry-port "${{ job.services.patchregistry.ports['5000'] }}"
           python3 -m venv "$RUNNER_TEMP/patch-worker"
           "$RUNNER_TEMP/patch-worker/bin/pip" install -r scripts/ad-patch-builder/requirements.txt
+          python3 scripts/test-ad-patch-context.py ./target/debug/rsctf --guest "$RUNNER_TEMP/patch-guest" --docker-load \
+            --registry-port "${{ job.services.patchregistry.ports['5000'] }}" --stage-python "$RUNNER_TEMP/patch-worker/bin/python"
           "$RUNNER_TEMP/patch-worker/bin/python" scripts/ad-patch-builder/test_export.py
           RSCTF_PATCH_VM_GUEST="$RUNNER_TEMP/patch-guest" \
             RSCTF_PATCH_WORKER_PYTHON="$RUNNER_TEMP/patch-worker/bin/python" \

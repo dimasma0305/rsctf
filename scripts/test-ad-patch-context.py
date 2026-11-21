@@ -13,7 +13,7 @@ import time
 import uuid
 
 
-def check(binary, directory, guest, docker_load, registry_port):
+def check(binary, directory, guest, docker_load, registry_port, stage_python=None):
     source = directory / "source"
     source.mkdir()
     (source / "Dockerfile").write_text(
@@ -38,7 +38,7 @@ def check(binary, directory, guest, docker_load, registry_port):
     subprocess.run(["git", "archive", "--format=zip", "-o", archive, tree], cwd=source, check=True)
 
     if guest:
-        return check_vm(binary, directory, guest, archive, tree, docker_load, registry_port)
+        return check_vm(binary, directory, guest, archive, tree, docker_load, registry_port, stage_python)
 
     context = directory / "context.tar"
     with context.open("wb") as output:
@@ -160,7 +160,7 @@ def check_interrupted_vm(command, directory):
     assert set(directory.iterdir()) == before, "worker death left private files on disk"
 
 
-def check_vm(binary, directory, guest, archive, tree, docker_load, registry_port):
+def check_vm(binary, directory, guest, archive, tree, docker_load, registry_port, stage_python=None):
     output = directory / "revision.oci.tar"
     builder = pathlib.Path(__file__).parent / "ad-patch-builder" / "build.py"
     command = [sys.executable, builder, archive, tree, "--rsctf", binary, "--guest", guest, "--json", "--output", output]
@@ -180,6 +180,9 @@ def check_vm(binary, directory, guest, archive, tree, docker_load, registry_port
         check_docker_load(output, image_id)
     if registry_port:
         check_registry(output, registry_port, receipt)
+    if stage_python:
+        subprocess.run([stage_python, builder.with_name("test_stage_registry.py"), output, manifest, image_id],
+                       check=True, timeout=120)
 
     def repack(dockerfile):
         source = directory / "source"
@@ -219,10 +222,11 @@ if __name__ == "__main__":
     parser.add_argument("--guest", type=pathlib.Path)
     parser.add_argument("--docker-load", action="store_true", help="load and run the fixed VM-built fixture on a local Docker daemon")
     parser.add_argument("--registry-port", type=int, help="port of a disposable loopback test registry")
+    parser.add_argument("--stage-python", type=pathlib.Path, help="worker Python for the PostgreSQL and TLS registry test")
     args = parser.parse_args()
-    if (args.docker_load or args.registry_port is not None) and not args.guest:
+    if (args.docker_load or args.registry_port is not None or args.stage_python) and not args.guest:
         parser.error("runtime image checks require --guest")
     if args.registry_port is not None and not 1 <= args.registry_port <= 65535:
         parser.error("invalid test registry port")
     with tempfile.TemporaryDirectory(prefix="rsctf-patch-build-") as temporary:
-        check(args.binary.resolve(strict=True), pathlib.Path(temporary), args.guest, args.docker_load, args.registry_port)
+        check(args.binary.resolve(strict=True), pathlib.Path(temporary), args.guest, args.docker_load, args.registry_port, args.stage_python)

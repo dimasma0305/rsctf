@@ -70,6 +70,9 @@ checks ownership, replay, failure and candidate retention.
 The [private image export](../../../../scripts/ad-patch-builder/export.py) selects one service,
 revision and build attempt. Its [PostgreSQL regressions](../../../../scripts/ad-patch-builder/test_export.py)
 cover corruption, replacement during transfer and competing output files.
+The [registry staging command](../../../../scripts/ad-patch-builder/stage.py)
+transfers the same build to its private service repository and records the verified digest.
+The [TLS registry test](../../../../scripts/ad-patch-builder/test_stage_registry.py) uses a real VM output and PostgreSQL.
 The [failed-build regression](../../../../src/services/challenge_builds/archive_tests/failed_candidate.rs)
 checks the Docker tag and the running service's data across an interrupted build,
 candidate cleanup, and retry. The [Docker transport](../../../../src/services/challenge_builds/docker_io.rs)
