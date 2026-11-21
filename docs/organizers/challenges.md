@@ -139,9 +139,13 @@ distinct published image until the game ends. Restarting on the same image
 preserves the previous version. An interrupted reset keeps its staged image
 even if the organizer rebuilds the challenge during recovery. When a hosted
 container stops, automatic repair uses the team's last published image and its
-current round flag. A round change during launch makes RSCTF discard the stale
-replacement. Existing services
-begin recording history at their next publication. Keep portable digests available in your own registry.
+current round flag. Before removing a stopped Docker container or resuming an
+interrupted reset that still has its old container, RSCTF checks that Docker
+can load the selected image. If staging fails, the old container and its files
+stay on the host. A stopped service's address is withdrawn so it cannot route
+players to a different workload. A round change during launch makes RSCTF
+discard the stale replacement. Existing services begin recording history at
+their next publication. Keep portable digests available in your own registry.
 Activation and rollback across hosted runtimes are still in development.
 
 On the trusted worker host, an organizer can export a ready build to a new
@@ -163,8 +167,11 @@ update the worker and rebuild its guest for new jobs.
 Exporting leaves the team's running service on its current revision.
 
 To rehearse with five hosted services, generate a separate hidden event from
-the bundled example repository. Each service comes with a starter ZIP, a
-working repair and a build-failure case.
+the bundled example repository. Each service includes a starter ZIP, two
+working patch revisions, a ZIP that fails to build, and a checker. Record the
+value of `GET /installation` for each team's service before the first patch.
+After activation or rollback, the same value indicates that the team's
+SQLite record in `/var/lib/rehearsal` survived the replacement.
 
 ```sh
 git submodule update --init examples/challenge-repository

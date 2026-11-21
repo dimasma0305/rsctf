@@ -20,10 +20,15 @@ async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
         .profile_pull_image(None, &image)
         .await
         .unwrap();
+    let scope = docker_installation_scope();
     let live = LiveService(docker(&[
         "run",
         "-d",
         "--rm",
+        "--label",
+        &format!("rsctf.managed={scope}"),
+        "--label",
+        &format!("rsctf.scope={scope}"),
         "-p",
         "127.0.0.1::8080",
         &image,
@@ -126,6 +131,64 @@ async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
             "ok"
         );
     }
+    // A process can stop after committing the preparation but before removing
+    // the old container. Remove only this test's staged replacement image.
+    let replacement = docker(&[
+        "commit",
+        "--pause=false",
+        "--change",
+        &format!("LABEL fixture.reset={}", job.id),
+        &live.0,
+    ]);
+    state
+        .containers
+        .profile_pull_image(None, &replacement)
+        .await
+        .unwrap();
+    let prepared = crate::services::ad_engine::prepare_service_reset(
+        &state.db,
+        fixture.game_id,
+        900041,
+        Some(&live.0),
+        job.id,
+        claimed.lease_token,
+        &replacement,
+        "fixture reset",
+    )
+    .await;
+    docker(&["image", "rm", &replacement]);
+    assert_eq!(
+        prepared.unwrap().retired_container_id.as_ref(),
+        Some(&live.0)
+    );
+    docker(&[
+        "exec",
+        &live.0,
+        "sh",
+        "-c",
+        "printf team-data > /tmp/reset-note",
+    ]);
+    sqlx::query(r#"UPDATE "ControlPlaneJobs" SET lease_expires_at_utc=now()-interval '1 second' WHERE id=$1"#)
+        .bind(job.id).execute(pool).await.unwrap();
+    let reclaimed = control_jobs::claim_next(pool, kind, Duration::from_secs(60))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(claimed.lease_token, reclaimed.lease_token);
+    let checkpoint = snapshot().await.unwrap();
+    let error = super::execute_job(&state, &reclaimed).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("daemon-local image id is absent"),
+        "{error}"
+    );
+    assert_eq!(snapshot().await.unwrap(), checkpoint);
+    assert_eq!(
+        docker(&["exec", &live.0, "cat", "/tmp/reset-note"]),
+        "team-data"
+    );
+    assert!(client.get(&url).send().await.unwrap().status().is_success());
     drop(live);
     fixture.cleanup().await;
 }
@@ -200,6 +263,51 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
     docker(&["start", &starting.0]);
     assert_eq!(reconcile().await.unwrap(), (0, 1));
 
+    let (shutdown, rx) = tokio::sync::watch::channel(false);
+    let capture = crate::services::traffic::start_capture_reconciler(state.clone(), rx);
+    docker(&[
+        "exec",
+        &starting.0,
+        "sh",
+        "-c",
+        "printf team-data > /tmp/repair-note",
+    ]);
+    docker(&["stop", "-t", "1", &starting.0]);
+    sqlx::raw_sql(r#"SET LOCAL rsctf.maintenance_writer='on';
+        UPDATE "GameChallenges" SET build_image_digest='sha256:' || repeat('e',64) WHERE id=900031"#)
+        .execute(pool).await.unwrap();
+    assert_eq!(reconcile().await.unwrap(), (0, 2));
+    let stopped = row(900041).await.unwrap();
+    assert_eq!(stopped["host"], "");
+    assert_eq!(stopped["port"], 0);
+    assert_eq!(stopped["container_id"], starting.0);
+    assert_eq!(row(900042).await.unwrap(), unrelated);
+    let note = std::env::temp_dir().join(format!("rsctf-repair-note-{}", Uuid::new_v4()));
+    docker(&[
+        "cp",
+        &format!("{}:/tmp/repair-note", starting.0),
+        note.to_str().unwrap(),
+    ]);
+    let contents = std::fs::read(&note).unwrap();
+    std::fs::remove_file(note).unwrap();
+    assert_eq!(contents, b"team-data");
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL rsctf.maintenance_writer='on'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(r#"UPDATE "GameChallenges" SET build_image_digest=$1 WHERE id=900031"#)
+        .bind(&image)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(reconcile().await.unwrap(), (1, 1));
+    let repaired = row(900041).await.unwrap();
+    assert_ne!(repaired["container_id"], starting.0);
+    let starting = LiveService(repaired["container_id"].as_str().unwrap().to_owned());
+    assert_eq!(repaired["published_image_ref"], image);
+
     let kind = ControlJobKind::AdReset;
     let job = control_jobs::enqueue(
         pool,
@@ -253,8 +361,6 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
     assert!(protected);
     let recovered = claim().await.unwrap().unwrap();
     assert_ne!(recovered.lease_token, first.lease_token);
-    let (shutdown, rx) = tokio::sync::watch::channel(false);
-    let capture = crate::services::traffic::start_capture_reconciler(state.clone(), rx);
     let result = super::execute_job(&state, &recovered).await;
     shutdown.send_replace(true);
     capture.await.unwrap();

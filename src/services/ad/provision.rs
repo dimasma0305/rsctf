@@ -571,6 +571,19 @@ pub(crate) async fn ensure_ad_containers(
                     existing.as_ref().unwrap().id,
                 )
                 .await?;
+                // The withdrawn address may already have been recycled. Keep
+                // the backend ID and writable layer until the image is ready.
+                if let Err(error) = st
+                    .containers
+                    .profile_pull_image(c.runtime_profile.as_deref(), &image)
+                    .await
+                {
+                    tracing::warn!(challenge = c.id, participation = p.id, backend_id = %cid,
+                        %error, "could not stage A&D repair image; retaining old workload");
+                    failures += 1;
+                    distributed.release().await?;
+                    continue;
+                }
                 crate::services::traffic::destroy_container_after_capture_fence(st, &cid).await?;
                 if let Some(row) = existing.as_mut() {
                     row.host.clear();

@@ -212,6 +212,18 @@ pub async fn execute_job(
         &challenge,
         pinned.as_deref(),
     )?;
+    let retained_backend = input
+        .retired_backend_id
+        .as_deref()
+        .filter(|retired| service.container_id.as_deref() == Some(*retired));
+    // A durable preparation records which image to use. A reclaimed job may
+    // run after that image disappeared, while the retired container still
+    // holds the team's files. Stage the image again before removing it.
+    if !resuming || (recovering_preparation && retained_backend.is_some()) {
+        st.containers
+            .profile_pull_image(challenge.runtime_profile.as_deref(), &image)
+            .await?;
+    }
     let (prepared_round_id, current_flag) = if resuming {
         let flag = match input.prepared_round_id {
             Some(round_id) => sqlx::query_scalar::<_, String>(
@@ -227,11 +239,7 @@ pub async fn execute_job(
         };
         if recovering_preparation {
             crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
-            if let Some(retired_backend_id) = input
-                .retired_backend_id
-                .as_deref()
-                .filter(|retired| service.container_id.as_deref() == Some(*retired))
-            {
+            if let Some(retired_backend_id) = retained_backend {
                 crate::services::traffic::destroy_container_after_capture_fence(
                     st,
                     retired_backend_id,
@@ -241,11 +249,6 @@ pub async fn execute_job(
         }
         (input.prepared_round_id, flag)
     } else {
-        // Docker can stage the immutable image while the old endpoint still
-        // serves traffic. A missing image must not start reset downtime.
-        st.containers
-            .profile_pull_image(challenge.runtime_profile.as_deref(), &image)
-            .await?;
         let reason = if input.player_policy {
             "service reset before checker completion"
         } else {
