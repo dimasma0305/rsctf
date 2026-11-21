@@ -209,9 +209,11 @@ continue managing that stack from their original challenge folder.
   host-side patches. Edits elsewhere in those containers are outside coverage.
 
 The agent checks common source files and build manifests once per minute.
-It skips hidden paths and dependency directories such as `node_modules` and
-`vendor`. To select exact paths, put a `.rsctf-files` list in the watched
-directory, one relative path per line. An empty list disables observation.
+It skips hidden paths, dependency directories such as `node_modules` and
+`vendor`, and files or directories mounted separately inside the source tree.
+To select exact paths, put a `.rsctf-files` list in the watched directory,
+one relative path per line. If that list includes a path on another mount,
+the agent reports that the source could not be read. An empty list disables observation.
 Existing bundles with an explicit list retain that behavior.
 The server collects up to four reports at a time. Connected agents waiting
 for a slot are served in order.

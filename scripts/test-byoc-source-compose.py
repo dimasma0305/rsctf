@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import tempfile
@@ -31,6 +32,7 @@ def wait_for_report(container, *expected):
     while True:
         log = subprocess.check_output(["docker", "logs", "--tail", "100", container],
                                       stderr=subprocess.STDOUT, text=True, timeout=10)
+        log = re.sub(r"\x1b\[[0-9;]*m", "", log)
         if any(all(word in line for word in expected) for line in log.splitlines()):
             return
         if time.monotonic() >= deadline or docker("inspect", "-f", "{{.State.Running}}", container) != "true":
@@ -169,6 +171,33 @@ def check(args, root, stack):
         assert docker("compose", "ps", "-q", "service", cwd=root) == before
         assert docker("compose", "ps", "-q", "rsctf-agent", cwd=root) == agent
     print("Standalone compose.yaml started the agent and observed a host source edit.")
+
+    # A team's source mount can have unrelated mounts beneath it, including
+    # individual files on the same filesystem as the registered source.
+    attached = root / "attached"
+    attached.mkdir()
+    attached.chmod(0o755)
+    (attached / "external.py").write_text("outside the source tree\n")
+    (attached / "external.py").chmod(0o644)
+    (source_dir / "attached").mkdir()
+    (source_dir / "mounted.py").touch()
+    override = root / "mounts.yaml"
+    override.write_text("""services:
+  rsctf-agent:
+    volumes:
+      - ./attached:/rsctf-source/attached:ro
+      - ./attached/external.py:/rsctf-source/mounted.py:ro
+""")
+    overlay = ["compose", "-f", "compose.yaml", "-f", "mounts.yaml"]
+    docker(*overlay, "up", "-d", "--no-deps", "--force-recreate", "rsctf-agent", cwd=root)
+    agent = docker(*overlay, "ps", "-q", "rsctf-agent", cwd=root)
+    wait_for_report(agent, "source baseline recorded", "files=1")
+    (source_dir / ".rsctf-files").write_text("main.py\nmounted.py\n")
+    (source_dir / ".rsctf-files").chmod(0o644)
+    docker(*overlay, "up", "-d", "--no-deps", "--force-recreate", "rsctf-agent", cwd=root)
+    agent = docker(*overlay, "ps", "-q", "rsctf-agent", cwd=root)
+    wait_for_report(agent, "registered source could not be observed")
+    print("Automatic discovery kept the local source and skipped separate mounts. Explicit registration failed closed.")
 
 
 if __name__ == "__main__":

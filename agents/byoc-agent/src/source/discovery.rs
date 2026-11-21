@@ -46,6 +46,21 @@ fn source_file(name: &str) -> bool {
     )
 }
 
+fn open_on_source_mount(root: &File, path: &str, flags: OFlags) -> io::Result<Option<File>> {
+    match openat2(
+        root,
+        path,
+        flags | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_XDEV,
+    ) {
+        Ok(fd) => Ok(Some(File::from(fd))),
+        // Files can also disappear between readdir and open during a team edit.
+        Err(rustix::io::Errno::XDEV | rustix::io::Errno::NOENT) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(super) fn discover(root: &File) -> io::Result<BTreeSet<String>> {
     let mut files = BTreeSet::new();
     let mut pending = vec![String::new()];
@@ -54,13 +69,12 @@ pub(super) fn discover(root: &File) -> io::Result<BTreeSet<String>> {
         let dir = if prefix.is_empty() {
             root.try_clone()?
         } else {
-            File::from(openat2(
-                root,
-                prefix.as_str(),
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                Mode::empty(),
-                ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_XDEV,
-            )?)
+            let Some(dir) =
+                open_on_source_mount(root, &prefix, OFlags::RDONLY | OFlags::DIRECTORY)?
+            else {
+                continue;
+            };
+            dir
         };
         for entry in std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()))? {
             inspected += 1;
@@ -103,6 +117,11 @@ pub(super) fn discover(root: &File) -> io::Result<BTreeSet<String>> {
                 }
                 pending.push(path);
             } else if kind.is_file() && source_file(&name) {
+                // read_dir reports a bind-mounted file as regular. Check its
+                // mount without reading the payload or counting it as source.
+                if open_on_source_mount(&dir, &name, OFlags::PATH)?.is_none() {
+                    continue;
+                }
                 if path.len() > 240 || files.len() >= MAX_FILES {
                     return Err(invalid());
                 }
