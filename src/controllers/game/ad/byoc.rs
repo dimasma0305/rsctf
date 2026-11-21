@@ -611,7 +611,7 @@ pub async fn byoc_setup(
     let public_origin = canonical_public_origin(st.config.public_url.as_deref(), &headers)?;
     let ctx = resolve_byoc(&st, &user, id, challenge_id, &public_origin).await?;
     let script = build_setup_script(id, challenge_id, &ctx);
-    let fname = format!("setup-{}.sh", slugify(&ctx.title, challenge_id));
+    let fname = format!("setup-{id}-{challenge_id}.sh");
     Ok(text_attachment("application/x-sh", &fname, script))
 }
 
@@ -626,8 +626,7 @@ pub async fn byoc_compose(
     let public_origin = canonical_public_origin(st.config.public_url.as_deref(), &headers)?;
     let ctx = resolve_byoc(&st, &user, id, challenge_id, &public_origin).await?;
     let compose = build_compose(id, challenge_id, &ctx);
-    let fname = format!("docker-compose-{}.yml", slugify(&ctx.title, challenge_id));
-    Ok(text_attachment("application/yaml", &fname, compose))
+    Ok(text_attachment("application/yaml", "compose.yaml", compose))
 }
 
 /// `GET /api/Game/{id}/Ad/Byoc/Agent/{participationId}/{challengeId}/{token}` —

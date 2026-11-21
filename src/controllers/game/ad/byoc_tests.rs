@@ -739,6 +739,14 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
         0
     );
 
+    // Reinstall with the BSD stat interface used on macOS.
+    let stat = bin.join("stat");
+    std::fs::write(
+        &stat,
+        "#!/bin/sh\n[ \"$1\" = -f ] && [ \"$2\" = %u ] && [ -d \"$3\" ] || exit 1\nid -u\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stat, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(run_setup(r#"[{"Name":"rsctf-byoc-17-23_flag"}]"#)
         .status
         .success());
@@ -748,6 +756,12 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
     assert!(run_setup(r#"[{"Name":"rsctf-byoc-17-23_source-abc"}]"#)
         .status
         .success());
+    assert_eq!(std::fs::read_to_string(&compose_log).unwrap(), compose);
+
+    std::fs::write(&stat, "#!/bin/sh\necho foreign-owner\n").unwrap();
+    let refused = run_setup("");
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("belongs to another user"));
     assert_eq!(std::fs::read_to_string(&compose_log).unwrap(), compose);
 
     std::fs::remove_dir_all(root).expect("clean emulation directory");

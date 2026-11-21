@@ -55,7 +55,7 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
     let mut lines: Vec<String> = vec![
         "#!/bin/sh".into(),
         format!("# rsctf Attack & Defense — self-hosted setup for \"{title}\""),
-        "# Run it:  sh setup.sh        (needs docker + docker compose)".into(),
+        format!("# Run it: sh setup-{game_id}-{challenge_id}.sh (needs Docker and Docker Compose)"),
         "set -e".into(),
         // The compose document carries the tunnel capability and the WireGuard
         // file carries a private key. Do not inherit a permissive host umask.
@@ -74,7 +74,8 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         "if [ -L \"$DIR\" ]; then echo 'Refusing a symlinked BYOC setup directory.' >&2; exit 1; fi".into(),
         "if [ -e \"$DIR\" ] && [ ! -d \"$DIR\" ]; then echo 'The BYOC setup path exists but is not a directory.' >&2; exit 1; fi".into(),
         "mkdir -p \"$DIR\"".into(),
-        "if [ \"$(stat -c '%u' \"$DIR\" 2>/dev/null)\" != \"$(id -u)\" ]; then echo 'The BYOC setup directory belongs to another user.' >&2; exit 1; fi".into(),
+        r#"if owner=$(stat -c '%u' "$DIR" 2>/dev/null) || owner=$(stat -f '%u' "$DIR" 2>/dev/null); then :; else echo 'Could not verify the BYOC setup directory owner.' >&2; exit 1; fi"#.into(),
+        r#"if [ "$owner" != "$(id -u)" ]; then echo 'The BYOC setup directory belongs to another user.' >&2; exit 1; fi"#.into(),
         "chmod 700 \"$DIR\"".into(),
         "cd \"$DIR\"".into(),
         "if [ -L service-src ]; then echo 'Refusing a symlinked challenge source directory.' >&2; exit 1; fi".into(),
