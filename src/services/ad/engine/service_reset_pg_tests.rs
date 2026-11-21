@@ -1,4 +1,4 @@
-use super::prepare_service_reset;
+use super::{checkpoint_reset_replacement, prepare_service_reset};
 use crate::services::ad::scoring::test_fixture::ad_scoring_fixture;
 use sea_orm::SqlxPostgresConnector;
 use serde_json::{json, Value};
@@ -78,5 +78,40 @@ async fn resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically(
             .await
             .unwrap();
     assert_eq!(unaffected, 15);
+
+    let checkpoint = |token| {
+        checkpoint_reset_replacement(
+            pool,
+            fixture.game_id,
+            900041,
+            job,
+            token,
+            None,
+            "replacement",
+        )
+    };
+    // A surviving retired backend cannot be displaced by a stale launch.
+    assert!(checkpoint(lease).await.is_err());
+    sqlx::query(r#"UPDATE "AdTeamServices" SET container_id=NULL WHERE id=900041"#)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert!(checkpoint(Uuid::new_v4()).await.is_err());
+    let ownership = || {
+        sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            r#"SELECT s.container_id, j.input->>'replacementBackendId' FROM "AdTeamServices" s
+            CROSS JOIN "ControlPlaneJobs" j WHERE s.id=900041 AND j.id=$1"#,
+        )
+        .bind(job)
+        .fetch_one(pool)
+    };
+    assert_eq!(ownership().await.unwrap(), (None, None));
+    for _ in 0..2 {
+        checkpoint(lease).await.unwrap();
+        assert_eq!(
+            ownership().await.unwrap(),
+            (Some("replacement".into()), Some("replacement".into()))
+        );
+    }
     fixture.cleanup().await;
 }

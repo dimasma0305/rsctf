@@ -207,7 +207,9 @@ pub(crate) use round_completion::{
     lock_owned_round_finish, prepared_round_snapshot, RoundFinishDisposition, RoundFinishLease,
 };
 pub use rounds::*;
-pub(crate) use service_reset::{prepare_service_reset, publish_service_reset};
+pub(crate) use service_reset::{
+    checkpoint_reset_replacement, prepare_service_reset, publish_service_reset,
+};
 
 /// Clear one hill's published holder through the canonical game-control
 /// transaction used by revision effects and checker mutations.

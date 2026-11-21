@@ -300,71 +300,64 @@ pub async fn execute_job(
     spec.operation_id = Some(format!("ad-reset:{}", job.operation_id));
     let info = st.containers.create(spec).await?;
     let backend_id = info.id.clone();
-    crate::services::control_jobs::checkpoint_input(
+    crate::services::ad_engine::checkpoint_reset_replacement(
         st.pg(),
-        job.id,
-        claimed.lease_token,
-        json!({ "replacementBackendId": backend_id.clone() }),
-    )
-    .await?;
-    let retained = crate::services::ad::service_lifecycle::retain_created_backend_identity(
-        st.pg(),
-        job.game_id,
-        service.participation_id,
-        service.challenge_id,
-        &backend_id,
-    )
-    .await;
-    if let Err(error) = retained {
-        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
-            tracing::error!(%backend_id, %destroy_error, "failed to destroy unretained reset replacement");
-        }
-        return Err(error);
-    }
-    if !retained.expect("retention error returned above") {
-        st.containers.destroy(&backend_id).await?;
-        return Err(AppError::conflict(
-            "Service ownership disappeared while the replacement was launching",
-        ));
-    }
-    let published = crate::services::ad_engine::publish_service_reset(
-        &st.db,
         job.game_id,
         service.id,
-        &info.ip,
-        info.port,
+        job.id,
+        claimed.lease_token,
+        input.replacement_backend_id.as_deref(),
         &backend_id,
-        prepared_round_id,
-        true,
-        // A worker from before image checkpointing may already have launched
-        // its replacement against a different organizer build.
-        (!resuming || pinned.is_some()).then_some(image.as_str()),
     )
-    .await;
-    match published {
-        Ok(true) => {}
-        Ok(false) => {
-            crate::services::ad::service_lifecycle::rollback_created_backend(
-                st,
-                service.participation_id,
-                service.challenge_id,
-                &backend_id,
-            )
-            .await?;
-            return Err(AppError::conflict(
-                "Service eligibility changed while the replacement was launching",
-            ));
-        }
+    .await?;
+    let publish = || {
+        crate::services::ad_engine::publish_service_reset(
+            &st.db,
+            job.game_id,
+            service.id,
+            &info.ip,
+            info.port,
+            &backend_id,
+            prepared_round_id,
+            true,
+            // A worker from before image checkpointing may already have launched
+            // its replacement against a different organizer build.
+            (!resuming || pinned.is_some()).then_some(image.as_str()),
+        )
+    };
+    let published = match publish().await {
+        Ok(published) => published,
         Err(error) => {
-            crate::services::ad::service_lifecycle::rollback_created_backend(
-                st,
-                service.participation_id,
-                service.challenge_id,
-                &backend_id,
+            // A dropped commit response can leave a live endpoint. The service
+            // lock still fences competing publishers while we check and retry.
+            tracing::warn!(service_id = service.id, %error, "confirming reset publication");
+            let committed: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS(SELECT 1 FROM "AdTeamServices"
+                    WHERE id=$1 AND game_id=$2 AND container_id=$3 AND host=$4 AND port=$5
+                      AND NULLIF(BTRIM(host), '') IS NOT NULL AND port BETWEEN 1 AND 65535)"#,
             )
-            .await?;
-            return Err(error);
+            .bind(service.id)
+            .bind(job.game_id)
+            .bind(&backend_id)
+            .bind(&info.ip)
+            .bind(info.port)
+            .fetch_one(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            committed || publish().await?
         }
+    };
+    if !published {
+        crate::services::ad::service_lifecycle::rollback_created_backend(
+            st,
+            service.participation_id,
+            service.challenge_id,
+            &backend_id,
+        )
+        .await?;
+        return Err(AppError::conflict(
+            "Service eligibility changed while the replacement was launching",
+        ));
     }
     distributed.release().await?;
     finish_publication(st, &backend_id, challenge.enable_traffic_capture).await?;

@@ -220,6 +220,44 @@ pub(crate) async fn prepare_service_reset(
     })
 }
 
+/// Keep the unpublished service and its job receipt on the same backend even
+/// if the worker loses its connection while committing the replacement.
+pub(crate) async fn checkpoint_reset_replacement(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    service_id: i32,
+    job_id: uuid::Uuid,
+    lease_token: uuid::Uuid,
+    previous_replacement: Option<&str>,
+    backend_id: &str,
+) -> AppResult<()> {
+    let db_error = |e: sqlx::Error| AppError::internal(e.to_string());
+    let mut tx = pool.begin().await.map_err(db_error)?;
+    let retained = sqlx::query(
+        r#"UPDATE "AdTeamServices" SET container_id = $3
+            WHERE id = $1 AND game_id = $2 AND host = '' AND port = 0
+              AND (NULLIF(container_id, '') IS NULL OR container_id = $3 OR container_id = $4)"#,
+    )
+    .bind(service_id)
+    .bind(game_id)
+    .bind(backend_id)
+    .bind(previous_replacement)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_error)?;
+    if retained.rows_affected() != 1 {
+        return Err(AppError::conflict("The service no longer owns this reset"));
+    }
+    crate::services::control_jobs::checkpoint_input(
+        &mut *tx,
+        job_id,
+        lease_token,
+        serde_json::json!({ "replacementBackendId": backend_id }),
+    )
+    .await?;
+    tx.commit().await.map_err(db_error)
+}
+
 /// Publish the new endpoint under the same identity fence used by checker
 /// persistence. It must still be the blank placeholder installed above.
 #[allow(clippy::too_many_arguments)]

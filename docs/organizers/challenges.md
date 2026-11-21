@@ -143,7 +143,10 @@ current round flag. Before removing a stopped Docker container or resuming an
 interrupted reset that still has its old container, RSCTF checks that Docker
 can load the selected image. If staging fails, the old container and its files
 stay on the host. A stopped service's address is withdrawn so it cannot route
-players to a different workload. A round change during launch makes RSCTF
+players to a different workload. Before publishing the replacement endpoint,
+RSCTF records the container ID on the reset job and the service in one
+transaction. If that worker stops, its successor can publish the same container
+with its files intact. A round change during launch makes RSCTF
 discard the stale replacement. Existing services begin recording history at
 their next publication. Keep portable digests available in your own registry.
 Activation and rollback across hosted runtimes are still in development.

@@ -1134,6 +1134,7 @@ jobs:
             pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_outputs
             byoc_source_history_coalesces_samples_and_bounds_private_retention
             resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically
+            orphan_sweep_respects_reclaimable_ad_reset_receipts
             missing_reset_image_preserves_live_endpoint_and_scoring
             player_reset_restores_the_registered_starter_after_an_organizer_rebuild
             native_round_publication_records_each_managed_service_acknowledgement

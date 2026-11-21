@@ -364,13 +364,81 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
     assert!(protected);
     let recovered = claim().await.unwrap().unwrap();
     assert_ne!(recovered.lease_token, first.lease_token);
-    let result = super::execute_job(&state, &recovered).await;
+    // Fail publication after the replacement has started and its ownership
+    // has been recorded. A reclaimed lease must publish the same instance.
+    sqlx::raw_sql(
+        r#"
+        CREATE FUNCTION interrupt_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'fixture publication interrupted'; END $$;
+        CREATE TRIGGER interrupt_publication BEFORE UPDATE ON "AdTeamServices"
+        FOR EACH ROW WHEN (NEW.id=900041 AND OLD.host='' AND NEW.host<>'')
+        EXECUTE FUNCTION interrupt_publication();
+    "#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let error = super::execute_job(&state, &recovered).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("fixture publication interrupted"),
+        "{error}"
+    );
+    let interrupted = row(900041).await.unwrap();
+    let saved = interrupted["container_id"].as_str().unwrap();
+    let receipt: String = sqlx::query_scalar(
+        r#"SELECT input->>'replacementBackendId' FROM "ControlPlaneJobs" WHERE id=$1"#,
+    )
+    .bind(job.id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(saved, receipt);
+    assert_eq!(interrupted["host"], "");
+    docker(&[
+        "exec",
+        saved,
+        "sh",
+        "-c",
+        "printf team-data > /tmp/publication-note",
+    ]);
+    // On the next claim only the first write fails. The worker must finish
+    // publication itself, without starting another container.
+    sqlx::raw_sql(
+        r#"CREATE SEQUENCE publication_attempt;
+        CREATE OR REPLACE FUNCTION interrupt_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            IF nextval('publication_attempt')=1 THEN
+                RAISE EXCEPTION 'transient fixture publication failure';
+            END IF;
+            RETURN NEW;
+        END $$;"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"UPDATE "ControlPlaneJobs" SET lease_expires_at_utc=now()-interval '1 second' WHERE id=$1"#)
+        .bind(job.id).execute(pool).await.unwrap();
+    let retry = claim().await.unwrap().unwrap();
+    assert_ne!(retry.lease_token, recovered.lease_token);
+    let result = super::execute_job(&state, &retry).await;
     shutdown.send_replace(true);
     capture.await.unwrap();
     let result = result.unwrap();
     assert_eq!(result["reset"], true);
+    let writes: i64 = sqlx::query_scalar("SELECT last_value FROM publication_attempt")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(writes, 2);
     let restored = row(900041).await.unwrap();
     let replacement = LiveService(restored["container_id"].as_str().unwrap().to_owned());
+    assert_eq!(replacement.0, saved);
+    assert_eq!(
+        docker(&["exec", saved, "cat", "/tmp/publication-note"]),
+        "team-data"
+    );
     assert_eq!(
         docker(&["inspect", "--format", "{{.Image}}", &replacement.0]),
         image
