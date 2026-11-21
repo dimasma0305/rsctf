@@ -787,7 +787,7 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, patc
                     <List.Item>
                       {t(
                         'game.content.ad.guide.container.patch',
-                        'Patch your service live inside the container — the platform does not redeploy on its own. Your changes live ONLY in the running container; there is no persistent disk.'
+                        'Keep a copy of your SSH patches outside the container. Replacing the container discards edits in its writable layer. On local Docker, compatible team data volumes keep their current contents.'
                       )}
                     </List.Item>
                     <List.Item>
@@ -799,7 +799,7 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, patc
                     <List.Item>
                       {t(
                         'game.content.ad.guide.container.reset',
-                        'Reset rebuilds the box from the original image — it WIPES all your changes (patches included), costs SLA during the rebuild, and has a cooldown. Use it only if your box is wedged or compromised, then re-apply your patches.'
+                        'Open your challenge to reset to its starter image or choose Restore previous image when available. Both actions share a cooldown. The checker can report downtime while your service restarts.'
                       )}
                     </List.Item>
                   </List>

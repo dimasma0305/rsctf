@@ -234,7 +234,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
     refreshInterval: 0,
     request: sshRequest,
   })
-  const [resetting, setResetting] = useState(false)
+  const [resetting, setResetting] = useState<'starter' | 'previous' | null>(null)
   const resetPromiseRef = useRef<Promise<void> | null>(null)
   const resetAbortRef = useRef<AbortController | null>(null)
   useEffect(() => () => resetAbortRef.current?.abort(), [])
@@ -381,26 +381,31 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
     )
   }
 
-  const onReset = async () => {
+  const onReset = async (target: 'starter' | 'previous') => {
     if (!service) return
     if (resetPromiseRef.current) return resetPromiseRef.current
     const operationId = createOperationId()
     const controller = new AbortController()
     resetAbortRef.current?.abort()
     resetAbortRef.current = controller
-    setResetting(true)
+    setResetting(target)
     const request = (async () => {
       try {
         let job
         try {
+          const submit = target === 'previous' ? api.game.gameAdRollbackService : api.game.gameAdResetService
           job = (
-            await api.game.gameAdResetService(gameId, service.adTeamServiceId, operationId, {
+            await submit(gameId, service.adTeamServiceId, operationId, {
               signal: controller.signal,
             })
           ).data
         } catch (error) {
           if (controller.signal.aborted) throw error
+          // A 4xx response to a rollback is authoritative (e.g. another reset is active).
+          const status = httpErrorStatus(error)
+          if (target === 'previous' && status && status >= 400 && status < 500) throw error
           job = (await api.game.gameAdResetJobByOperation(gameId, operationId, { signal: controller.signal })).data
+          if (target === 'previous' && job.kind !== 'AdRollback') throw error
         }
         const completed = await waitForControlJob(
           job,
@@ -410,7 +415,9 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
         showNotification({
           color: 'teal',
           icon: <Icon path={mdiRestart} size={1} />,
-          title: t('game.notification.ad.reset_finished.title', 'Reset finished'),
+          title: target === 'previous'
+            ? t('game.notification.ad.rollback_finished', 'Rollback finished')
+            : t('game.notification.ad.reset_finished.title', 'Reset finished'),
           message: completed.result?.reset === false
             ? t('game.notification.ad.reset_finished.already_replaced', 'Another operation already replaced your service.')
             : t('game.notification.ad.reset_finished.message', 'Your service has been rebuilt.'),
@@ -426,7 +433,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
     } finally {
       if (resetPromiseRef.current === request) resetPromiseRef.current = null
       if (resetAbortRef.current === controller) resetAbortRef.current = null
-      setResetting(false)
+      setResetting(null)
     }
   }
 
@@ -514,6 +521,17 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
             </Tooltip>
           )}
         </Group>
+        {!isSelfHosted && service.previousImageAvailable && (
+          <Button
+            size="compact-xs"
+            variant="default"
+            loading={resetting === 'previous'}
+            disabled={!service.canReset || resetting !== null}
+            onClick={() => void onReset('previous')}
+          >
+            {t('game.button.ad.rollback_previous', 'Restore previous image')}
+          </Button>
+        )}
         {/* Reset rebuilds an RSCTF-hosted container. For self-hosted (BYOC) the
             real container lives on the team's machine — they reset it there — so
             the relay reset would only confuse; hide it. */}
@@ -532,9 +550,9 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
               size="compact-xs"
               variant="default"
               leftSection={<Icon path={mdiRestart} size={0.7} />}
-              loading={resetting}
-              disabled={!service.canReset}
-              onClick={onReset}
+              loading={resetting === 'starter'}
+              disabled={!service.canReset || resetting !== null}
+              onClick={() => void onReset('starter')}
             >
               {!service.canReset && service.resetCooldownSecondsRemaining
                 ? `${service.resetCooldownSecondsRemaining}s`

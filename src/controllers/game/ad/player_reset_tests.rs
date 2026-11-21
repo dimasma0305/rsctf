@@ -124,15 +124,36 @@ async fn player_reset_restores_the_registered_starter_after_an_organizer_rebuild
         .issue(captain, Role::User, "fixture-one", "baseline-test")
         .unwrap();
     let app = super::router().with_state(state.clone());
-    let request_reset = |service: i32, operation: Uuid| {
-        app.clone().oneshot(
-            Request::post(format!("/api/Game/900001/Ad/Services/{service}/Reset"))
-                .header("authorization", format!("Bearer {token}"))
-                .header("idempotency-key", operation.to_string())
-                .body(Body::empty())
-                .unwrap(),
-        )
+    let request = |service: i32, operation: Uuid, action: &'static str| {
+        let send = move |router: axum::Router, auth: String| {
+            router.oneshot(
+                Request::post(format!("/api/Game/900001/Ad/Services/{service}/{action}"))
+                    .header("authorization", auth)
+                    .header("idempotency-key", operation.to_string())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        let router = app.clone();
+        let auth = format!("Bearer {token}");
+        async move {
+            let response = send(router.clone(), auth.clone()).await?;
+            if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                let delay: u64 = response.headers()["retry-after"]
+                    .to_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert!((1..=10).contains(&delay));
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+                send(router, auth).await
+            } else {
+                Ok(response)
+            }
+        }
     };
+    let request_reset = |service, operation| request(service, operation, "Reset");
+    let previous = |service, operation| request(service, operation, "Rollback");
     assert_eq!(
         request_reset(900041, Uuid::new_v4())
             .await
@@ -150,6 +171,14 @@ async fn player_reset_restores_the_registered_starter_after_an_organizer_rebuild
             .unwrap()
             .status(),
         StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        previous(900042, Uuid::new_v4()).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        previous(900041, Uuid::new_v4()).await.unwrap().status(),
+        StatusCode::CONFLICT
     );
     let operation = Uuid::new_v4();
     for _ in 0..2 {
@@ -219,6 +248,148 @@ async fn player_reset_restores_the_registered_starter_after_an_organizer_rebuild
         assert_eq!(row(900042).await.unwrap(), other_team);
         active = next;
     }
+    // The previous receipt belongs to this service, even when the organizer's
+    // current build has failed. A different replacement may not run concurrently.
+    let rollback_operation = Uuid::new_v4();
+    assert_eq!(
+        previous(900041, rollback_operation).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+    assert!(control_jobs::complete(
+        pool,
+        claimed.model.id,
+        claimed.lease_token,
+        claimed.input_revision,
+        serde_json::json!({"reset":true})
+    )
+    .await
+    .unwrap());
+    for _ in 0..2 {
+        assert_eq!(
+            previous(900041, rollback_operation).await.unwrap().status(),
+            StatusCode::ACCEPTED
+        );
+    }
+    assert_eq!(
+        request_reset(900041, Uuid::new_v4())
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let rollback =
+        control_jobs::claim_next(pool, ControlJobKind::AdRollback, Duration::from_secs(90))
+            .await
+            .unwrap()
+            .unwrap();
+    let execute = || crate::services::ad::reset::execute_job(&state, &rollback);
+    assert!(matches!(
+        execute().await,
+        Err(crate::utils::error::AppError::Conflict(_))
+    ));
+    assert_eq!(row(900041).await.unwrap()["container_id"], active.0);
+    sqlx::query(
+        r#"UPDATE "AdTeamServices" SET last_reset_at=now()-interval '1 day' WHERE id=900041"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    // A queued rollback may never substitute another image if its recorded
+    // history changes before retirement.
+    sqlx::query(r#"UPDATE "AdTeamServices" SET previous_image_ref=NULL WHERE id=900041"#)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        execute().await,
+        Err(crate::utils::error::AppError::Conflict(_))
+    ));
+    assert_eq!(row(900041).await.unwrap()["container_id"], active.0);
+    assert!(docker(&["exec", &active.0, "printenv", "RSCTF_FLAG"]) == flag);
+    sqlx::query(r#"UPDATE "AdTeamServices" SET previous_image_ref=$1 WHERE id=900041"#)
+        .bind(&rebuilt.0)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(r#"CREATE FUNCTION refuse_rollback_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'fixture refused rollback publication'; END $$;
+        CREATE TRIGGER refuse_rollback_publication BEFORE UPDATE ON "AdTeamServices" FOR EACH ROW
+        WHEN (OLD.id=900041 AND OLD.host='' AND NEW.host<>'') EXECUTE FUNCTION refuse_rollback_publication()"#)
+        .execute(pool).await.unwrap();
+    let error = execute().await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("fixture refused rollback publication"),
+        "{error}"
+    );
+    let pending = row(900041).await.unwrap();
+    assert_eq!(pending["host"], "");
+    let candidate = LiveService(pending["container_id"].as_str().unwrap().to_owned());
+    sqlx::raw_sql(
+        r#"DROP TRIGGER refuse_rollback_publication ON "AdTeamServices";
+        UPDATE "AdTeamServices" SET previous_image_ref=NULL WHERE id=900041"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let protected: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(SELECT 1 FROM "AdProtectedLocalImages"
+        WHERE challenge_id=900031 AND image_id=$1)"#,
+    )
+    .bind(&rebuilt.0)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(
+        protected,
+        "the pending rollback must keep its selected image"
+    );
+    sqlx::query(r#"UPDATE "ControlPlaneJobs" SET lease_expires_at_utc=now()-interval '1 second' WHERE id=$1"#)
+        .bind(rollback.model.id).execute(pool).await.unwrap();
+    let rollback =
+        control_jobs::claim_next(pool, ControlJobKind::AdRollback, Duration::from_secs(90))
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        crate::services::ad::reset::execute_job(&state, &rollback)
+            .await
+            .unwrap()["reset"],
+        true
+    );
+    let reverted = row(900041).await.unwrap();
+    assert_eq!(reverted["container_id"], candidate.0);
+    let final_service = LiveService(reverted["container_id"].as_str().unwrap().to_owned());
+    assert_eq!(
+        docker(&["inspect", "--format", "{{.Image}}", &final_service.0]),
+        rebuilt.0
+    );
+    assert_eq!(reverted["previous_image_ref"], original);
+    assert_eq!(
+        docker(&["exec", &final_service.0, "printenv", "RSCTF_FLAG"]),
+        flag
+    );
+    assert!(control_jobs::complete(
+        pool,
+        rollback.model.id,
+        rollback.lease_token,
+        rollback.input_revision,
+        serde_json::json!({"reset":true})
+    )
+    .await
+    .unwrap());
+    assert_eq!(
+        previous(900041, rollback_operation).await.unwrap().status(),
+        StatusCode::ACCEPTED
+    );
+    assert!(
+        control_jobs::claim_next(pool, ControlJobKind::AdRollback, Duration::from_secs(90))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(row(900042).await.unwrap(), other_team);
     shutdown.send_replace(true);
     capture.await.unwrap();
     runtime_pool.close().await;

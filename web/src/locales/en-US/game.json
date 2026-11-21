@@ -88,6 +88,7 @@
     "export_scoreboard": "Export scoreboard",
     "ad": {
       "reset": "Reset",
+      "rollback_previous": "Restore previous image",
       "submit": "Submit attack",
       "snapshot": "Snapshot",
       "download_snapshot": "Download .tar.gz",
@@ -337,9 +338,9 @@
           "ip": "The challenge modal shows your container IP:port — that's where checks run and where attackers point their exploits.",
           "flag_file": "The live flag is rewritten every round at the path in the RSCTF_FLAG_FILE environment variable. Read it fresh from $RSCTF_FLAG_FILE on every request (don't cache it).",
           "flag_env": "Never hard-code a platform-specific path. A creation-time RSCTF_FLAG compatibility value may exist, but it becomes stale after rotation — always read $RSCTF_FLAG_FILE.",
-          "patch": "Patch your service live inside the container — the platform does not redeploy on its own. Your changes live ONLY in the running container; there is no persistent disk.",
+          "patch": "Keep a copy of your SSH patches outside the container. Replacing the container discards edits in its writable layer. On local Docker, compatible team data volumes keep their current contents.",
           "supervisor": "Your service runs under a supervisor (PID 1). If the service process crashes — or you restart it — it comes back automatically and your patches stay. Restarting the service is safe; but don't kill PID 1 (the supervisor): that drops the box back to the base image.",
-          "reset": "Reset rebuilds the box from the original image — it WIPES all your changes (patches included), costs SLA during the rebuild, and has a cooldown. Use it only if your box is wedged or compromised, then re-apply your patches."
+          "reset": "Open your challenge to reset to its starter image or choose Restore previous image when available. Both actions share a cooldown. The checker can report downtime while your service restarts."
         },
         "do_dont": {
           "title": "Do / Don't",
@@ -542,6 +543,7 @@
   "notification": {
     "ad": {
       "attack_accepted": "Attack accepted (epoch evidence recorded)",
+      "rollback_finished": "Rollback finished",
       "reset_finished": {
         "title": "Reset finished",
         "message": "Your service has been rebuilt.",

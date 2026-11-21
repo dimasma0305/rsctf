@@ -1137,6 +1137,7 @@ jobs:
             orphan_sweep_respects_reclaimable_ad_reset_receipts
             missing_reset_image_preserves_live_endpoint_and_scoring
             player_reset_restores_the_registered_starter_after_an_organizer_rebuild
+            query_preserves_fresh_tail_and_filters_services
             native_round_publication_records_each_managed_service_acknowledgement
             provisioning_cannot_publish_after_the_round_changes
             reconcile_preserves_uncertain_backends_and_reclaimed_reset

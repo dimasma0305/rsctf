@@ -324,7 +324,9 @@ Keep a backup and a repeatable patch script outside the running container.
 A hosted reset replaces the container's writable layer. On local Docker,
 the replacement keeps the current contents of compatible team data volumes.
 Resetting to the starter restores its program image. It cannot undo a database
-migration or restore older files in those volumes.
+migration or restore older files in those volumes. If your team has a previous
+published image, **Restore previous image** brings that version back with the
+current flag. It shares the reset cooldown.
 
 ### 3.4 Defend without breaking the service
 
@@ -1298,6 +1300,7 @@ relative to the rsctf repository.
 | `GET/POST/DELETE /api/Game/{id}/Ad/Ssh/Key` | Manage the caller's SSH public key when shell access is enabled. |
 | `POST /api/Game/{id}/Ad/Ssh/Key/Generate` | Generate an SSH keypair when organizer policy allows it. |
 | `POST /api/Game/{id}/Ad/Services/{serviceId}/Reset` | Reset an authorized team service. |
+| `POST /api/Game/{id}/Ad/Services/{serviceId}/Rollback` | Restore the previous image recorded for that team service. |
 | `GET /api/Game/{id}/Ad/Services/{serviceId}/Snapshot` | Download an allowed post-game service snapshot. |
 | `GET /api/Game/{id}/Ad/Byoc/Setup/{challengeId}` | Read the caller's BYOC setup material. |
 | `GET /api/Game/{id}/Ad/Byoc/Compose/{challengeId}` | Generate the caller's BYOC Compose configuration. |

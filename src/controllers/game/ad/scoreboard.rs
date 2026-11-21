@@ -1,5 +1,6 @@
 //! Player-facing A&D scoreboard + live team state + self-service reset.
 
+use crate::services::control_jobs::ControlJobKind;
 use axum::response::Response;
 
 use super::*;
@@ -89,6 +90,7 @@ pub struct AdTeamServiceStateModel {
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub last_reset_at: Option<DateTime<Utc>>,
     pub can_reset: bool,
+    pub previous_image_available: bool,
     pub reset_cooldown_seconds_remaining: Option<i64>,
     pub snapshot_available: bool,
     pub self_hosted: Option<bool>,
@@ -634,6 +636,7 @@ pub async fn state(
                 // Self-hosted (BYOC): nothing on our side to relaunch, so never offer
                 // the reset button (RSCTF State reduction 1388: `&& !AdSelfHosted`).
                 can_reset: !archived && allow_self_reset && cooldown_remaining == 0 && !self_hosted,
+                previous_image_available: !archived && !self_hosted && s.previous_image_available,
                 reset_cooldown_seconds_remaining: (!archived && cooldown_remaining > 0)
                     .then_some(cooldown_remaining),
                 snapshot_available,
@@ -671,6 +674,48 @@ pub async fn reset_service(
     StatusCode,
     RequestResponse<crate::services::control_jobs::ControlJobModel>,
 )> {
+    enqueue_replacement(
+        st,
+        user,
+        id,
+        ad_team_service_id,
+        headers,
+        ControlJobKind::AdReset,
+    )
+    .await
+}
+
+pub async fn rollback_service(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((id, service_id)): Path<(i32, i32)>,
+    headers: HeaderMap,
+) -> AppResult<(
+    StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
+    enqueue_replacement(
+        st,
+        user,
+        id,
+        service_id,
+        headers,
+        ControlJobKind::AdRollback,
+    )
+    .await
+}
+
+async fn enqueue_replacement(
+    st: SharedState,
+    user: CurrentUser,
+    id: i32,
+    ad_team_service_id: i32,
+    headers: HeaderMap,
+    kind: ControlJobKind,
+) -> AppResult<(
+    StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
     let part = resolve_participation(&st, &user, id).await?;
     let service = ad_team_service::Entity::find_by_id(ad_team_service_id)
         .one(&st.db)
@@ -678,17 +723,52 @@ pub async fn reset_service(
         .filter(|service| service.game_id == id && service.participation_id == part.id)
         .ok_or(AppError::Forbidden)?;
     let operation_id = crate::controllers::edit::control_jobs::operation_id(&headers)?;
-    let input = serde_json::json!({
+    let scope = format!("ad-service:{}", service.id);
+    if kind == ControlJobKind::AdRollback {
+        // The same POST may arrive after the rollback rotated the image history.
+        if let Some(existing) = crate::services::control_jobs::get_ad_reset_for_participation(
+            st.pg(),
+            id,
+            part.id,
+            None,
+            Some(operation_id),
+        )
+        .await?
+        {
+            if existing.kind != kind.as_str() || existing.scope_key != scope {
+                return Err(AppError::conflict(
+                    "This operation ID was used for a different service action",
+                ));
+            }
+            return Ok((StatusCode::ACCEPTED, RequestResponse::ok(existing)));
+        }
+    }
+    let mut input = serde_json::json!({
         "serviceId": service.id,
         "participationId": service.participation_id,
         "expectedBackendId": service.container_id,
         "playerPolicy": true,
     });
+    if kind == ControlJobKind::AdRollback {
+        let image = sqlx::query_scalar::<_, String>(
+            r#"SELECT previous_image_ref FROM "AdPreviousImageTargets" WHERE service_id=$1
+                 AND game_id=$2 AND participation_id=$3 AND container_id=$4"#,
+        )
+        .bind(service.id)
+        .bind(id)
+        .bind(part.id)
+        .bind(service.container_id.as_deref())
+        .fetch_optional(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::conflict("No previous image is available for this service"))?;
+        input["previousImageRef"] = serde_json::Value::String(image);
+    }
     let fingerprint = crate::controllers::edit::control_jobs::fingerprint(&input)?;
     let job = crate::services::control_jobs::enqueue(
         st.pg(),
-        crate::services::control_jobs::ControlJobKind::AdReset,
-        &format!("ad-service:{}", service.id),
+        kind,
+        &scope,
         id,
         Some(service.challenge_id),
         operation_id,

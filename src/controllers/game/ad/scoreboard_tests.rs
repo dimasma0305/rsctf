@@ -105,6 +105,7 @@ fn ad_state_wire_distinguishes_managed_and_connected_byoc_services() {
             last_check_status: status.map(str::to_owned),
             last_reset_at: Some(reset_at),
             can_reset: !self_hosted,
+            previous_image_available: false,
             reset_cooldown_seconds_remaining: None,
             snapshot_available: !self_hosted,
             self_hosted: Some(self_hosted),

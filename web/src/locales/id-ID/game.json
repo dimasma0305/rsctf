@@ -85,6 +85,9 @@
     "your_team": "Tim Anda"
   },
   "button": {
+    "ad": {
+      "rollback_previous": "Pulihkan image sebelumnya"
+    },
     "export_scoreboard": "Ekspor papan skor",
     "challenges": "Challenges",
     "delete": {
@@ -294,6 +297,9 @@
     "new_hint": "Petunjuk untuk [{{title}}] telah diperbarui."
   },
   "notification": {
+    "ad": {
+      "rollback_finished": "Rollback selesai"
+    },
     "connected": {
       "event": "Real-time event terhubung",
       "submission": "Real-time submission terhubung"

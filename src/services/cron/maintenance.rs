@@ -202,7 +202,7 @@ async fn load_known_container_ids(
                    OR LOWER(LEFT(container_id, 12)) = ANY($2)
                 UNION ALL
                 SELECT input->>'replacementBackendId' FROM "ControlPlaneJobs"
-                 WHERE kind = 'AdReset' AND status IN (0, 1)
+                 WHERE kind IN ('AdReset','AdRollback') AND status IN (0, 1)
                    AND input->>'replacementBackendId' = ANY($1)"#,
             )
             .bind(candidates)
@@ -276,7 +276,7 @@ async fn runtime_has_durable_owner(pool: &sqlx::PgPool, id: &str) -> AppResult<b
                   OR ($2::text IS NOT NULL AND LOWER(LEFT(container_id, 12)) = $2)
                UNION ALL
                SELECT 1 FROM "ControlPlaneJobs"
-                WHERE kind = 'AdReset' AND status IN (0, 1)
+                WHERE kind IN ('AdReset','AdRollback') AND status IN (0, 1)
                   AND input->>'replacementBackendId' = $1
                UNION ALL
                SELECT 1 FROM "KothTargets" WHERE container_id = $1

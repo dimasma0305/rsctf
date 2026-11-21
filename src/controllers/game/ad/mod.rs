@@ -95,6 +95,10 @@ fn common_router() -> Router<SharedState> {
             limited(Policy::Container, post(reset_service)),
         )
         .route(
+            "/api/Game/{id}/Ad/Services/{adTeamServiceId}/Rollback",
+            limited(Policy::Container, post(rollback_service)),
+        )
+        .route(
             "/api/Game/{id}/Ad/ResetJobs/Operations/{operationId}",
             get(reset_job_by_operation),
         )

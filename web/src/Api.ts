@@ -2925,6 +2925,7 @@ export interface AdTeamServiceStateModel {
   /** @format uint64 */
   lastResetAt?: number | null;
   canReset: boolean;
+  previousImageAvailable?: boolean;
   resetCooldownSecondsRemaining?: number | null;
   /** True once a post-game snapshot exists for this service — team can download their own box. */
   snapshotAvailable: boolean;
@@ -11550,6 +11551,14 @@ export class Api<
     ) =>
       this.request<ControlJobModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Services/${adTeamServiceId}/Reset`,
+        method: "POST",
+        headers: { "Idempotency-Key": operationId },
+        ...params,
+      }),
+
+    gameAdRollbackService: (id: number, serviceId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Services/${serviceId}/Rollback`,
         method: "POST",
         headers: { "Idempotency-Key": operationId },
         ...params,

@@ -18,6 +18,8 @@ const PUBLISH_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices" service
        AND service.host = ''
        AND service.port = 0
        AND service.container_id = $13
+       AND (NOT $14 OR (challenge.ad_allow_self_reset AND EXISTS (
+           SELECT 1 FROM "AdPatchBuildEligibleServices" e WHERE e.service_id=service.id)))
        AND participation.id = service.participation_id
        AND participation.game_id = service.game_id
        AND participation.status = $6
@@ -117,6 +119,9 @@ pub(crate) async fn prepare_service_reset(
             WHERE service.id = $1
               AND service.game_id = $2
               AND NULLIF(service.container_id, '') IS NOT DISTINCT FROM NULLIF($6, '')
+              AND (NOT EXISTS (SELECT 1 FROM "ControlPlaneJobs" j WHERE j.id=$7 AND j.kind='AdRollback')
+                   OR EXISTS (SELECT 1 FROM "AdPreviousImageTargets" t WHERE t.service_id=service.id
+                                AND t.previous_image_ref=$8))
               AND participation.status = $3
               AND team.deletion_pending = FALSE
               AND game.deletion_pending = FALSE
@@ -135,6 +140,8 @@ pub(crate) async fn prepare_service_reset(
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(ChallengeType::AttackDefense as i16)
     .bind(expected_backend_id)
+    .bind(job_id)
+    .bind(image_ref)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -280,6 +287,7 @@ pub(crate) async fn publish_service_reset(
     prepared_round_id: Option<i32>,
     require_running_game: bool,
     image_ref: Option<&str>,
+    rollback: bool,
     volume_transfer: Option<ResetVolumeTransfer<'_>>,
 ) -> AppResult<bool> {
     if !valid_replacement_endpoint(host, port, container_id) {
@@ -303,6 +311,7 @@ pub(crate) async fn publish_service_reset(
         .bind(prepared_round_id)
         .bind(image_ref)
         .bind(volume_transfer.map_or(container_id, |transfer| transfer.donor))
+        .bind(rollback)
         .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?

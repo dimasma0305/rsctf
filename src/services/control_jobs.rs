@@ -65,6 +65,7 @@ pub enum ControlJobKind {
     WorkloadRollout,
     AdReconcile,
     AdReset,
+    AdRollback,
     ImagePreflight,
     CompetitionResume,
 }
@@ -79,6 +80,7 @@ impl ControlJobKind {
             Self::WorkloadRollout => "WorkloadRollout",
             Self::AdReconcile => "AdReconcile",
             Self::AdReset => "AdReset",
+            Self::AdRollback => "AdRollback",
             Self::ImagePreflight => "ImagePreflight",
             Self::CompetitionResume => "CompetitionResume",
         }
@@ -328,7 +330,8 @@ pub async fn enqueue(
 
     let active_sql = format!(
         r#"SELECT {JOB_COLUMNS} FROM "ControlPlaneJobs"
-            WHERE kind = $1 AND scope_key = $2 AND status IN (0, 1)
+            WHERE (kind = $1 OR ($1 IN ('AdReset','AdRollback') AND kind IN ('AdReset','AdRollback')))
+              AND scope_key = $2 AND status IN (0, 1)
             ORDER BY created_at_utc, id LIMIT 1
             FOR UPDATE"#
     );
@@ -339,6 +342,11 @@ pub async fn enqueue(
         .await
         .map_err(database_error)?
     {
+        if row.kind != kind.as_str() {
+            return Err(AppError::conflict(
+                "A different replacement is already in progress for this service",
+            ));
+        }
         if !can_coalesce_active(kind, &row.fingerprint, &effective_fingerprint) {
             transaction.rollback().await.map_err(database_error)?;
             return Err(AppError::conflict(
@@ -387,10 +395,10 @@ pub async fn enqueue(
             2,
         ));
     }
-    if kind == ControlJobKind::AdReset {
+    if matches!(kind, ControlJobKind::AdReset | ControlJobKind::AdRollback) {
         let game_active: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*) FROM "ControlPlaneJobs"
-                WHERE kind = 'AdReset' AND game_id = $1 AND status IN (0, 1)"#,
+                WHERE kind IN ('AdReset','AdRollback') AND game_id = $1 AND status IN (0, 1)"#,
         )
         .bind(game_id)
         .fetch_one(&mut *transaction)
@@ -410,7 +418,7 @@ pub async fn enqueue(
         {
             let participation_active: i64 = sqlx::query_scalar(
                 r#"SELECT COUNT(*) FROM "ControlPlaneJobs"
-                    WHERE kind = 'AdReset' AND game_id = $1
+                    WHERE kind IN ('AdReset','AdRollback') AND game_id = $1
                       AND status IN (0, 1)
                       AND (input->>'participationId')::integer = $2"#,
             )

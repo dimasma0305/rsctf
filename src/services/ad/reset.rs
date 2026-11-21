@@ -39,6 +39,7 @@ struct ResetJobInput {
     replacement_backend_id: Option<String>,
     #[serde(default)]
     preserve_data_volumes: bool,
+    previous_image_ref: Option<String>,
 }
 
 fn backend_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
@@ -71,7 +72,7 @@ pub(super) async fn owns_unpublished_service(
 ) -> AppResult<bool> {
     sqlx::query_scalar(
         r#"SELECT EXISTS (SELECT 1 FROM "ControlPlaneJobs"
-            WHERE kind='AdReset' AND scope_key=$1 AND status IN (0,1)
+            WHERE kind IN ('AdReset','AdRollback') AND scope_key=$1 AND status IN (0,1)
               AND game_id=$2 AND challenge_id=$3 AND input @> $4)"#,
     )
     .bind(format!("ad-service:{}", service.id))
@@ -90,6 +91,12 @@ pub async fn execute_job(
     let job = &claimed.model;
     let input: ResetJobInput = serde_json::from_value(claimed.input.clone())
         .map_err(|error| AppError::internal(format!("invalid reset job input: {error}")))?;
+    let rollback = job.kind == "AdRollback";
+    if rollback && (!input.player_policy || input.previous_image_ref.is_none()) {
+        return Err(AppError::conflict(
+            "The rollback has no player image receipt",
+        ));
+    }
     let initial = ad_team_service::Entity::find_by_id(input.service_id)
         .one(&st.db)
         .await?
@@ -192,11 +199,29 @@ pub async fn execute_job(
     }
 
     let resuming = replacement_checkpointed || recovering_preparation;
+    if rollback && resuming {
+        // Recovery may be claimed after a division lost challenge access.
+        let eligible = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(SELECT 1 FROM "AdPatchBuildEligibleServices" WHERE service_id=$1)"#,
+        )
+        .bind(service.id)
+        .fetch_one(st.pg())
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+        if !eligible {
+            return Err(AppError::Forbidden);
+        }
+    }
     // A fresh player reset restores the organizer's original starter when
     // one was recorded. Admin restarts keep their existing rebuild behavior.
     // On recovery, the job's own preparation receipt takes precedence.
     let pinned = if resuming {
+        if rollback && input.prepared_image_ref != input.previous_image_ref {
+            return Err(AppError::conflict("The prepared rollback image changed"));
+        }
         input.prepared_image_ref
+    } else if rollback {
+        input.previous_image_ref
     } else if input.player_policy {
         sqlx::query_scalar::<_, String>(
             r#"SELECT runtime_image_ref FROM "AdPatchStarters"
@@ -371,6 +396,7 @@ pub async fn execute_job(
             // A worker from before image checkpointing may already have launched
             // its replacement against a different organizer build.
             (!resuming || pinned.is_some()).then_some(image.as_str()),
+            rollback,
             volume_donor.map(|donor| crate::services::ad_engine::ResetVolumeTransfer {
                 donor,
                 job: job.id,

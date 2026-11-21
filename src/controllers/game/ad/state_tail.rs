@@ -18,6 +18,7 @@ pub(super) struct AdStateService {
     pub(super) port: i32,
     pub(super) container_id: Option<String>,
     pub(super) snapshot_available: bool,
+    pub(super) previous_image_available: bool,
     pub(super) last_reset_at: Option<DateTime<Utc>>,
     pub(super) current_flag: Option<String>,
     pub(super) last_check_status: Option<i16>,
@@ -57,6 +58,7 @@ struct AdStateTailRow {
     port: Option<i32>,
     container_id: Option<String>,
     snapshot_available: Option<bool>,
+    previous_image_available: Option<bool>,
     last_reset_at: Option<DateTime<Utc>>,
     current_flag: Option<String>,
     last_check_status: Option<i16>,
@@ -103,6 +105,7 @@ SELECT game.event_started, game.event_ended,
        game.ad_scoring_paused_at AS scoring_paused_at,
        service.id AS service_id, service.challenge_id, service.host, service.port,
        service.container_id,
+       EXISTS(SELECT 1 FROM "AdPreviousImageTargets" t WHERE t.service_id=service.id) AS previous_image_available,
        snapshot.id IS NOT NULL AND snapshot_file.reference_count > 0
            AS snapshot_available,
        service.last_reset_at,
@@ -180,6 +183,7 @@ fn reduce(rows: Vec<AdStateTailRow>) -> AppResult<AdStateTail> {
             port: row.port.ok_or_else(|| malformed_service("port"))?,
             container_id: row.container_id,
             snapshot_available: row.snapshot_available.unwrap_or(false),
+            previous_image_available: row.previous_image_available.unwrap_or(false),
             last_reset_at: row.last_reset_at,
             current_flag: row.current_flag,
             last_check_status: row.last_check_status,
@@ -211,6 +215,7 @@ mod tests {
             port: None,
             container_id: None,
             snapshot_available: Some(false),
+            previous_image_available: Some(false),
             last_reset_at: None,
             current_flag: None,
             last_check_status: None,
@@ -269,6 +274,8 @@ mod tests {
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, is_enabled BOOLEAN NOT NULL,
               review_status SMALLINT NOT NULL, "Type" SMALLINT NOT NULL
             );
+            CREATE TEMP TABLE "AdPreviousImageTargets" (service_id INTEGER PRIMARY KEY);
+            INSERT INTO "AdPreviousImageTargets" VALUES (21);
             CREATE TEMP TABLE "AdTeamServices" (
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
               participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
@@ -380,6 +387,8 @@ mod tests {
         assert!(tail.scoring_paused);
         assert!(tail.scoring_paused_at.is_some());
         assert_eq!(tail.services.len(), 2);
+        assert!(tail.services[0].previous_image_available);
+        assert!(!tail.services[1].previous_image_available);
         assert!(tail.services[0].snapshot_available);
         assert!(!tail.services[1].snapshot_available);
         assert_eq!(

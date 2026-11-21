@@ -55,7 +55,7 @@ pub(super) async fn execute_claimed(
             serde_json::to_value(result)
                 .map_err(|error| AppError::internal(format!("rollout result failed: {error}")))
         }
-        "AdReset" => crate::services::ad::reset::execute_job(state, job).await,
+        "AdReset" | "AdRollback" => crate::services::ad::reset::execute_job(state, job).await,
         "ImagePreflight" => crate::services::image_preflight::execute_job(state, job).await,
         "CompetitionResume" => crate::services::ad::maintenance::execute_resume(state, job).await,
         _ => Err(AppError::internal("unsupported claimed control-job kind")),

@@ -6,8 +6,9 @@ use std::{
 };
 use tokio::sync::watch;
 
-pub(super) const JOB_KINDS: [&str; 8] = [
+pub(super) const JOB_KINDS: [&str; 9] = [
     "AdReset",
+    "AdRollback",
     "AdReconcile",
     "ChallengeBuild",
     "BuildBatch",
@@ -16,13 +17,18 @@ pub(super) const JOB_KINDS: [&str; 8] = [
     "VariantGeneration",
     "SecurityDerivation",
 ];
-pub(super) static QUEUED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-pub(super) static RUNNING: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-pub(super) static EXPIRED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-pub(super) static OLDEST: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+pub(super) static QUEUED: [AtomicU64; JOB_KINDS.len()] =
+    [const { AtomicU64::new(0) }; JOB_KINDS.len()];
+pub(super) static RUNNING: [AtomicU64; JOB_KINDS.len()] =
+    [const { AtomicU64::new(0) }; JOB_KINDS.len()];
+pub(super) static EXPIRED: [AtomicU64; JOB_KINDS.len()] =
+    [const { AtomicU64::new(0) }; JOB_KINDS.len()];
+pub(super) static OLDEST: [AtomicU64; JOB_KINDS.len()] =
+    [const { AtomicU64::new(0) }; JOB_KINDS.len()];
 /// Process counters, unlike the sampled deployment gauges above. Count committed
 /// expired-lease claims only; ordinary queued claims and failed polls are excluded.
-pub(super) static RECLAIMED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+pub(super) static RECLAIMED: [AtomicU64; JOB_KINDS.len()] =
+    [const { AtomicU64::new(0) }; JOB_KINDS.len()];
 pub(super) fn record_control_job_reclaim(kind: &str) {
     if let Some(index) = JOB_KINDS.iter().position(|known| *known == kind) {
         RECLAIMED[index].fetch_add(1, Relaxed);

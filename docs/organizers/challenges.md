@@ -165,7 +165,12 @@ Files in the container's writable layer start fresh. Unverified persistent
 mounts leave the reset pending or rejected with the team's data still attached.
 The replacement reads the current contents of those volumes, so both image
 versions must be able to read the team's stored data format.
-Activation and rollback across hosted runtimes are still in development.
+For a hosted challenge with player resets enabled, **Restore previous image**
+selects the last different image that actually served that team. The platform
+pins the selection in its rollback job and verifies the current service before
+retiring it. The starter and previous image actions share one cooldown and
+one active replacement per service. ZIP candidate activation and verification
+on all hosted runtimes are still in development.
 
 On the trusted worker host, an organizer can export a ready build to a new
 private file. Use the team's service ID, revision number, and attempt UUID
