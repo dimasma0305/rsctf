@@ -39,7 +39,8 @@ pub(crate) fn docker_state(pool: &sqlx::PgPool) -> SharedState {
         Arc::new(LocalBlobStorage::new(
             std::env::temp_dir().join(format!("rsctf-reset-{}", Uuid::new_v4())),
         )),
-        TokenService::new("0123456789abcdef0123456789abcdef", 60),
+        // The real Docker flow spans several cooldowns and image replacements.
+        TokenService::new("0123456789abcdef0123456789abcdef", 15 * 60),
         Arc::new(manager),
     )
 }
