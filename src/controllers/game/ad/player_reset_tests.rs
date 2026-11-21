@@ -165,8 +165,6 @@ async fn player_reset_restores_the_registered_starter_after_an_organizer_rebuild
     let (shutdown, rx) = tokio::sync::watch::channel(false);
     let capture = crate::services::traffic::start_capture_reconciler(state.clone(), rx);
     let result = crate::services::ad::reset::execute_job(&state, &claimed).await;
-    shutdown.send_replace(true);
-    capture.await.unwrap();
     assert_eq!(result.unwrap()["reset"], true);
     let restored = row(900041).await.unwrap();
     let replacement = LiveService(restored["container_id"].as_str().unwrap().to_owned());
@@ -181,6 +179,48 @@ async fn player_reset_restores_the_registered_starter_after_an_organizer_rebuild
         flag
     );
     assert_eq!(row(900042).await.unwrap(), other_team);
+    // Recover a stopped service after both a different successful organizer
+    // build and a failed one. The team's selected revision stays authoritative.
+    let game = crate::services::game_config::load_game(&state, fixture.game_id)
+        .await
+        .unwrap();
+    let mut active = replacement;
+    for build_ready in [true, false] {
+        if !build_ready {
+            sqlx::raw_sql(r#"SET LOCAL rsctf.maintenance_writer='on';
+                UPDATE "GameChallenges" SET build_status=2,build_image_digest=NULL WHERE id=900031"#)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        docker(&["stop", "-t", "1", &active.0]);
+        let counts = crate::services::ad::provision::ensure_ad_containers(
+            &state,
+            &game,
+            Some(900021),
+            false,
+            false,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        let repaired = row(900041).await.unwrap();
+        let next = LiveService(repaired["container_id"].as_str().unwrap().to_owned());
+        assert_eq!(counts, (1, 0));
+        assert_ne!(active.0, next.0);
+        assert_eq!(
+            docker(&["inspect", "--format", "{{.Image}}", &next.0]),
+            original
+        );
+        assert_eq!(docker(&["exec", &next.0, "printenv", "RSCTF_FLAG"]), flag);
+        assert_eq!(repaired["previous_image_ref"], rebuilt.0);
+        assert_eq!(repaired["last_reset_at"], restored["last_reset_at"]);
+        assert_eq!(row(900042).await.unwrap(), other_team);
+        active = next;
+    }
+    shutdown.send_replace(true);
+    capture.await.unwrap();
     runtime_pool.close().await;
     fixture.cleanup().await;
 }

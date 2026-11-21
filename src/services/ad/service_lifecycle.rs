@@ -131,8 +131,8 @@ pub(crate) async fn drain_publications(
 /// Publish only while all durable owners remain eligible. This single SQL
 /// statement closes the last check-to-insert window and preserves
 /// `last_reset_at` when it fills an existing offline placeholder.
-pub(crate) async fn publish_managed_backend_if_eligible(
-    pool: &sqlx::PgPool,
+pub(crate) async fn publish_managed_backend_if_eligible<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
     publication: ManagedBackendPublication<'_>,
 ) -> AppResult<bool> {
     let published = sqlx::query_scalar::<_, i32>(
@@ -180,7 +180,7 @@ pub(crate) async fn publish_managed_backend_if_eligible(
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(ChallengeType::AttackDefense as i16)
     .bind(publication.image_ref)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(published.is_some())

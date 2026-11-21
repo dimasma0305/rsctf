@@ -137,7 +137,10 @@ When a hosted service publishes an endpoint, RSCTF records the immutable image
 used to launch it. Local Docker cleanup retains that image and the team's last
 distinct published image until the game ends. Restarting on the same image
 preserves the previous version. An interrupted reset keeps its staged image
-even if the organizer rebuilds the challenge during recovery. Existing services
+even if the organizer rebuilds the challenge during recovery. When a hosted
+container stops, automatic repair uses the team's last published image and its
+current round flag. A round change during launch makes RSCTF discard the stale
+replacement. Existing services
 begin recording history at their next publication. Keep portable digests available in your own registry.
 Activation and rollback across hosted runtimes are still in development.
 

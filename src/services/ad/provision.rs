@@ -41,13 +41,19 @@ fn should_ensure_network(reconcile_vpn: bool, topology_owner: bool) -> bool {
     reconcile_vpn && topology_owner
 }
 
+struct CurrentAdPair {
+    participation: participation::Model,
+    challenge: game_challenge::Model,
+    hosted_image: Option<String>,
+}
+
 async fn current_ad_pair(
     st: &SharedState,
     game_id: i32,
     participation_id: i32,
     challenge_id: i32,
     self_hosted: bool,
-) -> AppResult<Option<(participation::Model, game_challenge::Model)>> {
+) -> AppResult<Option<CurrentAdPair>> {
     let game_exists = sqlx::query_scalar::<_, bool>(
         r#"SELECT EXISTS (
              SELECT 1 FROM "Games"
@@ -97,24 +103,41 @@ async fn current_ad_pair(
     else {
         return Ok(None);
     };
-    let challenge_is_live = sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS (
-             SELECT 1 FROM "GameChallenges"
-              WHERE id = $1 AND game_id = $2 AND deletion_pending = FALSE
-           )"#,
+    // A team's last published image survives a stopped workload and an
+    // interrupted repair. A new or legacy service uses the organizer build.
+    let pin = sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT service.published_image_ref FROM "GameChallenges" challenge
+           LEFT JOIN "AdTeamServices" service
+             ON NOT challenge.ad_self_hosted AND service.challenge_id=challenge.id
+            AND service.game_id=challenge.game_id AND service.participation_id=$3
+          WHERE challenge.id=$1 AND challenge.game_id=$2 AND NOT challenge.deletion_pending"#,
     )
     .bind(challenge_id)
     .bind(game_id)
-    .fetch_one(st.pg())
+    .bind(participation_id)
+    .fetch_optional(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if !challenge_is_live {
+    let Some(pin) = pin else {
         return Ok(None);
-    }
-    if !self_hosted && crate::services::challenge_images::runtime_image(st, &challenge).is_err() {
-        return Ok(None);
-    }
-    Ok(Some((participation, challenge)))
+    };
+    let hosted_image = if self_hosted {
+        None
+    } else {
+        let Ok(image) = crate::services::challenge_images::runtime_image_with_pin(
+            st,
+            &challenge,
+            pin.as_deref(),
+        ) else {
+            return Ok(None);
+        };
+        Some(image)
+    };
+    Ok(Some(CurrentAdPair {
+        participation,
+        challenge,
+        hosted_image,
+    }))
 }
 
 async fn deactivate_stale_pair(
@@ -433,7 +456,12 @@ pub(crate) async fn ensure_ad_containers(
                     c.id,
                 )
                 .await?;
-                let Some((p, c)) = current_ad_pair(st, game.id, p.id, c.id, true).await? else {
+                let Some(CurrentAdPair {
+                    participation: p,
+                    challenge: c,
+                    ..
+                }) = current_ad_pair(st, game.id, p.id, c.id, true).await?
+                else {
                     distributed.release().await?;
                     continue;
                 };
@@ -493,7 +521,12 @@ pub(crate) async fn ensure_ad_containers(
                 c.id,
             )
             .await?;
-            let Some((p, c)) = current_ad_pair(st, game.id, p.id, c.id, false).await? else {
+            let Some(CurrentAdPair {
+                participation: p,
+                challenge: c,
+                hosted_image: Some(image),
+            }) = current_ad_pair(st, game.id, p.id, c.id, false).await?
+            else {
                 distributed.release().await?;
                 continue;
             };
@@ -549,30 +582,23 @@ pub(crate) async fn ensure_ad_containers(
             let team_hash =
                 crate::utils::flag_generator::team_challenge_hash(&salt, c.id, &p.token);
             let operation_id = ad_service_operation_id(reconcile_operation_id, game.id, p.id, c.id);
-            let flag = match operation_id.as_deref() {
-                Some(operation_id) => crate::utils::flag_generator::generate_retryable_ad_flag(
-                    &team_hash,
-                    operation_id,
-                ),
-                None => crate::utils::flag_generator::generate_ad_flag(),
+            let prepared_flag =
+                crate::services::ad_engine::ProvisionFlag::read(st.pg(), game.id, p.id, c.id)
+                    .await?;
+            let flag = match (&prepared_flag.official, operation_id.as_deref()) {
+                (Some(flag), _) => Ok(flag.clone()),
+                (None, Some(operation_id)) => {
+                    crate::utils::flag_generator::generate_retryable_ad_flag(
+                        &team_hash,
+                        operation_id,
+                    )
+                }
+                (None, None) => crate::utils::flag_generator::generate_ad_flag(),
             };
             let flag = match flag {
                 Ok(flag) => flag,
                 Err(error) => {
                     tracing::error!(challenge = c.id, %error, "A&D warmup flag generation failed");
-                    failures += 1;
-                    distributed.release().await?;
-                    continue;
-                }
-            };
-            let image = match crate::services::challenge_images::runtime_image(st, &c) {
-                Ok(image) => image,
-                Err(error) => {
-                    tracing::warn!(
-                        challenge = c.id,
-                        %error,
-                        "A&D service image is not immutably published"
-                    );
                     failures += 1;
                     distributed.release().await?;
                     continue;
@@ -693,12 +719,7 @@ pub(crate) async fn ensure_ad_containers(
                 backend_id: &backend_id,
                 image_ref: &image,
             };
-            let persisted =
-                crate::services::ad::service_lifecycle::publish_managed_backend_if_eligible(
-                    st.pg(),
-                    publication,
-                )
-                .await;
+            let persisted = prepared_flag.publish(st.pg(), publication).await;
             match persisted {
                 Ok(true) => {}
                 Ok(false) => {
