@@ -20,26 +20,34 @@ async fn history(pool: &sqlx::PgPool, service: i32) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-async fn await_change(pool: &sqlx::PgPool, kind: &str) -> std::time::Duration {
+fn reported(page: &Value, path: &str, kind: &str) -> bool {
+    page["events"].as_array().unwrap().iter().any(|event| {
+        event["status"] == "observed"
+            && event["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["path"] == path && item["kind"] == kind)
+    })
+}
+
+async fn await_change(
+    pool: &sqlx::PgPool,
+    service: i32,
+    path: &str,
+    kind: &str,
+) -> std::time::Duration {
     let started = Instant::now();
     timeout(Duration::from_secs(155), async {
         loop {
-            let page = history(pool, 900041).await;
-            if page["events"].as_array().unwrap().iter().any(|event| {
-                event["status"] == "observed"
-                    && event["changes"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|item| item["path"] == "app.py" && item["kind"] == kind)
-            }) {
+            if reported(&history(pool, service).await, path, kind) {
                 return;
             }
             sleep(Duration::from_secs(1)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("team history never recorded app.py as {kind}"));
+    .unwrap_or_else(|_| panic!("service {service} never recorded {path} as {kind}"));
     started.elapsed()
 }
 
@@ -128,7 +136,36 @@ async fn downloaded_byoc_bundle_observes_in_container_patches() {
         .await
         .unwrap()
         .success());
-    let baseline = await_change(&fixture.pool, "present").await;
+    // The two teams normally run Compose on separate hosts. Give the second
+    // download its own Docker project while using the same real game/challenge.
+    let other = root.join("other-team");
+    let other_token = byoc_token(
+        "adbyocagent:",
+        "fixture-private",
+        "fixture-team-two",
+        900022,
+        challenge,
+    );
+    let other_ctx = ByocContext {
+        tunnel_url: format!("ws://{address}/api/stateful/Game/{game}/Ad/Byoc/Agent/900022/{challenge}/{other_token}"),
+        ..withdrawn
+    };
+    std::fs::write(
+        other.join("compose.yaml"),
+        build_compose(project, 2, &other_ctx),
+    )
+    .unwrap();
+    assert!(tokio::process::Command::new("docker")
+        .args(["compose", "up", "-d"])
+        .current_dir(&other)
+        .status()
+        .await
+        .unwrap()
+        .success());
+    let (baseline, host_baseline) = tokio::join!(
+        await_change(&fixture.pool, 900041, "app.py", "present"),
+        await_change(&fixture.pool, 900042, "host.py", "present"),
+    );
     let compose = root.join(format!("rsctf-byoc-{project}-1/docker-compose.yml"));
     let patch = tokio::process::Command::new("docker")
         .args(["compose", "-f"])
@@ -137,12 +174,19 @@ async fn downloaded_byoc_bundle_observes_in_container_patches() {
             "test -s /app/app.py; test ! -e /app/.rsctf-files; echo '# team rehearsal patch' >> /app/app.py"])
         .status().await.unwrap();
     assert!(patch.success());
-    let changed = await_change(&fixture.pool, "modified").await;
-    assert_eq!(
-        history(&fixture.pool, 900042).await["events"],
-        serde_json::json!([])
+    std::fs::write(other.join("service-src/host.py"), "print('patched')\n").unwrap();
+    let (changed, host_changed) = tokio::join!(
+        await_change(&fixture.pool, 900041, "app.py", "modified"),
+        await_change(&fixture.pool, 900042, "host.py", "modified"),
     );
+    let installed = history(&fixture.pool, 900041).await;
+    let standalone = history(&fixture.pool, 900042).await;
+    for kind in ["present", "modified"] {
+        assert!(!reported(&installed, "host.py", kind));
+        assert!(!reported(&standalone, "app.py", kind));
+    }
     eprintln!("BYOC server observed baseline in {baseline:?} and in-container edit in {changed:?}");
+    eprintln!("Standalone Compose server history recorded baseline in {host_baseline:?} and host edit in {host_changed:?}");
     server.abort();
     state
         .byoc

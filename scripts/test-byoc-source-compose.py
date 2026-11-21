@@ -60,6 +60,9 @@ def check(args, root, stack):
     compose = ["compose", "--env-file", "/dev/null", "-f", compose_file]
 
     def clean_bundle():
+        peer = root / "other-team" / "compose.yaml"
+        if peer.exists():
+            docker("compose", "-f", peer, "down", "-v", "--timeout", "1")
         if compose_file.exists():
             docker(*compose, "down", "-v", "--timeout", "1")
         # A regression may replace the Compose file, orphaning the original volume.
@@ -71,6 +74,11 @@ def check(args, root, stack):
             docker("image", "rm", alias)
 
     stack.callback(clean_bundle)
+    peer_source = root / "other-team" / "service-src"
+    peer_source.mkdir(parents=True)
+    peer_source.chmod(0o755)
+    (peer_source / "host.py").write_text("print('original')\n")
+    (peer_source / "host.py").chmod(0o644)
     bridge = json.loads(docker("network", "inspect", "bridge"))[0]["IPAM"]["Config"]
     ipv4 = next(net for net in bridge if ":" not in net["Subnet"])
     env = {**os.environ, "RSCTF_AD_VPN_ENABLED": "false", "RSCTF_AD_VPN_SERVICES_CIDR": ipv4["Subnet"],
