@@ -62,6 +62,11 @@ fixture from a Git-generated tree ID and verifies the executable and its output.
 Its `--guest` mode exercises the [offline VM worker](../../../../scripts/ad-patch-builder/build.py)
 and [guest init](../../../../scripts/ad-patch-builder/init), including a failed
 build, a pinned starter image, and preservation of the previous candidate.
+The [Toolkit build control](../../../../web/src/components/competition/AdPatchBuildAction.tsx)
+submits a saved commit through the [team-scoped build endpoint](../../../../src/controllers/game/ad/patch_preview/builds.rs).
+The [challenge worker](../../../../scripts/ad-patch-builder/worker.py) claims the request and replaces
+the private candidate after verification. The [PostgreSQL and VM regression](../../../../src/controllers/game/ad/patch_preview/tests/history/builds.rs)
+checks ownership, replay, failure and candidate retention.
 The [failed-build regression](../../../../src/services/challenge_builds/archive_tests/failed_candidate.rs)
 checks the Docker tag and the running service's data across an interrupted build,
 candidate cleanup, and retry. The [Docker transport](../../../../src/services/challenge_builds/docker_io.rs)

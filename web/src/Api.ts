@@ -4597,6 +4597,12 @@ export interface AdPatchRevision {
   createdAt: number
 }
 
+export interface AdPatchBuild {
+  available: boolean
+  status: 'Queued' | 'Building' | 'Ready' | 'Failed' | 'Replaced' | null
+  attempt: string | null
+}
+
 export interface ByocSourceHistoryPage {
   before: number | null;
   events: {
@@ -11886,6 +11892,13 @@ export class Api<
       this.request<Blob, RequestResponse>({
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/source.zip`,
         method: "GET", query: { commit }, format: "blob", ...params,
+      }),
+
+    adPatchBuild: (id: number, challenge: number, revision: number, service: number, commit: string,
+      method: 'GET' | 'POST', previousAttempt?: string, params: RequestParams = {}) =>
+      this.request<AdPatchBuild, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/build`,
+        method, query: { service, commit, previousAttempt }, format: "json", ...params,
       }),
 
     byocSourceHistory: (game: number, challenge: number, before?: number, params: RequestParams = {}) =>

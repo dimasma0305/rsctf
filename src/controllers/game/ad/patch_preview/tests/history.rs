@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::Value;
 use std::io::Read;
+mod builds;
 
 async fn save(router: &Router, user: &CurrentUser, expected: i32, zip: &[u8]) -> Response {
     save_to(router, user, 20, expected, zip).await
@@ -290,6 +291,7 @@ pub(super) async fn check(
         StatusCode::CONFLICT
     );
     check_storage_reuse(pool, router, &other).await;
+    builds::check(pool, router, &other, user).await;
 }
 
 async fn check_storage_reuse(pool: &PgPool, router: &Router, user: &CurrentUser) {

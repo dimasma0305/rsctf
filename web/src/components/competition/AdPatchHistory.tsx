@@ -7,6 +7,7 @@ import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { showErrorMsg } from '@Utils/Shared'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { AdPatchChangeList } from './AdPatchChangeList'
+import { AdPatchBuildAction } from './AdPatchBuildAction'
 
 interface Props {
   gameId: number
@@ -65,7 +66,7 @@ export function AdPatchHistory({ gameId, challengeId, serviceId, file, report, s
         ? <Text size="sm" role="status">{t('game.ad.patch.recompare', 'A teammate saved a revision. Compare files again before saving.')}</Text>
         : <Group><Button size="xs" loading={saving} onClick={() => void save()}>{t('game.ad.patch.save_revision', 'Save private revision')}</Button></Group>)}
       {notice && <Text size="sm" role="status">{notice}</Text>}
-      {(data.length > 0 || before) && <details>
+      {(data.length > 0 || before) && <details onToggle={event => { if (!event.currentTarget.open) setSelected(undefined) }}>
         <summary>{t('game.ad.patch.history', 'Team revision history')}</summary>
         {data.map(r => <Stack key={r.revision} gap={2}>
           <Group gap="xs">
@@ -99,6 +100,7 @@ function RevisionChanges({ gameId, challengeId, serviceId, revision, commitId }:
   if (!data) return <Text size="sm" role="status">{t('game.ad.patch.loading_changes', 'Loading file changes…')}</Text>
   return <>
     <AdPatchChangeList changes={data} />
+    <AdPatchBuildAction key={commitId} {...{ gameId, challengeId, serviceId, revision, commitId }} />
     <Group><Button size="xs" variant="light" loading={downloading} onClick={() => void downloadBlob(
       `patch-revision:${serviceId}:${commitId}`, () => api.game.downloadAdPatchRevision(gameId, challengeId, revision, commitId),
       setDownloading, t, `patch-revision-${revision}.zip`

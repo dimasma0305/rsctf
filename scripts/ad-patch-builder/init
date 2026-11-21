@@ -71,7 +71,7 @@ until ctl debug workers >/dev/null 2>&1; do
 done
 stage=build
 ctl build --frontend dockerfile.v0 --local context=/work/src --local dockerfile=/work/src \
-    --opt force-network-mode=none "$@" --output type=oci,dest=/work/result.oci >/dev/null 2>&1
+    --opt force-network-mode=none "$@" --output type=docker,oci-mediatypes=true,dest=/work/result.oci >/dev/null 2>&1
 stage=export
 size=$(stat -c %s /work/result.oci)
 test "$size" -gt 0

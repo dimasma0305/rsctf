@@ -78,6 +78,8 @@ Each job gets a fresh VM with two virtual CPUs, 1.5 GiB RAM, and only a
 loopback network interface. The worker allows five minutes for emulation and a 256 MiB OCI
 archive. Add `--kvm` on workers with KVM access. A successful command prints
 the archive's SHA-256 and creates an owner-readable file at the requested path.
+The archive contains an OCI index and a Docker load manifest. Both reference
+the same layer files, so compatibility adds only manifest metadata.
 Use a new path for each candidate. The running team service keeps its current
 image throughout the build. Use a local output filesystem that supports Linux
 unnamed temporary files (`O_TMPFILE`), such as ext4 or XFS. Interrupted jobs
@@ -91,8 +93,29 @@ The digest identifies the manifest **inside** the OCI archive. The guest
 reads this base from a separate read-only disk. Package downloads and remote
 image pulls require preparing the dependencies before the event.
 
-This worker command produces a candidate for inspection. Toolkit activation
-and rollback across hosted runtimes are still in development.
+To accept build requests from the Toolkit, run one worker for the hosted
+challenge. Register its starter ZIP first. Set `RSCTF_DATABASE_URL` to the
+platform database connection string on the worker host before starting it.
+
+```sh
+python3 -m venv patch-worker
+patch-worker/bin/pip install -r scripts/ad-patch-builder/requirements.txt
+patch-worker/bin/python scripts/ad-patch-builder/worker.py --challenge "$challenge_id" --guest patch-guest
+```
+
+The worker uses Python 3.11+ and a direct PostgreSQL session. A worker that uses
+a base image takes the same `--base-oci` and `--base-manifest` options as a
+local build. Keep its guest files and approved base immutable while it runs.
+
+Players open **Team revision history**, select a revision, and choose **Build
+revision**. The button appears when the challenge's worker is connected. Each
+team service can queue one build at a time. If a worker stops partway through,
+its successor can reclaim the request. The private candidate lives in PostgreSQL
+in chunks of up to 1 MiB. Each service retains one successful candidate of up
+to 256 MiB, plus its source history. For five teams with five services each,
+that caps retained candidate archives at 6.25 GiB. PostgreSQL also needs room
+for transactions, WAL, and vacuum. A failed build retains the previous candidate.
+Activation and rollback across hosted runtimes are still in development.
 
 ## BYOC source history
 

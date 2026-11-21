@@ -24,6 +24,7 @@ enum ChallengeCommand {
     Matrix(PathBuf),
     PatchPreview(PathBuf, PathBuf),
     PatchContext(PathBuf, String),
+    PatchJobSource(uuid::Uuid, uuid::Uuid),
 }
 
 fn usage() -> &'static str {
@@ -98,6 +99,13 @@ where
     match arguments.next().as_deref() {
         Some("check") => parse_check_options(arguments),
         Some("matrix") => parse_matrix_options(arguments),
+        Some("patch-job-source") => match (arguments.next(), arguments.next(), arguments.next()) {
+            (Some(a), Some(c), None) => Ok(ChallengeCommand::PatchJobSource(
+                a.parse().map_err(|_| "invalid attempt UUID")?,
+                c.parse().map_err(|_| "invalid claim UUID")?,
+            )),
+            _ => Err("expected build attempt and claim UUIDs".into()),
+        },
         Some("patch-context") => match (arguments.next(), arguments.next(), arguments.next()) {
             (Some(flag), None, None) if flag == "--help" || flag == "-h" => {
                 Ok(ChallengeCommand::Help)
@@ -245,6 +253,9 @@ where
         }
         Ok(ChallengeCommand::Check(options)) => run_check(options),
         Ok(ChallengeCommand::Matrix(root)) => run_matrix(root),
+        Ok(ChallengeCommand::PatchJobSource(attempt, claim)) => {
+            patch_status(super::patch_preview::job_source(attempt, claim))
+        }
         Ok(ChallengeCommand::PatchContext(path, tree)) => {
             patch_status(super::patch_preview::context(&path, &tree))
         }

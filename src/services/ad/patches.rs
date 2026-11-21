@@ -6,7 +6,42 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) mod checkout;
+pub(crate) mod restore;
 pub(crate) mod revisions;
+
+/// Used by the trusted queue consumer. A lost or superseded claim cannot read the source.
+pub async fn claimed_source(
+    pool: &sqlx::PgPool,
+    attempt: uuid::Uuid,
+    claim: uuid::Uuid,
+) -> anyhow::Result<std::fs::File> {
+    use anyhow::Context;
+    let (service,tree_id,record,original,original_id)=sqlx::query_as::<_,(i32,String,String,Vec<u8>,String)>(r#"
+      SELECT b.service_id,t.tree_id,t.manifest,st.archive,st.tree_id
+        FROM "AdPatchBuilds" b JOIN "AdPatchRevisions" r USING(service_id,revision)
+        JOIN "AdPatchSourceTrees" t USING(service_id,tree_id)
+        JOIN "AdPatchBuildEligibleServices" s ON s.service_id=b.service_id
+        JOIN "AdPatchOnlineBuilders" w ON w.challenge_id=s.challenge_id AND w.backend_pid=b.claimed_by AND w.profile=b.profile
+        JOIN "AdPatchStarters" st ON st.challenge_id=s.challenge_id
+        WHERE b.attempt=$1 AND b.claim=$2 AND b.status='Building'
+        AND octet_length(t.manifest)<=4194304"#)
+       .bind(attempt).bind(claim).fetch_optional(pool).await?.context("patch build claim is no longer available")?;
+    let manifest = PatchManifest::from_record(&record)?;
+    let sizes = restore::blob_sizes(pool, service, manifest.blob_ids()).await?;
+    restore::restore(
+        pool,
+        service,
+        restore::Source {
+            manifest,
+            tree_id,
+            original,
+            original_id,
+        },
+        sizes,
+        std::sync::Arc::new(()),
+    )
+    .await
+}
 
 #[derive(Debug, PartialEq, Eq)]
 struct FileIdentity {

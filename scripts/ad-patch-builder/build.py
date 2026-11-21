@@ -58,11 +58,9 @@ def constrain_emulator(parent):
     resource.setrlimit(resource.RLIMIT_CPU, (limit, limit))
 
 
-def build(args):
+def build_to(args, scratch, candidate, source=None):
     if os.getuid() == 0:
         raise ValueError("run the patch VM as an unprivileged worker account")
-    if args.output.exists():
-        raise FileExistsError("patch output already exists")
     kernel = (args.guest / "vmlinuz").resolve(strict=True)
     initrd = (args.guest / "initramfs.cpio").resolve(strict=True)
     if bool(args.base_oci) != bool(args.base_manifest):
@@ -70,22 +68,13 @@ def build(args):
     if args.base_manifest and not re.fullmatch(r"sha256:[a-f0-9]{64}", args.base_manifest):
         raise ValueError("invalid starter image manifest digest")
     with ExitStack() as stack:
-        directory = os.open(args.output.parent, os.O_DIRECTORY)
-        stack.callback(os.close, directory)
-        try:
-            fd = os.open(".", os.O_TMPFILE | os.O_WRONLY, 0o600, dir_fd=directory)
-        except OSError as error:
-            if error.errno in (errno.EOPNOTSUPP, errno.EINVAL, errno.EISDIR):
-                raise ValueError("use a local worker output directory supporting O_TMPFILE") from error
-            raise
-        candidate = stack.enter_context(os.fdopen(fd, "wb"))
         # Anonymous spools disappear on cancellation or worker death, even
         # when the emulator has produced hundreds of MiB of private bytes.
-        out = stack.enter_context(tempfile.TemporaryFile(dir=args.output.parent))
+        out = stack.enter_context(tempfile.TemporaryFile(dir=scratch))
         subprocess.run([args.rsctf, "challenge", "patch-context", args.zip, args.tree],
-                       stdout=out, check=True, timeout=DEADLINE_SECONDS)
+                       stdin=source, stdout=out, check=True, timeout=DEADLINE_SECONDS)
         context = stack.enter_context(open(f"/proc/self/fd/{out.fileno()}", "rb"))
-        disk = stack.enter_context(tempfile.TemporaryFile(dir=args.output.parent))
+        disk = stack.enter_context(tempfile.TemporaryFile(dir=scratch))
         disk.truncate(HEADER_BYTES + MAX_IMAGE_BYTES)
         # QEMU probes a raw device read-only before opening the writable backend.
         disk_read = stack.enter_context(open(f"/proc/self/fd/{disk.fileno()}", "rb"))
@@ -106,6 +95,7 @@ def build(args):
             boot_args += " rsctf_base=" + args.base_manifest
         accelerator = "kvm" if args.kvm else "tcg"
         parent = os.getpid()
+        emulator_env = {key: os.environ[key] for key in ("PATH", "QEMU_MODULE_DIR") if key in os.environ}
         subprocess.run([
             "qemu-system-x86_64", "-no-user-config", "-nodefaults", "-machine", f"q35,accel={accelerator}",
             "-cpu", "max", "-smp", "2", "-m", "1536", "-nic", "none", "-display", "none",
@@ -120,9 +110,25 @@ def build(args):
             "-drive", "file=/dev/fdset/2,format=raw,if=none,id=result",
             "-device", "virtio-blk-pci,drive=result,serial=rsctf-result",
             *base_drive,
-        ], pass_fds=inherited, stdin=subprocess.DEVNULL, check=True, timeout=DEADLINE_SECONDS,
+        ], pass_fds=inherited, stdin=subprocess.DEVNULL, env=emulator_env, check=True, timeout=DEADLINE_SECONDS,
             preexec_fn=lambda: constrain_emulator(parent))
-        digest = copy_result(disk, candidate)
+        return copy_result(disk, candidate)
+
+
+def build(args):
+    if args.output.exists():
+        raise FileExistsError("patch output already exists")
+    with ExitStack() as stack:
+        directory = os.open(args.output.parent, os.O_DIRECTORY)
+        stack.callback(os.close, directory)
+        try:
+            fd = os.open(".", os.O_TMPFILE | os.O_WRONLY, 0o600, dir_fd=directory)
+        except OSError as error:
+            if error.errno in (errno.EOPNOTSUPP, errno.EINVAL, errno.EISDIR):
+                raise ValueError("use a local worker output directory supporting O_TMPFILE") from error
+            raise
+        candidate = stack.enter_context(os.fdopen(fd, "wb"))
+        digest = build_to(args, args.output.parent, candidate)
         candidate.flush()
         os.fsync(candidate.fileno())
         # Link the verified inode exactly once. A concurrent winner is preserved.

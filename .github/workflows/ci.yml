@@ -143,9 +143,15 @@ jobs:
       - name: Test offline defensive patch VM
         run: |
           python3 scripts/ad-patch-builder/test_result.py
-          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios
+          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios python3-venv
           docker buildx build --platform linux/amd64 --output "type=local,dest=$RUNNER_TEMP/patch-guest" scripts/ad-patch-builder
-          python3 scripts/test-ad-patch-context.py ./target/debug/rsctf --guest "$RUNNER_TEMP/patch-guest"
+          python3 scripts/test-ad-patch-context.py ./target/debug/rsctf --guest "$RUNNER_TEMP/patch-guest" --docker-load
+          python3 -m venv "$RUNNER_TEMP/patch-worker"
+          "$RUNNER_TEMP/patch-worker/bin/pip" install -r scripts/ad-patch-builder/requirements.txt
+          RSCTF_PATCH_VM_GUEST="$RUNNER_TEMP/patch-guest" \
+            RSCTF_PATCH_WORKER_PYTHON="$RUNNER_TEMP/patch-worker/bin/python" \
+            RSCTF_PATCH_TEST_BINARY="$PWD/target/debug/rsctf" \
+            cargo test --all-features --locked --lib player_download_preview_and_revocation_during_upload -- --ignored --nocapture
 
       - name: Build test targets
         run: cargo build --all-targets --all-features --locked

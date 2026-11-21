@@ -1,6 +1,14 @@
 {
   "ad": {
     "patch": {
+      "build_revision": "Build revision {{number}}",
+      "reload_build": "Reload build status",
+      "queued": "Build queued",
+      "building": "Building in an isolated VM…",
+      "ready": "Candidate ready. Your service is still running its current version.",
+      "failed": "Build failed. Your service keeps running.",
+      "replaced": "Another revision is the current candidate.",
+      "waiting_worker": "Waiting for the challenge builder to reconnect.",
       "open_service": "Patch your service",
       "label": "Preview a patch ZIP",
       "compare_with": "Compare with",

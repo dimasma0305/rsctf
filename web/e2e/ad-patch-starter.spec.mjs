@@ -152,6 +152,8 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
   const root = '/api/game/901/ad/challenges/9001'
   const writes = []
   const revisions = []
+  let buildAttempt = null
+  let builderReconnected = false
   await page.route('**/*', async route => {
     const req = route.request()
     const url = new URL(req.url())
@@ -182,6 +184,20 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
     if (path === root + '/patch-revisions/1/changes') return route.fulfill({
       json: [{ path: 'src/version.txt', kind: 'Added' }],
     })
+    if (path === root + '/patch-revisions/1/build') {
+      expect(url.searchParams.get('service')).toBe('91')
+      expect(url.searchParams.get('commit')).toBe(revisions[0].commitId)
+      if (req.method() === 'POST') {
+        expect(buildAttempt).toBeNull()
+        buildAttempt = 'bb071404-0670-4655-94dd-726e8ea59254'
+        return route.fulfill({ json: { available: true, status: 'Queued', attempt: buildAttempt } })
+      }
+      if (buildAttempt && !builderReconnected) {
+        builderReconnected = true
+        return route.fulfill({ json: { available: false, status: 'Building', attempt: buildAttempt } })
+      }
+      return route.fulfill({ json: { available: true, status: buildAttempt ? 'Ready' : null, attempt: buildAttempt } })
+    }
     if (path === root + '/patch-revisions/1/source.zip') {
       expect(url.searchParams.get('commit')).toBe(revisions[0].commitId)
       return route.fulfill({ contentType: 'application/zip', body: candidate })
@@ -226,6 +242,10 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
   await panel.getByText('Team revision history').click()
   await expect(panel.getByText('111111111111')).toBeVisible()
   await panel.getByRole('button', { name: 'Changes in revision 1' }).click()
+  await panel.getByRole('button', { name: 'Build revision 1' }).click()
+  await expect(panel.getByText('Build queued')).toBeVisible()
+  await expect(panel.getByText('Waiting for the challenge builder to reconnect.')).toBeVisible({ timeout: 25000 })
+  await expect(panel.getByText(/^Candidate ready\./)).toBeVisible({ timeout: 25000 })
   await expect(panel.locator('details').getByRole('listitem')).toHaveText('Added · src/version.txt')
   const revisionDownload = page.waitForEvent('download')
   await panel.getByRole('button', { name: 'Download revision 1 ZIP' }).click()

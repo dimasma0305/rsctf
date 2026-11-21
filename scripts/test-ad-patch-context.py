@@ -10,13 +10,14 @@ import sys
 import tarfile
 import tempfile
 import time
+import uuid
 
 
-def check(binary, directory, guest):
+def check(binary, directory, guest, docker_load):
     source = directory / "source"
     source.mkdir()
     (source / "Dockerfile").write_text(
-        'FROM scratch\nCOPY service /service\nRUN ["/service"]\n'
+        f'FROM scratch\nLABEL org.rsctf.test-run="{uuid.uuid4()}"\nCOPY service /service\nRUN ["/service"]\n'
     )
     subprocess.run(
         ["cc", "-static", "-s", "-x", "c", "-", "-o", "service"],
@@ -37,7 +38,7 @@ def check(binary, directory, guest):
     subprocess.run(["git", "archive", "--format=zip", "-o", archive, tree], cwd=source, check=True)
 
     if guest:
-        return check_vm(binary, directory, guest, archive, tree)
+        return check_vm(binary, directory, guest, archive, tree, docker_load)
 
     context = directory / "context.tar"
     with context.open("wb") as output:
@@ -69,7 +70,15 @@ def vm_files(output):
 
         descriptor, = json.load(image.extractfile("index.json"))["manifests"]
         manifest = json.loads(blob(descriptor))
-        assert json.loads(blob(manifest["config"]))["os"] == "linux"
+        config = manifest["config"]
+        assert json.loads(blob(config))["os"] == "linux"
+        # Both readers must see exactly the same config and layer payloads.
+        docker_manifest, = json.load(image.extractfile("manifest.json"))
+        def blob_path(descriptor):
+            return "blobs/" + descriptor["digest"].replace(":", "/")
+        assert docker_manifest["Config"] == blob_path(config)
+        assert docker_manifest["Layers"] == [blob_path(layer) for layer in manifest["layers"]]
+        assert not docker_manifest.get("RepoTags")
         files = {}
         for layer in manifest["layers"]:
             with tarfile.open(fileobj=io.BytesIO(blob(layer))) as root:
@@ -78,7 +87,22 @@ def vm_files(output):
                         files[entry.name] = (entry.mode, root.extractfile(entry).read())
         assert files["service"][0] & 0o777 == 0o755
         assert files["version"][1] == b"patched\n"
-        return descriptor["digest"], files
+        return descriptor["digest"], config["digest"], files
+
+
+def check_docker_load(output, image_id):
+    # This test creates an untagged image with a unique fixture label. Run the
+    # already verified config ID so a mutable daemon tag cannot select the image.
+    subprocess.run(["docker", "image", "load", "--input", output], check=True, timeout=60)
+    try:
+        inspected = json.loads(subprocess.check_output(["docker", "image", "inspect", image_id]))
+        assert inspected[0]["Id"] == image_id
+        assert not inspected[0].get("RepoTags")
+        subprocess.run(["docker", "run", "--rm", "--pull=never", "--network=none",
+                        "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=24",
+                        "--memory=64m", image_id, "/service"], check=True, timeout=30)
+    finally:
+        subprocess.run(["docker", "image", "rm", image_id], check=True, timeout=30)
 
 
 def check_interrupted_vm(command, directory):
@@ -118,7 +142,7 @@ def check_interrupted_vm(command, directory):
     assert set(directory.iterdir()) == before, "worker death left private files on disk"
 
 
-def check_vm(binary, directory, guest, archive, tree):
+def check_vm(binary, directory, guest, archive, tree, docker_load):
     output = directory / "revision.oci.tar"
     builder = pathlib.Path(__file__).parent / "ad-patch-builder" / "build.py"
     command = [sys.executable, builder, archive, tree, "--rsctf", binary, "--guest", guest, "--output", output]
@@ -132,7 +156,9 @@ def check_vm(binary, directory, guest, archive, tree):
     assert "File exists" in loser or "already exists" in loser, loser
     digest = (stdout if first.returncode == 0 else second.stdout).strip()
     assert digest == "sha256:" + hashlib.sha256(output.read_bytes()).hexdigest()
-    manifest, _ = vm_files(output)
+    manifest, image_id, _ = vm_files(output)
+    if docker_load:
+        check_docker_load(output, image_id)
 
     def repack(dockerfile):
         source = directory / "source"
@@ -161,7 +187,7 @@ def check_vm(binary, directory, guest, archive, tree):
     assert not other.exists()
     command[-1] = manifest
     subprocess.run(command, check=True)
-    _, files = vm_files(other)
+    _, _, files = vm_files(other)
     assert files["revision"][1].startswith(b"FROM rsctf-starter\n")
     assert "sha256:" + hashlib.sha256(output.read_bytes()).hexdigest() == digest
 
@@ -170,6 +196,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=pathlib.Path)
     parser.add_argument("--guest", type=pathlib.Path)
+    parser.add_argument("--docker-load", action="store_true", help="load and run the fixed VM-built fixture on a local Docker daemon")
     args = parser.parse_args()
+    if args.docker_load and not args.guest:
+        parser.error("--docker-load requires --guest")
     with tempfile.TemporaryDirectory(prefix="rsctf-patch-build-") as temporary:
-        check(args.binary.resolve(strict=True), pathlib.Path(temporary), args.guest)
+        check(args.binary.resolve(strict=True), pathlib.Path(temporary), args.guest, args.docker_load)

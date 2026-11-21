@@ -23,7 +23,7 @@ pub(crate) struct Page {
     before: Option<i32>,
 }
 
-fn db_error(error: sqlx::Error) -> AppError {
+pub(super) fn db_error(error: sqlx::Error) -> AppError {
     AppError::internal(error.to_string())
 }
 

@@ -1,6 +1,14 @@
 {
   "ad": {
     "patch": {
+      "build_revision": "Build revisi {{number}}",
+      "reload_build": "Muat ulang status build",
+      "queued": "Build masuk antrean",
+      "building": "Build sedang berjalan di VM terisolasi…",
+      "ready": "Image kandidat siap. Layananmu masih menggunakan versi yang sedang aktif.",
+      "failed": "Build gagal. Layananmu tetap berjalan.",
+      "replaced": "Revisi lain sudah menjadi kandidat terbaru.",
+      "waiting_worker": "Menunggu worker build untuk challenge ini tersambung kembali.",
       "open_service": "Patch layanan tim",
       "label": "Pratinjau ZIP patch",
       "compare_with": "Bandingkan dengan",
