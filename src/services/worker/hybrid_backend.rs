@@ -106,20 +106,17 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.repair_ad_volumes(previous, spec, change).await
     }
 
-    async fn check_ad_volume_reset(
-        &self,
-        id: &str,
-        spec: &ContainerSpec,
-        preserve_volumes: bool,
-    ) -> AppResult<()> {
+    async fn check_stateless_ad_patch(&self, profile: Option<&str>, image: &str) -> AppResult<()> {
+        self.local.check_stateless_ad_patch(profile, image).await
+    }
+
+    async fn check_ad_volume_reset(&self, id: &str, spec: &ContainerSpec) -> AppResult<()> {
         if Self::is_worker_id(id) {
             return Err(AppError::conflict(
                 "The worker cannot transfer local Docker data volumes",
             ));
         }
-        self.local
-            .check_ad_volume_reset(id, spec, preserve_volumes)
-            .await
+        self.local.check_ad_volume_reset(id, spec).await
     }
 
     async fn create_workload(

@@ -489,20 +489,27 @@ impl ContainerManager for DockerContainerManager {
         self.create_with_donor(repair, Some(&id)).await.map(Some)
     }
 
-    async fn check_ad_volume_reset(
-        &self,
-        id: &str,
-        spec: &ContainerSpec,
-        preserve_volumes: bool,
-    ) -> AppResult<()> {
-        let donor = self
-            .ad_volume_repair_spec(id, spec, AdVolumeChange::Reset)
-            .await?;
-        if donor.is_some() != preserve_volumes {
+    async fn check_stateless_ad_patch(&self, _profile: Option<&str>, image: &str) -> AppResult<()> {
+        let config = self
+            .inspect_image(image)
+            .await?
+            .ok()
+            .and_then(|image| image.config)
+            .ok_or_else(|| AppError::conflict("Cannot verify the patch image volumes"))?;
+        if config.volumes.is_some_and(|volumes| !volumes.is_empty()) {
             return Err(AppError::conflict(
-                "The service data volumes changed before reset",
+                "Patch adds data volumes to a service without persistent volumes",
             ));
         }
+        Ok(())
+    }
+
+    async fn check_ad_volume_reset(&self, id: &str, spec: &ContainerSpec) -> AppResult<()> {
+        self.ad_volume_repair_spec(id, spec, AdVolumeChange::Reset)
+            .await?
+            .ok_or_else(|| {
+                AppError::conflict("The service data volume disappeared before reset")
+            })?;
         Ok(())
     }
 

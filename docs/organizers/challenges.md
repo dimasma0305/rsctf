@@ -161,6 +161,8 @@ For local Docker services, put team data in image-declared anonymous volumes
 at `/data` or `/var/lib/<name>`. An automatic repair reuses those volumes with
 the same image. A player reset to the starter or an organizer restart can switch
 images when both declare the same set of data volumes on the same Docker runtime.
+If the running service has no persistent volume, its ZIP patch must also
+declare none. Adding a volume would leave the starter unable to reuse it on rollback.
 RSCTF checks compatibility before withdrawing the endpoint or recording reset
 downtime. It stops the old writer before starting its replacement and retains
 the old container until the endpoint and reset job receipt commit together.

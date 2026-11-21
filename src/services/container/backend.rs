@@ -186,13 +186,19 @@ pub trait ContainerManager: Send + Sync {
         Ok(false)
     }
 
-    /// Verify the target and donor before the reset withdraws the live endpoint.
-    async fn check_ad_volume_reset(
+    /// A stateless team's previous image must remain a valid rollback target.
+    async fn check_stateless_ad_patch(
         &self,
-        _id: &str,
-        _spec: &ContainerSpec,
-        _preserve_volumes: bool,
+        _profile: Option<&str>,
+        _image: &str,
     ) -> AppResult<()> {
+        Err(AppError::conflict(
+            "This runtime cannot verify patch image volumes",
+        ))
+    }
+
+    /// Verify the target and donor before the reset withdraws the live endpoint.
+    async fn check_ad_volume_reset(&self, _id: &str, _spec: &ContainerSpec) -> AppResult<()> {
         Err(AppError::conflict(
             "This runtime cannot transfer team data volumes",
         ))

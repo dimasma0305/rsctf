@@ -308,11 +308,12 @@ pub async fn execute_job(
     if !replacement_checkpointed {
         if let Some(id) = source {
             preserve_volumes |= st.containers.has_ad_data_volumes(id).await?;
-            // A reclaimed stateless activation may already have removed its donor.
-            // Its durable preparation pinned the image after this compatibility check.
-            if preserve_volumes || (activation && !resuming) {
+            if preserve_volumes {
+                st.containers.check_ad_volume_reset(id, &spec).await?;
+            } else if activation && !resuming {
+                // After preparation, recovery may legitimately find the donor gone.
                 st.containers
-                    .check_ad_volume_reset(id, &spec, preserve_volumes)
+                    .check_stateless_ad_patch(spec.runtime_profile.as_deref(), &spec.image)
                     .await?;
             }
         } else if preserve_volumes {
