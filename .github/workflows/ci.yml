@@ -320,7 +320,9 @@ jobs:
           docker build --tag rsctf-coverage-smoke:ci \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
           image_id="$(docker image inspect rsctf-coverage-smoke:ci --format '{{.Id}}')"
-          printf 'RSCTF_REAL_DOCKER_RETRY_IMAGE=%s\nRSCTF_TEST_CONTAINER_IMAGE=%s\n' "$image_id" "$image_id" >> "$GITHUB_ENV"
+          docker build --build-arg SMOKE_IMAGE=rsctf-coverage-smoke:ci --tag rsctf-ad-state-smoke:ci - < tests/fixtures/ad-smoke.Dockerfile
+          ad_image_id="$(docker image inspect rsctf-ad-state-smoke:ci --format '{{.Id}}')"
+          printf 'RSCTF_REAL_DOCKER_RETRY_IMAGE=%s\nRSCTF_TEST_CONTAINER_IMAGE=%s\n' "$image_id" "$ad_image_id" >> "$GITHUB_ENV"
           printf 'RSCTF_DOCKER_PROXY_BIND=%s\n' "$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')" >> "$GITHUB_ENV"
           printf 'RSCTF_DOCKER_SCOPE=ci-architecture-coverage\n' >> "$GITHUB_ENV"
 
@@ -1112,13 +1114,7 @@ jobs:
           docker build --tag rsctf-architecture-smoke:ci \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
           export RSCTF_REAL_DOCKER_RETRY_IMAGE="$(docker image inspect rsctf-architecture-smoke:ci --format '{{.Id}}')"
-          # Reuse the HTTP smoke service with the hosted A&D flag-file contract.
-          docker build --tag rsctf-ad-state-smoke:ci - <<'DOCKERFILE'
-          FROM rsctf-architecture-smoke:ci
-          USER root
-          RUN touch /flag && chown nobody:nogroup /flag
-          USER nobody
-          DOCKERFILE
+          docker build --build-arg SMOKE_IMAGE=rsctf-architecture-smoke:ci --tag rsctf-ad-state-smoke:ci - < tests/fixtures/ad-smoke.Dockerfile
           export RSCTF_TEST_CONTAINER_IMAGE="$(docker image inspect rsctf-ad-state-smoke:ci --format '{{.Id}}')"
           export RSCTF_DOCKER_PROXY_BIND="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
           export RSCTF_DOCKER_SCOPE=ci-architecture

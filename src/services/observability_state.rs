@@ -8,7 +8,6 @@ use tokio::sync::watch;
 
 pub(super) const JOB_KINDS: [&str; 9] = [
     "AdReset",
-    "AdRollback",
     "AdReconcile",
     "ChallengeBuild",
     "BuildBatch",
@@ -16,6 +15,7 @@ pub(super) const JOB_KINDS: [&str; 9] = [
     "ImagePreflight",
     "VariantGeneration",
     "SecurityDerivation",
+    "AdRollback",
 ];
 pub(super) static QUEUED: [AtomicU64; JOB_KINDS.len()] =
     [const { AtomicU64::new(0) }; JOB_KINDS.len()];
@@ -123,6 +123,7 @@ mod tests {
               ('AdReset', 0, clock_timestamp() - interval '120 seconds', NULL),
               ('AdReset', 1, clock_timestamp(), clock_timestamp() - interval '1 second'),
               ('BuildBatch', 1, clock_timestamp(), clock_timestamp() + interval '1 minute'),
+              ('AdRollback', 0, clock_timestamp(), NULL),
               ('arbitrary-secret-label', 0, clock_timestamp(), NULL);
             INSERT INTO "WorkerNodes" VALUES
               ('Active', clock_timestamp() - interval '1 day'),
@@ -135,6 +136,7 @@ mod tests {
         assert_eq!(EXPIRED[0].load(Relaxed), 1);
         assert!(OLDEST[0].load(Relaxed) >= 120);
         assert_eq!(RUNNING[3].load(Relaxed), 1);
+        assert_eq!(QUEUED[8].load(Relaxed), 1);
         assert_eq!(WORKER_CERT_EXPIRED.load(Relaxed), 1);
         assert_eq!(WORKER_CERT_7_DAYS.load(Relaxed), 1);
         assert_eq!(WORKER_CERT_30_DAYS.load(Relaxed), 2);
