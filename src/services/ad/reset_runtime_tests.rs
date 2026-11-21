@@ -158,6 +158,7 @@ async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
         job.id,
         claimed.lease_token,
         &replacement,
+        false,
         "fixture reset",
     )
     .await;
@@ -394,6 +395,7 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
         job.id,
         first.lease_token,
         &image,
+        false,
         "fixture restart",
     )
     .await

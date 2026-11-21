@@ -660,9 +660,8 @@ pub async fn state(
 }
 
 /// `POST /api/Game/{id}/Ad/Services/{adTeamServiceId}/Reset` — the caller
-/// restarts their own service container: destroy it, launch a fresh one with a
-/// newly-planted flag, and stamp the self-reset cooldown. Requires the challenge
-/// to allow self-reset and the cooldown to have elapsed.
+/// queues a reset of their own hosted service. The reset worker restores the
+/// starter when available, delivers the current flag, and records the cooldown.
 pub async fn reset_service(
     State(st): State<SharedState>,
     user: CurrentUser,

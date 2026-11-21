@@ -299,11 +299,20 @@ impl ContainerManager for CapacityGatedDockerManager {
         &self,
         previous: &str,
         spec: &ContainerSpec,
+        change: super::AdVolumeChange,
     ) -> AppResult<Option<ContainerInfo>> {
-        let Some((id, repair)) = self.inner.ad_volume_repair_spec(previous, spec).await? else {
+        let Some((id, repair)) = self
+            .inner
+            .prepare_volume_launch(previous, spec, change)
+            .await?
+        else {
             return Ok(None);
         };
         self.create_reserved(repair, Some(&id)).await.map(Some)
+    }
+
+    async fn check_ad_volume_reset(&self, id: &str, spec: &ContainerSpec) -> AppResult<()> {
+        self.inner.check_ad_volume_reset(id, spec).await
     }
 
     async fn destroy(&self, id: &str) -> AppResult<()> {

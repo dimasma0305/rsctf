@@ -320,8 +320,11 @@ When SSH is enabled, add or generate the key shown by the toolkit and use the
 exact command displayed by rsctf. The username normally identifies the
 challenge, while your registered key identifies your participation.
 
-Keep a backup and a repeatable patch script outside the running container. A
-reset can discard changes made only inside the instance.
+Keep a backup and a repeatable patch script outside the running container.
+A hosted reset replaces the container's writable layer. On local Docker,
+the replacement keeps the current contents of compatible team data volumes.
+Resetting to the starter restores its program image. It cannot undo a database
+migration or restore older files in those volumes.
 
 ### 3.4 Defend without breaking the service
 

@@ -1,6 +1,8 @@
-use bollard::models::{ContainerStateStatusEnum, MountPointTypeEnum, RestartPolicyNameEnum};
+use bollard::models::{
+    ContainerStateStatusEnum, MountPoint, MountPointTypeEnum, RestartPolicyNameEnum,
+};
 
-use super::super::{ContainerSpec, DockerContainerManager, TEAM_ENV};
+use super::super::{AdVolumeChange, ContainerSpec, DockerContainerManager, TEAM_ENV};
 use crate::services::docker_admission::docker_admission;
 use crate::utils::error::{AppError, AppResult};
 
@@ -15,40 +17,43 @@ fn application_data(path: &str) -> bool {
         })
 }
 
+// An unfamiliar mount still carries team data and must reach validation.
+fn has_persistent_mount(mounts: &[MountPoint]) -> bool {
+    mounts
+        .iter()
+        .any(|m| m.typ != Some(MountPointTypeEnum::TMPFS))
+}
+
 impl DockerContainerManager {
     pub(in crate::services::container) async fn inspect_ad_data_volumes(
         &self,
         id: &str,
     ) -> AppResult<bool> {
         let old = self.inspect_scoped_container(self.client()?, id).await?;
-        Ok(old.and_then(|c| c.mounts).is_some_and(|mounts| {
-            mounts
-                .iter()
-                .any(|m| m.destination.as_deref().is_some_and(application_data))
-        }))
+        Ok(old
+            .and_then(|c| c.mounts)
+            .is_some_and(|mounts| has_persistent_mount(&mounts)))
     }
 
-    /// Docker inherits every donor mount. Accept only a stopped, same-image
-    /// service whose entire mount set consists of its own anonymous volumes.
+    /// Docker inherits every donor mount. Both images must declare exactly
+    /// these anonymous application volumes before a reset may stop the donor.
     pub(in crate::services::container) async fn ad_volume_repair_spec(
         &self,
         previous: &str,
         spec: &ContainerSpec,
-    ) -> AppResult<Option<(String, ContainerSpec)>> {
+        change: AdVolumeChange,
+    ) -> AppResult<Option<(String, ContainerSpec, bool)>> {
         let docker = self.client()?;
         let Some(old) = self.inspect_scoped_container(docker, previous).await? else {
             return Ok(None);
         };
         let mounts = old.mounts.as_deref().unwrap_or_default();
-        if !mounts
-            .iter()
-            .any(|m| m.destination.as_deref().is_some_and(application_data))
-        {
+        if !has_persistent_mount(mounts) {
             return Ok(None);
         }
         let mismatch = || {
             AppError::conflict(
-                "Cannot verify the stopped service's application volumes; keeping its data",
+                "Cannot verify the team's application volumes for the selected image",
             )
         };
         let image = self
@@ -61,6 +66,12 @@ impl DockerContainerManager {
             .and_then(|c| c.volumes.as_ref())
             .ok_or_else(mismatch)?;
         let config = old.config.as_ref().ok_or_else(mismatch)?;
+        let old_volumes = config.volumes.as_ref().ok_or_else(mismatch)?;
+        let running = match old.state.as_ref().and_then(|s| s.status) {
+            Some(ContainerStateStatusEnum::EXITED) => false,
+            Some(ContainerStateStatusEnum::RUNNING) if change == AdVolumeChange::Reset => true,
+            _ => return Err(mismatch()),
+        };
         let host = old.host_config.as_ref().ok_or_else(mismatch)?;
         let team = spec
             .env
@@ -92,8 +103,10 @@ impl DockerContainerManager {
             || spec.game_kind != rsctf_worker_protocol::GameKind::AttackDefense
             || id != previous
             || old.image.is_none()
-            || old.image != image.id
-            || old.state.as_ref().and_then(|s| s.status) != Some(ContainerStateStatusEnum::EXITED)
+            || image.id.is_none()
+            || (change == AdVolumeChange::RepairStopped && old.image != image.id)
+            || host.auto_remove == Some(true)
+            || old_volumes != declared
             || !config
                 .env
                 .as_ref()
@@ -138,6 +151,63 @@ impl DockerContainerManager {
         // A reclaimed repair must find the same successor even after a lost
         // create response. Its launch fingerprint fences a changed round.
         repair.operation_id = Some(format!("ad-volume-repair:{id}"));
-        Ok(Some((id.to_owned(), repair)))
+        Ok(Some((id.to_owned(), repair, running)))
+    }
+
+    pub(in crate::services::container) async fn prepare_volume_launch(
+        &self,
+        id: &str,
+        spec: &ContainerSpec,
+        change: AdVolumeChange,
+    ) -> AppResult<Option<(String, ContainerSpec)>> {
+        let Some((id, repair, running)) = self.ad_volume_repair_spec(id, spec, change).await?
+        else {
+            return Ok(None);
+        };
+        if running {
+            let docker = self.client()?;
+            let stopped = docker_admission()
+                .lifecycle(
+                    "stop_container",
+                    docker.stop_container(
+                        &id,
+                        Some(bollard::container::StopContainerOptions { t: 10 }),
+                    ),
+                )
+                .await?;
+            let state = self
+                .inspect_scoped_container(docker, &id)
+                .await?
+                .and_then(|c| c.state)
+                .and_then(|s| s.status);
+            if state != Some(ContainerStateStatusEnum::EXITED) {
+                if let Err(error) = stopped {
+                    tracing::warn!(backend_id=%id,%error,"could not stop team data volume writer");
+                }
+                return Err(AppError::conflict(
+                    "The team data volume still has an active writer",
+                ));
+            }
+        }
+        Ok(Some((id, repair)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_validates_even_an_unrecognized_persistent_mount() {
+        let mut mount = MountPoint {
+            destination: Some("/private".into()),
+            typ: Some(MountPointTypeEnum::TMPFS),
+            ..Default::default()
+        };
+        assert!(!has_persistent_mount(std::slice::from_ref(&mount)));
+        mount.typ = Some(MountPointTypeEnum::VOLUME);
+        assert!(has_persistent_mount(std::slice::from_ref(&mount)));
+        mount.typ = None;
+        assert!(has_persistent_mount(&[mount]));
     }
 }

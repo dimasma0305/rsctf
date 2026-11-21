@@ -17,7 +17,7 @@ const PUBLISH_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices" service
        AND service.game_id = $2
        AND service.host = ''
        AND service.port = 0
-       AND service.container_id = $5
+       AND service.container_id = $13
        AND participation.id = service.participation_id
        AND participation.game_id = service.game_id
        AND participation.status = $6
@@ -78,6 +78,7 @@ pub(crate) async fn prepare_service_reset(
     job_id: uuid::Uuid,
     lease_token: uuid::Uuid,
     image_ref: &str,
+    preserve_data_volumes: bool,
     reason: &str,
 ) -> AppResult<ServiceResetPreparation> {
     let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
@@ -203,6 +204,7 @@ pub(crate) async fn prepare_service_reset(
         lease_token,
         serde_json::json!({
             "resetPrepared": true,
+            "preserveDataVolumes": preserve_data_volumes,
             "preparedImageRef": image_ref,
             "preparedRoundId": round_id,
             "retiredBackendId": retired_container_id,
@@ -258,6 +260,13 @@ pub(crate) async fn checkpoint_reset_replacement(
     tx.commit().await.map_err(db_error)
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ResetVolumeTransfer<'a> {
+    pub donor: &'a str,
+    pub job: uuid::Uuid,
+    pub lease: uuid::Uuid,
+}
+
 /// Publish the new endpoint under the same identity fence used by checker
 /// persistence. It must still be the blank placeholder installed above.
 #[allow(clippy::too_many_arguments)]
@@ -271,6 +280,7 @@ pub(crate) async fn publish_service_reset(
     prepared_round_id: Option<i32>,
     require_running_game: bool,
     image_ref: Option<&str>,
+    volume_transfer: Option<ResetVolumeTransfer<'_>>,
 ) -> AppResult<bool> {
     if !valid_replacement_endpoint(host, port, container_id) {
         return Err(AppError::internal(
@@ -292,11 +302,23 @@ pub(crate) async fn publish_service_reset(
         .bind(require_running_game)
         .bind(prepared_round_id)
         .bind(image_ref)
+        .bind(volume_transfer.map_or(container_id, |transfer| transfer.donor))
         .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?
         .rows_affected()
         == 1;
+    if let Some(transfer) = volume_transfer.filter(|_| published) {
+        // Commit the replacement receipt and the donor-to-successor endpoint
+        // switch together. Until then the service row still owns the donor.
+        crate::services::control_jobs::checkpoint_input(
+            &mut **control.transaction_mut(),
+            transfer.job,
+            transfer.lease,
+            serde_json::json!({"replacementBackendId":container_id}),
+        )
+        .await?;
+    }
     control
         .release()
         .await
@@ -338,7 +360,7 @@ mod tests {
     #[test]
     fn reset_retains_old_identity_until_capture_fence_clears_it() {
         assert!(!RETIRE_SERVICE_ENDPOINT_SQL.contains("container_id = NULL"));
-        assert!(PUBLISH_SERVICE_ENDPOINT_SQL.contains("service.container_id = $5"));
+        assert!(PUBLISH_SERVICE_ENDPOINT_SQL.contains("service.container_id = $13"));
         assert!(PUBLISH_SERVICE_ENDPOINT_SQL.contains("challenge.deletion_pending = FALSE"));
         assert!(PUBLISH_SERVICE_ENDPOINT_SQL.contains("game.deletion_pending = FALSE"));
         assert!(PUBLISH_SERVICE_ENDPOINT_SQL.contains("team.deletion_pending = FALSE"));

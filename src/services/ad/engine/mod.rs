@@ -208,7 +208,7 @@ pub(crate) use round_completion::{
 };
 pub use rounds::*;
 pub(crate) use service_reset::{
-    checkpoint_reset_replacement, prepare_service_reset, publish_service_reset,
+    checkpoint_reset_replacement, prepare_service_reset, publish_service_reset, ResetVolumeTransfer,
 };
 
 /// Clear one hill's published holder through the canonical game-control

@@ -37,6 +37,8 @@ struct ResetJobInput {
     prepared_image_ref: Option<String>,
     #[serde(default)]
     replacement_backend_id: Option<String>,
+    #[serde(default)]
+    preserve_data_volumes: bool,
 }
 
 fn backend_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
@@ -224,6 +226,38 @@ pub async fn execute_job(
             .profile_pull_image(challenge.runtime_profile.as_deref(), &image)
             .await?;
     }
+    let mut spec = ContainerSpec::ad_service(
+        image.clone(),
+        ContainerResourceLimits {
+            memory_limit: challenge.memory_limit.unwrap_or(256),
+            cpu_count: challenge.cpu_count.unwrap_or(1),
+            storage_limit: storage_limit_or_default(challenge.storage_limit),
+        },
+        challenge.expose_port.unwrap_or(80),
+        part.team_id,
+        challenge.ad_allow_egress,
+        String::new(),
+    );
+    spec.runtime_profile = challenge.runtime_profile.clone();
+    spec.operation_id = Some(format!("ad-reset:{}", job.operation_id));
+    let source = if resuming {
+        retained_backend
+    } else {
+        service.container_id.as_deref()
+    };
+    let mut preserve_volumes = input.preserve_data_volumes;
+    if !replacement_checkpointed {
+        if let Some(id) = source {
+            preserve_volumes |= st.containers.has_ad_data_volumes(id).await?;
+            if preserve_volumes {
+                st.containers.check_ad_volume_reset(id, &spec).await?;
+            }
+        } else if preserve_volumes {
+            return Err(AppError::conflict(
+                "The reset could not locate the team's data volume donor",
+            ));
+        }
+    }
     let prepared = if resuming {
         None
     } else {
@@ -241,6 +275,7 @@ pub async fn execute_job(
                 job.id,
                 claimed.lease_token,
                 &image,
+                preserve_volumes,
                 reason,
             )
             .await?,
@@ -285,35 +320,44 @@ pub async fn execute_job(
         None if recovering_preparation => retained_backend,
         None => None,
     };
-    if let Some(container_id) = retired {
-        crate::services::traffic::destroy_container_after_capture_fence(st, container_id).await?;
-    }
-    let mut spec = ContainerSpec::ad_service(
-        image.clone(),
-        ContainerResourceLimits {
-            memory_limit: challenge.memory_limit.unwrap_or(256),
-            cpu_count: challenge.cpu_count.unwrap_or(1),
-            storage_limit: storage_limit_or_default(challenge.storage_limit),
-        },
-        challenge.expose_port.unwrap_or(80),
-        part.team_id,
-        challenge.ad_allow_egress,
-        flag,
-    );
-    spec.runtime_profile = challenge.runtime_profile.clone();
-    spec.operation_id = Some(format!("ad-reset:{}", job.operation_id));
-    let info = st.containers.create(spec).await?;
+    spec.flag = Some(flag);
+    let volume_donor = retired.filter(|_| preserve_volumes);
+    let info = if let Some(id) = volume_donor {
+        crate::services::traffic::fence_container_capture_stop(st, id).await?;
+        let candidate = st
+            .containers
+            .repair_ad_volumes(id, &spec, crate::services::container::AdVolumeChange::Reset)
+            .await?
+            .ok_or_else(|| AppError::conflict("The team's data volume disappeared during reset"))?;
+        if candidate.status != "running"
+            || candidate.ip.trim().is_empty()
+            || !(1..=65535).contains(&candidate.port)
+        {
+            st.containers.destroy(&candidate.id).await?;
+            return Err(AppError::unavailable(
+                "The replacement service has no running endpoint",
+            ));
+        }
+        candidate
+    } else {
+        if let Some(id) = retired {
+            crate::services::traffic::destroy_container_after_capture_fence(st, id).await?;
+        }
+        st.containers.create(spec).await?
+    };
     let backend_id = info.id.clone();
-    crate::services::ad_engine::checkpoint_reset_replacement(
-        st.pg(),
-        job.game_id,
-        service.id,
-        job.id,
-        claimed.lease_token,
-        input.replacement_backend_id.as_deref(),
-        &backend_id,
-    )
-    .await?;
+    if volume_donor.is_none() {
+        crate::services::ad_engine::checkpoint_reset_replacement(
+            st.pg(),
+            job.game_id,
+            service.id,
+            job.id,
+            claimed.lease_token,
+            input.replacement_backend_id.as_deref(),
+            &backend_id,
+        )
+        .await?;
+    }
     let publish = || {
         crate::services::ad_engine::publish_service_reset(
             &st.db,
@@ -327,6 +371,11 @@ pub async fn execute_job(
             // A worker from before image checkpointing may already have launched
             // its replacement against a different organizer build.
             (!resuming || pinned.is_some()).then_some(image.as_str()),
+            volume_donor.map(|donor| crate::services::ad_engine::ResetVolumeTransfer {
+                donor,
+                job: job.id,
+                lease: claimed.lease_token,
+            }),
         )
     };
     let published = match publish().await {
@@ -352,6 +401,12 @@ pub async fn execute_job(
         }
     };
     if !published {
+        if volume_donor.is_some() {
+            st.containers.destroy(&backend_id).await?;
+            return Err(AppError::conflict(
+                "The service changed before its volume transfer could be published",
+            ));
+        }
         crate::services::ad::service_lifecycle::rollback_created_backend(
             st,
             service.participation_id,
@@ -362,6 +417,11 @@ pub async fn execute_job(
         return Err(AppError::conflict(
             "Service eligibility changed while the replacement was launching",
         ));
+    }
+    if let Some(id) = volume_donor {
+        if let Err(error) = st.containers.destroy(id).await {
+            tracing::warn!(backend_id=id,%error,"published reset; stopped donor awaits cleanup");
+        }
     }
     distributed.release().await?;
     finish_publication(st, &backend_id, challenge.enable_traffic_capture).await?;

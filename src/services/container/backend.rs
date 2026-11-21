@@ -4,6 +4,12 @@ use rsctf_worker_protocol::{GameKind, ValidatedWorkloadSpec};
 use super::{ContainerInfo, ContainerSpec};
 use crate::utils::error::{AppError, AppResult};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AdVolumeChange {
+    RepairStopped,
+    Reset,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ContainerExecAdmission(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
@@ -166,12 +172,20 @@ pub trait ContainerManager: Send + Sync {
         Ok(false)
     }
 
+    /// Verify the target and donor before the reset withdraws the live endpoint.
+    async fn check_ad_volume_reset(&self, _id: &str, _spec: &ContainerSpec) -> AppResult<()> {
+        Err(AppError::conflict(
+            "This runtime cannot transfer team data volumes",
+        ))
+    }
+
     /// Start a replacement while a stopped hosted service still owns its data.
     /// None leaves ordinary provisioning in charge of stateless workloads.
     async fn repair_ad_volumes(
         &self,
         _previous: &str,
         _spec: &ContainerSpec,
+        _change: AdVolumeChange,
     ) -> AppResult<Option<ContainerInfo>> {
         Ok(None)
     }

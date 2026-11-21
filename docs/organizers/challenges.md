@@ -154,14 +154,17 @@ with its files intact. A round change during launch makes RSCTF
 discard the stale replacement. Existing services begin recording history at
 their next publication. Keep portable digests available in your own registry.
 
-For automatic repair of a stopped local Docker service, put team data in
-image-declared anonymous volumes at `/data` or `/var/lib/<name>`. RSCTF verifies
-the team's stopped container and reattaches those volumes on the same Docker
-runtime with the same image. It keeps the stopped container
-until the replacement endpoint is saved. Files in the container's writable
-layer start fresh. If a service with a recognized data path has additional
-mounts that RSCTF cannot verify, repair stops and leaves the data attached.
-This recovery applies to automatic repair of a stopped service.
+For local Docker services, put team data in image-declared anonymous volumes
+at `/data` or `/var/lib/<name>`. An automatic repair reuses those volumes with
+the same image. A player reset to the starter or an organizer restart can switch
+images when both declare the same set of data volumes on the same Docker runtime.
+RSCTF checks compatibility before withdrawing the endpoint or recording reset
+downtime. It stops the old writer before starting its replacement and retains
+the old container until the endpoint and reset job receipt commit together.
+Files in the container's writable layer start fresh. Unverified persistent
+mounts leave the reset pending or rejected with the team's data still attached.
+The replacement reads the current contents of those volumes, so both image
+versions must be able to read the team's stored data format.
 Activation and rollback across hosted runtimes are still in development.
 
 On the trusted worker host, an organizer can export a ready build to a new

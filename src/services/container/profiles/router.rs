@@ -17,6 +17,24 @@ pub struct ProfileRouter {
 }
 
 impl ProfileRouter {
+    fn volume_owner<'a>(
+        &'a self,
+        previous: &'a str,
+        profile: Option<&str>,
+    ) -> AppResult<(&'a dyn ContainerManager, &'a str)> {
+        let (owner, raw) = self.route(previous)?;
+        self.selected(profile)?;
+        let selected = match profile {
+            Some(id) => Self::handle(&self.entries[id].0, raw),
+            None => raw.to_owned(),
+        };
+        if selected != previous {
+            return Err(AppError::conflict(
+                "The previous service's data volumes belong to a different runtime profile",
+            ));
+        }
+        Ok((owner, raw))
+    }
     pub fn new(
         default: Arc<dyn ContainerManager>,
         entries: Vec<(RuntimeProfile, Arc<dyn ContainerManager>)>,
@@ -217,27 +235,25 @@ impl ContainerManager for ProfileRouter {
         &self,
         previous: &str,
         spec: &ContainerSpec,
+        change: crate::services::container::AdVolumeChange,
     ) -> AppResult<Option<ContainerInfo>> {
-        let (owner, raw) = self.route(previous)?;
-        self.selected(spec.runtime_profile.as_deref())?;
-        let selected_handle = match spec.runtime_profile.as_deref() {
-            Some(id) => Self::handle(&self.entries[id].0, raw),
-            None => raw.to_owned(),
-        };
-        if selected_handle != previous {
-            return Err(AppError::conflict(
-                "The previous service's data volumes belong to a different runtime profile",
-            ));
-        }
+        let (owner, raw) = self.volume_owner(previous, spec.runtime_profile.as_deref())?;
         let mut local = spec.clone();
         let profile = local.runtime_profile.take();
-        let Some(mut info) = owner.repair_ad_volumes(raw, &local).await? else {
+        let Some(mut info) = owner.repair_ad_volumes(raw, &local, change).await? else {
             return Ok(None);
         };
         if let Some(id) = profile {
             info.id = Self::handle(&self.entries[&id].0, &info.id);
         }
         Ok(Some(info))
+    }
+
+    async fn check_ad_volume_reset(&self, previous: &str, spec: &ContainerSpec) -> AppResult<()> {
+        let (owner, raw) = self.volume_owner(previous, spec.runtime_profile.as_deref())?;
+        let mut local = spec.clone();
+        local.runtime_profile = None;
+        owner.check_ad_volume_reset(raw, &local).await
     }
 
     async fn create_workload(

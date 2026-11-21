@@ -35,6 +35,7 @@ async fn resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically(
             job,
             token,
             &image,
+            false,
             "fixture retirement",
         )
     };
@@ -69,7 +70,7 @@ async fn resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically(
             0,
             "running".into(),
             false,
-            json!({"preparedImageRef":image,"preparedRoundId": 900108, "retiredBackendId": "running", "resetPrepared": true})
+            json!({"preparedImageRef":image,"preparedRoundId": 900108, "retiredBackendId": "running", "resetPrepared": true,"preserveDataVolumes":false})
         )
     );
     let unaffected: i64 =

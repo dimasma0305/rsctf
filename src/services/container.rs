@@ -70,9 +70,9 @@ use self::docker::{
     SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
 };
 pub use backend::{
-    should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
-    ContainerFile, ContainerLiveness, ContainerManager, ContainerStatus, FileChange,
-    NoopContainerManager,
+    should_use_platform_proxy, AdVolumeChange, ContainerBackendKind, ContainerExecAdmission,
+    ContainerExecError, ContainerFile, ContainerLiveness, ContainerManager, ContainerStatus,
+    FileChange, NoopContainerManager,
 };
 pub use capacity::CapacityGatedDockerManager;
 pub use docker::{
@@ -478,11 +478,21 @@ impl ContainerManager for DockerContainerManager {
         &self,
         previous: &str,
         spec: &ContainerSpec,
+        change: AdVolumeChange,
     ) -> AppResult<Option<ContainerInfo>> {
-        let Some((id, repair)) = self.ad_volume_repair_spec(previous, spec).await? else {
+        let Some((id, repair)) = self.prepare_volume_launch(previous, spec, change).await? else {
             return Ok(None);
         };
         self.create_with_donor(repair, Some(&id)).await.map(Some)
+    }
+
+    async fn check_ad_volume_reset(&self, id: &str, spec: &ContainerSpec) -> AppResult<()> {
+        self.ad_volume_repair_spec(id, spec, AdVolumeChange::Reset)
+            .await?
+            .ok_or_else(|| {
+                AppError::conflict("The service data volume disappeared before reset")
+            })?;
+        Ok(())
     }
 
     async fn destroy(&self, id: &str) -> AppResult<()> {

@@ -85,7 +85,11 @@ impl ProvisionFlag {
         crate::services::traffic::fence_container_capture_stop(state, donor).await?;
         let info = state
             .containers
-            .repair_ad_volumes(donor, spec)
+            .repair_ad_volumes(
+                donor,
+                spec,
+                crate::services::container::AdVolumeChange::RepairStopped,
+            )
             .await?
             .ok_or_else(|| {
                 AppError::conflict("The service's data volumes changed before repair")

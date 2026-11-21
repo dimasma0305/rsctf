@@ -146,6 +146,12 @@ async fn docker_repair_preserves_each_teams_anonymous_data_volume() {
             docker(&["stop", "-t", "1", &replacement.0]);
             previous = replacement.0.clone();
         } else {
+            reset_running_service_to_starter(&state, &peer.0, &base, &template.0).await;
+            assert_eq!(id(900041).await.unwrap(), replacement.0);
+            assert_eq!(
+                docker(&["exec", &replacement.0, "cat", "/data/marker"]),
+                "first"
+            );
             state.containers.destroy(&replacement.0).await.unwrap();
         }
         generations.push(replacement);
@@ -195,7 +201,11 @@ async fn docker_repair_preserves_each_teams_anonymous_data_volume() {
     assert!(matches!(
         state
             .containers
-            .repair_ad_volumes(&mixed.0, &mixed_spec)
+            .repair_ad_volumes(
+                &mixed.0,
+                &mixed_spec,
+                crate::services::container::AdVolumeChange::RepairStopped
+            )
             .await,
         Err(crate::utils::error::AppError::Conflict(_))
     ));
@@ -208,4 +218,154 @@ async fn docker_repair_preserves_each_teams_anonymous_data_volume() {
     capture.await.unwrap();
     runtime_pool.close().await;
     fixture.cleanup().await;
+}
+
+async fn reset_running_service_to_starter(
+    state: &crate::app_state::SharedState,
+    peer: &str,
+    incompatible: &str,
+    template: &str,
+) {
+    use crate::services::control_jobs::{self, ControlJobKind};
+    use serde_json::json;
+    use std::time::Duration;
+    let pool = state.pg();
+    let target = TestImage(docker(&[
+        "commit",
+        "--change",
+        "VOLUME /data",
+        "--change",
+        "ENV RSCTF_RESET_FIXTURE=starter",
+        template,
+    ]));
+    let volume = |id: &str| docker(&["inspect", "--format", "{{(index .Mounts 0).Name}}", id]);
+    let original_data = volume(peer);
+    sqlx::query(r#"UPDATE "GameChallenges" SET ad_allow_self_reset=TRUE WHERE id=900031"#)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "AdPatchStarters"(challenge_id,tree_id,archive)
+        VALUES(900031,repeat('a',64),'fixture'::bytea)"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    // The fixture game is already live. Seed the image receipt normally
+    // recorded when a starter is registered before the game.
+    sqlx::query(r#"UPDATE "AdPatchStarters" SET runtime_image_ref=$1 WHERE challenge_id=900031"#)
+        .bind(incompatible)
+        .execute(pool)
+        .await
+        .unwrap();
+    let kind = ControlJobKind::AdReset;
+    let job = control_jobs::enqueue(pool, kind, "ad-service:900042",900001,Some(900031),uuid::Uuid::new_v4(),&"d".repeat(64),
+        json!({"serviceId":900042,"participationId":900022,"expectedBackendId":peer,"playerPolicy":true})).await.unwrap();
+    let claim = || control_jobs::claim_next(pool, kind, Duration::from_secs(120));
+    let claimed = claim().await.unwrap().unwrap();
+    let snapshot = || {
+        sqlx::query_scalar::<_, serde_json::Value>(
+            r#"SELECT jsonb_build_array(to_jsonb(s),to_jsonb(c),j.input) FROM "AdTeamServices" s
+        JOIN "AdCheckResults" c ON c.team_service_id=s.id AND c.round_id=900108
+        CROSS JOIN "ControlPlaneJobs" j WHERE s.id=900042 AND j.id=$1"#,
+        )
+        .bind(job.id)
+        .fetch_one(pool)
+    };
+    let before = snapshot().await.unwrap();
+    let mismatch = super::reset::execute_job(state, &claimed)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(mismatch, crate::utils::error::AppError::Conflict(_)),
+        "{mismatch}"
+    );
+    assert_eq!(snapshot().await.unwrap(), before);
+    assert_eq!(docker(&["exec", peer, "cat", "/data/marker"]), "peer");
+    sqlx::query(r#"UPDATE "AdPatchStarters" SET runtime_image_ref=$1 WHERE challenge_id=900031"#)
+        .bind(&target.0)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"CREATE FUNCTION refuse_volume_receipt() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'fixture rejects receipt'; END $$;
+        CREATE TRIGGER refuse_volume_receipt BEFORE UPDATE ON "ControlPlaneJobs" FOR EACH ROW
+        WHEN (NEW.input ? 'replacementBackendId') EXECUTE FUNCTION refuse_volume_receipt()"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let failure = super::reset::execute_job(state, &claimed)
+        .await
+        .unwrap_err();
+    assert!(
+        failure.to_string().contains("fixture rejects receipt"),
+        "{failure}"
+    );
+    let pending = snapshot().await.unwrap();
+    assert_eq!(pending[0]["host"], "");
+    assert_eq!(pending[0]["container_id"], peer);
+    assert_eq!(pending[2]["preserveDataVolumes"], true);
+    assert!(pending[2].get("replacementBackendId").is_none());
+    assert_eq!(volume(peer), original_data);
+    let candidate = LiveService(docker(&[
+        "ps",
+        "-q",
+        "--no-trunc",
+        "--filter",
+        &format!("label=rsctf.operation=ad-volume-repair:{peer}"),
+    ]));
+    assert_eq!(candidate.0.len(), 64);
+    assert_eq!(volume(&candidate.0), original_data);
+    sqlx::query(r#"DROP TRIGGER refuse_volume_receipt ON "ControlPlaneJobs""#)
+        .execute(pool)
+        .await
+        .unwrap();
+    // Recovery must use the prepared image even if an organizer replaces
+    // the challenge starter while the reset worker is offline.
+    sqlx::query(r#"UPDATE "AdPatchStarters" SET runtime_image_ref=$1 WHERE challenge_id=900031"#)
+        .bind(incompatible)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"UPDATE "ControlPlaneJobs" SET lease_expires_at_utc=now()-interval '1 second' WHERE id=$1"#)
+        .bind(job.id).execute(pool).await.unwrap();
+    let reclaimed = claim().await.unwrap().unwrap();
+    assert_eq!(
+        super::reset::execute_job(state, &reclaimed).await.unwrap()["reset"],
+        true
+    );
+    let published = snapshot().await.unwrap();
+    assert_eq!(published[0]["container_id"], candidate.0);
+    assert_eq!(published[2]["replacementBackendId"], candidate.0);
+    assert_eq!(published[0]["published_image_ref"], target.0);
+    assert_eq!(
+        docker(&["exec", &candidate.0, "cat", "/data/marker"]),
+        "peer"
+    );
+    assert_eq!(
+        docker(&["exec", &candidate.0, "printenv", "RSCTF_RESET_FIXTURE"]),
+        "starter"
+    );
+    let flag: String = sqlx::query_scalar(
+        r#"SELECT flag FROM "AdFlags" WHERE round_id=900108 AND team_service_id=900042"#,
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(docker(&["exec", &candidate.0, "printenv", "RSCTF_FLAG"]) == flag);
+    assert!(!Command::new("docker")
+        .args(["inspect", peer])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    state.containers.destroy(&candidate.0).await.unwrap();
+    assert!(!Command::new("docker")
+        .args(["volume", "inspect", &original_data])
+        .output()
+        .unwrap()
+        .status
+        .success());
 }
