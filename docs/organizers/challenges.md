@@ -128,6 +128,11 @@ in chunks of up to 1 MiB. Each service retains one successful candidate of up
 to 256 MiB, plus its source history. For five teams with five services each,
 that caps retained candidate archives at 6.25 GiB. PostgreSQL also needs room
 for transactions, WAL, and vacuum. A failed build retains the previous candidate.
+When a hosted service publishes an endpoint, RSCTF records the immutable image
+used to launch it. Local Docker cleanup retains that image and the team's last
+distinct published image until the game ends. Restarting on the same image
+preserves the previous version. Existing services begin recording history at
+their next publication. Keep portable digests available in your own registry.
 Activation and rollback across hosted runtimes are still in development.
 
 On the trusted worker host, an organizer can export a ready build to a new

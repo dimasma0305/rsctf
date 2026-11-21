@@ -6,11 +6,11 @@ use sea_orm::SqlxPostgresConnector;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, SharedState};
 use crate::models::internal::configs::AppConfig;
 use crate::services::ad::scoring::test_fixture::ad_scoring_fixture;
 use crate::services::cache::InMemoryCache;
-use crate::services::container::{capacity, ContainerManager, DockerContainerManager};
+use crate::services::container::{capacity, docker_installation_scope, DockerContainerManager};
 use crate::services::control_jobs::{self, ControlJobKind};
 use crate::services::token::TokenService;
 use crate::storage::LocalBlobStorage;
@@ -33,18 +33,36 @@ fn docker(args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+fn docker_state(pool: &sqlx::PgPool) -> SharedState {
+    let manager = capacity::CapacityGatedDockerManager::from_env(
+        DockerContainerManager::connect().unwrap(),
+        pool.clone(),
+    )
+    .unwrap();
+    AppState::new(
+        SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone()),
+        Arc::new(AppConfig::default()),
+        Arc::new(InMemoryCache::new()),
+        Arc::new(LocalBlobStorage::new(
+            std::env::temp_dir().join(format!("rsctf-reset-{}", Uuid::new_v4())),
+        )),
+        TokenService::new("0123456789abcdef0123456789abcdef", 60),
+        Arc::new(manager),
+    )
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL, Docker and the CI static-flag-service image"]
 async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
     let image = std::env::var("RSCTF_TEST_CONTAINER_IMAGE").unwrap();
     let fixture = ad_scoring_fixture().await;
     let pool = &fixture.pool;
-    let manager = capacity::CapacityGatedDockerManager::from_env(
-        DockerContainerManager::connect().unwrap(),
-        pool.clone(),
-    )
-    .unwrap();
-    manager.profile_pull_image(None, &image).await.unwrap();
+    let state = docker_state(pool);
+    state
+        .containers
+        .profile_pull_image(None, &image)
+        .await
+        .unwrap();
     let live = LiveService(docker(&[
         "run",
         "-d",
@@ -78,15 +96,6 @@ async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
     .await
     .unwrap();
 
-    let storage = std::env::temp_dir().join(format!("rsctf-reset-{}", Uuid::new_v4()));
-    let state = AppState::new(
-        SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone()),
-        Arc::new(AppConfig::default()),
-        Arc::new(InMemoryCache::new()),
-        Arc::new(LocalBlobStorage::new(storage)),
-        TokenService::new("0123456789abcdef0123456789abcdef", 60),
-        Arc::new(manager),
-    );
     sqlx::raw_sql(r#"
         SET LOCAL rsctf.maintenance_writer = 'on';
         UPDATE "Games" SET end_time_utc=now()+interval '1 hour' WHERE id=900001;
@@ -161,5 +170,145 @@ async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
         );
     }
     drop(live);
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL, local Docker and the CI static-flag-service image"]
+async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
+    let image = std::env::var("RSCTF_TEST_CONTAINER_IMAGE").unwrap();
+    let fixture = ad_scoring_fixture().await;
+    let pool = &fixture.pool;
+    // Production reserves dedicated connections for the capture owner and
+    // its heartbeat while the reset holds the service publication lock.
+    let runtime_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(12)
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let state = docker_state(&runtime_pool);
+    let scope = docker_installation_scope();
+    let starting = LiveService(docker(&[
+        "create",
+        "--label",
+        &format!("rsctf.managed={scope}"),
+        "--label",
+        &format!("rsctf.scope={scope}"),
+        &image,
+    ]));
+    // Docker refuses to attribute this other installation's container to our manager.
+    let other = LiveService(docker(&["run", "-d", "--rm", &image]));
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::raw_sql(
+        r#"
+        SET LOCAL rsctf.maintenance_writer='on';
+        UPDATE "Games" SET end_time_utc=now()+interval '1 hour' WHERE id=900001;
+        UPDATE "AdRounds" SET finalized=FALSE WHERE id=900108;
+    "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE "GameChallenges" SET ad_self_hosted=FALSE,container_image='fixture',
+        build_status=1,build_image_digest=$1,expose_port=8080 WHERE id=900031"#,
+    )
+    .bind(&image)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(r#"UPDATE "AdTeamServices" SET container_id=CASE id WHEN 900041 THEN $1 ELSE $2 END WHERE id IN (900041,900042)"#)
+        .bind(&starting.0).bind(&other.0).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let game = crate::services::game_config::load_game(&state, fixture.game_id)
+        .await
+        .unwrap();
+    let reconcile = || {
+        crate::services::ad::provision::ensure_ad_containers(
+            &state, &game, None, false, false, false, None,
+        )
+    };
+    let row = |id| {
+        sqlx::query_scalar::<_, Value>(r#"SELECT to_jsonb(s) FROM "AdTeamServices" s WHERE id=$1"#)
+            .bind(id)
+            .fetch_one(pool)
+    };
+    let old = row(900041).await.unwrap();
+    let unrelated = row(900042).await.unwrap();
+    // Docker Created and an inspection error both leave the published endpoints intact.
+    assert_eq!(reconcile().await.unwrap(), (0, 2));
+    assert_eq!(row(900041).await.unwrap(), old);
+    assert_eq!(row(900042).await.unwrap(), unrelated);
+    docker(&["start", &starting.0]);
+    assert_eq!(reconcile().await.unwrap(), (0, 1));
+
+    let kind = ControlJobKind::AdReset;
+    let job = control_jobs::enqueue(
+        pool,
+        kind,
+        "ad-service:900041",
+        fixture.game_id,
+        Some(900031),
+        Uuid::new_v4(),
+        &"a".repeat(64),
+        json!({"serviceId":900041,"participationId":900021,
+            "expectedBackendId":starting.0,"playerPolicy":false}),
+    )
+    .await
+    .unwrap();
+    let claim = || control_jobs::claim_next(pool, kind, Duration::from_secs(60));
+    let first = claim().await.unwrap().unwrap();
+    let prepared = crate::services::ad_engine::prepare_service_reset(
+        &state.db,
+        fixture.game_id,
+        900041,
+        Some(&starting.0),
+        job.id,
+        first.lease_token,
+        "fixture restart",
+    )
+    .await
+    .unwrap();
+    let pending = row(900041).await.unwrap();
+    assert_eq!(pending["host"], "");
+    assert_eq!(pending["container_id"], starting.0);
+    sqlx::query(r#"UPDATE "ControlPlaneJobs" SET lease_expires_at_utc=now()-interval '1 second' WHERE id=$1"#)
+        .bind(job.id).execute(pool).await.unwrap();
+    assert_eq!(reconcile().await.unwrap(), (0, 1));
+    assert_eq!(row(900041).await.unwrap(), pending);
+    assert_eq!(
+        docker(&["inspect", "--format", "{{.State.Status}}", &starting.0]),
+        "running"
+    );
+    let recovered = claim().await.unwrap().unwrap();
+    assert_ne!(recovered.lease_token, first.lease_token);
+    let (shutdown, rx) = tokio::sync::watch::channel(false);
+    let capture = crate::services::traffic::start_capture_reconciler(state.clone(), rx);
+    let result = super::execute_job(&state, &recovered).await;
+    shutdown.send_replace(true);
+    capture.await.unwrap();
+    let result = result.unwrap();
+    assert_eq!(result["reset"], true);
+    let restored = row(900041).await.unwrap();
+    let replacement = LiveService(restored["container_id"].as_str().unwrap().to_owned());
+    assert_eq!(restored["published_image_ref"], image);
+    assert_eq!(restored["published_image_backend"], replacement.0);
+    assert!(restored["previous_image_ref"].is_null());
+    assert_ne!(replacement.0, starting.0);
+    assert_eq!(restored["port"], 8080);
+    assert!(!restored["host"].as_str().unwrap().is_empty());
+    assert_eq!(
+        docker(&["exec", &replacement.0, "printenv", "RSCTF_FLAG"]),
+        prepared.current_flag.unwrap()
+    );
+    assert_eq!(row(900042).await.unwrap(), unrelated);
+    assert_eq!(
+        docker(&["inspect", "--format", "{{.State.Status}}", &other.0]),
+        "running"
+    );
+    assert_eq!(reconcile().await.unwrap(), (0, 1));
+    assert_eq!(row(900041).await.unwrap(), restored);
+    runtime_pool.close().await;
     fixture.cleanup().await;
 }

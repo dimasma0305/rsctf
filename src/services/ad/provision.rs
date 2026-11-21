@@ -1,7 +1,7 @@
 //! A&D provisioning and durable reconcile application operations.
 use crate::app_state::SharedState;
 use crate::models::data::{ad_team_service, game, game_challenge, participation};
-use crate::services::container::{ContainerResourceLimits, ContainerSpec};
+use crate::services::container::{ContainerLiveness, ContainerResourceLimits, ContainerSpec};
 use crate::services::game_config::load_game;
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
@@ -502,19 +502,36 @@ pub(crate) async fn ensure_ad_containers(
                 .filter(ad_team_service::Column::ChallengeId.eq(c.id))
                 .one(&st.db)
                 .await?;
-            // Skip only if the service's container is actually ALIVE. A dead one
-            // (crashed / reaped) must be recreated — otherwise it stays Offline, or,
-            // since A&D services and KotH hills share the rsctf-ad subnet, its freed
-            // IP gets reused by another container and the checker silently hits the
-            // wrong service (an unexplained Mumble). Tear down the stale container
-            // first so it can't linger.
+            if let Some(unpublished) = existing
+                .as_ref()
+                .filter(|row| row.host.is_empty() && row.port == 0)
+            {
+                if super::reset::owns_unpublished_service(st.pg(), unpublished).await? {
+                    distributed.release().await?;
+                    continue;
+                }
+            }
+            // A published address can be reused once a workload stops. Only
+            // retire it on positive evidence from the owning runtime.
             if let Some(cid) = existing.as_ref().and_then(|s| s.container_id.clone()) {
                 let endpoint_is_published = existing
                     .as_ref()
                     .is_some_and(|service| !service.host.trim().is_empty() && service.port > 0);
-                if endpoint_is_published && st.containers.is_running(&cid).await {
-                    distributed.release().await?;
-                    continue; // already running
+                if endpoint_is_published {
+                    match st.containers.inspect_liveness(&cid).await {
+                        Ok(ContainerLiveness::Stopped) => {}
+                        Ok(ContainerLiveness::Running) => {
+                            distributed.release().await?;
+                            continue;
+                        }
+                        observation => {
+                            tracing::warn!(challenge = c.id, participation = p.id, backend_id = %cid,
+                                ?observation, "could not establish A&D workload liveness; keeping published endpoint");
+                            failures += 1;
+                            distributed.release().await?;
+                            continue;
+                        }
+                    }
                 }
                 crate::services::ad_vpn::deactivate_team_service(
                     &st.db,
@@ -562,7 +579,7 @@ pub(crate) async fn ensure_ad_containers(
                 }
             };
             let mut spec = ContainerSpec::ad_service(
-                image,
+                image.clone(),
                 ContainerResourceLimits {
                     memory_limit: c.memory_limit.unwrap_or(256),
                     cpu_count: c.cpu_count.unwrap_or(1),
@@ -674,6 +691,7 @@ pub(crate) async fn ensure_ad_containers(
                 host: &info.ip,
                 port: info.port,
                 backend_id: &backend_id,
+                image_ref: &image,
             };
             let persisted =
                 crate::services::ad::service_lifecycle::publish_managed_backend_if_eligible(

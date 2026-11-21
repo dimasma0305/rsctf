@@ -58,6 +58,27 @@ impl ResetJobInput {
     }
 }
 
+/// Called under the service publication lock. A reset can have committed its
+/// blank endpoint and lost its process before the replacement is published.
+/// Its durable checkpoint still owns recovery when its worker lease expires.
+pub(super) async fn owns_unpublished_service(
+    pool: &sqlx::PgPool,
+    service: &ad_team_service::Model,
+) -> AppResult<bool> {
+    sqlx::query_scalar(
+        r#"SELECT EXISTS (SELECT 1 FROM "ControlPlaneJobs"
+            WHERE kind='AdReset' AND scope_key=$1 AND status IN (0,1)
+              AND game_id=$2 AND challenge_id=$3 AND input @> $4)"#,
+    )
+    .bind(format!("ad-service:{}", service.id))
+    .bind(service.game_id)
+    .bind(service.challenge_id)
+    .bind(json!({"serviceId":service.id,"participationId":service.participation_id,"resetPrepared":true}))
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 pub async fn execute_job(
     st: &SharedState,
     claimed: &crate::services::control_jobs::ClaimedControlJob,
@@ -236,7 +257,7 @@ pub async fn execute_job(
         }
     };
     let mut spec = ContainerSpec::ad_service(
-        image,
+        image.clone(),
         ContainerResourceLimits {
             memory_limit: challenge.memory_limit.unwrap_or(256),
             cpu_count: challenge.cpu_count.unwrap_or(1),
@@ -287,6 +308,7 @@ pub async fn execute_job(
         &backend_id,
         prepared_round_id,
         true,
+        &image,
     )
     .await;
     match published {

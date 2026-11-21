@@ -314,7 +314,8 @@ jobs:
           sudo apt-get update && sudo apt-get install --yes --no-install-recommends python3-venv
           docker build --tag rsctf-coverage-smoke:ci \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
-          printf 'RSCTF_REAL_DOCKER_RETRY_IMAGE=%s\n' "$(docker image inspect rsctf-coverage-smoke:ci --format '{{.Id}}')" >> "$GITHUB_ENV"
+          image_id="$(docker image inspect rsctf-coverage-smoke:ci --format '{{.Id}}')"
+          printf 'RSCTF_REAL_DOCKER_RETRY_IMAGE=%s\nRSCTF_TEST_CONTAINER_IMAGE=%s\n' "$image_id" "$image_id" >> "$GITHUB_ENV"
           printf 'RSCTF_DOCKER_PROXY_BIND=%s\n' "$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')" >> "$GITHUB_ENV"
           printf 'RSCTF_DOCKER_SCOPE=ci-architecture-coverage\n' >> "$GITHUB_ENV"
 
@@ -1129,6 +1130,8 @@ jobs:
             byoc_source_history_coalesces_samples_and_bounds_private_retention
             resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically
             missing_reset_image_preserves_live_endpoint_and_scoring
+            reconcile_preserves_uncertain_backends_and_reclaimed_reset
+            image_history_tracks_distinct_publications_and_protects_only_retained_images
             stale_conditional_delete_cannot_destroy_a_real_replacement_runtime
             newly_issued_sessions_work_immediately_after_a_cached_credential_rotation
             exact_replay_and_stale_phase_recovery_are_durable

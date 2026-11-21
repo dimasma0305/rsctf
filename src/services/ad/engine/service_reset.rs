@@ -7,8 +7,9 @@ const RETIRE_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices"
      WHERE id = $1 AND game_id = $2"#;
 
 const PUBLISH_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices" service
-       SET host = $3, port = $4, container_id = $5,
-           last_reset_at = clock_timestamp(), status = $8
+       SET host = $3, port = $4, container_id = $5::text,
+           last_reset_at = clock_timestamp(), status = $8,
+           published_image_backend = $5::text, published_image_ref = $12
       FROM "Participations" participation,
            "Teams" team, "GameChallenges" challenge, "Games" game
      WHERE service.id = $1
@@ -227,6 +228,7 @@ pub(crate) async fn publish_service_reset(
     container_id: &str,
     prepared_round_id: Option<i32>,
     require_running_game: bool,
+    image_ref: &str,
 ) -> AppResult<bool> {
     if !valid_replacement_endpoint(host, port, container_id) {
         return Err(AppError::internal(
@@ -247,6 +249,7 @@ pub(crate) async fn publish_service_reset(
         .bind(ChallengeType::AttackDefense as i16)
         .bind(require_running_game)
         .bind(prepared_round_id)
+        .bind(image_ref)
         .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?

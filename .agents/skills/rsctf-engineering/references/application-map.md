@@ -80,6 +80,11 @@ The [starter image migration](../../../../src/migrations/m0371_ad_patch_starter_
 pairs the source with the organizer's pregame build and protects local images during cleanup.
 Its [HTTP and PostgreSQL regression](../../../../src/controllers/edit/ad/patch_starter/tests.rs)
 exercises replay, replacement, simultaneous registration, and game ownership.
+The [per-service image history](../../../../src/migrations/m0372_ad_service_image_history.rs)
+records the current and previous distinct image at endpoint publication. The
+[runtime regression](../../../../src/services/ad/reset_runtime_tests.rs) checks reconciliation
+across an interrupted reset and the [publication tests](../../../../src/services/ad/service_lifecycle_tests.rs)
+cover retention and older servers.
 The [private revision history](../../../../src/controllers/game/ad/patch_preview/revisions.rs)
 stores [content-addressed source](../../../../src/services/ad/patches/revisions.rs) for one hosted team service.
 The [revision download](../../../../src/controllers/game/ad/patch_preview/source.rs) checks team access
