@@ -3054,7 +3054,7 @@ export interface AdTeamCellModel {
   snapshotAvailable: boolean;
   /** Number of files the team changed vs the baseline image (docker diff), if captured. */
   changedFileCount?: number | null;
-  /** True for self-hosted (BYOC) challenges — no RSCTF-hosted container to shell/snapshot/inspect; only SLA status is meaningful. */
+  /** Self-hosted (BYOC) service with SLA status and private agent-reported source history. */
   selfHosted?: boolean;
 }
 
@@ -4575,6 +4575,51 @@ export interface ChallengeAuditFile {
   size: number
 }
 
+/** Stored ZIP for the original source of a hosted A&D challenge. */
+export interface RegisteredAdPatchStarter extends AdPatchStarter {
+  runtimeImageRef: string | null;
+  awaitingImageBuild: boolean;
+}
+
+export interface AdPatchStarter {
+  treeId: string
+  archiveBytes: number
+}
+
+export interface AdPatchPreview {
+  starterTree: string
+  candidateTree: string
+  baseRevision: number
+  comparisonRevision?: number
+  changes: { path: string; kind: 'Added' | 'Modified' | 'Deleted' }[]
+}
+
+export interface AdPatchRevision {
+  revision: number
+  treeId: string
+  commitId: string
+  parentId: string
+  createdAt: number
+}
+
+export interface AdPatchBuild {
+  available: boolean
+  status: 'Queued' | 'Building' | 'Ready' | 'Failed' | 'Replaced' | null
+  attempt: string | null
+}
+
+export interface ByocSourceHistoryPage {
+  before: number | null;
+  events: {
+    revision: number;
+    status: "observed" | "notRegistered" | "unavailable" | "legacyAgent";
+    trackedFiles?: number;
+    firstSeen: number;
+    lastSeen: number;
+    changes: { path: string; kind: "registered" | "unregistered" | "created" | "deleted" | "modified" | "present" | "missing" }[];
+  }[];
+}
+
 /** Parsed audit metadata for a pending/imported challenge */
 export interface ChallengeAuditModel {
   yamlText?: string | null
@@ -5699,6 +5744,10 @@ export class Api<
       }),
   };
   admin = {
+    byocSourceHistory: (game: number, service: number, before?: number, params: RequestParams = {}) =>
+      this.request<ByocSourceHistoryPage, RequestResponse>({
+        path: `/api/ad/admin/${game}/Services/${service}/ByocSource`, method: "GET", query: { before }, format: "json", ...params,
+      }),
     /**
      * @description Get admin dashboard stats
      *
@@ -9476,6 +9525,24 @@ export class Api<
         options,
       ),
 
+    getAdPatchStarter: (id: number, challengeId: number, params: RequestParams = {}) =>
+      this.request<RegisteredAdPatchStarter | null, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${challengeId}/patch-starter`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    putAdPatchStarter: (id: number, challengeId: number, zip: File, expected: string | null, params: RequestParams = {}) =>
+      this.request<RegisteredAdPatchStarter, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${challengeId}/patch-starter`,
+        method: "PUT",
+        body: zip,
+        format: "json",
+        ...params,
+        headers: { ...params.headers, "Content-Type": "application/zip", ...(expected ? { "X-RSCTF-Expected-Tree": expected } : {}) },
+      }),
+
     /**
      * @description Get parsed audit metadata (YAML, file tree, previews) for a pending challenge.
      *
@@ -11799,6 +11866,57 @@ export class Api<
      */
     gameAdDownloadSnapshotUrl: (id: number, adTeamServiceId: number) =>
       `/api/Game/${id}/Ad/Services/${adTeamServiceId}/Snapshot`,
+
+    getAdPatchPreviewInfo: (id: number, challenge: number, params: RequestParams = {}) =>
+      this.request<AdPatchStarter | null, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-preview`, method: "GET", format: "json", ...params,
+      }),
+
+    previewAdPatch: (id: number, challenge: number, zip: File, { base, ...params }: RequestParams & { base?: 'latest' | 'starter' } = {}) =>
+      this.request<AdPatchPreview, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-preview`, method: "POST", format: "json", body: zip, query: { base },
+        ...params, headers: { ...params.headers, "Content-Type": "application/zip" },
+      }),
+
+    downloadAdPatchStarter: (id: number, challenge: number, params: RequestParams = {}) =>
+      this.request<Blob, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-starter`, method: "GET", format: "blob", ...params,
+      }),
+
+    listAdPatchRevisions: (id: number, challenge: number, before?: number, params: RequestParams = {}) =>
+      this.request<AdPatchRevision[], RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions`, method: "GET", format: "json",
+        query: { before }, ...params,
+      }),
+
+    getAdPatchRevisionChanges: (id: number, challenge: number, revision: number, params: RequestParams = {}) =>
+      this.request<AdPatchPreview['changes'], RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/changes`, method: "GET", format: "json", ...params,
+      }),
+
+    downloadAdPatchRevision: (id: number, challenge: number, revision: number, commit: string, params: RequestParams = {}) =>
+      this.request<Blob, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/source.zip`,
+        method: "GET", query: { commit }, format: "blob", ...params,
+      }),
+
+    adPatchBuild: (id: number, challenge: number, revision: number, service: number, commit: string,
+      method: 'GET' | 'POST', previousAttempt?: string, params: RequestParams = {}) =>
+      this.request<AdPatchBuild, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/build`,
+        method, query: { service, commit, previousAttempt }, format: "json", ...params,
+      }),
+
+    byocSourceHistory: (game: number, challenge: number, before?: number, params: RequestParams = {}) =>
+      this.request<ByocSourceHistoryPage, RequestResponse>({
+        path: `/api/Game/${game}/Ad/Byoc/Source/${challenge}`, method: "GET", query: { before }, format: "json", ...params,
+      }),
+
+    saveAdPatchRevision: (id: number, challenge: number, service: number, zip: File, expected: number, params: RequestParams = {}) =>
+      this.request<AdPatchRevision, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions`, method: "POST", format: "json", body: zip,
+        ...params, headers: { ...params.headers, "Content-Type": "application/zip", "X-RSCTF-Expected-Revision": String(expected), "X-RSCTF-Expected-Service": String(service) },
+      }),
 
     /**
      * @description Downloads the game scoreboard; requires Monitor permission

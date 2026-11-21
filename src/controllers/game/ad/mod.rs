@@ -44,12 +44,50 @@ use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationSta
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
+#[cfg(test)]
+mod player_reset_tests;
+
 // ---------------------------------------------------------------------------
 // Router — paths match Api.ts verbatim (mixed case, case-sensitive).
 // ---------------------------------------------------------------------------
 
 fn common_router() -> Router<SharedState> {
     Router::new()
+        .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions",
+            limited(
+                Policy::Query,
+                get(patch_preview::revisions::list).post(patch_preview::revisions::save),
+            ),
+        )
+        .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions/{revision}/build",
+            limited(Policy::Query, get(patch_preview::builds::build)).merge(limited(
+                Policy::Container,
+                post(patch_preview::builds::build),
+            )),
+        )
+        .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions/{revision}/source.zip",
+            limited(Policy::Query, get(patch_preview::source::download)),
+        )
+        .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions/{revision}/changes",
+            limited(Policy::Query, get(patch_preview::revisions::changes)),
+        )
+        .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-preview",
+            get(patch_preview::info).merge(limited(
+                Policy::Query,
+                post(patch_preview::preview).layer(DefaultBodyLimit::max(
+                    crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES,
+                )),
+            )),
+        )
+        .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-starter",
+            limited(Policy::Query, get(patch_preview::download)),
+        )
         .route("/api/game/{id}/ad/scoreboard", get(scoreboard))
         .route("/api/Game/{id}/Ad/Scoreboard", get(scoreboard))
         .route(
@@ -128,6 +166,10 @@ fn common_router() -> Router<SharedState> {
                 )),
         )
         .route("/api/Game/{id}/Ad/Vpn/Config", get(download_vpn_config))
+        .route(
+            "/api/Game/{id}/Ad/Byoc/Source/{challengeId}",
+            limited(Policy::Query, get(byoc::byoc_source_history)),
+        )
         .route(
             "/api/Game/{id}/Ad/Byoc/Setup/{challengeId}",
             get(byoc_setup),
@@ -515,6 +557,7 @@ fn fill_random(buf: &mut [u8]) {
 
 mod byoc;
 mod byoc_authorization;
+mod patch_preview;
 mod scoreboard;
 pub(crate) mod snapshot_download;
 mod ssh;

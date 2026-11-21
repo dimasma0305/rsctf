@@ -8,6 +8,7 @@ use super::*;
 
 mod inspector;
 pub(crate) mod maintenance;
+pub(super) mod patch_starter;
 mod provision;
 mod provision_recovery;
 mod state;

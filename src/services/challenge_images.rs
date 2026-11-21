@@ -191,6 +191,16 @@ pub(crate) fn runtime_image(
     st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> AppResult<String> {
+    runtime_image_with_pin(st, challenge, None)
+}
+
+/// A registered starter or prepared operation supplies its original immutable
+/// reference. Validate it against the current profile even after a rebuild.
+pub(crate) fn runtime_image_with_pin(
+    st: &SharedState,
+    challenge: &game_challenge::Model,
+    pinned_image: Option<&str>,
+) -> AppResult<String> {
     if challenge.runtime_profile.is_some() {
         crate::services::container::profiles::policy::validate_selection(
             st,
@@ -200,6 +210,15 @@ pub(crate) fn runtime_image(
             challenge.workload_spec.is_some(),
             challenge.enable_traffic_capture,
         )?;
+    }
+    if let Some(image) = pinned_image {
+        return validate_runtime_reference(
+            image,
+            st.containers
+                .profile_backend_kind(challenge.runtime_profile.as_deref())?,
+            st.config.runtime_role,
+            shared_docker_daemon_acknowledged(),
+        );
     }
     runtime_image_for_profile_fields(
         st,

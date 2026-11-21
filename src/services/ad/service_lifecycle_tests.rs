@@ -19,6 +19,100 @@ struct Harness {
     schema: String,
 }
 
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn image_history_tracks_distinct_publications_and_protects_only_retained_images() {
+    let fixture = crate::services::ad::scoring::test_fixture::ad_scoring_fixture().await;
+    let pool = &fixture.pool;
+    sqlx::raw_sql(
+        r#"
+        UPDATE "Games" SET end_time_utc=now()+interval '1 hour' WHERE id=900001;
+        UPDATE "GameChallenges" SET ad_self_hosted=FALSE WHERE id=900031;
+    "#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(crate::migrations::m0372_ad_service_image_history::UP_SQL)
+        .execute(pool)
+        .await
+        .unwrap();
+    let history = || {
+        sqlx::query_as::<_,(Option<String>,Option<String>)>(
+        r#"SELECT published_image_ref,previous_image_ref FROM "AdTeamServices" WHERE id=900041"#).fetch_one(pool)
+    };
+    let protected = || {
+        sqlx::query_scalar::<_,String>(
+        r#"SELECT image_id FROM "AdProtectedLocalImages" WHERE challenge_id=900031 ORDER BY image_id"#).fetch_all(pool)
+    };
+    let a = format!("sha256:{}", "a".repeat(64));
+    let b = format!("sha256:{}", "b".repeat(64));
+    let c = format!("sha256:{}", "c".repeat(64));
+    let base = ManagedBackendPublication {
+        game_id: fixture.game_id,
+        participation_id: 900021,
+        challenge_id: 900031,
+        host: "fixture-host",
+        port: 8080,
+        backend_id: "first",
+        image_ref: &a,
+    };
+    assert_eq!(history().await.unwrap(), (None, None));
+    for (backend_id, image_ref, previous) in [
+        ("one", &a, None),
+        ("two", &b, Some(&a)),
+        ("restarted", &b, Some(&a)),
+        ("three", &c, Some(&b)),
+    ] {
+        assert!(publish_managed_backend_if_eligible(
+            pool,
+            ManagedBackendPublication {
+                backend_id,
+                image_ref,
+                ..base
+            }
+        )
+        .await
+        .unwrap());
+        assert_eq!(
+            history().await.unwrap(),
+            (Some(image_ref.clone()), previous.cloned())
+        );
+    }
+    assert_eq!(protected().await.unwrap(), [b.clone(), c.clone()]);
+    assert!(
+        retain_created_backend_identity(pool, fixture.game_id, 900021, 900031, "unpublished")
+            .await
+            .unwrap()
+    );
+    assert_eq!(history().await.unwrap(), (Some(c.clone()), Some(b.clone())));
+    assert_eq!(protected().await.unwrap(), [b.clone(), c.clone()]);
+    // A second team independently publishes the same image. Inventory returns one
+    // challenge reference, and finishing a game releases both teams' protections.
+    assert!(publish_managed_backend_if_eligible(
+        pool,
+        ManagedBackendPublication {
+            participation_id: 900022,
+            backend_id: "other-team",
+            image_ref: &c,
+            ..base
+        }
+    )
+    .await
+    .unwrap());
+    assert_eq!(protected().await.unwrap(), [b, c.clone()]);
+    sqlx::query(r#"UPDATE "AdTeamServices" SET host='legacy',port=8080,container_id='old-server' WHERE id=900041"#)
+        .execute(pool).await.unwrap();
+    assert_eq!(history().await.unwrap(), (None, None));
+    assert_eq!(protected().await.unwrap(), [c]);
+    sqlx::query(r#"UPDATE "Games" SET end_time_utc=now() WHERE id=900001"#)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert!(protected().await.unwrap().is_empty());
+    fixture.cleanup().await;
+}
+
 impl Harness {
     async fn new() -> Self {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
@@ -77,6 +171,8 @@ impl Harness {
               status SMALLINT NOT NULL,
               container_id TEXT,
               last_reset_at TIMESTAMPTZ,
+              published_image_backend TEXT,
+              published_image_ref TEXT,
               UNIQUE (participation_id, challenge_id)
             );
             INSERT INTO "Games" VALUES (1, clock_timestamp() + interval '1 hour', FALSE);
@@ -213,6 +309,7 @@ async fn eligibility_cas_preserves_identity_and_cascaded_owner_still_destroys_lo
         host: "10.13.40.7",
         port: 8080,
         backend_id: "runtime-a",
+        image_ref: "fixture-image-a",
     };
     assert!(publish_managed_backend_if_eligible(&harness.pool, first)
         .await

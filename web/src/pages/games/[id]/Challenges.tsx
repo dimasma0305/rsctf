@@ -17,7 +17,7 @@ import { WithRole } from '@Components/WithRole'
 import { CompetitionStatus } from '@Components/competition/CompetitionStatus'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
 import { useAdState, useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
-import { ChallengeType, Role } from '@Api'
+import { AdServiceDeliveryState, ChallengeType, Role } from '@Api'
 import classes from '@Styles/GameWorkspace.module.css'
 
 const Challenges: FC = () => {
@@ -50,6 +50,14 @@ const Challenges: FC = () => {
   }, [teamInfo])
 
   const { adState, error: adStateError, mutate: mutateAdState } = useAdState(numId, hasAdEngine && !archived)
+  const patchChallenges = useMemo(() => {
+    if (archived || adStateError || !teamInfo?.challenges) return []
+    const hosted = new Set(adState?.services
+      .filter(service => !service.selfHosted && service.deliveryState === AdServiceDeliveryState.Managed)
+      .map(service => service.challengeId))
+    return Object.values(teamInfo.challenges).flatMap(list =>
+      (list ?? []).filter(challenge => challenge.type === ChallengeType.AttackDefense && hosted.has(challenge.id)))
+  }, [archived, adState, adStateError, teamInfo])
   const adStateOwner = useMemo(
     () => ({ data: adState, error: adStateError, mutate: mutateAdState }),
     [adState, adStateError, mutateAdState]
@@ -101,6 +109,7 @@ const Challenges: FC = () => {
           {hasAdChallenges && (
             <AdGuideModal
               gameId={numId}
+              patchChallenges={patchChallenges}
               tokenOwner={tokenOwner}
               opened={adGuideOpened}
               onClose={adGuideHandlers.close}

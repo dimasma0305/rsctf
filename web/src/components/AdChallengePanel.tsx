@@ -7,6 +7,8 @@ import { useTranslation } from 'react-i18next'
 import useSWR, { type KeyedMutator } from 'swr'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { FlagDeliveryNotice } from '@Components/competition/FlagDeliveryNotice'
+import { AdPatchPreviewPanel } from '@Components/competition/AdPatchPreviewPanel'
+import { ByocSourceHistory } from '@Components/competition/ByocSourceHistory'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
@@ -73,25 +75,28 @@ export const adServicePresentationState = (
   const isSelfHosted = selfHosted || service?.selfHosted === true
   if (!service) return isSelfHosted ? 'byoc-absent' : 'managed-absent'
   if (!isSelfHosted) return 'managed'
+  const endpointPublished = Boolean(service.containerIp && service.containerPort && service.containerPort > 0)
+  // Scoring can create the team-service row before the first agent connects.
+  const awaitingCheck = endpointPublished ? 'byoc-connecting' : 'byoc-absent'
   switch (service.deliveryState) {
     case AdServiceDeliveryState.ByocHealthy:
       return 'byoc-healthy'
     case AdServiceDeliveryState.ByocStale:
       return 'byoc-stale'
     case AdServiceDeliveryState.ByocConnecting:
-      return 'byoc-connecting'
+      return awaitingCheck
   }
   // Rolling upgrades can briefly pair a new client with an older cached state
   // response. Preserve safe BYOC guidance until the authoritative enum arrives.
-  const endpointPublished = Boolean(service.containerIp && service.containerPort && service.containerPort > 0)
   if (endpointPublished && service.lastCheckStatus === 'Ok') return 'byoc-healthy'
   if (service.lastCheckStatus) return 'byoc-stale'
-  return 'byoc-connecting'
+  return awaitingCheck
 }
 
 const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state }) => {
   const { t } = useTranslation()
   const [downloadBusy, setDownloadBusy] = useState(false)
+  const setupFilename = `setup-${gameId}-${challengeId}.sh`
   const download = (kind: 'Setup' | 'Compose') => {
     const suffix = kind === 'Setup' ? 'setup' : 'compose'
     void downloadBlob(
@@ -101,7 +106,8 @@ const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state })
           responseType: 'blob',
         }),
       setDownloadBusy,
-      t
+      t,
+      kind === 'Setup' ? setupFilename : 'compose.yaml'
     )
   }
   const content = {
@@ -110,7 +116,8 @@ const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state })
       title: t('game.content.ad.byoc.setup_title', 'Set up your BYOC service'),
       description: t(
         'game.content.ad.byoc.waiting_description',
-        'This is a self-hosted BYOC challenge; RSCTF will not provision a service container. Download setup.sh and run it on your service host. Its agent connects outbound and registers your service here.'
+        'Download the setup script and run {{command}} on your team’s service host. Docker Compose starts the service and reporting agent in the background.',
+        { command: `sh ${setupFilename}` }
       ),
     },
     'byoc-connecting': {
@@ -118,7 +125,7 @@ const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state })
       title: t('game.content.ad.byoc.connecting_title', 'BYOC agent is connecting'),
       description: t(
         'game.content.ad.byoc.connecting_description',
-        'The team service is enrolled but is not healthy yet. Keep setup.sh running and wait for the agent and service check to connect; restart the BYOC stack if it remains here.'
+        'Your team service is registered. You can close the setup terminal. Keep Docker running while RSCTF checks the connection.'
       ),
     },
     'byoc-healthy': {
@@ -157,12 +164,12 @@ const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state })
             variant="light"
             leftSection={<Icon path={mdiDownload} size={0.7} aria-hidden="true" />}
           >
-            {t('game.button.ad.byoc.download', 'Download setup.sh')}
+            {t('game.button.ad.byoc.download', 'Download setup script')}
           </Button>
           <Tooltip
             label={t(
               'game.tooltip.ad.byoc.byo',
-              'Prefer to run your own modified service instead of the one we ship? Get a docker-compose to fill in.'
+              'Save compose.yaml in a folder for this challenge. Run docker compose up -d in that folder to start your service and agent.'
             )}
           >
             <Button
@@ -175,6 +182,7 @@ const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state })
               {t('game.button.ad.byoc.byo', 'Bring your own service')}
             </Button>
           </Tooltip>
+          <ByocSourceHistory gameId={gameId} challengeId={challengeId} />
         </Group>
       </Stack>
     </Alert>
@@ -394,7 +402,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
           if (controller.signal.aborted) throw error
           job = (await api.game.gameAdResetJobByOperation(gameId, operationId, { signal: controller.signal })).data
         }
-        await waitForControlJob(
+        const completed = await waitForControlJob(
           job,
           controller.signal,
           async (jobId, signal) => (await api.game.gameAdResetJob(gameId, jobId, { signal })).data
@@ -402,8 +410,10 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
         showNotification({
           color: 'teal',
           icon: <Icon path={mdiRestart} size={1} />,
-          title: t('game.notification.ad.reset_queued.title', 'Reset queued'),
-          message: t('game.notification.ad.reset_queued.message', 'Container will rebuild in seconds.'),
+          title: t('game.notification.ad.reset_finished.title', 'Reset finished'),
+          message: completed.result?.reset === false
+            ? t('game.notification.ad.reset_finished.already_replaced', 'Another operation already replaced your service.')
+            : t('game.notification.ad.reset_finished.message', 'Your service has been rebuilt.'),
         })
         await mutateState()
       } catch (e) {
@@ -633,6 +643,10 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
       {/* SSH-jump reaches the RSCTF-hosted container; for self-hosted (BYOC) there
           is none (the team's service is on their own machine), so hide the hint. */}
       {!isSelfHosted && renderSshHint()}
+
+      {active && !isSelfHosted && !stateFailure && (
+        <AdPatchPreviewPanel key={`${gameId}:${service.adTeamServiceId}`} gameId={gameId} challengeId={challengeId} serviceId={service.adTeamServiceId} />
+      )}
 
       {snapshotDownload}
     </Stack>

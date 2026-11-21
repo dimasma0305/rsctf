@@ -13,6 +13,219 @@ Choose the simplest challenge type that delivers the intended experience. Every 
 | Attack & Defense | Every team defends a service and attacks targets | Container backend, checker, and event networking |
 | King of the Hill | Teams compete for a shared controlled service | Container backend and working control checks |
 
+## Compare two A&D source ZIPs
+
+In the hosted A&D challenge editor, choose **Starter ZIP for team patches**,
+select the source archive intended for teams, and click **Save starter ZIP**.
+Put the Dockerfile at the root. The editor displays the saved Git tree ID.
+You can replace the starter before the game begins. RSCTF keeps one ZIP per
+challenge in PostgreSQL, up to 72 MiB, shared across all teams. Saving a starter
+prepares the original source for comparison and leaves running services in place.
+
+When you save a starter before the game, the editor also records the challenge's
+successful build by its immutable image reference. If you upload the ZIP first,
+the editor shows **Build the challenge image** until the first successful build
+before kickoff. Later image rebuilds keep the recorded original. Replacing
+the starter ZIP before kickoff pairs the new source with the current build.
+For older starters and ZIPs first uploaded during play, the editor shows when
+the original image is unknown.
+
+If self-reset is enabled, a player's **Reset** rebuilds their service from the
+recorded original image. When no original was recorded, it uses the challenge's
+current successful build. Reset discards edits inside the container and incurs
+the usual SLA cost during the rebuild.
+
+RSCTF's Docker cleanup keeps the recorded local image until the game ends.
+All teams share that image. Saving a starter adds one database reference per
+challenge. For registry images, retain the manifest and layers at the recorded
+digest in your registry for the duration of the event.
+
+During the game, an accepted teammate can open **A&D Toolkit → Patch your
+service**, choose their hosted challenge, and use **Download starter ZIP**.
+After editing, they can choose their ZIP and click
+**Compare files** to see additions, modifications, and deletions. Preview reads
+the submitted ZIP in memory. By default it compares against the team's latest
+private revision, or the starter ZIP for a team's first save. Choose **Starter
+ZIP** under **Compare with** to see all changes since the original. If a
+teammate saves while a latest-revision preview is uploading, compare again
+to see the new baseline before saving.
+
+After comparing, a teammate can choose **Save private revision**. Open **Team
+revision history** to see the time and Git commit ID of each saved ZIP. Select
+a revision to see which files changed since the previous save. Choose **Download
+revision N ZIP** to recover that version, including executable permissions. Saving
+records source only. The service continues running its current version.
+RSCTF shares the starter across teams and stores each additional file's
+contents once per team service, even when the file is renamed. Each service
+can keep up to 4096 revisions and 512 MiB of source blobs and manifests.
+
+Run `rsctf challenge patch-preview current.zip candidate.zip` to review the
+files added, modified, or deleted in a candidate patch. Both ZIPs need a
+`Dockerfile` at the root. The command runs locally and prints JSON with the
+two Git SHA-256 tree IDs and the changed paths. It reads one archive at a time
+and does not run the Dockerfile. A change to the executable bit is a modification.
+Identical tree IDs mean the two archives supply identical source inputs. When
+reusing a built image, also check the base image digest and external dependencies.
+
+To prepare a saved revision for an isolated builder, download its ZIP and use
+the full `treeId` from that revision in the team's patch history API. Run
+`rsctf challenge patch-context revision.zip "$tree_id" > context.tar`.
+Use the tar only if the command succeeds. It contains the reviewed files and
+their executable bits. A damaged ZIP or a different revision fails before any
+source is written. The command only prepares the input for a build.
+
+### Build a revision on an offline worker
+
+On a Linux x86-64 worker, build the guest kernel and initramfs once. The
+packaging step needs Docker Buildx and network access to fetch the guest tools.
+
+```sh
+docker buildx build --platform linux/amd64 --output type=local,dest=patch-guest scripts/ad-patch-builder
+```
+
+For each revision, run the following command as an unprivileged worker
+account with Python 3, QEMU (`qemu-system-x86_64` with seccomp support), and
+the RSCTF CLI on its path. Use the saved revision's full `treeId`.
+
+```sh
+python3 scripts/ad-patch-builder/build.py revision.zip "$tree_id" \
+  --guest patch-guest --output candidate.oci.tar
+```
+
+Each job gets a fresh VM with two virtual CPUs, 1.5 GiB RAM, and only a
+loopback network interface. The worker allows five minutes for emulation and a 256 MiB OCI
+archive. Add `--kvm` on workers with KVM access. A successful command prints
+the archive's SHA-256 and creates an owner-readable file at the requested path.
+The archive contains an OCI index and a Docker load manifest. Both reference
+the same layer files, so compatibility adds only manifest metadata.
+Use a new path for each candidate. The running team service keeps its current
+image throughout the build. Use a local output filesystem that supports Linux
+unnamed temporary files (`O_TMPFILE`), such as ext4 or XFS. Interrupted jobs
+release their scratch files when the worker exits.
+
+A self-contained Dockerfile can use `FROM scratch`. For an application
+with dependencies, prepare an approved Linux amd64 OCI image containing them,
+use `FROM rsctf-starter` in the challenge Dockerfile, and pass
+`--base-oci starter.oci.tar --base-manifest "sha256:$manifest_digest"`.
+The digest identifies the manifest **inside** the OCI archive. The guest
+reads this base from a separate read-only disk. Package downloads and remote
+image pulls require preparing the dependencies before the event.
+
+To accept build requests from the Toolkit, run one worker for the hosted
+challenge. Register its starter ZIP first. Set `RSCTF_DATABASE_URL` to the
+platform database connection string on the worker host before starting it.
+
+```sh
+python3 -m venv patch-worker
+patch-worker/bin/pip install -r scripts/ad-patch-builder/requirements.txt
+patch-worker/bin/python scripts/ad-patch-builder/worker.py --challenge "$challenge_id" --guest patch-guest
+```
+
+The worker uses Python 3.11+ and a direct PostgreSQL session. A worker that uses
+a base image takes the same `--base-oci` and `--base-manifest` options as a
+local build. Keep its guest files and approved base immutable while it runs.
+
+Players open **Team revision history**, select a revision, and choose **Build
+revision**. The button appears when the challenge's worker is connected. Each
+team service can queue one build at a time. If a worker stops partway through,
+its successor can reclaim the request. The private candidate lives in PostgreSQL
+in chunks of up to 1 MiB. Each service retains one successful candidate of up
+to 256 MiB, plus its source history. For five teams with five services each,
+that caps retained candidate archives at 6.25 GiB. PostgreSQL also needs room
+for transactions, WAL, and vacuum. A failed build retains the previous candidate.
+When a hosted service publishes an endpoint, RSCTF records the immutable image
+used to launch it. Local Docker cleanup retains that image and the team's last
+distinct published image until the game ends. Restarting on the same image
+preserves the previous version. An interrupted reset keeps its staged image
+even if the organizer rebuilds the challenge during recovery. When a hosted
+container stops, automatic repair uses the team's last published image and its
+current round flag. Before removing a stopped Docker container or resuming an
+interrupted reset that still has its old container, RSCTF checks that Docker
+can load the selected image. If staging fails, the old container and its files
+stay on the host. A stopped service's address is withdrawn so it cannot route
+players to a different workload. A round change during launch makes RSCTF
+discard the stale replacement. Existing services begin recording history at
+their next publication. Keep portable digests available in your own registry.
+Activation and rollback across hosted runtimes are still in development.
+
+On the trusted worker host, an organizer can export a ready build to a new
+private file. Use the team's service ID, revision number, and attempt UUID
+from its build status. The export checks the archive size and SHA-256 digest
+and stops if a newer build replaces the selected one during transfer.
+
+```sh
+patch-worker/bin/python scripts/ad-patch-builder/export.py \
+  --service "$service_id" --revision "$revision" --attempt "$attempt" --output candidate.oci.tar
+```
+
+The command prints the archive digest. Add `--json` to print the archive
+digest, the OCI manifest digest for a registry, and the Docker image config
+digest together. These identify the exact build attempt that was exported.
+For candidates built with an older guest, the last two values are `null`.
+When updating an existing builder, migrate the server database first, then
+update the worker and rebuild its guest for new jobs.
+Exporting leaves the team's running service on its current revision.
+
+To rehearse with five hosted services, generate a separate hidden event from
+the bundled example repository. Each service includes a starter ZIP, two
+working patch revisions, a ZIP that fails to build, and a checker. Record the
+value of `GET /installation` for each team's service before the first patch.
+After activation or rollback, the same value indicates that the team's
+SQLite record in `/var/lib/rehearsal` survived the replacement.
+
+```sh
+git submodule update --init examples/challenge-repository
+python3 examples/challenge-repository/tools/ad-patch-rehearsal/generate.py ../rsctf-rehearsal
+```
+
+## BYOC source history
+
+The team runs the setup command shown on its challenge page. For example,
+`sh setup-13-50.sh` starts the service and reporting agent for game 13,
+challenge 50. Teams using **Bring your own service** save `compose.yaml` in a
+folder for that challenge and run `docker compose up -d` there. Both methods
+start source history in the background.
+The setup script requests the reviewed image revision selected at download
+time. If that revision becomes unavailable, a reinstall keeps the team's
+existing service and configuration. A fresh script can install a newly
+reviewed revision when the Compose file still matches the generated settings.
+If a team customizes the generated service definition, setup preserves that
+file and leaves the team in control of the running or stopped service.
+Teams already running the standalone Compose download
+continue managing that stack from their original challenge folder.
+
+- For a fresh installation with a reviewed image whose Dockerfile uses
+  `WORKDIR /app`, `/srv/app`, `/opt/app`, `/usr/src/app`, `/var/www/html` or
+  `/rsctf-source`, setup shares that directory with the agent read-only.
+  Docker seeds a volume from the image once per image revision. Edits inside
+  the running service persist across container recreation with the same volume.
+  Allow disk space for one copy of that directory per installed revision.
+- The standalone Compose file, placeholder, other image layouts, and existing
+  services upgraded from a bundle without a source volume use `./service-src`
+  next to the Compose file. Put the service's build context there to observe
+  host-side patches. Edits elsewhere in those containers are outside coverage.
+
+The agent checks common source files and build manifests once per minute.
+It skips hidden paths and dependency directories such as `node_modules` and
+`vendor`. To select exact paths, put a `.rsctf-files` list in the watched
+directory, one relative path per line. An empty list disables observation.
+Existing bundles with an explicit list retain that behavior.
+The server collects up to four reports at a time. Connected agents waiting
+for a slot are served in order.
+
+Only paths, Git SHA-256 blob IDs and executable permissions are reported.
+Contents stay with the team. The agent reuses hashes for unchanged files.
+Each scan supports 128 files, 8 MiB per file and 64 MiB total. Discovery visits
+up to 2,048 entries and 16 levels of directories. If a limit is exceeded, the
+agent reports that the source could not be read. A change reverted between
+samples can go unseen.
+
+Teams can open **Source history** on their BYOC challenge during the game.
+Platform admins can open it on the team's service in **A&D Operations**.
+RSCTF retains the last 128 distinct reports per service and displays the time
+of the latest report. Existing v2 agents continue serving traffic and flags and
+show a legacy-agent status. The team controls its deployed image and rollbacks.
+
 ## Required content
 
 Write the description for someone who has not seen the challenge source. State:
@@ -77,6 +290,11 @@ Prefer a repository digest in the challenge definition. A mutable tag may be
 used as build input on a Docker-backed installation, but rsctf resolves and
 provisions its immutable digest. Changing the tag clears that pin and requires a
 new successful build/pull.
+
+For a Docker build from a source ZIP, RSCTF applies the configured tag after
+BuildKit finishes and RSCTF verifies the resulting image ID. If the build fails
+or the build response is interrupted, the previous tag stays available. You can
+retry the build while existing instances continue serving their current image.
 
 Docker images that do not need setuid, Linux capabilities, or writes outside
 `/tmp` may opt into the restricted runtime profile with the image label

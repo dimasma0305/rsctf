@@ -1,0 +1,90 @@
+#!/bin/sh
+# PID 1 inside a disposable VM. Only the context and the result disk cross the VM boundary.
+set -eu
+export PATH=/bin
+# Linux does not allow pivot_root from the kernel's initial rootfs. Move PID 1
+# into a fresh mount so runc can use its normal process and mount isolation.
+if [ "$0" = /init ]; then
+    /bin/busybox mkdir /guest
+    /bin/busybox mount -t tmpfs tmpfs /guest
+    /bin/busybox cp -a /bin /lib /virtio_blk.ko /guest/
+    /bin/busybox cp /init /guest/guest-init
+    /bin/busybox mkdir -p /guest/dev /guest/proc /guest/sys /guest/tmp /guest/work /guest/etc /guest/run
+    exec /bin/busybox switch_root /guest /guest-init
+fi
+/bin/busybox --install -s /bin
+stage=startup
+result_disk=
+finish() {
+    if [ "$stage" != done ] && [ -b "$result_disk" ]; then
+        printf 'RSCTF-PATCH-FAILED %s\n' "$stage" | dd of="$result_disk" conv=notrunc 2>/dev/null || :
+    fi
+    sync
+    poweroff -f
+}
+trap finish EXIT
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mkdir -p /sys/fs/cgroup /dev/pts /dev/shm
+mount -t cgroup2 cgroup2 /sys/fs/cgroup
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /dev/shm
+insmod /virtio_blk.ko
+disk() {
+    for device in /sys/block/vd*; do
+        if [ "$(cat "$device/serial")" = "$1" ]; then
+            echo "/dev/${device##*/}"
+            return
+        fi
+    done
+    return 1
+}
+result_disk=$(disk rsctf-result)
+context_disk=$(disk rsctf-context)
+export HOME=/work/home TMPDIR=/work/tmp XDG_RUNTIME_DIR=/work/run
+mkdir -p "$HOME" "$TMPDIR" "$XDG_RUNTIME_DIR" /work/src /work/state
+ip link set lo up
+stage=context
+tar -xpf "$context_disk" -C /work/src
+set --
+for parameter in $(cat /proc/cmdline); do
+    case "$parameter" in
+        rsctf_base=*)
+            stage=base
+            mkdir /work/base
+            base_disk=$(disk rsctf-starter)
+            tar -xpf "$base_disk" -C /work/base
+            set -- --oci-layout patchbase=/work/base --opt "context:rsctf-starter=oci-layout://patchbase@${parameter#rsctf_base=}"
+            ;;
+    esac
+done
+stage=daemon
+buildkitd --root /work/state --addr unix:///work/run/buildkit.sock \
+    --oci-worker=true --containerd-worker=false --oci-worker-snapshotter=native \
+    --oci-worker-net=host --oci-worker-binary=/bin/buildkit-runc >/dev/null 2>&1 &
+daemon=$!
+ctl() { buildctl --addr unix:///work/run/buildkit.sock "$@"; }
+until ctl debug workers >/dev/null 2>&1; do
+    kill -0 "$daemon"
+    sleep 1
+done
+stage=build
+ctl build --frontend dockerfile.v0 --local context=/work/src --local dockerfile=/work/src \
+    --opt force-network-mode=none "$@" --metadata-file /work/metadata.json \
+    --output type=docker,oci-mediatypes=true,dest=/work/result.oci >/dev/null 2>&1
+stage=export
+# BuildKit writes these top-level keys outside the build container. Keep the
+# nested image metadata and all parsing of guest output inside this VM.
+manifest=$(sed -n 's/^  "containerimage\.digest": "\(sha256:[0-9a-f]\{64\}\)"[,]\{0,1\}$/\1/p' /work/metadata.json)
+config=$(sed -n 's/^  "containerimage\.config\.digest": "\(sha256:[0-9a-f]\{64\}\)"[,]\{0,1\}$/\1/p' /work/metadata.json)
+test "${#manifest}" -eq 71
+test "${#config}" -eq 71
+size=$(stat -c %s /work/result.oci)
+test "$size" -gt 0
+test "$size" -le "$(( $(blockdev --getsize64 "$result_disk") - 65536 ))"
+digest=$(sha256sum /work/result.oci)
+dd if=/work/result.oci of="$result_disk" bs=65536 seek=1 conv=notrunc
+sync
+printf 'RSCTF-PATCH-OCI 2 %s %s %s %s\n' "$size" "${digest%% *}" "$manifest" "$config" | dd of="$result_disk" conv=notrunc
+stage=done

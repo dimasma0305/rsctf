@@ -50,6 +50,53 @@ For every row, continue to [frontend-map.md](frontend-map.md),
 
 ## Start from a symptom
 
+For a local A&D source ZIP comparison, [patch-preview](../../../../src/cli/patch_preview.rs)
+uses the [patch manifest](../../../../src/services/ad/patches.rs) and the same validated
+archive reader as Docker builds. The [archive tests](../../../../src/services/challenge_builds/archive_tests.rs)
+cover Git tree compatibility, mode changes, and equivalent repackaging.
+The same CLI module exports a saved tree through `patch-context`. Its
+[CLI regression](../../../../tests/rsctf_cli.rs) checks the generated tar and
+empty output for stale or damaged input.
+The [BuildKit regression](../../../../scripts/test-ad-patch-context.py) builds a
+fixture from a Git-generated tree ID and verifies the executable and its output.
+Its `--guest` mode exercises the [offline VM worker](../../../../scripts/ad-patch-builder/build.py)
+and [guest init](../../../../scripts/ad-patch-builder/init), including a failed
+build, a pinned starter image, and preservation of the previous candidate.
+The [Toolkit build control](../../../../web/src/components/competition/AdPatchBuildAction.tsx)
+submits a saved commit through the [team-scoped build endpoint](../../../../src/controllers/game/ad/patch_preview/builds.rs).
+The [challenge worker](../../../../scripts/ad-patch-builder/worker.py) claims the request and replaces
+the private candidate after verification. The [PostgreSQL and VM regression](../../../../src/controllers/game/ad/patch_preview/tests/history/builds.rs)
+checks ownership, replay, failure and candidate retention.
+The [private image export](../../../../scripts/ad-patch-builder/export.py) selects one service,
+revision and build attempt. Its [PostgreSQL regressions](../../../../scripts/ad-patch-builder/test_export.py)
+cover corruption, replacement during transfer and competing output files.
+The [failed-build regression](../../../../src/services/challenge_builds/archive_tests/failed_candidate.rs)
+checks the Docker tag and the running service's data across an interrupted build,
+candidate cleanup, and retry. The [Docker transport](../../../../src/services/challenge_builds/docker_io.rs)
+builds an untagged image and publishes the tag after verifying the build receipt.
+The [starter ZIP editor](../../../../web/src/components/admin/AdPatchStarterInput.tsx)
+sends an explicitly selected source archive to the [hosted challenge endpoint](../../../../src/controllers/edit/ad/patch_starter.rs).
+The [starter image migration](../../../../src/migrations/m0371_ad_patch_starter_images.rs)
+pairs the source with the organizer's pregame build and protects local images during cleanup.
+Its [HTTP and PostgreSQL regression](../../../../src/controllers/edit/ad/patch_starter/tests.rs)
+exercises replay, replacement, simultaneous registration, and game ownership.
+The [per-service image history](../../../../src/migrations/m0372_ad_service_image_history.rs)
+records the current and previous distinct image at endpoint publication. The
+[runtime regression](../../../../src/services/ad/reset_runtime_tests.rs) checks reconciliation
+across an interrupted reset and the [publication tests](../../../../src/services/ad/service_lifecycle_tests.rs)
+cover retention and older servers.
+The [private revision history](../../../../src/controllers/game/ad/patch_preview/revisions.rs)
+stores [content-addressed source](../../../../src/services/ad/patches/revisions.rs) for one hosted team service.
+The [revision download](../../../../src/controllers/game/ad/patch_preview/source.rs) checks team access
+and [reconstructs the ZIP](../../../../src/services/ad/patches/checkout.rs) from the pinned starter and verified file contents.
+The [player preview panel](../../../../web/src/components/competition/AdPatchPreviewPanel.tsx) and
+the [A&D Toolkit](../../../../web/src/components/AdGuideModal.tsx) share the same challenge entry point. The
+[player routes](../../../../src/controllers/game/ad/patch_preview.rs) handle the download
+and comparison against the starter. The [PostgreSQL test](../../../../src/controllers/game/ad/patch_preview/tests.rs)
+covers revocation during upload and division access. The [revision tests](../../../../src/controllers/game/ad/patch_preview/tests/history.rs)
+also cover private comparison baselines and a teammate saving during an upload. The [browser test](../../../../web/e2e/ad-patch-starter.spec.mjs)
+exercises the organizer and player flows.
+
 For security-sensitive changes, use the initial
 [route → policy → regression index](security-boundaries.md). Its scope and missing
 end-to-end evidence are explicit.

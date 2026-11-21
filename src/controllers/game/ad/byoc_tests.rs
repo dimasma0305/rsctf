@@ -1,6 +1,21 @@
 use super::agent_image::default_byoc_agent_image_from;
 use super::*;
 
+#[test]
+fn image_export_accepts_the_bundled_revision_and_legacy_downloads() {
+    let original = format!("registry.example/service@sha256:{}", "a".repeat(64));
+    let replacement = format!("registry.example/service@sha256:{}", "b".repeat(64));
+    let query = ImageExportQuery {
+        revision: Some(export_revision(&original)),
+    };
+    assert!(query.accepts(&original));
+    assert!(!query.accepts(&replacement));
+    assert!(ImageExportQuery { revision: None }.accepts(&replacement));
+}
+
+#[path = "byoc_live_source_tests.rs"]
+mod live_source;
+
 fn context_with_hostile_values(marker: &std::path::Path) -> ByocContext {
     let marker = marker.display();
     ByocContext {
@@ -144,6 +159,8 @@ fn generated_tunnel_agents_drop_linux_privilege_by_default() {
             .split("  rsctf-agent:")
             .nth(1)
             .expect("agent service");
+        assert!(agent.contains("      RSCTF_BYOC_SOURCE_DISCOVERY: auto"));
+        assert!(agent.contains("\n      - ./service-src:/rsctf-source:ro"));
         assert!(agent.contains("    read_only: true"));
         assert!(agent.contains("    cap_drop:\n      - ALL"));
         assert!(agent.contains("    security_opt:\n      - no-new-privileges:true"));
@@ -508,7 +525,7 @@ fn hostile_generated_setup_is_shell_safe_and_preserves_wireguard_bytes() {
     let docker = bin.join("docker");
     std::fs::write(
         &docker,
-        "#!/bin/sh\nif [ \"$1\" = load ]; then exit 1; fi\nexit 0\n",
+        "#!/bin/sh\ncase \"$1\" in load|container|image) exit 1 ;; esac\nexit 0\n",
     )
     .expect("write docker stub");
     std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
@@ -616,8 +633,10 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
         format!(
             "#!/bin/sh\n\
              case \"$1:$2\" in\n\
+               ps:--all) exit 0 ;;\n\
                load:) cat >/dev/null; printf '%s\\n' 'Loaded image ID: {LOADED_ID}' ;;\n\
-               image:inspect) [ \"$5\" = '{LOADED_ID}' ] || exit 21; printf '%s\\n' '{LOADED_ID}' ;;\n\
+               image:inspect) if [ \"$4\" = '{{{{.Config.WorkingDir}}}}' ]; then printf '/app\\n'; else [ \"$5\" = '{LOADED_ID}' ] || exit 21; printf '%s\\n' '{LOADED_ID}'; fi ;;\n\
+               container:inspect) [ -n \"$RSCTF_TEST_PRIOR_MOUNTS\" ] || exit 1; printf '%s\\n' \"$RSCTF_TEST_PRIOR_MOUNTS\" ;;\n\
                image:tag) printf '%s\\n%s\\n' \"$3\" \"$4\" > \"$RSCTF_TEST_TAG_LOG\" ;;\n\
                compose:--env-file) [ \"$3:$4:$5:$6:$7\" = '/dev/null:-f:docker-compose.yml:up:-d' ] || exit 23; [ \"$COMPOSE_PROJECT_NAME\" = 'rsctf-byoc-17-23' ] || exit 24; cp docker-compose.yml \"$RSCTF_TEST_COMPOSE_LOG\" ;;\n\
                *) exit 22 ;;\n\
@@ -640,14 +659,18 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
     let mut path = std::ffi::OsString::from(bin.as_os_str());
     path.push(":");
     path.push(std::env::var_os("PATH").unwrap_or_default());
-    let output = Command::new("sh")
-        .args(["-c", &script])
-        .current_dir(&root)
-        .env("PATH", path)
-        .env("RSCTF_TEST_TAG_LOG", &tag_log)
-        .env("RSCTF_TEST_COMPOSE_LOG", &compose_log)
-        .output()
-        .expect("emulate generated installer");
+    let run_setup = |prior: &str| {
+        Command::new("sh")
+            .args(["-c", &script])
+            .current_dir(&root)
+            .env("PATH", &path)
+            .env("RSCTF_TEST_PRIOR_MOUNTS", prior)
+            .env("RSCTF_TEST_TAG_LOG", &tag_log)
+            .env("RSCTF_TEST_COMPOSE_LOG", &compose_log)
+            .output()
+            .expect("emulate generated installer")
+    };
+    let output = run_setup("");
     assert!(
         output.status.success(),
         "installer emulation failed; stdout={} stderr={}",
@@ -670,6 +693,10 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
     assert!(compose.contains(&format!("image: {}", compose_scalar(&reviewed))));
     assert!(compose.contains("    pull_policy: never"));
     assert!(!compose.contains(&compose_scalar(&immutable)));
+    assert!(compose.contains(":/app\n"));
+    assert!(compose.contains("        target: /rsctf-source\n        read_only: true"));
+    assert!(compose.contains("volume: { nocopy: true }"));
+    assert!(output_dir.join("service-src").is_dir());
     for sensitive in ["docker-compose.yml", "rsctf-ad.conf"] {
         let metadata =
             std::fs::symlink_metadata(output_dir.join(sensitive)).expect("read protected output");
@@ -687,6 +714,56 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
             & 0o077,
         0
     );
+
+    // Reinstall with the BSD stat interface used on macOS.
+    let stat = bin.join("stat");
+    std::fs::write(
+        &stat,
+        "#!/bin/sh\n[ \"$1\" = -f ] && [ \"$2\" = %u ] && [ -d \"$3\" ] || exit 1\nid -u\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stat, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // An older installation has no shared source mount in its service definition.
+    let legacy = build_setup_compose(17, 23, &ctx, Some(&reviewed))
+        .replace("      RSCTF_BYOC_SOURCE_DISCOVERY: auto\n", "")
+        .replace("      - ./service-src:/rsctf-source:ro\n", "");
+    std::fs::write(output_dir.join("docker-compose.yml"), legacy).unwrap();
+    assert!(run_setup(r#"[{"Name":"rsctf-byoc-17-23_flag"}]"#)
+        .status
+        .success());
+    let upgraded = std::fs::read_to_string(&compose_log).unwrap();
+    assert!(!upgraded.contains(":/app\n"));
+    assert!(upgraded.contains("      - ./service-src:/rsctf-source:ro"));
+    std::fs::write(output_dir.join("docker-compose.yml"), &compose).unwrap();
+    assert!(run_setup(r#"[{"Name":"rsctf-byoc-17-23_source-abc"}]"#)
+        .status
+        .success());
+    assert_eq!(std::fs::read_to_string(&compose_log).unwrap(), compose);
+
+    // A new download may upgrade a generated revision. A different volume
+    // chosen by the team is part of their service configuration.
+    let revision = reviewed.split_once(":reviewed-").unwrap().1;
+    let old_revision = "1111111111111111";
+    let current_file = output_dir.join("docker-compose.yml");
+    std::fs::write(&current_file, compose.replace(revision, old_revision)).unwrap();
+    assert!(run_setup("").status.success());
+    assert_eq!(std::fs::read_to_string(&current_file).unwrap(), compose);
+    let customized = compose.replacen(
+        &format!("source-{revision}:"),
+        "source-1111111111111111:",
+        1,
+    );
+    std::fs::write(&current_file, &customized).unwrap();
+    let refused = run_setup("");
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("Kept your existing BYOC setup"));
+    assert_eq!(std::fs::read_to_string(&current_file).unwrap(), customized);
+
+    std::fs::write(&stat, "#!/bin/sh\necho foreign-owner\n").unwrap();
+    let refused = run_setup("");
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("belongs to another user"));
+    assert_eq!(std::fs::read_to_string(&compose_log).unwrap(), compose);
 
     std::fs::remove_dir_all(root).expect("clean emulation directory");
 }

@@ -7,8 +7,10 @@ const RETIRE_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices"
      WHERE id = $1 AND game_id = $2"#;
 
 const PUBLISH_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices" service
-       SET host = $3, port = $4, container_id = $5,
-           last_reset_at = clock_timestamp(), status = $8
+       SET host = $3, port = $4, container_id = $5::text,
+           last_reset_at = clock_timestamp(), status = $8,
+           published_image_backend = CASE WHEN $12::text IS NOT NULL THEN $5::text END,
+           published_image_ref = $12
       FROM "Participations" participation,
            "Teams" team, "GameChallenges" challenge, "Games" game
      WHERE service.id = $1
@@ -24,6 +26,7 @@ const PUBLISH_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices" service
        AND challenge.id = service.challenge_id
        AND challenge.game_id = service.game_id
        AND challenge.is_enabled = TRUE
+       AND challenge.ad_self_hosted = FALSE
        AND challenge.deletion_pending = FALSE
        AND challenge.review_status = $7
        AND challenge."Type" = $9
@@ -66,10 +69,15 @@ pub(crate) struct ServiceResetPreparation {
 /// Checker persistence and this mutation share the per-game control lock. If a
 /// real verdict committed first it remains evidence; otherwise reset downtime is
 /// an explicit zero-credit Offline sample, never a carry-forward InternalError.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_service_reset(
     db: &DatabaseConnection,
     game_id: i32,
     service_id: i32,
+    expected_backend_id: Option<&str>,
+    job_id: uuid::Uuid,
+    lease_token: uuid::Uuid,
+    image_ref: &str,
     reason: &str,
 ) -> AppResult<ServiceResetPreparation> {
     let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
@@ -107,10 +115,14 @@ pub(crate) async fn prepare_service_reset(
               AND flag.team_service_id = service.id
             WHERE service.id = $1
               AND service.game_id = $2
+              AND NULLIF(service.container_id, '') IS NOT DISTINCT FROM NULLIF($6, '')
               AND participation.status = $3
               AND team.deletion_pending = FALSE
               AND game.deletion_pending = FALSE
+              AND game.start_time_utc <= clock_timestamp()
+              AND clock_timestamp() < game.end_time_utc
               AND challenge.is_enabled = TRUE
+              AND challenge.ad_self_hosted = FALSE
               AND challenge.deletion_pending = FALSE
               AND challenge.review_status = $4
               AND challenge."Type" = $5
@@ -121,6 +133,7 @@ pub(crate) async fn prepare_service_reset(
     .bind(ParticipationStatus::Accepted as i16)
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(ChallengeType::AttackDefense as i16)
+    .bind(expected_backend_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -182,6 +195,20 @@ pub(crate) async fn prepare_service_reset(
             "A&D service changed while replacement was starting",
         ));
     }
+    // A reclaimed job must never commit downtime without the exact round
+    // and backend needed to resume. A lost job lease rolls back all three writes.
+    crate::services::control_jobs::checkpoint_input(
+        &mut **tx,
+        job_id,
+        lease_token,
+        serde_json::json!({
+            "resetPrepared": true,
+            "preparedImageRef": image_ref,
+            "preparedRoundId": round_id,
+            "retiredBackendId": retired_container_id,
+        }),
+    )
+    .await?;
     control
         .release()
         .await
@@ -205,6 +232,7 @@ pub(crate) async fn publish_service_reset(
     container_id: &str,
     prepared_round_id: Option<i32>,
     require_running_game: bool,
+    image_ref: Option<&str>,
 ) -> AppResult<bool> {
     if !valid_replacement_endpoint(host, port, container_id) {
         return Err(AppError::internal(
@@ -225,6 +253,7 @@ pub(crate) async fn publish_service_reset(
         .bind(ChallengeType::AttackDefense as i16)
         .bind(require_running_game)
         .bind(prepared_round_id)
+        .bind(image_ref)
         .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?
@@ -236,6 +265,10 @@ pub(crate) async fn publish_service_reset(
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(published)
 }
+
+#[cfg(test)]
+#[path = "service_reset_pg_tests.rs"]
+mod pg_tests;
 
 #[cfg(test)]
 mod tests {

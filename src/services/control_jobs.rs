@@ -568,8 +568,8 @@ pub async fn release_resource(
     Ok(())
 }
 
-pub async fn checkpoint_input(
-    pool: &sqlx::PgPool,
+pub async fn checkpoint_input<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     id: Uuid,
     lease_token: Uuid,
     patch: Value,
@@ -590,7 +590,7 @@ pub async fn checkpoint_input(
     .bind(id)
     .bind(lease_token)
     .bind(patch)
-    .execute(pool)
+    .execute(executor)
     .await
     .map_err(database_error)?
     .rows_affected();

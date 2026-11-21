@@ -65,6 +65,7 @@ async fn manual_cleanup_finalization_waits_for_a_live_durable_build_lease() {
              cleanup_removal_started BOOLEAN NOT NULL DEFAULT FALSE,
              PRIMARY KEY (installation_scope, canonical_ref)
            );
+           CREATE TABLE "AdProtectedLocalImages" (image_id TEXT PRIMARY KEY);
            CREATE TABLE "ControlPlaneResourceLeases" (
              resource_key TEXT PRIMARY KEY,
              owner_job_id UUID NOT NULL,
@@ -173,6 +174,26 @@ async fn manual_cleanup_finalization_waits_for_a_live_durable_build_lease() {
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::query(r#"INSERT INTO "AdProtectedLocalImages" VALUES($1)"#)
+        .bind(&image_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let pinned = sqlx::query(FINALIZE_MANUAL_CLAIM_SQL)
+        .bind(scope)
+        .bind(canonical)
+        .bind(&image_id)
+        .bind(claim)
+        .bind(MANUAL_CLAIM_SECONDS)
+        .bind(&lock_key)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(pinned.rows_affected(), 0);
+    sqlx::query(r#"DELETE FROM "AdProtectedLocalImages""#)
+        .execute(&pool)
+        .await
+        .unwrap();
     let finalized = sqlx::query(FINALIZE_MANUAL_CLAIM_SQL)
         .bind(scope)
         .bind(canonical)

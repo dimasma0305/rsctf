@@ -65,6 +65,8 @@ end-to-end evidence tracked in TODO.md.
 | Trusted worker native agent | [agents/worker-agent/src/main.rs](../../../../agents/worker-agent/src/main.rs), [agents/worker-agent/src/client/](../../../../agents/worker-agent/src/client/), [agents/worker-agent/src/runtime/](../../../../agents/worker-agent/src/runtime/), [agents/worker-agent/README.md](../../../../agents/worker-agent/README.md) |
 | Shared worker framing/enrollment/workload protocol | [lib/worker-protocol/src/](../../../../lib/worker-protocol/src/), [lib/worker-protocol/README.md](../../../../lib/worker-protocol/README.md) |
 | Participant BYOC agent and transport | [agents/byoc-agent/src/](../../../../agents/byoc-agent/src/), [src/services/byoc_tunnel/](../../../../src/services/byoc_tunnel/), [src/controllers/game/ad/byoc/](../../../../src/controllers/game/ad/byoc/) |
+| Private BYOC source history | [Agent sampler](../../../../agents/byoc-agent/src/source.rs), [tunnel collector](../../../../src/services/byoc_tunnel/source.rs), [history response](../../../../src/services/byoc_tunnel/source/history.rs), [team and admin viewer](../../../../web/src/components/competition/ByocSourceHistory.tsx) |
+| Hosted A&D service reset and recovery | [Reset job](../../../../src/services/ad/reset.rs), [endpoint retirement and scoring transaction](../../../../src/services/ad/engine/service_reset.rs), [automatic repair and round flag](../../../../src/services/ad/engine/provision_flag.rs), [PostgreSQL recovery test](../../../../src/services/ad/engine/service_reset_pg_tests.rs) |
 | Managed checker confinement | [src/services/ad/engine/sandbox.rs](../../../../src/services/ad/engine/sandbox.rs), [src/services/ad/engine/sandbox/](../../../../src/services/ad/engine/sandbox/), [src/services/ad/engine/checker/](../../../../src/services/ad/engine/checker/) |
 | VPN owner session, firewall and route policy | [src/services/ad/vpn/](../../../../src/services/ad/vpn/), [src/services/ad/ssh.rs](../../../../src/services/ad/ssh.rs), [scripts/check-event-vpn.mjs](../../../../scripts/check-event-vpn.mjs) |
 | Capture ownership, evidence and inventory | [src/services/traffic/capture/](../../../../src/services/traffic/capture/), [src/services/traffic/inventory/](../../../../src/services/traffic/inventory/), [src/services/capture_safety.rs](../../../../src/services/capture_safety.rs) |
@@ -102,6 +104,10 @@ cover automatic, enforced, unknown and strict settings plus worker status.
 | Docker images, writable layers, logs, final snapshots | Runtime adapter plus [src/services/image_storage.rs](../../../../src/services/image_storage.rs), [src/services/ad/snapshots.rs](../../../../src/services/ad/snapshots.rs) |
 
 Trace which owner retains/deletes data before proposing storage savings.
+The [anonymous image collector](../../../../src/services/image_storage/dangling.rs)
+shares a per-destination build fence with image publication. Its
+[Docker and PostgreSQL test](../../../../src/services/image_storage/dangling_tests.rs)
+exercises pressure cleanup with pinned image IDs and an interrupted sweep.
 S3 blobs alone do not eliminate filesystem rename/flock or shared mounts.
 PostgreSQL session advisory-lock users require a direct or session-preserving
 connection; inspect the actual lease and pooling setup rather than assuming

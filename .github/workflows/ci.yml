@@ -92,6 +92,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
+      patchregistry:
+        image: registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - "127.0.0.1::5000"
       postgres:
         image: postgres:18-alpine
         env:
@@ -137,8 +141,34 @@ jobs:
       - name: Build application binaries
         run: cargo build --all-features --locked
 
+      - name: Build a verified defensive patch context
+        run: python3 scripts/test-ad-patch-context.py ./target/debug/rsctf
+
+      - name: Test offline defensive patch VM
+        run: |
+          python3 scripts/ad-patch-builder/test_result.py
+          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios python3-venv skopeo
+          docker buildx build --platform linux/amd64 --output "type=local,dest=$RUNNER_TEMP/patch-guest" scripts/ad-patch-builder
+          python3 scripts/test-ad-patch-context.py ./target/debug/rsctf --guest "$RUNNER_TEMP/patch-guest" --docker-load \
+            --registry-port "${{ job.services.patchregistry.ports['5000'] }}"
+          python3 -m venv "$RUNNER_TEMP/patch-worker"
+          "$RUNNER_TEMP/patch-worker/bin/pip" install -r scripts/ad-patch-builder/requirements.txt
+          "$RUNNER_TEMP/patch-worker/bin/python" scripts/ad-patch-builder/test_export.py
+          RSCTF_PATCH_VM_GUEST="$RUNNER_TEMP/patch-guest" \
+            RSCTF_PATCH_WORKER_PYTHON="$RUNNER_TEMP/patch-worker/bin/python" \
+            RSCTF_PATCH_TEST_BINARY="$PWD/target/debug/rsctf" \
+            cargo test --all-features --locked --lib player_download_preview_and_revocation_during_upload -- --ignored --nocapture
+
       - name: Build test targets
         run: cargo build --all-targets --all-features --locked
+
+      - name: Test source history in the downloaded BYOC bundle
+        run: |
+          cargo build --locked --manifest-path agents/byoc-agent/Cargo.toml --target-dir target
+          python3 scripts/test-byoc-source-compose.py --agent target/debug/rsctf-byoc-agent \
+            --agent-base ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 \
+            --service-base postgres:18-alpine -- \
+            cargo test --locked --all-features --lib downloaded_byoc_bundle_observes_in_container_patches -- --ignored --nocapture
 
       - name: Test Docker idempotent retry lifecycle
         run: |
@@ -247,6 +277,7 @@ jobs:
     env:
       RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test
       RSCTF_TEST_REDIS_URL: redis://127.0.0.1:6379
+      RSCTF_PATCH_TEST_REDIS_IMAGE: redis:8-alpine
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -288,7 +319,8 @@ jobs:
           sudo apt-get update && sudo apt-get install --yes --no-install-recommends python3-venv
           docker build --tag rsctf-coverage-smoke:ci \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
-          printf 'RSCTF_REAL_DOCKER_RETRY_IMAGE=%s\n' "$(docker image inspect rsctf-coverage-smoke:ci --format '{{.Id}}')" >> "$GITHUB_ENV"
+          image_id="$(docker image inspect rsctf-coverage-smoke:ci --format '{{.Id}}')"
+          printf 'RSCTF_REAL_DOCKER_RETRY_IMAGE=%s\nRSCTF_TEST_CONTAINER_IMAGE=%s\n' "$image_id" "$image_id" >> "$GITHUB_ENV"
           printf 'RSCTF_DOCKER_PROXY_BIND=%s\n' "$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')" >> "$GITHUB_ENV"
           printf 'RSCTF_DOCKER_SCOPE=ci-architecture-coverage\n' >> "$GITHUB_ENV"
 
@@ -1083,6 +1115,7 @@ jobs:
           export RSCTF_TEST_CONTAINER_IMAGE="$RSCTF_REAL_DOCKER_RETRY_IMAGE"
           export RSCTF_DOCKER_PROXY_BIND="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
           export RSCTF_DOCKER_SCOPE=ci-architecture
+          export RSCTF_PATCH_TEST_REDIS_IMAGE=redis:8-alpine
           filters=(
             registered_import_roles_recover_committed_side_effects_and_replay_http_receipts
             repository_update_preserves_challenge_solves_and_refreshes_content
@@ -1094,6 +1127,19 @@ jobs:
             readiness_rechecks_ownership_and_shutdown_after_waiting_for_dependencies
             docker_bootstrap_reuses_pending_code_and_stops_after_registration
             simple_challenge_create_is_atomic_authorized_and_retryable
+            starter_http_scope_replay_and_concurrent_registration
+            player_download_preview_and_revocation_during_upload
+            buildkit_accepts_checked_out_patch_revision
+            buildkit_failed_patch_candidate_preserves_active_image_and_service
+            pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_outputs
+            byoc_source_history_coalesces_samples_and_bounds_private_retention
+            resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically
+            missing_reset_image_preserves_live_endpoint_and_scoring
+            player_reset_restores_the_registered_starter_after_an_organizer_rebuild
+            native_round_publication_records_each_managed_service_acknowledgement
+            provisioning_cannot_publish_after_the_round_changes
+            reconcile_preserves_uncertain_backends_and_reclaimed_reset
+            image_history_tracks_distinct_publications_and_protects_only_retained_images
             stale_conditional_delete_cannot_destroy_a_real_replacement_runtime
             newly_issued_sessions_work_immediately_after_a_cached_credential_rotation
             exact_replay_and_stale_phase_recovery_are_durable

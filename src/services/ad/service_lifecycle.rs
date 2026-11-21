@@ -16,6 +16,7 @@ pub(crate) struct ManagedBackendPublication<'a> {
     pub(crate) host: &'a str,
     pub(crate) port: i32,
     pub(crate) backend_id: &'a str,
+    pub(crate) image_ref: &'a str,
 }
 
 pub(crate) fn service_lock_key(participation_id: i32, challenge_id: i32) -> String {
@@ -130,15 +131,15 @@ pub(crate) async fn drain_publications(
 /// Publish only while all durable owners remain eligible. This single SQL
 /// statement closes the last check-to-insert window and preserves
 /// `last_reset_at` when it fills an existing offline placeholder.
-pub(crate) async fn publish_managed_backend_if_eligible(
-    pool: &sqlx::PgPool,
+pub(crate) async fn publish_managed_backend_if_eligible<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
     publication: ManagedBackendPublication<'_>,
 ) -> AppResult<bool> {
     let published = sqlx::query_scalar::<_, i32>(
         r#"INSERT INTO "AdTeamServices"
              (game_id, participation_id, challenge_id, host, port, status,
-              container_id, last_reset_at)
-           SELECT game.id, participation.id, challenge.id, $4, $5, $6, $7, NULL
+              container_id, last_reset_at, published_image_backend, published_image_ref)
+           SELECT game.id, participation.id, challenge.id, $4, $5, $6, $7::text, NULL, $7::text, $11
              FROM "Games" game
              JOIN "Participations" participation
                ON participation.game_id = game.id
@@ -162,7 +163,9 @@ pub(crate) async fn publish_managed_backend_if_eligible(
                      host = EXCLUDED.host,
                      port = EXCLUDED.port,
                      status = EXCLUDED.status,
-                     container_id = EXCLUDED.container_id
+                     container_id = EXCLUDED.container_id,
+                     published_image_backend = EXCLUDED.published_image_backend,
+                     published_image_ref = EXCLUDED.published_image_ref
                WHERE "AdTeamServices".game_id = EXCLUDED.game_id
            RETURNING id"#,
     )
@@ -176,7 +179,8 @@ pub(crate) async fn publish_managed_backend_if_eligible(
     .bind(ParticipationStatus::Accepted as i16)
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(ChallengeType::AttackDefense as i16)
-    .fetch_optional(pool)
+    .bind(publication.image_ref)
+    .fetch_optional(executor)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(published.is_some())

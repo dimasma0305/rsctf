@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "dangling_tests.rs"]
+mod dangling_tests;
+
 const ID: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 fn reference() -> ChallengeReference {
@@ -64,6 +67,23 @@ fn reference_snapshot_indexes_aliases_and_managed_generators_once() {
     assert!(matching
         .iter()
         .any(|reference| managed_generator_matches(reference, &owned)));
+}
+
+#[test]
+fn immutable_runtime_and_checker_ids_protect_images_across_tag_changes() {
+    let owned = ownership();
+    let mut runtime = reference();
+    runtime.challenge_type = ChallengeType::AttackDefense as i16;
+    runtime.container_image = Some("rsctf/game/new-name:v2".into());
+    let mut checker = reference();
+    checker.ad_checker_image = Some(ID.into());
+    let mut direct = reference();
+    direct.container_image = Some(ID.into());
+    direct.build_image_digest = None;
+    let snapshot = ReferenceSnapshot::new(vec![runtime, checker, direct]);
+    let matches = snapshot.matching(&owned);
+    assert_eq!(matches.len(), 3);
+    assert!(matches.iter().all(|r| !reference_is_rebuildable(r, &owned)));
 }
 
 #[test]
@@ -242,6 +262,7 @@ async fn cleanup_finalization_waits_for_a_live_durable_build_lease() {
              cleanup_removal_started BOOLEAN NOT NULL DEFAULT FALSE,
              PRIMARY KEY (installation_scope, canonical_ref)
            );
+           CREATE TABLE "AdProtectedLocalImages" (image_id TEXT PRIMARY KEY);
            CREATE TABLE "ControlPlaneResourceLeases" (
              resource_key TEXT PRIMARY KEY,
              owner_job_id UUID NOT NULL,
@@ -299,6 +320,30 @@ async fn cleanup_finalization_waits_for_a_live_durable_build_lease() {
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::query(r#"INSERT INTO "AdProtectedLocalImages" VALUES ($1)"#)
+        .bind(ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let pinned = sqlx::query(RENEW_CLAIM_SQL)
+        .bind(scope)
+        .bind(canonical)
+        .bind(ID)
+        .bind(claim)
+        .bind(CLAIM_LEASE_SECONDS)
+        .bind(&lock_key)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        pinned.rows_affected(),
+        0,
+        "the starter was pinned after inventory"
+    );
+    sqlx::query(r#"DELETE FROM "AdProtectedLocalImages""#)
+        .execute(&pool)
+        .await
+        .unwrap();
     let finalized = sqlx::query(RENEW_CLAIM_SQL)
         .bind(scope)
         .bind(canonical)

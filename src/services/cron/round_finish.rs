@@ -15,11 +15,31 @@ enum DeliveryAttempt {
     PlatformFailure,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct DeliveryAttemptSummary {
     delivered: bool,
     participant_attempts: usize,
     saw_platform_failure: bool,
+    saw_admitted_timeout: bool,
+}
+
+impl DeliveryAttemptSummary {
+    fn failure_reason(self, managed: bool) -> &'static str {
+        if self.participant_attempts == 0 {
+            return if self.saw_platform_failure {
+                MANAGED_BACKEND_FAILURE_REASON
+            } else {
+                crate::services::ad_engine::PUBLICATION_DEADLINE_REASON
+            };
+        }
+        if self.saw_admitted_timeout {
+            "a round flag delivery attempt timed out waiting for acknowledgement"
+        } else if managed {
+            "managed container rejected the round flag"
+        } else {
+            "BYOC tunnel did not acknowledge the round flag"
+        }
+    }
 }
 
 #[derive(Default)]
@@ -105,8 +125,7 @@ where
     Fut: std::future::Future<Output = DeliveryAttempt>,
 {
     let mut started_attempts = 0;
-    let mut participant_attempts = 0;
-    let mut saw_platform_failure = false;
+    let mut summary = DeliveryAttemptSummary::default();
     while started_attempts < policy.attempts() {
         let Some(latest_start) = deadline.checked_sub(policy.attempt_timeout()) else {
             break;
@@ -130,17 +149,17 @@ where
         drop(permit);
         match attempt {
             Ok(DeliveryAttempt::Delivered) => {
-                participant_attempts += 1;
-                return DeliveryAttemptSummary {
-                    delivered: true,
-                    participant_attempts,
-                    saw_platform_failure,
-                };
+                summary.participant_attempts += 1;
+                summary.delivered = true;
+                return summary;
             }
-            Ok(DeliveryAttempt::ParticipantFailure) => participant_attempts += 1,
-            Ok(DeliveryAttempt::PlatformFailure) => saw_platform_failure = true,
-            Err(_) if admission.is_admitted() => participant_attempts += 1,
-            Err(_) => saw_platform_failure = true,
+            Ok(DeliveryAttempt::ParticipantFailure) => summary.participant_attempts += 1,
+            Ok(DeliveryAttempt::PlatformFailure) => summary.saw_platform_failure = true,
+            Err(_) if admission.is_admitted() => {
+                summary.participant_attempts += 1;
+                summary.saw_admitted_timeout = true;
+            }
+            Err(_) => summary.saw_platform_failure = true,
         }
         if started_attempts == policy.attempts() {
             break;
@@ -153,11 +172,7 @@ where
         }
         tokio::time::sleep(backoff).await;
     }
-    DeliveryAttemptSummary {
-        delivered: false,
-        participant_attempts,
-        saw_platform_failure,
-    }
+    summary
 }
 
 async fn deliver_external_flag(
@@ -325,15 +340,7 @@ async fn deliver_round_flag(
             kind,
             planted.managed.then(|| container_id.unwrap().to_string()),
             attempted.participant_attempts,
-            if attempted.participant_attempts == 0 && attempted.saw_platform_failure {
-                MANAGED_BACKEND_FAILURE_REASON
-            } else if attempted.participant_attempts == 0 {
-                crate::services::ad_engine::PUBLICATION_DEADLINE_REASON
-            } else if planted.managed {
-                "managed container rejected the round flag"
-            } else {
-                "BYOC tunnel did not acknowledge the round flag"
-            },
+            attempted.failure_reason(planted.managed),
         )
     }
 }

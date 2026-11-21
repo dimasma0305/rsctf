@@ -1,7 +1,7 @@
 //! A&D provisioning and durable reconcile application operations.
 use crate::app_state::SharedState;
 use crate::models::data::{ad_team_service, game, game_challenge, participation};
-use crate::services::container::{ContainerResourceLimits, ContainerSpec};
+use crate::services::container::{ContainerLiveness, ContainerResourceLimits, ContainerSpec};
 use crate::services::game_config::load_game;
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
@@ -41,13 +41,19 @@ fn should_ensure_network(reconcile_vpn: bool, topology_owner: bool) -> bool {
     reconcile_vpn && topology_owner
 }
 
+struct CurrentAdPair {
+    participation: participation::Model,
+    challenge: game_challenge::Model,
+    hosted_image: Option<String>,
+}
+
 async fn current_ad_pair(
     st: &SharedState,
     game_id: i32,
     participation_id: i32,
     challenge_id: i32,
     self_hosted: bool,
-) -> AppResult<Option<(participation::Model, game_challenge::Model)>> {
+) -> AppResult<Option<CurrentAdPair>> {
     let game_exists = sqlx::query_scalar::<_, bool>(
         r#"SELECT EXISTS (
              SELECT 1 FROM "Games"
@@ -97,24 +103,41 @@ async fn current_ad_pair(
     else {
         return Ok(None);
     };
-    let challenge_is_live = sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS (
-             SELECT 1 FROM "GameChallenges"
-              WHERE id = $1 AND game_id = $2 AND deletion_pending = FALSE
-           )"#,
+    // A team's last published image survives a stopped workload and an
+    // interrupted repair. A new or legacy service uses the organizer build.
+    let pin = sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT service.published_image_ref FROM "GameChallenges" challenge
+           LEFT JOIN "AdTeamServices" service
+             ON NOT challenge.ad_self_hosted AND service.challenge_id=challenge.id
+            AND service.game_id=challenge.game_id AND service.participation_id=$3
+          WHERE challenge.id=$1 AND challenge.game_id=$2 AND NOT challenge.deletion_pending"#,
     )
     .bind(challenge_id)
     .bind(game_id)
-    .fetch_one(st.pg())
+    .bind(participation_id)
+    .fetch_optional(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if !challenge_is_live {
+    let Some(pin) = pin else {
         return Ok(None);
-    }
-    if !self_hosted && crate::services::challenge_images::runtime_image(st, &challenge).is_err() {
-        return Ok(None);
-    }
-    Ok(Some((participation, challenge)))
+    };
+    let hosted_image = if self_hosted {
+        None
+    } else {
+        let Ok(image) = crate::services::challenge_images::runtime_image_with_pin(
+            st,
+            &challenge,
+            pin.as_deref(),
+        ) else {
+            return Ok(None);
+        };
+        Some(image)
+    };
+    Ok(Some(CurrentAdPair {
+        participation,
+        challenge,
+        hosted_image,
+    }))
 }
 
 async fn deactivate_stale_pair(
@@ -433,7 +456,12 @@ pub(crate) async fn ensure_ad_containers(
                     c.id,
                 )
                 .await?;
-                let Some((p, c)) = current_ad_pair(st, game.id, p.id, c.id, true).await? else {
+                let Some(CurrentAdPair {
+                    participation: p,
+                    challenge: c,
+                    ..
+                }) = current_ad_pair(st, game.id, p.id, c.id, true).await?
+                else {
                     distributed.release().await?;
                     continue;
                 };
@@ -493,7 +521,12 @@ pub(crate) async fn ensure_ad_containers(
                 c.id,
             )
             .await?;
-            let Some((p, c)) = current_ad_pair(st, game.id, p.id, c.id, false).await? else {
+            let Some(CurrentAdPair {
+                participation: p,
+                challenge: c,
+                hosted_image: Some(image),
+            }) = current_ad_pair(st, game.id, p.id, c.id, false).await?
+            else {
                 distributed.release().await?;
                 continue;
             };
@@ -502,25 +535,55 @@ pub(crate) async fn ensure_ad_containers(
                 .filter(ad_team_service::Column::ChallengeId.eq(c.id))
                 .one(&st.db)
                 .await?;
-            // Skip only if the service's container is actually ALIVE. A dead one
-            // (crashed / reaped) must be recreated — otherwise it stays Offline, or,
-            // since A&D services and KotH hills share the rsctf-ad subnet, its freed
-            // IP gets reused by another container and the checker silently hits the
-            // wrong service (an unexplained Mumble). Tear down the stale container
-            // first so it can't linger.
+            if let Some(unpublished) = existing
+                .as_ref()
+                .filter(|row| row.host.is_empty() && row.port == 0)
+            {
+                if super::reset::owns_unpublished_service(st.pg(), unpublished).await? {
+                    distributed.release().await?;
+                    continue;
+                }
+            }
+            // A published address can be reused once a workload stops. Only
+            // retire it on positive evidence from the owning runtime.
             if let Some(cid) = existing.as_ref().and_then(|s| s.container_id.clone()) {
                 let endpoint_is_published = existing
                     .as_ref()
                     .is_some_and(|service| !service.host.trim().is_empty() && service.port > 0);
-                if endpoint_is_published && st.containers.is_running(&cid).await {
-                    distributed.release().await?;
-                    continue; // already running
+                if endpoint_is_published {
+                    match st.containers.inspect_liveness(&cid).await {
+                        Ok(ContainerLiveness::Stopped) => {}
+                        Ok(ContainerLiveness::Running) => {
+                            distributed.release().await?;
+                            continue;
+                        }
+                        observation => {
+                            tracing::warn!(challenge = c.id, participation = p.id, backend_id = %cid,
+                                ?observation, "could not establish A&D workload liveness; keeping published endpoint");
+                            failures += 1;
+                            distributed.release().await?;
+                            continue;
+                        }
+                    }
                 }
                 crate::services::ad_vpn::deactivate_team_service(
                     &st.db,
                     existing.as_ref().unwrap().id,
                 )
                 .await?;
+                // The withdrawn address may already have been recycled. Keep
+                // the backend ID and writable layer until the image is ready.
+                if let Err(error) = st
+                    .containers
+                    .profile_pull_image(c.runtime_profile.as_deref(), &image)
+                    .await
+                {
+                    tracing::warn!(challenge = c.id, participation = p.id, backend_id = %cid,
+                        %error, "could not stage A&D repair image; retaining old workload");
+                    failures += 1;
+                    distributed.release().await?;
+                    continue;
+                }
                 crate::services::traffic::destroy_container_after_capture_fence(st, &cid).await?;
                 if let Some(row) = existing.as_mut() {
                     row.host.clear();
@@ -532,12 +595,18 @@ pub(crate) async fn ensure_ad_containers(
             let team_hash =
                 crate::utils::flag_generator::team_challenge_hash(&salt, c.id, &p.token);
             let operation_id = ad_service_operation_id(reconcile_operation_id, game.id, p.id, c.id);
-            let flag = match operation_id.as_deref() {
-                Some(operation_id) => crate::utils::flag_generator::generate_retryable_ad_flag(
-                    &team_hash,
-                    operation_id,
-                ),
-                None => crate::utils::flag_generator::generate_ad_flag(),
+            let prepared_flag =
+                crate::services::ad_engine::ProvisionFlag::read(st.pg(), game.id, p.id, c.id)
+                    .await?;
+            let flag = match (&prepared_flag.official, operation_id.as_deref()) {
+                (Some(flag), _) => Ok(flag.clone()),
+                (None, Some(operation_id)) => {
+                    crate::utils::flag_generator::generate_retryable_ad_flag(
+                        &team_hash,
+                        operation_id,
+                    )
+                }
+                (None, None) => crate::utils::flag_generator::generate_ad_flag(),
             };
             let flag = match flag {
                 Ok(flag) => flag,
@@ -548,21 +617,8 @@ pub(crate) async fn ensure_ad_containers(
                     continue;
                 }
             };
-            let image = match crate::services::challenge_images::runtime_image(st, &c) {
-                Ok(image) => image,
-                Err(error) => {
-                    tracing::warn!(
-                        challenge = c.id,
-                        %error,
-                        "A&D service image is not immutably published"
-                    );
-                    failures += 1;
-                    distributed.release().await?;
-                    continue;
-                }
-            };
             let mut spec = ContainerSpec::ad_service(
-                image,
+                image.clone(),
                 ContainerResourceLimits {
                     memory_limit: c.memory_limit.unwrap_or(256),
                     cpu_count: c.cpu_count.unwrap_or(1),
@@ -674,13 +730,9 @@ pub(crate) async fn ensure_ad_containers(
                 host: &info.ip,
                 port: info.port,
                 backend_id: &backend_id,
+                image_ref: &image,
             };
-            let persisted =
-                crate::services::ad::service_lifecycle::publish_managed_backend_if_eligible(
-                    st.pg(),
-                    publication,
-                )
-                .await;
+            let persisted = prepared_flag.publish(st.pg(), publication).await;
             match persisted {
                 Ok(true) => {}
                 Ok(false) => {

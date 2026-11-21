@@ -421,6 +421,7 @@ async fn changed_ad_service_cidr_does_not_adopt_a_kubernetes_crash_orphan() {
 
 #[tokio::test]
 async fn retry_discovers_and_validates_the_previous_kubernetes_workload_name() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let (manager, resources) = mock_manager(ServiceFailure::None);
     let spec = retry_spec(false);
     let first = manager.create(spec.clone()).await.unwrap();
@@ -441,6 +442,7 @@ async fn retry_discovers_and_validates_the_previous_kubernetes_workload_name() {
 
 #[tokio::test]
 async fn lost_service_response_retains_pod_and_rejects_a_stale_owner_uid() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let (manager, resources) = mock_manager(ServiceFailure::AmbiguousOnce);
     let spec = retry_spec(false);
     assert!(matches!(
@@ -477,6 +479,7 @@ async fn lost_service_response_retains_pod_and_rejects_a_stale_owner_uid() {
 
 #[tokio::test]
 async fn authoritative_service_rejection_rolls_back_a_stable_operation() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let (manager, resources) = mock_manager(ServiceFailure::ApiOnce);
     let error = manager.create(retry_spec(false)).await.unwrap_err();
 
@@ -489,6 +492,7 @@ async fn authoritative_service_rejection_rolls_back_a_stable_operation() {
 
 #[tokio::test]
 async fn terminal_adopted_pod_is_removed_before_the_operation_key_rotates() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let (manager, resources) = mock_manager(ServiceFailure::None);
     let spec = retry_spec(false);
     let created = manager.create(spec.clone()).await.unwrap();

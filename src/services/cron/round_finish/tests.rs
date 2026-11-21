@@ -1,3 +1,6 @@
+#[path = "tests/docker_publication.rs"]
+mod docker_publication;
+
 use super::{
     cap_flag_publication_deadlines, deliver_initial_round_flags, delivery_order_key,
     invalid_stored_flag_outcome, managed_flag_command, run_delivery_attempts,
@@ -41,6 +44,7 @@ fn failed_summary(
         delivered: false,
         participant_attempts,
         saw_platform_failure,
+        saw_admitted_timeout: false,
     }
 }
 
@@ -75,6 +79,10 @@ async fn backend_failures_do_not_become_participant_attempts() {
     )
     .await;
     assert_eq!(result, failed_summary(0, true));
+    assert_eq!(
+        result.failure_reason(true),
+        super::MANAGED_BACKEND_FAILURE_REASON
+    );
 }
 
 #[tokio::test]
@@ -89,6 +97,14 @@ async fn participant_failures_remain_offline_attempts() {
     )
     .await;
     assert_eq!(result, failed_summary(3, false));
+    assert_eq!(
+        result.failure_reason(true),
+        "managed container rejected the round flag"
+    );
+    assert_eq!(
+        result.failure_reason(false),
+        "BYOC tunnel did not acknowledge the round flag"
+    );
 }
 
 #[tokio::test]
@@ -105,7 +121,19 @@ async fn admitted_command_timeout_remains_a_participant_attempt() {
         },
     )
     .await;
-    assert_eq!(result, failed_summary(1, false));
+    assert_eq!(
+        result,
+        DeliveryAttemptSummary {
+            saw_admitted_timeout: true,
+            ..failed_summary(1, false)
+        }
+    );
+    for managed in [true, false] {
+        assert_eq!(
+            result.failure_reason(managed),
+            "a round flag delivery attempt timed out waiting for acknowledgement"
+        );
+    }
 }
 
 #[tokio::test]
@@ -120,6 +148,10 @@ async fn pre_admission_backend_stall_is_platform_attributed() {
     )
     .await;
     assert_eq!(result, failed_summary(0, true));
+    assert_eq!(
+        result.failure_reason(true),
+        super::MANAGED_BACKEND_FAILURE_REASON
+    );
 }
 
 #[tokio::test]

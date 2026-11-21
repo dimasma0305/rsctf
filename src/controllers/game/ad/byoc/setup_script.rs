@@ -26,14 +26,9 @@ pub(super) fn compose_scalar(value: &str) -> String {
     serde_json::Value::String(value.replace('$', "$$")).to_string()
 }
 
-fn encoded_file_command(path: &str, contents: &[u8]) -> String {
+fn decode_contents(contents: &[u8]) -> String {
     let encoded = base64::engine::general_purpose::STANDARD.encode(contents);
-    format!(
-        "printf '%s' {} | base64 -d > {} && chmod 600 {}",
-        shell_single_quote(&encoded),
-        shell_single_quote(path),
-        shell_single_quote(path)
-    )
+    format!("printf '%s' '{encoded}' | base64 -d")
 }
 
 /// A daemon-local alias for the exact archive loaded by `setup.sh`. A Docker
@@ -55,7 +50,7 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
     let mut lines: Vec<String> = vec![
         "#!/bin/sh".into(),
         format!("# rsctf Attack & Defense — self-hosted setup for \"{title}\""),
-        "# Run it:  sh setup.sh        (needs docker + docker compose)".into(),
+        format!("# Run it: sh setup-{game_id}-{challenge_id}.sh (needs Docker and Docker Compose)"),
         "set -e".into(),
         // The compose document carries the tunnel capability and the WireGuard
         // file carries a private key. Do not inherit a permissive host umask.
@@ -74,21 +69,36 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         "if [ -L \"$DIR\" ]; then echo 'Refusing a symlinked BYOC setup directory.' >&2; exit 1; fi".into(),
         "if [ -e \"$DIR\" ] && [ ! -d \"$DIR\" ]; then echo 'The BYOC setup path exists but is not a directory.' >&2; exit 1; fi".into(),
         "mkdir -p \"$DIR\"".into(),
-        "if [ \"$(stat -c '%u' \"$DIR\" 2>/dev/null)\" != \"$(id -u)\" ]; then echo 'The BYOC setup directory belongs to another user.' >&2; exit 1; fi".into(),
+        r#"if owner=$(stat -c '%u' "$DIR" 2>/dev/null) || owner=$(stat -f '%u' "$DIR" 2>/dev/null); then :; else echo 'Could not verify the BYOC setup directory owner.' >&2; exit 1; fi"#.into(),
+        r#"if [ "$owner" != "$(id -u)" ]; then echo 'The BYOC setup directory belongs to another user.' >&2; exit 1; fi"#.into(),
         "chmod 700 \"$DIR\"".into(),
         "cd \"$DIR\"".into(),
-        // Remove only the two files this installer owns. This safely unlinks a
-        // pre-planted output symlink and ensures a rerun cannot retain an old
-        // world-readable mode despite the restrictive umask.
-        "rm -f docker-compose.yml rsctf-ad.conf".into(),
+        // Both Toolkit downloads use the same Compose project. Compose would
+        // adopt and replace a team's standalone service even across directories.
+        "keep_compose() { echo 'Kept your existing BYOC setup. Run docker compose up -d in your original challenge folder.' >&2; exit 1; }".into(),
+        "for file in compose.yaml compose.yml docker-compose.yaml; do if [ -e \"$file\" ] || [ -L \"$file\" ]; then keep_compose; fi; done".into(),
+        "project_services=$(docker ps --all --filter \"label=com.docker.compose.project=$DIR\" --filter 'label=com.docker.compose.service=service' --format '{{.Names}}')".into(),
+        "case \"$project_services\" in ''|\"$DIR-service\") ;; *) keep_compose ;; esac".into(),
+        r#"if [ -n "$project_services" ]; then
+  project_dir=$(docker container inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$DIR-service")
+  [ "$project_dir" = "$(pwd -P)" ] && [ -f docker-compose.yml ] && [ ! -L docker-compose.yml ] || keep_compose
+fi"#.into(),
+        "if [ -L service-src ]; then echo 'Refusing a symlinked challenge source directory.' >&2; exit 1; fi".into(),
+        "if [ ! -d service-src ]; then mkdir -m 755 service-src; fi".into(),
         "".into(),
         "SERVICE_IMAGE=\"\"".into(),
+        "SOURCE_LOCATION=\"./service-src on this machine\"".into(),
         "echo '[1/4] Fetching the real service image from the game server (best-effort)...'".into(),
     ]);
 
     // The image pull is non-fatal: on any failure (image not built yet) we fall
     // back to a placeholder so the script still runs. Byoc/Image now streams the
     // real docker-save tarball, so the pull normally succeeds.
+    let fallback_compose = build_setup_compose(game_id, challenge_id, ctx, None);
+    lines.push(format!(
+        "write_placeholder() {{ {}; }}",
+        decode_contents(fallback_compose.as_bytes())
+    ));
     if let Some(image) = ctx.container_image.as_deref().filter(|s| !s.is_empty()) {
         let reviewed_image = reviewed_service_image_name(game_id, challenge_id, image);
         lines.push(format!(
@@ -109,51 +119,125 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         lines.push("    SERVICE_IMAGE=\"$REVIEWED_IMAGE\"".into());
         lines.push("    echo \"  loaded and pinned $SERVICE_IMAGE\"".into());
         lines.push("  else".into());
-        lines.push("    echo '  the archive loaded but its immutable local identity could not be verified — using the pinned placeholder.'".into());
+        lines.push("    echo '  Could not identify the loaded service image.'".into());
         lines.push("  fi".into());
         lines.push("else".into());
+        lines.push("  echo '  The reviewed service image could not be downloaded.'".into());
+        lines.push("fi".into());
+        lines.push("if [ -z \"$SERVICE_IMAGE\" ]; then".into());
+        // An existing Compose file may contain team edits. A transient export
+        // failure must never authorize replacing it or the current container.
+        lines.push(format!("  if [ -e docker-compose.yml ] || docker container inspect 'rsctf-byoc-{game_id}-{challenge_id}-service' >/dev/null 2>&1; then"));
+        lines.push("    echo 'Kept your existing BYOC setup. Retry with a fresh setup script when the reviewed image is available.' >&2; exit 1".into());
+        lines.push("  fi".into());
+        lines.push(format!("  if CACHED_ID=$(docker image inspect --format '{{{{.Id}}}}' {} 2>/dev/null) && [ -n \"$CACHED_ID\" ] && docker image tag \"$CACHED_ID\" \"$REVIEWED_IMAGE\"; then", shell_single_quote(image)));
         lines.push(
-            "  echo '  image pull unavailable on this server — using a placeholder that serves the rotating flag.'"
+            "    SERVICE_IMAGE=\"$REVIEWED_IMAGE\"; echo '  Using the locally cached revision.'"
                 .into(),
         );
+        lines
+            .push("  else echo '  Starting the placeholder for this new installation.'; fi".into());
         lines.push("fi".into());
     } else {
+        // The organizer can withdraw an image while a team still has a patched
+        // service, including one stopped with compose down. Only refresh an
+        // existing placeholder when its team-owned settings still match.
+        lines.extend([
+            "keep_service() { echo 'Kept your existing BYOC setup. No reviewed service image is available. Your team can continue using its current Compose file.' >&2; exit 1; }".into(),
+            format!("if current_image=$(docker container inspect --format '{{{{.Config.Image}}}}' 'rsctf-byoc-{game_id}-{challenge_id}-service' 2>/dev/null); then"),
+            format!("  [ \"$current_image\" = '{}' ] || keep_service", DEFAULT_BYOC_FALLBACK_IMAGE),
+            "fi".into(),
+            "[ ! -L docker-compose.yml ] || keep_service".into(),
+        ]);
         lines.push(
             "echo '  this challenge ships no image — using a placeholder that serves the rotating flag.'"
                 .into(),
         );
     }
 
-    // Select between two fully-rendered, encoded compose documents. Keeping
+    // Select between rendered, encoded Compose documents. Keeping
     // server-provided values out of an executable heredoc prevents a newline,
     // quote, `$()`, or heredoc-marker payload from becoming shell syntax.
-    let fallback_compose = build_setup_compose(game_id, challenge_id, ctx, None);
     let real_compose = ctx
         .container_image
         .as_deref()
         .filter(|image| !image.is_empty())
         .map(|image| {
             let reviewed_image = reviewed_service_image_name(game_id, challenge_id, image);
-            build_setup_compose(game_id, challenge_id, ctx, Some(&reviewed_image))
+            let digest = Sha256::digest(image.as_bytes());
+            let volume = format!("source-{}", hex::encode(&digest[..8]));
+            let shared = super::compose::setup_compose(
+                game_id,
+                challenge_id,
+                ctx,
+                Some(&reviewed_image),
+                Some(&volume),
+            );
+            (
+                build_setup_compose(game_id, challenge_id, ctx, Some(&reviewed_image)),
+                shared,
+                volume,
+            )
         });
     lines.push("".into());
     lines.push("echo '[2/4] Writing docker-compose.yml...'".into());
+    lines.push(
+        r#"staging=$(mktemp -d ./.rsctf-setup.XXXXXXXX)
+trap 'rm -rf "$staging"' EXIT"#
+            .into(),
+    );
     lines.push("if [ -n \"$SERVICE_IMAGE\" ]; then".into());
-    if let Some(real_compose) = real_compose {
+    if let Some((host, shared, volume)) = real_compose {
+        lines.push("  workdir=$(docker image inspect --format '{{.Config.WorkingDir}}' \"$SERVICE_IMAGE\" 2>/dev/null || true)".into());
+        // Preserve an older service's writable layer when upgrading the observer.
+        lines.push(format!("  if mounts=$(docker container inspect --format '{{{{json .Mounts}}}}' 'rsctf-byoc-{game_id}-{challenge_id}-service' 2>/dev/null); then"));
+        lines.push(format!("    case \"$mounts\" in *'rsctf-byoc-{game_id}-{challenge_id}_source-'*) ;; *) workdir='' ;; esac"));
+        // After compose down only the file tells us whether the service used a source volume.
+        lines.push(r#"  elif [ -f docker-compose.yml ] && [ ! -L docker-compose.yml ] && ! grep -Eq '^      - source-[0-9a-f]{16}:/' docker-compose.yml; then workdir=''"#.into());
+        lines.push("  fi".into());
+        lines.push("  case \"$workdir\" in".into());
+        lines.push("    /app|/srv/app|/opt/app|/usr/src/app|/var/www/html|/rsctf-source)".into());
+        lines.push("      SOURCE_LOCATION=\"$workdir inside the service container\"".into());
+        // Only the service's exact mount line matches. The agent mount stays read-only.
+        lines.push(format!(r#"      {} | sed "s|^      - {volume}:/rsctf-source$|      - {volume}:$workdir|" > "$staging/compose" ;;"#, decode_contents(shared.as_bytes())));
         lines.push(format!(
-            "  {}",
-            encoded_file_command("docker-compose.yml", real_compose.as_bytes())
+            r#"    *) {} > "$staging/compose" ;;"#,
+            decode_contents(host.as_bytes())
         ));
+        lines.push("  esac".into());
     } else {
         lines.push("  echo 'internal error: service image selection is inconsistent' >&2".into());
         lines.push("  exit 1".into());
     }
     lines.push("else".into());
-    lines.push(format!(
-        "  {}",
-        encoded_file_command("docker-compose.yml", fallback_compose.as_bytes())
-    ));
+    lines.push(r#"  write_placeholder > "$staging/compose""#.into());
     lines.push("fi".into());
+
+    // Compare text before running Compose. Its parser can resolve environment
+    // references and included files, which are under the team's control.
+    lines.push(r#"if [ -e docker-compose.yml ] && [ ! -L docker-compose.yml ]; then
+  [ -f docker-compose.yml ] || keep_compose
+  managed_settings() {
+    revision=$(sed -nE "s|^    image: \"$DIR-service:reviewed-([0-9a-f]{16})\"$|\1|p" "$1") || return 1
+    case "$revision" in *[!0-9a-f]*) return 1 ;; esac
+    sed -E -e '/^  rsctf-agent:$/,/^volumes:$/{s/^    image: ".*"$/    image:/;s/^      RSCTF_BYOC_TUNNEL_URL: ".*"$/      RSCTF_BYOC_TUNNEL_URL:/;}' \
+      -e "s|^(    image: \"$DIR-service:reviewed-)${revision:-none}\"$|\1REV\"|" \
+      -e "s/^(      - |        source: |  )source-${revision:-none}(:.*|$)/\1source-REV\2/" "$1"
+  }
+  matches_generated() {
+    managed_settings "$1" > "$staging/expected" || return 1
+    cmp -s "$staging/current" "$staging/expected" && return 0
+    # Bundles before source observation had the same service and two fewer agent settings.
+    sed '/^  rsctf-agent:$/,/^volumes:$/{/^      RSCTF_BYOC_SOURCE_DISCOVERY: auto$/d;/^      - \.\/service-src:\/rsctf-source:ro$/d;}' "$staging/expected" > "$staging/legacy" || return 1
+    cmp -s "$staging/current" "$staging/legacy"
+  }
+  managed_settings docker-compose.yml > "$staging/current" || keep_compose
+  if ! matches_generated "$staging/compose"; then
+    [ -n "$SERVICE_IMAGE" ] || keep_compose
+    write_placeholder > "$staging/placeholder"
+    matches_generated "$staging/placeholder" || keep_compose
+  fi
+fi"#.into());
 
     // Bundle the deterministic WireGuard config as an L3 connectivity fallback.
     // Encode the complete payload rather than selecting a heredoc delimiter:
@@ -161,10 +245,21 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
     // line, while base64 has no shell metacharacters or line breaks here.
     lines.push("".into());
     lines.push("echo '[3/4] Writing bundled WireGuard config (rsctf-ad.conf)...'".into());
-    lines.push(encoded_file_command(
-        "rsctf-ad.conf",
-        ctx.wg_config.as_bytes(),
+    lines.push(format!(
+        r#"{} > "$staging/vpn""#,
+        decode_contents(ctx.wg_config.as_bytes())
     ));
+    lines.push(
+        r#"for file in docker-compose.yml rsctf-ad.conf; do
+  [ -L "$file" ] || [ ! -e "$file" ] || [ -f "$file" ] || keep_compose
+done
+for file in docker-compose.yml rsctf-ad.conf; do
+  if [ -L "$file" ]; then rm -f "$file"; fi
+done
+mv -f "$staging/compose" docker-compose.yml
+mv -f "$staging/vpn" rsctf-ad.conf"#
+            .into(),
+    );
     lines.push(
         "echo '  if the tunnel agent cannot connect, bring the VPN up:  wg-quick up ./rsctf-ad.conf'"
             .into(),
@@ -181,6 +276,7 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
     lines.push(
         "echo 'Done — watch the platform; your status should go green within a tick.'".into(),
     );
+    lines.push("echo \"Source history watches $SOURCE_LOCATION every minute.\"".into());
     lines.push("".into());
     lines.join("\n")
 }
