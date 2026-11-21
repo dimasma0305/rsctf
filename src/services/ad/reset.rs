@@ -190,9 +190,28 @@ pub async fn execute_job(
     }
 
     let resuming = replacement_checkpointed || recovering_preparation;
-    let pinned = input.prepared_image_ref.as_deref().filter(|_| resuming);
-    let image =
-        crate::services::challenge_images::runtime_image_with_checkpoint(st, &challenge, pinned)?;
+    // A fresh player reset restores the organizer's original starter when
+    // one was recorded. Admin restarts keep their existing rebuild behavior.
+    // On recovery, the job's own preparation receipt takes precedence.
+    let pinned = if resuming {
+        input.prepared_image_ref
+    } else if input.player_policy {
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT runtime_image_ref FROM "AdPatchStarters"
+                WHERE challenge_id=$1 AND runtime_image_ref IS NOT NULL"#,
+        )
+        .bind(challenge.id)
+        .fetch_optional(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+    } else {
+        None
+    };
+    let image = crate::services::challenge_images::runtime_image_with_pin(
+        st,
+        &challenge,
+        pinned.as_deref(),
+    )?;
     let (prepared_round_id, current_flag) = if resuming {
         let flag = match input.prepared_round_id {
             Some(round_id) => sqlx::query_scalar::<_, String>(

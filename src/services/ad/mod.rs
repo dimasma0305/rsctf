@@ -15,6 +15,8 @@ pub mod patches;
 pub(crate) mod provision;
 pub(crate) mod provision_recovery;
 pub(crate) mod reset;
+#[cfg(test)]
+pub(crate) mod reset_fixture;
 pub(crate) mod roster;
 pub mod scoring;
 pub(crate) mod service_lifecycle;

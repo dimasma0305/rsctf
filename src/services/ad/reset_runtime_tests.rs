@@ -1,55 +1,12 @@
-use std::process::Command;
-use std::sync::Arc;
 use std::time::Duration;
 
-use sea_orm::SqlxPostgresConnector;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::app_state::{AppState, SharedState};
-use crate::models::internal::configs::AppConfig;
+use crate::services::ad::reset_fixture::{docker, docker_state, LiveService};
 use crate::services::ad::scoring::test_fixture::ad_scoring_fixture;
-use crate::services::cache::InMemoryCache;
-use crate::services::container::{capacity, docker_installation_scope, DockerContainerManager};
+use crate::services::container::docker_installation_scope;
 use crate::services::control_jobs::{self, ControlJobKind};
-use crate::services::token::TokenService;
-use crate::storage::LocalBlobStorage;
-
-struct LiveService(String);
-
-impl Drop for LiveService {
-    fn drop(&mut self) {
-        let _ = Command::new("docker").args(["rm", "-f", &self.0]).output();
-    }
-}
-
-fn docker(args: &[&str]) -> String {
-    let output = Command::new("docker").args(args).output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
-}
-
-fn docker_state(pool: &sqlx::PgPool) -> SharedState {
-    let manager = capacity::CapacityGatedDockerManager::from_env(
-        DockerContainerManager::connect().unwrap(),
-        pool.clone(),
-    )
-    .unwrap();
-    AppState::new(
-        SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone()),
-        Arc::new(AppConfig::default()),
-        Arc::new(InMemoryCache::new()),
-        Arc::new(LocalBlobStorage::new(
-            std::env::temp_dir().join(format!("rsctf-reset-{}", Uuid::new_v4())),
-        )),
-        TokenService::new("0123456789abcdef0123456789abcdef", 60),
-        Arc::new(manager),
-    )
-}
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL, Docker and the CI static-flag-service image"]

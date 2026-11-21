@@ -30,6 +30,11 @@ the starter ZIP before kickoff pairs the new source with the current build.
 For older starters and ZIPs first uploaded during play, the editor shows when
 the original image is unknown.
 
+If self-reset is enabled, a player's **Reset** rebuilds their service from the
+recorded original image. When no original was recorded, it uses the challenge's
+current successful build. Reset discards edits inside the container and incurs
+the usual SLA cost during the rebuild.
+
 RSCTF's Docker cleanup keeps the recorded local image until the game ends.
 All teams share that image. Saving a starter adds one database reference per
 challenge. For registry images, retain the manifest and layers at the recorded

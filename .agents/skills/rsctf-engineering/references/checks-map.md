@@ -82,6 +82,10 @@ The focused Rust regression for a partially completed drain is in
 [startup_tests.rs](../../../../src/startup_tests.rs):
 `scripts/bounded-cargo.sh test --bin rsctf drain_deadline_joins_completed_tasks_once_and_cancels_remaining_work`.
 
+The [player reset regression](../../../../src/controllers/game/ad/player_reset_tests.rs)
+uses the authenticated HTTP route, PostgreSQL and Docker to check the original
+starter image after an organizer rebuild, team ownership, and current-round flag delivery.
+
 For backup consistency, use the
 [disposable restore drill](../../../../tests/load/restore-drill.mjs) and its
 [fixture](../../../../tests/load/restore-drill/seed.sql). The load README documents

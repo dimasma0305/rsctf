@@ -191,15 +191,15 @@ pub(crate) fn runtime_image(
     st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> AppResult<String> {
-    runtime_image_with_checkpoint(st, challenge, None)
+    runtime_image_with_pin(st, challenge, None)
 }
 
-/// A prepared operation may already have created a workload. Its verified
-/// digest stays authoritative across process restarts and organizer rebuilds.
-pub(crate) fn runtime_image_with_checkpoint(
+/// A registered starter or prepared operation supplies its original immutable
+/// reference. Validate it against the current profile even after a rebuild.
+pub(crate) fn runtime_image_with_pin(
     st: &SharedState,
     challenge: &game_challenge::Model,
-    prepared_image: Option<&str>,
+    pinned_image: Option<&str>,
 ) -> AppResult<String> {
     if challenge.runtime_profile.is_some() {
         crate::services::container::profiles::policy::validate_selection(
@@ -211,7 +211,7 @@ pub(crate) fn runtime_image_with_checkpoint(
             challenge.enable_traffic_capture,
         )?;
     }
-    if let Some(image) = prepared_image {
+    if let Some(image) = pinned_image {
         return validate_runtime_reference(
             image,
             st.containers

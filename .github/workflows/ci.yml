@@ -1130,6 +1130,7 @@ jobs:
             byoc_source_history_coalesces_samples_and_bounds_private_retention
             resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically
             missing_reset_image_preserves_live_endpoint_and_scoring
+            player_reset_restores_the_registered_starter_after_an_organizer_rebuild
             reconcile_preserves_uncertain_backends_and_reclaimed_reset
             image_history_tracks_distinct_publications_and_protects_only_retained_images
             stale_conditional_delete_cannot_destroy_a_real_replacement_runtime

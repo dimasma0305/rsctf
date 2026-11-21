@@ -44,6 +44,9 @@ use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationSta
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
+#[cfg(test)]
+mod player_reset_tests;
+
 // ---------------------------------------------------------------------------
 // Router — paths match Api.ts verbatim (mixed case, case-sensitive).
 // ---------------------------------------------------------------------------
