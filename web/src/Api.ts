@@ -4605,6 +4605,7 @@ export interface AdPatchRevision {
 
 export interface AdPatchBuild {
   available: boolean
+  staged?: boolean
   status: 'Queued' | 'Building' | 'Ready' | 'Failed' | 'Replaced' | null
   attempt: string | null
 }

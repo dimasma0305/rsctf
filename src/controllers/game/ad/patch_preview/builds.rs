@@ -15,6 +15,15 @@ struct BuildStatus {
     available: bool,
     status: Option<String>,
     attempt: Option<Uuid>,
+    staged: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct CurrentBuild {
+    status: Option<String>,
+    attempt: Option<Uuid>,
+    profile: Option<String>,
+    staged: bool,
 }
 
 pub async fn build(
@@ -41,14 +50,15 @@ pub async fn build(
             .await
             .map_err(super::revisions::db_error)?;
     }
-    let record = sqlx::query_as::<_,(Option<String>,Option<Uuid>,Option<String>)>(r#"
-        SELECT b.status,b.attempt,(SELECT profile FROM "AdPatchOnlineBuilders" WHERE challenge_id=$4)
+    let CurrentBuild { mut status, mut attempt, profile, mut staged } = sqlx::query_as::<_, CurrentBuild>(r#"
+        SELECT b.status,b.attempt,(SELECT profile FROM "AdPatchOnlineBuilders" WHERE challenge_id=$4) AS profile,
+               (c.registry_image_ref IS NOT NULL AND b.status='Ready') AS staged
         FROM "AdPatchRevisions" r LEFT JOIN "AdPatchBuilds" b USING(service_id,revision)
+        LEFT JOIN "AdPatchCandidates" c ON c.service_id=r.service_id AND c.revision=r.revision
         WHERE r.service_id=$1 AND r.revision=$2 AND r.commit_id=$3"#)
         .bind(service).bind(revision).bind(query.commit).bind(challenge)
         .fetch_optional(&mut *db).await.map_err(super::revisions::db_error)?
         .ok_or_else(|| AppError::not_found("Private revision not found"))?;
-    let (mut status, mut attempt, profile) = record;
     let retry = matches!(status.as_deref(), Some("Failed" | "Replaced"))
         && query.previous_attempt == attempt;
     if mutate && (status.is_none() || retry) {
@@ -66,6 +76,7 @@ pub async fn build(
           } else { super::revisions::db_error(e) })?;
         status = Some("Queued".into());
         attempt = Some(new);
+        staged = false;
     }
     roster.release().await?;
     Ok((
@@ -74,6 +85,7 @@ pub async fn build(
             available: profile.is_some(),
             status,
             attempt,
+            staged,
         }),
     )
         .into_response())

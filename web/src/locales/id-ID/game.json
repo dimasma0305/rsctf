@@ -6,6 +6,7 @@
       "queued": "Build masuk antrean",
       "building": "Build sedang berjalan di VM terisolasi…",
       "ready": "Image kandidat siap. Layananmu masih menggunakan versi yang sedang aktif.",
+      "staged": "Image sudah diverifikasi di registry. Layanan timmu masih menjalankan versi yang aktif.",
       "failed": "Build gagal. Layananmu tetap berjalan.",
       "replaced": "Revisi lain sudah menjadi kandidat terbaru.",
       "waiting_worker": "Menunggu worker build untuk challenge ini tersambung kembali.",

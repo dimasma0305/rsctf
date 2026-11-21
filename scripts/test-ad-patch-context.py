@@ -181,7 +181,8 @@ def check_vm(binary, directory, guest, archive, tree, docker_load, registry_port
     if registry_port:
         check_registry(output, registry_port, receipt)
     if stage_python:
-        subprocess.run([stage_python, builder.with_name("test_stage_registry.py"), output, manifest, image_id],
+        subprocess.run([stage_python, builder.with_name("test_stage_registry.py"), output, manifest, image_id,
+                        *(["--docker-pull"] if docker_load else [])],
                        check=True, timeout=120)
 
     def repack(dockerfile):

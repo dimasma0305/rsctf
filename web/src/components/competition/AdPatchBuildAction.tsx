@@ -55,7 +55,9 @@ export function AdPatchBuildAction({ gameId, challengeId, serviceId, revision, c
   const message = {
     Queued: t('game.ad.patch.queued', 'Build queued'),
     Building: t('game.ad.patch.building', 'Building in an isolated VM…'),
-    Ready: t('game.ad.patch.ready', 'Candidate ready. Your service is still running its current version.'),
+    Ready: data.staged
+      ? t('game.ad.patch.staged', 'Image verified in the registry. Your service is still running its current version.')
+      : t('game.ad.patch.ready', 'Candidate ready. Your service is still running its current version.'),
     Failed: t('game.ad.patch.failed', 'Build failed. Your service keeps running.'),
     Replaced: t('game.ad.patch.replaced', 'Another revision is the current candidate.'),
   }
@@ -65,6 +67,8 @@ export function AdPatchBuildAction({ gameId, challengeId, serviceId, revision, c
     {data.status && <Text size="sm" role="status">
       {waiting ? t('game.ad.patch.waiting_worker', 'Waiting for the challenge builder to reconnect.') : message[data.status]}
     </Text>}
+    {data.status === 'Ready' && !data.staged && <Button size="xs" variant="subtle" loading={isValidating}
+      onClick={() => void mutate().catch(() => {})}>{t('game.ad.patch.reload_build', 'Reload build status')}</Button>}
     {data.available && canBuild && <Button variant="light" size="xs" loading={sending} onClick={() => void submit()}>
       {t('game.ad.patch.build_revision', 'Build revision {{number}}', { number: revision })}
     </Button>}

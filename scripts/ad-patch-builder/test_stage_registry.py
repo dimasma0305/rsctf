@@ -16,7 +16,7 @@ from stage import stage_candidate
 from test_export import CandidateFixture
 
 
-def check(archive, manifest, config):
+def check(archive, manifest, config, docker_pull=False):
     fixture = CandidateFixture()
     try:
         fixture.setUp()
@@ -74,6 +74,21 @@ def check(archive, manifest, config):
                     assert ref == host + "/rsctf/service-1@" + manifest
                     assert stage_candidate(*args, trust) == ref
                     assert db.execute('SELECT registry_image_ref FROM "AdPatchCandidates"').fetchone() == (ref,)
+                if docker_pull:
+                    # The CI registry and Docker daemon share this loopback address.
+                    # Give Docker an empty client config, independent of runner credentials.
+                    client = root / "docker-client"
+                    client.mkdir()
+                    docker = ["docker", "--config", str(client)]
+                    try:
+                        subprocess.run([*docker, "pull", ref], check=True, timeout=60)
+                        info, = json.loads(subprocess.check_output([*docker, "image", "inspect", ref], timeout=15))
+                        assert info["Id"] == config and ref in info["RepoDigests"]
+                        subprocess.run([*docker, "run", "--rm", "--pull=never", "--network=none",
+                                        "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=24",
+                                        "--memory=64m", ref, "/service"], check=True, timeout=30)
+                    finally:
+                        subprocess.run([*docker, "image", "rm", ref], capture_output=True, timeout=30)
             finally:
                 proc.terminate()
                 proc.wait(timeout=10)
@@ -83,4 +98,4 @@ def check(archive, manifest, config):
 
 
 if __name__ == "__main__":
-    check(Path(sys.argv[1]), *sys.argv[2:])
+    check(Path(sys.argv[1]), sys.argv[2], sys.argv[3], "--docker-pull" in sys.argv[4:])

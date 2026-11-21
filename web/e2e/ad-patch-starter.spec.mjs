@@ -211,6 +211,7 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
   const revisions = []
   let buildAttempt = null
   let builderReconnected = false
+  let staged = false
   await page.route('**/*', async route => {
     const req = route.request()
     const url = new URL(req.url())
@@ -253,7 +254,7 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
         builderReconnected = true
         return route.fulfill({ json: { available: false, status: 'Building', attempt: buildAttempt } })
       }
-      return route.fulfill({ json: { available: true, status: buildAttempt ? 'Ready' : null, attempt: buildAttempt } })
+      return route.fulfill({ json: { available: true, status: buildAttempt ? 'Ready' : null, attempt: buildAttempt, staged } })
     }
     if (path === root + '/patch-revisions/1/source.zip') {
       expect(url.searchParams.get('commit')).toBe(revisions[0].commitId)
@@ -303,6 +304,9 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
   await expect(panel.getByText('Build queued')).toBeVisible()
   await expect(panel.getByText('Waiting for the challenge builder to reconnect.')).toBeVisible({ timeout: 25000 })
   await expect(panel.getByText(/^Candidate ready\./)).toBeVisible({ timeout: 25000 })
+  staged = true
+  await panel.getByRole('button', { name: 'Reload build status' }).click()
+  await expect(panel.getByText(/^Image verified in the registry\./)).toBeVisible()
   await expect(panel.locator('details').getByRole('listitem')).toHaveText('Added · src/version.txt')
   const revisionDownload = page.waitForEvent('download')
   await panel.getByRole('button', { name: 'Download revision 1 ZIP' }).click()

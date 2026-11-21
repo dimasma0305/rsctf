@@ -58,6 +58,10 @@ pub(super) async fn check(
             .execute(pool)
             .await
             .unwrap();
+        sqlx::raw_sql(crate::migrations::m0375_ad_patch_registry_receipt::UP_SQL)
+            .execute(pool)
+            .await
+            .unwrap();
     }
     // A pending team deletion fences both source export and candidate publication.
     // Other eligible teams in the same challenge keep their own queue.
@@ -102,7 +106,9 @@ pub(super) async fn check(
     );
     let read = |route| build_request(router, "GET", route, owner);
     let post = |route| build_request(router, "POST", route, owner);
-    assert_eq!(json(read(&good).await).await["available"], false);
+    let offline = json(read(&good).await).await;
+    assert_eq!(offline["available"], false);
+    assert_eq!(offline["staged"], false);
     assert_eq!(post(&good).await.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
         request(router, "POST", 10, &good, Some(outsider), Body::empty())
@@ -267,6 +273,12 @@ pub(super) async fn check(
         );
         assert_eq!(tokio::fs::read(&exported).await.unwrap(), parts.concat());
         tokio::fs::remove_file(&exported).await.unwrap();
+        assert_eq!(json(read(&good).await).await["staged"], false);
+        sqlx::query(r#"UPDATE "AdPatchCandidates" SET registry_image_ref='registry.example/private/service-30@' || manifest_digest WHERE service_id=30"#)
+            .execute(pool).await.unwrap();
+        let staged = json(read(&good).await).await;
+        assert_eq!(staged["staged"], true);
+        assert!(!staged.to_string().contains("registry.example"));
         let failed = json(post(&bad).await).await;
         wait_status(pool, 7, "Failed").await;
         // A replay cannot re-run a failed Dockerfile unless the requester
@@ -341,7 +353,9 @@ pub(super) async fn check(
             json(build_request(router, "GET", &replacement, owner).await).await["status"],
             "Ready"
         );
-        assert_eq!(json(read(&good).await).await["status"], "Replaced");
+        let replaced = json(read(&good).await).await;
+        assert_eq!(replaced["status"], "Replaced");
+        assert_eq!(replaced["staged"], false);
         assert!(!export.output().await.unwrap().status.success());
         assert!(!exported.exists());
         let cached: i64 =
