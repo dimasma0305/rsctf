@@ -1128,6 +1128,7 @@ jobs:
             pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_outputs
             byoc_source_history_coalesces_samples_and_bounds_private_retention
             resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically
+            missing_reset_image_preserves_live_endpoint_and_scoring
             stale_conditional_delete_cannot_destroy_a_real_replacement_runtime
             newly_issued_sessions_work_immediately_after_a_cached_credential_rotation
             exact_replay_and_stale_phase_recovery_are_durable

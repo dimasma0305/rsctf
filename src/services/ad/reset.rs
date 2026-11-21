@@ -196,6 +196,11 @@ pub async fn execute_job(
         }
         (input.prepared_round_id, flag)
     } else {
+        // Docker can stage the immutable image while the old endpoint still
+        // serves traffic. A missing image must not start reset downtime.
+        st.containers
+            .profile_pull_image(challenge.runtime_profile.as_deref(), &image)
+            .await?;
         let reason = if input.player_policy {
             "service reset before checker completion"
         } else {
@@ -320,6 +325,10 @@ async fn finish_publication(st: &SharedState, backend_id: &str, capture: bool) -
     }
     crate::services::ad_vpn::reconcile_for_deployment(&st.db).await
 }
+
+#[cfg(test)]
+#[path = "reset_runtime_tests.rs"]
+mod runtime_tests;
 
 #[cfg(test)]
 mod tests {

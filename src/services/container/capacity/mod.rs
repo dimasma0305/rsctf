@@ -186,6 +186,10 @@ impl ContainerManager for CapacityGatedDockerManager {
         self.inner.image_exists(image).await
     }
 
+    async fn pull_image(&self, image: &str) -> AppResult<()> {
+        self.inner.pull_image(image).await
+    }
+
     /// Lists the labeled inventory and, at a bounded rate, reconciles
     /// reservations against it. The orphan sweep is the only production
     /// caller, so this is the single inventory scan after a crash.
