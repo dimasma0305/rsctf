@@ -12,8 +12,8 @@ import tempfile
 import time
 
 
-def docker(*args):
-    return subprocess.check_output(["docker", *args], text=True, timeout=120).strip()
+def docker(*args, cwd=None):
+    return subprocess.check_output(["docker", *args], cwd=cwd, text=True, timeout=120).strip()
 
 
 def fixture(stack, base, tag, source, destination, *options, entrypoint=None):
@@ -96,6 +96,24 @@ def check(args, root, stack):
     docker(*compose, "up", "-d", "--force-recreate", "service")
     docker(*compose, "exec", "-T", "service", "grep", "-qx", "patched", "/app/main.py")
     print("Downloaded bundle detected an in-container edit and retained it after recreation.")
+
+    # A separate participant takes the Compose download, with no setup script,
+    # manifest, or command-line flags. Use the filename suggested by the UI.
+    docker(*compose, "down", "-v", "--timeout", "1")
+    (root / "standalone.yml").rename(root / "compose.yaml")
+    source_dir = root / "service-src"
+    source_dir.mkdir()
+    source_dir.chmod(0o755)
+    source_file = source_dir / "main.py"
+    source_file.write_text("original\n")
+    source_file.chmod(0o644)
+    stack.callback(docker, "compose", "down", "-v", "--timeout", "1", cwd=root)
+    docker("compose", "up", "-d", cwd=root)
+    agent = docker("compose", "ps", "-q", "rsctf-agent", cwd=root)
+    wait_for_report(agent, "source baseline recorded")
+    source_file.write_text("patched\n")
+    wait_for_report(agent, "source changed", "main.py", "modified")
+    print("Standalone compose.yaml started the agent and observed a host source edit.")
 
 
 if __name__ == "__main__":

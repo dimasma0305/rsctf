@@ -154,8 +154,11 @@ python3 examples/challenge-repository/tools/ad-patch-rehearsal/generate.py ../rs
 
 ## BYOC source history
 
-Source history starts with the agent when the team runs the downloaded
-`setup.sh` or starts the downloaded Compose file with `docker compose up -d`.
+The team runs the setup command shown on its challenge page. For example,
+`sh setup-13-50.sh` starts the service and reporting agent for game 13,
+challenge 50. Teams using **Bring your own service** save `compose.yaml` in a
+folder for that challenge and run `docker compose up -d` there. Both methods
+start source history in the background.
 Each new setup script requests the reviewed image revision selected at download
 time. If that image changes or its download fails on reinstall, the installer
 keeps the team's Compose file, VPN configuration and service. Download a fresh

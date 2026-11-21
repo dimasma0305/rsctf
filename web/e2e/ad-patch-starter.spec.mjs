@@ -23,8 +23,13 @@ test('team opens private BYOC source history and pages back to the legacy agent'
     const path = url.pathname.toLowerCase()
     if (!path.startsWith('/api/') && !path.startsWith('/hub')) return route.continue()
     if (path === '/api/game/901/ad/state') return route.fulfill({ json: {
-      flagsReady: true, currentRound: 1, services: [{ adTeamServiceId: 91, challengeId: 9001, selfHosted: true }],
+      flagsReady: true, currentRound: 1, services: [{ adTeamServiceId: 91, challengeId: 9001, selfHosted: true,
+        deliveryState: 'ByocConnecting', containerIp: '', containerPort: 0 }],
     } })
+    if (path === '/api/game/901/ad/byoc/setup/9001' || path === '/api/game/901/ad/byoc/compose/9001') {
+      return route.fulfill({ contentType: 'application/octet-stream', body: 'fixture download',
+        headers: { 'Content-Disposition': 'attachment; filename="challenge-named-attachment"' } })
+    }
     if (path === '/api/game/901/ad/byoc/source/9001') {
       const before = url.searchParams.get('before')
       reads.push(before)
@@ -37,6 +42,12 @@ test('team opens private BYOC source history and pages back to the legacy agent'
     return route.fulfill({ status: result.status ?? 200, json: result.body ?? null })
   })
   await page.goto(server.origin + '/games/901/challenges#9001')
+  await expect(page.getByText(/run sh setup-901-9001\.sh/)).toBeVisible()
+  for (const [button, filename] of [['Download setup script', 'setup-901-9001.sh'], ['Bring your own service', 'compose.yaml']]) {
+    const downloaded = page.waitForEvent('download')
+    await page.getByRole('button', { name: button, exact: true }).click()
+    expect((await downloaded).suggestedFilename()).toBe(filename)
+  }
   const open = page.getByRole('button', { name: 'Source history', exact: true })
   await expect(open).toBeVisible()
   expect(reads).toHaveLength(0)
