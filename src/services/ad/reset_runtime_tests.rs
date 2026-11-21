@@ -133,13 +133,16 @@ async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
     }
     // A process can stop after committing the preparation but before removing
     // the old container. Remove only this test's staged replacement image.
-    let replacement = docker(&[
+    let tag = format!("rsctf-reset-test:{}", job.id);
+    docker(&[
         "commit",
         "--pause=false",
         "--change",
         &format!("LABEL fixture.reset={}", job.id),
         &live.0,
+        &tag,
     ]);
+    let replacement = docker(&["image", "inspect", "--format", "{{.Id}}", &tag]);
     state
         .containers
         .profile_pull_image(None, &replacement)
@@ -156,7 +159,7 @@ async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
         "fixture reset",
     )
     .await;
-    docker(&["image", "rm", &replacement]);
+    docker(&["image", "rm", &tag]);
     assert_eq!(
         prepared.unwrap().retired_container_id.as_ref(),
         Some(&live.0)
