@@ -176,7 +176,10 @@ start source history in the background.
 The setup script requests the reviewed image revision selected at download
 time. If that revision becomes unavailable, a reinstall keeps the team's
 existing service and configuration. A fresh script can install a newly
-reviewed revision. Teams already running the standalone Compose download
+reviewed revision when the Compose file still matches the generated settings.
+If a team customizes the generated service definition, setup preserves that
+file and leaves the team in control of the running or stopped service.
+Teams already running the standalone Compose download
 continue managing that stack from their original challenge folder.
 
 - For a fresh installation with a reviewed image whose Dockerfile uses

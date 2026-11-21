@@ -85,11 +85,33 @@ def check(args, root, stack):
     wait_for_report(agent, "source changed", "main.py", "modified")
     # A network/export failure on reinstall must leave both the team's files
     # and the existing service identity intact.
-    (root / "service.tar").unlink()
     config = compose_file.read_bytes()
     vpn = compose_file.with_name("rsctf-ad.conf")
     vpn.write_text("# team-local test settings\n")
     before = docker(*compose, "ps", "-q", "service")
+    # A healthy export must also preserve team-owned changes to the definition.
+    custom = config.replace(b"restart: unless-stopped", b"restart: always", 1)
+    assert custom != config
+    compose_file.write_bytes(custom)
+    rerun = subprocess.run(["sh", "setup.sh"], cwd=root, capture_output=True, text=True, timeout=60)
+    assert rerun.returncode != 0 and "Kept your existing BYOC setup" in rerun.stderr
+    assert compose_file.read_bytes() == custom and vpn.read_text() == "# team-local test settings\n"
+    assert docker(*compose, "ps", "-q", "service") == before
+    assert docker(*compose, "ps", "-q", "rsctf-agent") == agent
+    docker(*compose, "down", "--timeout", "1")
+    rerun = subprocess.run(["sh", "setup.sh"], cwd=root, capture_output=True, text=True, timeout=60)
+    assert rerun.returncode != 0 and "Kept your existing BYOC setup" in rerun.stderr
+    assert compose_file.read_bytes() == custom and vpn.read_text() == "# team-local test settings\n"
+    assert not docker(*compose, "ps", "-aq")
+    compose_file.write_bytes(config)
+    subprocess.run(["sh", "setup.sh"], cwd=root, check=True, timeout=60)
+    before = docker(*compose, "ps", "-q", "service")
+    assert before
+    docker(*compose, "exec", "-T", "service", "grep", "-qx", "patched", "/app/main.py")
+    assert compose_file.read_bytes() == config
+    print("A healthy export preserved customized running and stopped setups; an unmodified reinstall reused the patched source.")
+    (root / "service.tar").unlink()
+    vpn.write_text("# team-local test settings\n")
     for installer in ("setup.sh", "withdrawn.sh"):
         rerun = subprocess.run(["sh", installer], cwd=root, capture_output=True, text=True, timeout=30)
         assert rerun.returncode != 0 and "Kept your existing BYOC setup" in rerun.stderr

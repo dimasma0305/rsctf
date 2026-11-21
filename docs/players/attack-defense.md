@@ -1346,7 +1346,9 @@ The service therefore starts from that downloaded archive without a second
 registry lookup. On a fresh install, setup can use a digest-pinned placeholder
 when the reviewed image is unavailable. If the organizer withdraws the image
 after your team has patched the service, running setup again keeps your existing
-service and Compose file, even after `docker compose down`.
+service and Compose file, even after `docker compose down`. If you edited the
+generated service definition, setup also keeps your changes when the download
+succeeds. Use `docker compose up -d` in that challenge folder to start it again.
 Tagged official server images embed the exact Linux amd64/arm64 relay-agent
 index built in the same release workflow. Direct source and local Docker builds
 have no agent fallback because pairing a new server with an older ACK-less agent

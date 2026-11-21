@@ -723,16 +723,41 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
     )
     .unwrap();
     std::fs::set_permissions(&stat, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // An older installation has no shared source mount in its service definition.
+    let legacy = build_setup_compose(17, 23, &ctx, Some(&reviewed))
+        .replace("      RSCTF_BYOC_SOURCE_DISCOVERY: auto\n", "")
+        .replace("      - ./service-src:/rsctf-source:ro\n", "");
+    std::fs::write(output_dir.join("docker-compose.yml"), legacy).unwrap();
     assert!(run_setup(r#"[{"Name":"rsctf-byoc-17-23_flag"}]"#)
         .status
         .success());
     let upgraded = std::fs::read_to_string(&compose_log).unwrap();
     assert!(!upgraded.contains(":/app\n"));
     assert!(upgraded.contains("      - ./service-src:/rsctf-source:ro"));
+    std::fs::write(output_dir.join("docker-compose.yml"), &compose).unwrap();
     assert!(run_setup(r#"[{"Name":"rsctf-byoc-17-23_source-abc"}]"#)
         .status
         .success());
     assert_eq!(std::fs::read_to_string(&compose_log).unwrap(), compose);
+
+    // A new download may upgrade a generated revision. A different volume
+    // chosen by the team is part of their service configuration.
+    let revision = reviewed.split_once(":reviewed-").unwrap().1;
+    let old_revision = "1111111111111111";
+    let current_file = output_dir.join("docker-compose.yml");
+    std::fs::write(&current_file, compose.replace(revision, old_revision)).unwrap();
+    assert!(run_setup("").status.success());
+    assert_eq!(std::fs::read_to_string(&current_file).unwrap(), compose);
+    let customized = compose.replacen(
+        &format!("source-{revision}:"),
+        "source-1111111111111111:",
+        1,
+    );
+    std::fs::write(&current_file, &customized).unwrap();
+    let refused = run_setup("");
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("Kept your existing BYOC setup"));
+    assert_eq!(std::fs::read_to_string(&current_file).unwrap(), customized);
 
     std::fs::write(&stat, "#!/bin/sh\necho foreign-owner\n").unwrap();
     let refused = run_setup("");
