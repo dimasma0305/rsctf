@@ -25,6 +25,41 @@ impl Drop for TestImage {
     }
 }
 
+async fn player_post(
+    app: &axum::Router,
+    token: &str,
+    path: String,
+    operation: Uuid,
+    payload: Option<Value>,
+) -> Result<axum::response::Response, std::convert::Infallible> {
+    let send = || {
+        let mut request = Request::post(&path)
+            .header("authorization", format!("Bearer {token}"))
+            .header("idempotency-key", operation.to_string());
+        let body = match &payload {
+            Some(value) => {
+                request = request.header("content-type", "application/json");
+                Body::from(value.to_string())
+            }
+            None => Body::empty(),
+        };
+        app.clone().oneshot(request.body(body).unwrap())
+    };
+    let response = send().await?;
+    if response.status() == StatusCode::TOO_MANY_REQUESTS {
+        let delay: u64 = response.headers()["retry-after"]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((1..=10).contains(&delay));
+        tokio::time::sleep(Duration::from_secs(delay + 1)).await;
+        send().await
+    } else {
+        Ok(response)
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL, local Docker and the CI static-flag-service image"]
 async fn player_reset_restores_the_registered_starter_after_an_organizer_rebuild() {
@@ -128,32 +163,13 @@ async fn player_reset_restores_the_registered_starter_after_an_organizer_rebuild
         .unwrap();
     let app = super::router().with_state(state.clone());
     let request = |service: i32, operation: Uuid, action: &'static str| {
-        let send = move |router: axum::Router, auth: String| {
-            router.oneshot(
-                Request::post(format!("/api/Game/900001/Ad/Services/{service}/{action}"))
-                    .header("authorization", auth)
-                    .header("idempotency-key", operation.to_string())
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-        };
-        let router = app.clone();
-        let auth = format!("Bearer {token}");
-        async move {
-            let response = send(router.clone(), auth.clone()).await?;
-            if response.status() == StatusCode::TOO_MANY_REQUESTS {
-                let delay: u64 = response.headers()["retry-after"]
-                    .to_str()
-                    .unwrap()
-                    .parse()
-                    .unwrap();
-                assert!((1..=10).contains(&delay));
-                tokio::time::sleep(Duration::from_secs(delay)).await;
-                send(router, auth).await
-            } else {
-                Ok(response)
-            }
-        }
+        player_post(
+            &app,
+            &token,
+            format!("/api/Game/900001/Ad/Services/{service}/{action}"),
+            operation,
+            None,
+        )
     };
     let request_reset = |service, operation| request(service, operation, "Reset");
     let previous = |service, operation| request(service, operation, "Rollback");

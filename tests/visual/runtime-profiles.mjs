@@ -135,6 +135,9 @@ try {
     await evaluate(`document.querySelector('[data-runtime-profile-controls]').scrollIntoView({block:'center'})`)
     await audit(`${theme}-${width}-editor`, '#main-content')
     await visit('/games/19', '[data-game-status] .mantine-Badge-label')
+    // The badge mounts while the game request is pending. Measure it after
+    // the fixture title renders, then assert the status independently.
+    await wait(`document.querySelector('#event-title')?.textContent === 'INTECHFEST 2026 Warmup'`)
     const spacing = await evaluate(`(() => { const badge=document.querySelector('[data-game-status]'); const dot=badge.querySelector('[aria-hidden]'); const label=badge.querySelector('.mantine-Badge-label'); return {gap:label.getBoundingClientRect().left-dot.getBoundingClientRect().right, width:dot.getBoundingClientRect().width, text:label.textContent, shadow:getComputedStyle(dot).boxShadow}; })()`)
     assert.ok(spacing.gap >= 7 && spacing.width >= 6, JSON.stringify(spacing))
     assert.equal(spacing.shadow, 'none')
