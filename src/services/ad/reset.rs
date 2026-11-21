@@ -308,7 +308,9 @@ pub async fn execute_job(
     if !replacement_checkpointed {
         if let Some(id) = source {
             preserve_volumes |= st.containers.has_ad_data_volumes(id).await?;
-            if preserve_volumes || activation {
+            // A reclaimed stateless activation may already have removed its donor.
+            // Its durable preparation pinned the image after this compatibility check.
+            if preserve_volumes || (activation && !resuming) {
                 st.containers
                     .check_ad_volume_reset(id, &spec, preserve_volumes)
                     .await?;
