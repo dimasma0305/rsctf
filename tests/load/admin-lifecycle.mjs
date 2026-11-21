@@ -3244,6 +3244,12 @@ async function adAdminLifecycle() {
     "A&D service registration returned wrong owner",
   );
   const serviceId = service.json.adTeamServiceId;
+  const sourceHistory = await call(
+    "GET",
+    "/api/ad/admin/{game_id}/Services/{service_id}/ByocSource",
+    `/api/ad/admin/${fixtureGame}/Services/${serviceId}/ByocSource`,
+  );
+  requireCondition(Array.isArray(sourceHistory.json?.events), "missing BYOC source history");
   await adminApi("POST", `/api/ad/admin/${fixtureGame}/Services`, {
     body: {
       participationId: fixtureParticipation,

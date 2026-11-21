@@ -36,6 +36,7 @@ import {
   assertSemanticGameClone,
   assertSemanticGameImport,
   challengeArchive,
+  hostedPatchStarter,
   discoverManagedKothHill,
   mutateContainerFilesystem,
   ownedBuildImageRefs,
@@ -287,6 +288,7 @@ async function call(
   const requestHeaders = { ...headers };
   let requestBody;
   if (form) requestBody = multipartBody(form);
+  else if (Buffer.isBuffer(body)) requestBody = body;
   else if (body !== undefined) {
     requestHeaders["content-type"] = "application/json";
     requestBody = JSON.stringify(body);
@@ -1083,6 +1085,16 @@ async function prepareAdFixture() {
     category: "Pwn",
     type: "AttackDefense",
   });
+  const starter = hostedPatchStarter();
+  const saved = await call("edit_patch_starter_put", {
+    jwt: identities.managerJwt, headers: { "content-type": "application/zip" }, body: starter,
+  });
+  const stored = await call("edit_patch_starter_get", { jwt: identities.managerJwt });
+  requireCondition(
+    /^[0-9a-f]{64}$/.test(saved.model.treeId) && saved.model.treeId === stored.model.treeId &&
+    stored.model.archiveBytes === starter.length,
+    "hosted A&D starter did not retain the submitted ZIP",
+  );
   const checker = A.prepareExactChecker(
     context.adGameId,
     context.adChallengeId,
