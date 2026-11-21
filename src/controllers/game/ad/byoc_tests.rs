@@ -633,6 +633,7 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
         format!(
             "#!/bin/sh\n\
              case \"$1:$2\" in\n\
+               ps:--all) exit 0 ;;\n\
                load:) cat >/dev/null; printf '%s\\n' 'Loaded image ID: {LOADED_ID}' ;;\n\
                image:inspect) if [ \"$4\" = '{{{{.Config.WorkingDir}}}}' ]; then printf '/app\\n'; else [ \"$5\" = '{LOADED_ID}' ] || exit 21; printf '%s\\n' '{LOADED_ID}'; fi ;;\n\
                container:inspect) [ -n \"$RSCTF_TEST_PRIOR_MOUNTS\" ] || exit 1; printf '%s\\n' \"$RSCTF_TEST_PRIOR_MOUNTS\" ;;\n\

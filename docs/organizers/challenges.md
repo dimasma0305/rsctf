@@ -170,10 +170,11 @@ The team runs the setup command shown on its challenge page. For example,
 challenge 50. Teams using **Bring your own service** save `compose.yaml` in a
 folder for that challenge and run `docker compose up -d` there. Both methods
 start source history in the background.
-Each new setup script requests the reviewed image revision selected at download
-time. If that image changes or its download fails on reinstall, the installer
-keeps the team's Compose file, VPN configuration and service. Download a fresh
-setup script to retry.
+The setup script requests the reviewed image revision selected at download
+time. If that revision becomes unavailable, a reinstall keeps the team's
+existing service and configuration. A fresh script can install a newly
+reviewed revision. Teams already running the standalone Compose download
+continue managing that stack from their original challenge folder.
 
 - For a fresh installation with a reviewed image whose Dockerfile uses
   `WORKDIR /app`, `/srv/app`, `/opt/app`, `/usr/src/app`, `/var/www/html` or

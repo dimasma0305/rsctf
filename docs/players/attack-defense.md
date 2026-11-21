@@ -1330,8 +1330,12 @@ cannot establish that the scoring policy measures skill or causes engagement.
 
 ### D.1 Bring Your Own Container (BYOC) challenges
 
-In a BYOC challenge, your team runs the service and relay
-agent on its own machine. Follow the generated configuration from the toolkit.
+In a BYOC challenge, download the setup script from the Toolkit and run the
+command shown next to the download on your team's Docker host. It starts the
+service and its reporting agent. If you choose **Bring your own service**,
+save `compose.yaml` in the challenge folder, put the source you want to track
+in `service-src/`, and run `docker compose up -d` there. Open **Source history**
+on the challenge page to see the first report and subsequent file changes.
 The downloaded setup script contains an image capability and creates
 a Compose file with the relay capability plus a WireGuard private key. Keep the
 script private, run it only on the dedicated BYOC host, and delete the downloaded
@@ -1339,8 +1343,10 @@ copy after setup. The generated directory and credential files are owner-only.
 When the server supplies a reviewed service archive, setup gives Docker load's
 returned content ID a revision-scoped local name and sets `pull_policy: never`.
 The service therefore starts from that downloaded archive without a second
-registry lookup; if the local identity cannot be verified, setup uses the
-digest-pinned placeholder instead.
+registry lookup. On a fresh install, setup can use a digest-pinned placeholder
+when the reviewed image is unavailable. If the organizer withdraws the image
+after your team has patched the service, running setup again keeps your existing
+service and Compose file, even after `docker compose down`.
 Tagged official server images embed the exact Linux amd64/arm64 relay-agent
 index built in the same release workflow. Direct source and local Docker builds
 have no agent fallback because pairing a new server with an older ACK-less agent

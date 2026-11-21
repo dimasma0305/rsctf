@@ -78,6 +78,12 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         r#"if [ "$owner" != "$(id -u)" ]; then echo 'The BYOC setup directory belongs to another user.' >&2; exit 1; fi"#.into(),
         "chmod 700 \"$DIR\"".into(),
         "cd \"$DIR\"".into(),
+        // Both Toolkit downloads use the same Compose project. Compose would
+        // adopt and replace a team's standalone service even across directories.
+        "keep_compose() { echo 'Kept your existing BYOC setup. Run docker compose up -d in your original challenge folder.' >&2; exit 1; }".into(),
+        "for file in compose.yaml compose.yml docker-compose.yaml; do if [ -e \"$file\" ] || [ -L \"$file\" ]; then keep_compose; fi; done".into(),
+        "project_services=$(docker ps --all --filter \"label=com.docker.compose.project=$DIR\" --filter 'label=com.docker.compose.service=service' --format '{{.Names}}')".into(),
+        "case \"$project_services\" in ''|\"$DIR-service\") ;; *) keep_compose ;; esac".into(),
         "if [ -L service-src ]; then echo 'Refusing a symlinked challenge source directory.' >&2; exit 1; fi".into(),
         "if [ ! -d service-src ]; then mkdir -m 755 service-src; fi".into(),
         "".into(),
@@ -89,6 +95,11 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
     // The image pull is non-fatal: on any failure (image not built yet) we fall
     // back to a placeholder so the script still runs. Byoc/Image now streams the
     // real docker-save tarball, so the pull normally succeeds.
+    let fallback_compose = build_setup_compose(game_id, challenge_id, ctx, None);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&fallback_compose);
+    lines.push(format!(
+        "write_placeholder() {{ printf '%s' '{encoded}' | base64 -d; }}"
+    ));
     if let Some(image) = ctx.container_image.as_deref().filter(|s| !s.is_empty()) {
         let reviewed_image = reviewed_service_image_name(game_id, challenge_id, image);
         lines.push(format!(
@@ -129,6 +140,25 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
             .push("  else echo '  Starting the placeholder for this new installation.'; fi".into());
         lines.push("fi".into());
     } else {
+        // The organizer can withdraw an image while a team still has a patched
+        // service, including one stopped with compose down. Only refresh an
+        // existing placeholder when its team-owned settings still match.
+        lines.extend([
+            "keep_service() { echo 'Kept your existing BYOC setup. No reviewed service image is available. Your team can continue using its current Compose file.' >&2; exit 1; }".into(),
+            format!("if current_image=$(docker container inspect --format '{{{{.Config.Image}}}}' 'rsctf-byoc-{game_id}-{challenge_id}-service' 2>/dev/null); then"),
+            format!("  [ \"$current_image\" = '{}' ] || keep_service", DEFAULT_BYOC_FALLBACK_IMAGE),
+            "fi".into(),
+            "if [ -e docker-compose.yml ] || [ -L docker-compose.yml ]; then".into(),
+            "  [ -f docker-compose.yml ] && [ ! -L docker-compose.yml ] || keep_service".into(),
+            // The released agent and the game's relay credential can rotate.
+            // Compare the rest as text, without evaluating team Compose files.
+            r#"  placeholder_settings() { sed '/^  rsctf-agent:$/,/^volumes:$/{s/^    image: ".*"$/    image:/;s/^      RSCTF_BYOC_TUNNEL_URL: ".*"$/      RSCTF_BYOC_TUNNEL_URL:/;}'; }"#.into(),
+            "  expected=$(mktemp ./placeholder.XXXXXXXX)".into(),
+            "  trap 'rm -f \"$expected\"' EXIT".into(),
+            "  write_placeholder | placeholder_settings > \"$expected\"".into(),
+            "  placeholder_settings < docker-compose.yml | cmp -s \"$expected\" - || keep_service".into(),
+            "fi".into(),
+        ]);
         lines.push(
             "echo '  this challenge ships no image — using a placeholder that serves the rotating flag.'"
                 .into(),
@@ -138,7 +168,6 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
     // Select between rendered, encoded Compose documents. Keeping
     // server-provided values out of an executable heredoc prevents a newline,
     // quote, `$()`, or heredoc-marker payload from becoming shell syntax.
-    let fallback_compose = build_setup_compose(game_id, challenge_id, ctx, None);
     let real_compose = ctx
         .container_image
         .as_deref()
@@ -188,10 +217,7 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         lines.push("  exit 1".into());
     }
     lines.push("else".into());
-    lines.push(format!(
-        "  {}",
-        encoded_file_command("docker-compose.yml", fallback_compose.as_bytes())
-    ));
+    lines.push("  write_placeholder > docker-compose.yml && chmod 600 docker-compose.yml".into());
     lines.push("fi".into());
 
     // Bundle the deterministic WireGuard config as an L3 connectivity fallback.

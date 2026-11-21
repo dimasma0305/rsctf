@@ -106,6 +106,21 @@ async fn downloaded_byoc_bundle_observes_in_container_patches() {
     };
     std::fs::write(root.join("standalone.yml"), build_compose(project, 1, &ctx)).unwrap();
     std::fs::write(root.join("setup.sh"), build_setup_script(project, 1, &ctx)).unwrap();
+    let mut withdrawn = ByocContext {
+        container_image: None,
+        ..ctx
+    };
+    std::fs::write(
+        root.join("withdrawn.sh"),
+        build_setup_script(project, 1, &withdrawn),
+    )
+    .unwrap();
+    withdrawn.tunnel_url.push_str("-renewed");
+    std::fs::write(
+        root.join("renewed.sh"),
+        build_setup_script(project, 1, &withdrawn),
+    )
+    .unwrap();
     assert!(tokio::process::Command::new("sh")
         .arg("setup.sh")
         .current_dir(&root)

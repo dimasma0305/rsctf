@@ -90,10 +90,11 @@ def check(args, root, stack):
     vpn = compose_file.with_name("rsctf-ad.conf")
     vpn.write_text("# team-local test settings\n")
     before = docker(*compose, "ps", "-q", "service")
-    rerun = subprocess.run(["sh", "setup.sh"], cwd=root, capture_output=True, text=True, timeout=30)
-    assert rerun.returncode != 0 and "Kept your existing BYOC setup" in rerun.stderr
-    assert compose_file.read_bytes() == config and vpn.read_text() == "# team-local test settings\n"
-    assert docker(*compose, "ps", "-q", "service") == before
+    for installer in ("setup.sh", "withdrawn.sh"):
+        rerun = subprocess.run(["sh", installer], cwd=root, capture_output=True, text=True, timeout=30)
+        assert rerun.returncode != 0 and "Kept your existing BYOC setup" in rerun.stderr
+        assert compose_file.read_bytes() == config and vpn.read_text() == "# team-local test settings\n"
+        assert docker(*compose, "ps", "-q", "service") == before
     docker(*compose, "up", "-d", "--force-recreate", "service")
     docker(*compose, "exec", "-T", "service", "grep", "-qx", "patched", "/app/main.py")
     print("Downloaded bundle detected an in-container edit and retained it after recreation.")
@@ -101,6 +102,28 @@ def check(args, root, stack):
     # A separate participant takes the Compose download, with no setup script,
     # manifest, or command-line flags. Use the filename suggested by the UI.
     docker(*compose, "down", "-v", "--timeout", "1")
+    rerun = subprocess.run(["sh", "withdrawn.sh"], cwd=root, capture_output=True, text=True, timeout=30)
+    assert rerun.returncode != 0 and "Kept your existing BYOC setup" in rerun.stderr
+    assert compose_file.read_bytes() == config and vpn.read_text() == "# team-local test settings\n"
+    print("Withdrawing the reviewed image preserved the running and stopped team's setup.")
+    # On a fresh machine the same no-image download starts a placeholder.
+    # Refreshing its credential may recreate the agent, but keeps the service.
+    compose_file.unlink()
+    subprocess.run(["sh", "withdrawn.sh"], cwd=root, check=True, timeout=60)
+    placeholder = docker(*compose, "ps", "-q", "service")
+    assert placeholder
+    subprocess.run(["sh", "renewed.sh"], cwd=root, check=True, timeout=60)
+    assert docker(*compose, "ps", "-q", "service") == placeholder
+    assert "-renewed" in compose_file.read_text()
+    customized = compose_file.read_text().replace("    restart: unless-stopped", "    restart: always", 1)
+    compose_file.write_text(customized)
+    rerun = subprocess.run(["sh", "renewed.sh"], cwd=root, capture_output=True, text=True, timeout=30)
+    assert rerun.returncode != 0 and "Kept your existing BYOC setup" in rerun.stderr
+    assert compose_file.read_text() == customized
+    assert docker(*compose, "ps", "-q", "service") == placeholder
+    docker(*compose, "down", "-v", "--timeout", "1")
+    compose_file.unlink()
+    print("A fresh placeholder refreshed its relay credential and preserved subsequent team edits.")
     (root / "standalone.yml").rename(root / "compose.yaml")
     source_dir = root / "service-src"
     source_dir.mkdir()
@@ -114,6 +137,15 @@ def check(args, root, stack):
     wait_for_report(agent, "source baseline recorded")
     source_file.write_text("patched\n")
     wait_for_report(agent, "source changed", "main.py", "modified")
+    # A setup-script download for this project must leave a separately started
+    # Compose stack in its own directory, including the running agent, intact.
+    docker("image", "save", "-o", root / "service.tar", f"{tag}:service")
+    before = docker("compose", "ps", "-q", "service", cwd=root)
+    for installer in ("setup.sh", "withdrawn.sh"):
+        rerun = subprocess.run(["sh", installer], cwd=root, capture_output=True, text=True, timeout=30)
+        assert rerun.returncode != 0 and "original challenge folder" in rerun.stderr
+        assert docker("compose", "ps", "-q", "service", cwd=root) == before
+        assert docker("compose", "ps", "-q", "rsctf-agent", cwd=root) == agent
     print("Standalone compose.yaml started the agent and observed a host source edit.")
 
 
