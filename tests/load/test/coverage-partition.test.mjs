@@ -107,6 +107,7 @@ test('coverage keeps the established environment-only exclusions and complete in
   const job = workflow.split('  coverage:\n')[1].split('\n  byoc-agent:\n')[0]
   assert.deepEqual(databaseExclusions, [
     'downloaded_byoc_bundle_observes_in_container_patches',
+    'cold_docker_pull_uses_only_the_configured_registry_credential',
     'same_origin_ssh_kernel_regression',
     's3_round_trip',
     'stale_conditional_delete_cannot_destroy_a_real_replacement_runtime',
@@ -122,6 +123,9 @@ test('coverage keeps the established environment-only exclusions and complete in
   ])
   assert.match(workflow, /cargo test --lib --all-features --locked real_docker_profiles -- --ignored/)
   assert.match(workflow, /test-byoc-source-compose\.py[\s\S]*downloaded_byoc_bundle_observes_in_container_patches -- --ignored/)
+  assert.match(workflow, /export RSCTF_PATCH_PULL_TEST="\$pull_test"[\s\S]*--docker-load[\s\S]*--stage-python/)
+  const registryTest = readFileSync(new URL('../../../scripts/ad-patch-builder/test_stage_registry.py', import.meta.url), 'utf8')
+  assert.match(registryTest, /"cold_docker_pull_uses_only_the_configured_registry_credential",\s*"--ignored"/)
   assert.match(workflow, /run: bash scripts\/test-runtime-profiles\.sh/)
   assert.match(job, /cargo llvm-cov --all-targets --all-features --locked --no-report/)
   assert.match(job, /export CARGO_TARGET_DIR="\$GITHUB_WORKSPACE\/target\/llvm-cov-target"/)
