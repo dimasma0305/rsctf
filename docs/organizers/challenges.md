@@ -215,6 +215,9 @@ continue managing that stack from their original challenge folder.
   `/rsctf-source`, setup shares that directory with the agent read-only.
   Docker seeds a volume from the image once per image revision. Edits inside
   the running service persist across container recreation with the same volume.
+  The agent needs read access to registered source files. The BYOC example
+  installs its application with `COPY --chown=nobody:nogroup --chmod=0644`
+  so a private build checkout also works.
   Allow disk space for one copy of that directory per installed revision.
 - The standalone Compose file, placeholder, other image layouts, and existing
   services upgraded from a bundle without a source volume use `./service-src`

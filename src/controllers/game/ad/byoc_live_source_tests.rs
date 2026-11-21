@@ -31,7 +31,7 @@ async fn await_change(pool: &sqlx::PgPool, kind: &str) -> std::time::Duration {
                         .as_array()
                         .unwrap()
                         .iter()
-                        .any(|item| item["path"] == "main.py" && item["kind"] == kind)
+                        .any(|item| item["path"] == "app.py" && item["kind"] == kind)
             }) {
                 return;
             }
@@ -39,7 +39,7 @@ async fn await_change(pool: &sqlx::PgPool, kind: &str) -> std::time::Duration {
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("team history never recorded main.py as {kind}"));
+    .unwrap_or_else(|_| panic!("team history never recorded app.py as {kind}"));
     started.elapsed()
 }
 
@@ -134,7 +134,7 @@ async fn downloaded_byoc_bundle_observes_in_container_patches() {
         .args(["compose", "-f"])
         .arg(compose)
         .args(["exec", "-T", "service", "sh", "-ec",
-            "test \"$(cat /app/main.py)\" = original; test ! -e /app/.rsctf-files; echo patched >/app/main.py"])
+            "test -s /app/app.py; test ! -e /app/.rsctf-files; echo '# team rehearsal patch' >> /app/app.py"])
         .status().await.unwrap();
     assert!(patch.success());
     let changed = await_change(&fixture.pool, "modified").await;

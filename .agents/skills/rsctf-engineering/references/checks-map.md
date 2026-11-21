@@ -33,12 +33,13 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 ## Discover the smallest meaningful check
 
 The [BYOC Compose regression](../../../../scripts/test-byoc-source-compose.py)
-installs the real generated bundle with a local service image and the current
-agent. The [live tunnel test](../../../../src/controllers/game/ad/byoc_live_source_tests.rs)
+installs the generated bundle with the example repository's self-hosted service
+and the current agent. The [live tunnel test](../../../../src/controllers/game/ad/byoc_live_source_tests.rs)
 waits for the baseline and an in-container edit to appear in the owning
 service's PostgreSQL-backed history. It checks the other team's history too.
-The Compose harness verifies the read-only agent mount, patch persistence
-after recreation, and discovery from a standalone Compose download.
+The Compose harness verifies the read-only agent mount and discovery from a
+standalone Compose download. After recreating the example container, it checks
+that the patch is still present and the HTTP health endpoint answers.
 
 The [patch VM test](../../../../scripts/test-ad-patch-context.py) compares the
 guest's archive, OCI manifest, and Docker config digests to the exported bytes.

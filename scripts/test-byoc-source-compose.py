@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import subprocess
 import tempfile
 import time
@@ -17,14 +18,12 @@ def docker(*args, cwd=None):
     return subprocess.check_output(["docker", *args], cwd=cwd, text=True, timeout=120).strip()
 
 
-def fixture(stack, base, tag, source, destination, *options, entrypoint=None):
-    container = docker("create", *options, base, "sleep", "300")
+def agent_image(stack, base, tag, binary):
+    container = docker("create", base, "sleep", "300")
     stack.callback(docker, "rm", "-v", container)
-    docker("cp", source, f"{container}:{destination}")
-    changes = ["--change", f'ENTRYPOINT ["{entrypoint}"]'] if entrypoint else []
-    image = docker("commit", *changes, container, tag)
+    docker("cp", binary, f"{container}:/rsctf-byoc-agent")
+    docker("commit", "--change", 'ENTRYPOINT ["/rsctf-byoc-agent"]', container, tag)
     stack.callback(docker, "image", "rm", tag)
-    return image
 
 
 def wait_for_report(container, *expected):
@@ -44,13 +43,17 @@ def check(args, root, stack):
     game = secrets.randbelow(2**31 - 1) + 1
     tag = f"rsctf-source-test-{game}"
     project = f"rsctf-byoc-{game}-1"
-    source = root / "main.py"
-    source.write_text("original\n")
-    source.chmod(0o644)
-    service = fixture(stack, args.service_base, f"{tag}:service", source, "/app/main.py",
-                      "--workdir", "/app", "--entrypoint", "")
-    fixture(stack, args.agent_base, f"{tag}:agent", args.agent, "/rsctf-byoc-agent",
-            entrypoint="/rsctf-byoc-agent")
+    example = (Path(__file__).resolve().parents[1] / "examples/challenge-repository"
+               / "challenges/AD/Web/self-hosted-service/src")
+    context = root / "example"
+    shutil.copytree(example, context)
+    # A private checkout can have owner-only source. Exercise the image's
+    # installed permissions independently of the CI runner's umask.
+    (context / "app.py").chmod(0o600)
+    docker("build", "--network=none", "-t", f"{tag}:service", context)
+    stack.callback(docker, "image", "rm", f"{tag}:service")
+    service = docker("image", "inspect", "--format", "{{.Id}}", f"{tag}:service")
+    agent_image(stack, args.agent_base, f"{tag}:agent", args.agent)
     docker("image", "save", "-o", root / "service.tar", f"{tag}:service")
     alias = f"{project}-service:reviewed-{hashlib.sha256(service.encode()).hexdigest()[:16]}"
     compose_file = root / project / "docker-compose.yml"
@@ -84,7 +87,7 @@ def check(args, root, stack):
     assert any(v["Destination"] == "/rsctf-source" and not v["RW"] for v in mounts)
     assert all(v["Destination"] != "/var/run/docker.sock" for v in mounts)
     wait_for_report(agent, "source baseline recorded")
-    wait_for_report(agent, "source changed", "main.py", "modified")
+    wait_for_report(agent, "source changed", "app.py", "modified")
     # A network/export failure on reinstall must leave both the team's files
     # and the existing service identity intact.
     config = compose_file.read_bytes()
@@ -109,7 +112,7 @@ def check(args, root, stack):
     subprocess.run(["sh", "setup.sh"], cwd=root, check=True, timeout=60)
     before = docker(*compose, "ps", "-q", "service")
     assert before
-    docker(*compose, "exec", "-T", "service", "grep", "-qx", "patched", "/app/main.py")
+    docker(*compose, "exec", "-T", "service", "grep", "-Fxq", "# team rehearsal patch", "/app/app.py")
     assert compose_file.read_bytes() == config
     print("A healthy export preserved customized running and stopped setups; an unmodified reinstall reused the patched source.")
     (root / "service.tar").unlink()
@@ -119,9 +122,11 @@ def check(args, root, stack):
         assert rerun.returncode != 0 and "Kept your existing BYOC setup" in rerun.stderr
         assert compose_file.read_bytes() == config and vpn.read_text() == "# team-local test settings\n"
         assert docker(*compose, "ps", "-q", "service") == before
-    docker(*compose, "up", "-d", "--force-recreate", "service")
-    docker(*compose, "exec", "-T", "service", "grep", "-qx", "patched", "/app/main.py")
-    print("Downloaded bundle detected an in-container edit and retained it after recreation.")
+    docker(*compose, "up", "-d", "--wait", "--wait-timeout", "45", "--force-recreate", "service")
+    docker(*compose, "exec", "-T", "service", "grep", "-Fxq", "# team rehearsal patch", "/app/app.py")
+    assert docker(*compose, "exec", "-T", "service", "wget", "-Y", "off", "-qO-",
+                  "http://127.0.0.1:8080/health") == "ok"
+    print("The BYOC example retained the team's app.py edit and answered /health after recreation.")
 
     # A separate participant takes the Compose download, with no setup script,
     # manifest, or command-line flags. Use the filename suggested by the UI.
@@ -204,7 +209,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent", required=True, type=Path)
     parser.add_argument("--agent-base", required=True, help="Linux image compatible with the agent binary")
-    parser.add_argument("--service-base", required=True, help="Linux image with sh, sleep, cat and grep")
     parser.add_argument("test_command", nargs="+", help="command that runs the Rust bundle fixture")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="rsctf-byoc-source-") as directory, ExitStack() as cleanup:
