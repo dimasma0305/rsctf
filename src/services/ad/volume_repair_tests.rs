@@ -361,7 +361,75 @@ async fn reset_running_service_to_starter(
         .unwrap()
         .status
         .success());
-    state.containers.destroy(&candidate.0).await.unwrap();
+    assert!(control_jobs::complete(
+        pool,
+        job.id,
+        reclaimed.lease_token,
+        reclaimed.input_revision,
+        json!({"reset":true}),
+    )
+    .await
+    .unwrap());
+    // Restoring the previous program image must keep writes made after the
+    // starter reset. A volume snapshot would silently lose these changes.
+    docker(&[
+        "exec",
+        "-u",
+        "0",
+        &candidate.0,
+        "sh",
+        "-c",
+        "echo after-starter >/data/marker",
+    ]);
+    let prior = published[0]["previous_image_ref"].as_str().unwrap();
+    sqlx::query(
+        r#"UPDATE "AdTeamServices" SET last_reset_at=now()-interval '1 day' WHERE id=900042"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let rollback_kind = ControlJobKind::AdRollback;
+    let rollback = control_jobs::enqueue(
+        pool,
+        rollback_kind,
+        "ad-service:900042",
+        900001,
+        Some(900031),
+        uuid::Uuid::new_v4(),
+        &"e".repeat(64),
+        json!({
+            "serviceId":900042, "participationId":900022, "expectedBackendId":candidate.0,
+            "playerPolicy":true, "previousImageRef":prior,
+        }),
+    )
+    .await
+    .unwrap();
+    let claimed = control_jobs::claim_next(pool, rollback_kind, Duration::from_secs(120))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.model.id, rollback.id);
+    assert_eq!(
+        super::reset::execute_job(state, &claimed).await.unwrap()["reset"],
+        true
+    );
+    let restored = snapshot().await.unwrap();
+    let running = LiveService(restored[0]["container_id"].as_str().unwrap().to_owned());
+    assert_eq!(restored[0]["previous_image_ref"], target.0);
+    assert_eq!(
+        docker(&["inspect", "--format", "{{.Image}}", &running.0]),
+        prior
+    );
+    assert_eq!(volume(&running.0), original_data);
+    assert_eq!(
+        docker(&["exec", &running.0, "cat", "/data/marker"]),
+        "after-starter"
+    );
+    assert_eq!(
+        docker(&["exec", &running.0, "printenv", "RSCTF_FLAG"]),
+        flag
+    );
+    state.containers.destroy(&running.0).await.unwrap();
     assert!(!Command::new("docker")
         .args(["volume", "inspect", &original_data])
         .output()

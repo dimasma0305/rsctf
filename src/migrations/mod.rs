@@ -633,7 +633,7 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 204);
+        assert_eq!(names.len(), 205);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         let recent = [
             "m0108_koth_observer_rotation_operations",
