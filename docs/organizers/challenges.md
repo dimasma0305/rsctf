@@ -117,10 +117,23 @@ that caps retained candidate archives at 6.25 GiB. PostgreSQL also needs room
 for transactions, WAL, and vacuum. A failed build retains the previous candidate.
 Activation and rollback across hosted runtimes are still in development.
 
+To rehearse with five hosted services, generate a separate hidden event from
+the bundled example repository. Each service comes with a starter ZIP, a
+working repair and a build-failure case.
+
+```sh
+git submodule update --init examples/challenge-repository
+python3 examples/challenge-repository/tools/ad-patch-rehearsal/generate.py ../rsctf-rehearsal
+```
+
 ## BYOC source history
 
 Source history starts with the agent when the team runs the downloaded
 `setup.sh` or starts the downloaded Compose file with `docker compose up -d`.
+Each new setup script requests the reviewed image revision selected at download
+time. If that image changes or its download fails on reinstall, the installer
+keeps the team's Compose file, VPN configuration and service. Download a fresh
+setup script to retry.
 
 - For a fresh installation with a reviewed image whose Dockerfile uses
   `WORKDIR /app`, `/srv/app`, `/opt/app`, `/usr/src/app`, `/var/www/html` or

@@ -156,6 +156,14 @@ jobs:
       - name: Build test targets
         run: cargo build --all-targets --all-features --locked
 
+      - name: Test source history in the downloaded BYOC bundle
+        run: |
+          cargo build --locked --manifest-path agents/byoc-agent/Cargo.toml --target-dir target
+          python3 scripts/test-byoc-source-compose.py --agent target/debug/rsctf-byoc-agent \
+            --agent-base ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 \
+            --service-base postgres:18-alpine -- \
+            cargo test --locked --all-features --lib downloaded_byoc_bundle_observes_in_container_patches -- --ignored --nocapture
+
       - name: Test Docker idempotent retry lifecycle
         run: |
           docker build --tag rsctf-server-smoke:ci \

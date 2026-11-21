@@ -77,12 +77,8 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         "if [ \"$(stat -c '%u' \"$DIR\" 2>/dev/null)\" != \"$(id -u)\" ]; then echo 'The BYOC setup directory belongs to another user.' >&2; exit 1; fi".into(),
         "chmod 700 \"$DIR\"".into(),
         "cd \"$DIR\"".into(),
-        // Remove only the two files this installer owns. This safely unlinks a
-        // pre-planted output symlink and ensures a rerun cannot retain an old
-        // world-readable mode despite the restrictive umask.
         "if [ -L service-src ]; then echo 'Refusing a symlinked challenge source directory.' >&2; exit 1; fi".into(),
         "if [ ! -d service-src ]; then mkdir -m 755 service-src; fi".into(),
-        "rm -f docker-compose.yml rsctf-ad.conf".into(),
         "".into(),
         "SERVICE_IMAGE=\"\"".into(),
         "SOURCE_LOCATION=\"./service-src on this machine\"".into(),
@@ -112,13 +108,24 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         lines.push("    SERVICE_IMAGE=\"$REVIEWED_IMAGE\"".into());
         lines.push("    echo \"  loaded and pinned $SERVICE_IMAGE\"".into());
         lines.push("  else".into());
-        lines.push("    echo '  the archive loaded but its immutable local identity could not be verified — using the pinned placeholder.'".into());
+        lines.push("    echo '  Could not identify the loaded service image.'".into());
         lines.push("  fi".into());
         lines.push("else".into());
+        lines.push("  echo '  The reviewed service image could not be downloaded.'".into());
+        lines.push("fi".into());
+        lines.push("if [ -z \"$SERVICE_IMAGE\" ]; then".into());
+        // An existing Compose file may contain team edits. A transient export
+        // failure must never authorize replacing it or the current container.
+        lines.push(format!("  if [ -e docker-compose.yml ] || docker container inspect 'rsctf-byoc-{game_id}-{challenge_id}-service' >/dev/null 2>&1; then"));
+        lines.push("    echo 'Kept your existing BYOC setup. Retry with a fresh setup script when the reviewed image is available.' >&2; exit 1".into());
+        lines.push("  fi".into());
+        lines.push(format!("  if CACHED_ID=$(docker image inspect --format '{{{{.Id}}}}' {} 2>/dev/null) && [ -n \"$CACHED_ID\" ] && docker image tag \"$CACHED_ID\" \"$REVIEWED_IMAGE\"; then", shell_single_quote(image)));
         lines.push(
-            "  echo '  image pull unavailable on this server — using a placeholder that serves the rotating flag.'"
+            "    SERVICE_IMAGE=\"$REVIEWED_IMAGE\"; echo '  Using the locally cached revision.'"
                 .into(),
         );
+        lines
+            .push("  else echo '  Starting the placeholder for this new installation.'; fi".into());
         lines.push("fi".into());
     } else {
         lines.push(
@@ -154,6 +161,9 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         });
     lines.push("".into());
     lines.push("echo '[2/4] Writing docker-compose.yml...'".into());
+    // Unlink installer-owned outputs only after the image decision so a
+    // failed upgrade retains the previous Compose and WireGuard files.
+    lines.push("rm -f docker-compose.yml rsctf-ad.conf".into());
     lines.push("if [ -n \"$SERVICE_IMAGE\" ]; then".into());
     if let Some((host, shared, volume)) = real_compose {
         lines.push("  workdir=$(docker image inspect --format '{{.Config.WorkingDir}}' \"$SERVICE_IMAGE\" 2>/dev/null || true)".into());

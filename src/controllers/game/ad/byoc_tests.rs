@@ -1,6 +1,46 @@
 use super::agent_image::default_byoc_agent_image_from;
 use super::*;
 
+#[test]
+fn image_export_accepts_the_bundled_revision_and_legacy_downloads() {
+    let original = format!("registry.example/service@sha256:{}", "a".repeat(64));
+    let replacement = format!("registry.example/service@sha256:{}", "b".repeat(64));
+    let query = ImageExportQuery {
+        revision: Some(export_revision(&original)),
+    };
+    assert!(query.accepts(&original));
+    assert!(!query.accepts(&replacement));
+    assert!(ImageExportQuery { revision: None }.accepts(&replacement));
+}
+
+#[test]
+#[ignore = "requires the Docker fixtures from scripts/test-byoc-source-compose.py"]
+fn downloaded_byoc_bundle_observes_in_container_patches() {
+    let root = std::path::PathBuf::from(std::env::var_os("RSCTF_TEST_BYOC_BUNDLE").unwrap());
+    let game: i32 = std::env::var("RSCTF_TEST_BYOC_GAME")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let ctx = ByocContext {
+        title: "Source history fixture".into(),
+        agent_image: format!("rsctf-source-test-{game}:agent"),
+        agent_image_requires_amd64: false,
+        container_image: Some(std::env::var("RSCTF_TEST_BYOC_IMAGE_ID").unwrap()),
+        image_url: format!("file://{}/service.tar", root.display()),
+        tunnel_url: "ws://127.0.0.1:1/fixture".into(),
+        svc_port: 3000,
+        wg_config: String::new(),
+    };
+    std::fs::write(root.join("standalone.yml"), build_compose(game, 1, &ctx)).unwrap();
+    std::fs::write(root.join("setup.sh"), build_setup_script(game, 1, &ctx)).unwrap();
+    assert!(std::process::Command::new("sh")
+        .arg("setup.sh")
+        .current_dir(root)
+        .status()
+        .unwrap()
+        .success());
+}
+
 fn context_with_hostile_values(marker: &std::path::Path) -> ByocContext {
     let marker = marker.display();
     ByocContext {
@@ -510,7 +550,7 @@ fn hostile_generated_setup_is_shell_safe_and_preserves_wireguard_bytes() {
     let docker = bin.join("docker");
     std::fs::write(
         &docker,
-        "#!/bin/sh\nif [ \"$1\" = load ]; then exit 1; fi\nexit 0\n",
+        "#!/bin/sh\ncase \"$1\" in load|container|image) exit 1 ;; esac\nexit 0\n",
     )
     .expect("write docker stub");
     std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))

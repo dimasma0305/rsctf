@@ -106,6 +106,7 @@ test('coverage keeps the established environment-only exclusions and complete in
   const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8')
   const job = workflow.split('  coverage:\n')[1].split('\n  byoc-agent:\n')[0]
   assert.deepEqual(databaseExclusions, [
+    'downloaded_byoc_bundle_observes_in_container_patches',
     'same_origin_ssh_kernel_regression',
     's3_round_trip',
     'stale_conditional_delete_cannot_destroy_a_real_replacement_runtime',
@@ -120,6 +121,7 @@ test('coverage keeps the established environment-only exclusions and complete in
     'postgres_coalesces_retries_and_recovers_one_expired_lease',
   ])
   assert.match(workflow, /cargo test --lib --all-features --locked real_docker_profiles -- --ignored/)
+  assert.match(workflow, /test-byoc-source-compose\.py[\s\S]*downloaded_byoc_bundle_observes_in_container_patches -- --ignored/)
   assert.match(workflow, /run: bash scripts\/test-runtime-profiles\.sh/)
   assert.match(job, /cargo llvm-cov --all-targets --all-features --locked --no-report/)
   assert.match(job, /export CARGO_TARGET_DIR="\$GITHUB_WORKSPACE\/target\/llvm-cov-target"/)

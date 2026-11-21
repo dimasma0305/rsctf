@@ -32,6 +32,11 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 
 ## Discover the smallest meaningful check
 
+The [BYOC Compose regression](../../../../scripts/test-byoc-source-compose.py)
+installs the real generated bundle with a local service image and the current
+agent. It checks the agent's read-only mount, observes a source edit without a
+manifest, and recreates the service to verify that the patch persists.
+
 Same-origin SSH address selection is tested in
 [endpoint.rs](../../../../src/services/ad/ssh/endpoint.rs). The ignored
 `same_origin_ssh_kernel_regression` runs the production INPUT rules through

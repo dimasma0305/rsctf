@@ -482,7 +482,7 @@ async fn resolve_byoc(
         "{ws_scheme}://{public_authority}/api/stateful/Game/{game_id}/Ad/Byoc/Agent/{}/{challenge_id}/{agent_token}",
         part.id
     );
-    let image_url = format!(
+    let mut image_url = format!(
         "{http_scheme}://{public_authority}/api/stateful/Game/{game_id}/Ad/Byoc/Image/{}/{challenge_id}/{image_token}",
         part.id
     );
@@ -509,6 +509,9 @@ async fn resolve_byoc(
 
     let wg_config = super::vpn::render_wg_config_for_game(st, game_id, &user.name, part.id).await?;
     let container_image = grant.setup_runtime_image(st)?;
+    if let Some(image) = &container_image {
+        image_url.push_str(&format!("?revision={}", export_revision(image)));
+    }
     roster_access.release().await?;
 
     Ok(ByocContext {
@@ -765,6 +768,23 @@ fn byoc_agent_protocol_offered(headers: &HeaderMap) -> bool {
         .any(|protocol| protocol.trim() == crate::services::byoc_tunnel::AGENT_PROTOCOL)
 }
 
+fn export_revision(image: &str) -> String {
+    hex::encode(Sha256::digest(image.as_bytes()))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImageExportQuery {
+    revision: Option<String>,
+}
+
+impl ImageExportQuery {
+    fn accepts(&self, image: &str) -> bool {
+        self.revision
+            .as_ref()
+            .is_none_or(|revision| *revision == export_revision(image))
+    }
+}
+
 /// `GET /api/Game/{id}/Ad/Byoc/Image/{participationId}/{challengeId}/{token}` —
 /// streams the challenge's built SERVICE image as a `docker save` tarball, which
 /// `setup.sh` pipes into `docker load` so the team runs the REAL vulnerable
@@ -773,6 +793,7 @@ fn byoc_agent_protocol_offered(headers: &HeaderMap) -> bool {
 pub async fn byoc_image(
     State(st): State<SharedState>,
     Path((id, pid, cid, token)): Path<(i32, i32, i32, String)>,
+    axum::extract::Query(query): axum::extract::Query<ImageExportQuery>,
 ) -> Response {
     if !st.config.runtime_role.capabilities().network {
         return (
@@ -815,6 +836,16 @@ pub async fn byoc_image(
             .into_response();
     };
     let title = authorization.grant().title.clone();
+    // The capability and current image are checked under the same roster fence.
+    // Old bundles have no revision parameter and keep their original behavior.
+    if !query.accepts(&image) {
+        let _ = authorization.release().await;
+        return (
+            StatusCode::CONFLICT,
+            "service image changed; download a fresh BYOC setup script\n",
+        )
+            .into_response();
+    }
     let Ok(docker) = bollard::Docker::connect_with_local_defaults() else {
         drop(export_permit);
         let _ = authorization.release().await;
