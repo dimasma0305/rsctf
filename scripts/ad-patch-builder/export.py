@@ -9,11 +9,11 @@ import uuid
 
 import psycopg
 
-from build import MAX_IMAGE_BYTES, private_archive
+from build import ImageReceipt, MAX_IMAGE_BYTES, private_archive
 
 
 # A service ID by itself would silently select a teammate's newer build.
-READY = '''SELECT c.digest,c.archive_bytes FROM "AdPatchCandidates" c
+READY = '''SELECT c.digest,c.archive_bytes,c.manifest_digest,c.config_digest FROM "AdPatchCandidates" c
     JOIN "AdPatchBuilds" b USING(service_id,revision)
     JOIN "AdPatchBuildEligibleServices" e USING(service_id)
     WHERE c.service_id=%s AND c.revision=%s AND b.attempt=%s AND b.status='Ready' '''
@@ -28,7 +28,7 @@ def export_candidate(db, service, revision, attempt, path):
         header = db.execute(READY, identity).fetchone()
         if header is None:
             raise ValueError("this build is not the eligible service's ready candidate")
-        digest, size = header
+        digest, size, manifest, config = header
         if not 0 < size <= MAX_IMAGE_BYTES:
             raise ValueError("invalid candidate size")
         copied = 0
@@ -51,7 +51,7 @@ def export_candidate(db, service, revision, attempt, path):
             # the identity check and publication of the verified local file.
             if db.execute(READY + " FOR SHARE OF c", identity).fetchone() != header:
                 raise ValueError("candidate changed during export")
-    return digest
+    return ImageReceipt(digest, manifest, config)
 
 
 def main():
@@ -60,15 +60,16 @@ def main():
     parser.add_argument("--revision", required=True, type=int)
     parser.add_argument("--attempt", required=True, type=uuid.UUID)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--json", action="store_true", help="include the registry manifest and Docker config digests")
     args = parser.parse_args()
     try:
         with psycopg.connect(os.environ["RSCTF_DATABASE_URL"], autocommit=True) as db:
-            digest = export_candidate(db, args.service, args.revision, args.attempt, args.output)
+            receipt = export_candidate(db, args.service, args.revision, args.attempt, args.output)
     except psycopg.Error as error:
         sys.exit(f"could not export private build (PostgreSQL {error.sqlstate or 'connection error'})")
     except (OSError, ValueError, KeyError) as error:
         sys.exit(str(error))
-    print("sha256:" + digest)
+    print(receipt.format(args.json))
 
 
 if __name__ == "__main__":

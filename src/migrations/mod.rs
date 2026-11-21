@@ -227,6 +227,7 @@ pub(crate) mod m0369_anonymous_image_cleanup;
 pub(crate) mod m0370_ad_patch_build_queue;
 pub(crate) mod m0371_ad_patch_starter_images;
 pub(crate) mod m0372_ad_service_image_history;
+pub(crate) mod m0373_ad_patch_candidate_image_digests;
 
 #[cfg(test)]
 pub(crate) use m0261_control_plane_jobs::UP_SQL as CONTROL_JOBS_SQL;
@@ -485,6 +486,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0370_ad_patch_build_queue::Migration),
             Box::new(m0371_ad_patch_starter_images::Migration),
             Box::new(m0372_ad_service_image_history::Migration),
+            Box::new(m0373_ad_patch_candidate_image_digests::Migration),
         ]
     }
 }
@@ -629,7 +631,7 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 203);
+        assert_eq!(names.len(), 204);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         let recent = [
             "m0108_koth_observer_rotation_operations",
@@ -728,6 +730,7 @@ mod tests {
             "m0370_ad_patch_build_queue",
             "m0371_ad_patch_starter_images",
             "m0372_ad_service_image_history",
+            "m0373_ad_patch_candidate_image_digests",
         ];
         assert_eq!(&names[names.len() - recent.len()..], recent);
     }

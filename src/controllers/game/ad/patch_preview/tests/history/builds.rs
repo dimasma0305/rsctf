@@ -54,6 +54,10 @@ pub(super) async fn check(
             .execute(pool)
             .await
             .unwrap();
+        sqlx::raw_sql(crate::migrations::m0373_ad_patch_candidate_image_digests::UP_SQL)
+            .execute(pool)
+            .await
+            .unwrap();
     }
     // A pending team deletion fences both source export and candidate publication.
     // Other eligible teams in the same challenge keep their own queue.
@@ -216,8 +220,8 @@ pub(super) async fn check(
                 .await
                 .is_err()
         );
-        let digest = sqlx::query_scalar::<_, String>(
-            r#"SELECT digest FROM "AdPatchCandidates" WHERE service_id=30"#,
+        let (digest, manifest, config) = sqlx::query_as::<_, (String, String, String)>(
+            r#"SELECT digest,manifest_digest,config_digest FROM "AdPatchCandidates" WHERE service_id=30"#,
         )
         .fetch_one(pool)
         .await
@@ -239,6 +243,7 @@ pub(super) async fn check(
         export
             .args([
                 "scripts/ad-patch-builder/export.py",
+                "--json",
                 "--service",
                 "30",
                 "--revision",
@@ -257,8 +262,8 @@ pub(super) async fn check(
             String::from_utf8_lossy(&result.stderr)
         );
         assert_eq!(
-            String::from_utf8(result.stdout).unwrap().trim(),
-            format!("sha256:{digest}")
+            serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
+            serde_json::json!({"archiveDigest":format!("sha256:{digest}"),"manifestDigest":manifest,"configDigest":config})
         );
         assert_eq!(tokio::fs::read(&exported).await.unwrap(), parts.concat());
         tokio::fs::remove_file(&exported).await.unwrap();

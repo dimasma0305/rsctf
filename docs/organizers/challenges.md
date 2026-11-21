@@ -154,8 +154,13 @@ patch-worker/bin/python scripts/ad-patch-builder/export.py \
   --service "$service_id" --revision "$revision" --attempt "$attempt" --output candidate.oci.tar
 ```
 
-The command prints the archive digest. The team's running service continues
-serving its current revision during the export.
+The command prints the archive digest. Add `--json` to print the archive
+digest, the OCI manifest digest for a registry, and the Docker image config
+digest together. These identify the exact build attempt that was exported.
+For candidates built with an older guest, the last two values are `null`.
+When updating an existing builder, migrate the server database first, then
+update the worker and rebuild its guest for new jobs.
+Exporting leaves the team's running service on its current revision.
 
 To rehearse with five hosted services, generate a separate hidden event from
 the bundled example repository. Each service comes with a starter ZIP, a

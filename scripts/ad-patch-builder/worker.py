@@ -50,7 +50,7 @@ def claim_next(db, challenge):
         (challenge, uuid.uuid4())).fetchone()
 
 
-def publish(db, job, image, digest):
+def publish(db, job, image, receipt):
     with db.transaction():
         current = db.execute('''SELECT b.service_id FROM "AdPatchBuilds" b
             JOIN "AdTeamServices" s ON s.id=b.service_id
@@ -66,8 +66,11 @@ def publish(db, job, image, digest):
         size = image.tell()
         image.seek(0)
         db.execute('DELETE FROM "AdPatchCandidates" WHERE service_id=%s', (service,))
-        db.execute('''INSERT INTO "AdPatchCandidates"(service_id,revision,digest,archive_bytes)
-                      VALUES(%s,%s,%s,%s)''', (service,job["revision"],digest,size))
+        db.execute('''INSERT INTO "AdPatchCandidates"
+                      (service_id,revision,digest,archive_bytes,manifest_digest,config_digest)
+                      VALUES(%s,%s,%s,%s,%s,%s)''',
+                   (service, job["revision"], receipt.archive_hash, size,
+                    receipt.manifest_digest, receipt.config_digest))
         part = 0
         while block := image.read(1024 * 1024):
             db.execute('INSERT INTO "AdPatchCandidateChunks"(service_id,part,payload) VALUES(%s,%s,%s)',
@@ -94,8 +97,8 @@ def run_job(db, job, args, profile):
             build_args = copy(args)
             build_args.zip = "/proc/self/fd/0"
             build_args.tree = job["tree_id"]
-            digest = build_to(build_args, args.scratch, image, source=source)
-            publish(db, job, image, digest)
+            receipt = build_to(build_args, args.scratch, image, source=source)
+            publish(db, job, image, receipt)
         return
     except psycopg.DatabaseError as error:
         if db.closed or db.broken:

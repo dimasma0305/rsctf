@@ -71,13 +71,20 @@ until ctl debug workers >/dev/null 2>&1; do
 done
 stage=build
 ctl build --frontend dockerfile.v0 --local context=/work/src --local dockerfile=/work/src \
-    --opt force-network-mode=none "$@" --output type=docker,oci-mediatypes=true,dest=/work/result.oci >/dev/null 2>&1
+    --opt force-network-mode=none "$@" --metadata-file /work/metadata.json \
+    --output type=docker,oci-mediatypes=true,dest=/work/result.oci >/dev/null 2>&1
 stage=export
+# BuildKit writes these top-level keys outside the build container. Keep the
+# nested image metadata and all parsing of guest output inside this VM.
+manifest=$(sed -n 's/^  "containerimage\.digest": "\(sha256:[0-9a-f]\{64\}\)"[,]\{0,1\}$/\1/p' /work/metadata.json)
+config=$(sed -n 's/^  "containerimage\.config\.digest": "\(sha256:[0-9a-f]\{64\}\)"[,]\{0,1\}$/\1/p' /work/metadata.json)
+test "${#manifest}" -eq 71
+test "${#config}" -eq 71
 size=$(stat -c %s /work/result.oci)
 test "$size" -gt 0
 test "$size" -le "$(( $(blockdev --getsize64 "$result_disk") - 65536 ))"
 digest=$(sha256sum /work/result.oci)
 dd if=/work/result.oci of="$result_disk" bs=65536 seek=1 conv=notrunc
 sync
-printf 'RSCTF-PATCH-OCI 1 %s %s\n' "$size" "${digest%% *}" | dd of="$result_disk" conv=notrunc
+printf 'RSCTF-PATCH-OCI 2 %s %s %s %s\n' "$size" "${digest%% *}" "$manifest" "$config" | dd of="$result_disk" conv=notrunc
 stage=done

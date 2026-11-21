@@ -92,6 +92,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
+      patchregistry:
+        image: registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - "127.0.0.1::5000"
       postgres:
         image: postgres:18-alpine
         env:
@@ -143,9 +147,10 @@ jobs:
       - name: Test offline defensive patch VM
         run: |
           python3 scripts/ad-patch-builder/test_result.py
-          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios python3-venv
+          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios python3-venv skopeo
           docker buildx build --platform linux/amd64 --output "type=local,dest=$RUNNER_TEMP/patch-guest" scripts/ad-patch-builder
-          python3 scripts/test-ad-patch-context.py ./target/debug/rsctf --guest "$RUNNER_TEMP/patch-guest" --docker-load
+          python3 scripts/test-ad-patch-context.py ./target/debug/rsctf --guest "$RUNNER_TEMP/patch-guest" --docker-load \
+            --registry-port "${{ job.services.patchregistry.ports['5000'] }}"
           python3 -m venv "$RUNNER_TEMP/patch-worker"
           "$RUNNER_TEMP/patch-worker/bin/pip" install -r scripts/ad-patch-builder/requirements.txt
           "$RUNNER_TEMP/patch-worker/bin/python" scripts/ad-patch-builder/test_export.py

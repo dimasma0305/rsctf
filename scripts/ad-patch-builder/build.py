@@ -3,8 +3,10 @@
 import argparse
 from contextlib import ExitStack, contextmanager
 import ctypes
+from dataclasses import dataclass
 import errno
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -22,13 +24,34 @@ MAX_IMAGE_BYTES = 256 * 1024 * 1024
 DEADLINE_SECONDS = 300
 
 
+@dataclass(frozen=True)
+class ImageReceipt:
+    archive_hash: str
+    manifest_digest: str | None
+    config_digest: str | None
+
+    def format(self, structured):
+        archive = "sha256:" + self.archive_hash
+        if structured:
+            return json.dumps({"archiveDigest": archive, "manifestDigest": self.manifest_digest,
+                               "configDigest": self.config_digest})
+        return archive
+
+
 def copy_result(source, output):
     source.seek(0)
     header = source.read(HEADER_BYTES)
     failure = re.fullmatch(rb"RSCTF-PATCH-FAILED (startup|context|base|daemon|build|export)\n\x00*", header)
     if failure:
         raise ValueError("patch VM failed during " + failure[1].decode())
-    receipt = re.fullmatch(rb"RSCTF-PATCH-OCI 1 ([1-9][0-9]{0,8}) ([a-f0-9]{64})\n\x00*", header)
+    receipt = re.fullmatch(rb"RSCTF-PATCH-OCI 2 ([1-9][0-9]{0,8}) ([a-f0-9]{64}) "
+                           rb"(sha256:[a-f0-9]{64}) (sha256:[a-f0-9]{64})\n\x00*", header)
+    manifest = config = None
+    if receipt:
+        manifest, config = receipt[3].decode(), receipt[4].decode()
+    else:
+        # Operators can upgrade the worker before replacing their existing guest.
+        receipt = re.fullmatch(rb"RSCTF-PATCH-OCI 1 ([1-9][0-9]{0,8}) ([a-f0-9]{64})\n\x00*", header)
     if not receipt:
         raise ValueError("patch VM did not finish the OCI export")
     remaining = int(receipt[1])
@@ -44,7 +67,7 @@ def copy_result(source, output):
         remaining -= len(data)
     if digest.hexdigest().encode() != receipt[2]:
         raise ValueError("patch image transfer digest mismatch")
-    return digest.hexdigest()
+    return ImageReceipt(digest.hexdigest(), manifest, config)
 
 
 def constrain_emulator(parent):
@@ -149,15 +172,17 @@ def main():
     parser.add_argument("tree", help="full Git tree ID from the saved revision")
     parser.add_argument("--guest", required=True, type=Path, help="trusted kernel and initramfs directory")
     parser.add_argument("--output", required=True, type=Path, help="new private OCI archive")
+    parser.add_argument("--json", action="store_true", help="include the registry manifest and Docker config digests")
     parser.add_argument("--rsctf", default="rsctf", help="rsctf CLI executable")
     parser.add_argument("--kvm", action="store_true", help="use an available KVM device")
     parser.add_argument("--base-oci", type=Path, help="organizer-approved OCI tar for FROM rsctf-starter")
     parser.add_argument("--base-manifest", help="approved sha256 manifest digest inside the starter archive")
     try:
-        digest = build(parser.parse_args())
+        args = parser.parse_args()
+        receipt = build(args)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         sys.exit(str(error))
-    print("sha256:" + digest)
+    print(receipt.format(args.json))
 
 
 if __name__ == "__main__":

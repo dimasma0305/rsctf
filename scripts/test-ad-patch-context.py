@@ -13,7 +13,7 @@ import time
 import uuid
 
 
-def check(binary, directory, guest, docker_load):
+def check(binary, directory, guest, docker_load, registry_port):
     source = directory / "source"
     source.mkdir()
     (source / "Dockerfile").write_text(
@@ -38,7 +38,7 @@ def check(binary, directory, guest, docker_load):
     subprocess.run(["git", "archive", "--format=zip", "-o", archive, tree], cwd=source, check=True)
 
     if guest:
-        return check_vm(binary, directory, guest, archive, tree, docker_load)
+        return check_vm(binary, directory, guest, archive, tree, docker_load, registry_port)
 
     context = directory / "context.tar"
     with context.open("wb") as output:
@@ -105,6 +105,24 @@ def check_docker_load(output, image_id):
         subprocess.run(["docker", "image", "rm", image_id], check=True, timeout=30)
 
 
+def check_registry(output, port, receipt):
+    # Only the fixed test fixture is sent to this disposable loopback registry.
+    ref = f"docker://127.0.0.1:{port}/rsctf/fixture@{receipt['manifestDigest']}"
+    auth = output.parent / "empty-auth.json"
+    auth.write_text('{"auths":{}}')
+    policy = output.parent / "fixture-policy.json"
+    policy.write_text(json.dumps({"default": [{"type": "reject"}], "transports": {
+        "oci-archive": {str(output): [{"type": "insecureAcceptAnything"}]},
+    }}))
+    subprocess.run(["skopeo", "--policy", policy, "copy", "--dest-authfile", auth,
+                    "--preserve-digests", "--dest-tls-verify=false", f"oci-archive:{output}", ref],
+                   check=True, timeout=60)
+    raw = subprocess.check_output(["skopeo", "inspect", "--authfile", auth, "--raw",
+                                   "--tls-verify=false", ref], timeout=30)
+    assert "sha256:" + hashlib.sha256(raw).hexdigest() == receipt["manifestDigest"]
+    assert json.loads(raw)["config"]["digest"] == receipt["configDigest"]
+
+
 def check_interrupted_vm(command, directory):
     before = set(directory.iterdir())
     with subprocess.Popen(command) as worker:
@@ -142,10 +160,10 @@ def check_interrupted_vm(command, directory):
     assert set(directory.iterdir()) == before, "worker death left private files on disk"
 
 
-def check_vm(binary, directory, guest, archive, tree, docker_load):
+def check_vm(binary, directory, guest, archive, tree, docker_load, registry_port):
     output = directory / "revision.oci.tar"
     builder = pathlib.Path(__file__).parent / "ad-patch-builder" / "build.py"
-    command = [sys.executable, builder, archive, tree, "--rsctf", binary, "--guest", guest, "--output", output]
+    command = [sys.executable, builder, archive, tree, "--rsctf", binary, "--guest", guest, "--json", "--output", output]
     check_interrupted_vm(command, directory)
     # Admission to a particular output can race; both builds must leave exactly one candidate.
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as first:
@@ -154,11 +172,14 @@ def check_vm(binary, directory, guest, archive, tree, docker_load):
     assert sorted((first.returncode, second.returncode)) == [0, 1], stderr + second.stderr
     loser = second.stderr if first.returncode == 0 else stderr
     assert "File exists" in loser or "already exists" in loser, loser
-    digest = (stdout if first.returncode == 0 else second.stdout).strip()
-    assert digest == "sha256:" + hashlib.sha256(output.read_bytes()).hexdigest()
+    receipt = json.loads(stdout if first.returncode == 0 else second.stdout)
+    digest = "sha256:" + hashlib.sha256(output.read_bytes()).hexdigest()
     manifest, image_id, _ = vm_files(output)
+    assert receipt == {"archiveDigest": digest, "manifestDigest": manifest, "configDigest": image_id}
     if docker_load:
         check_docker_load(output, image_id)
+    if registry_port:
+        check_registry(output, registry_port, receipt)
 
     def repack(dockerfile):
         source = directory / "source"
@@ -197,8 +218,11 @@ if __name__ == "__main__":
     parser.add_argument("binary", type=pathlib.Path)
     parser.add_argument("--guest", type=pathlib.Path)
     parser.add_argument("--docker-load", action="store_true", help="load and run the fixed VM-built fixture on a local Docker daemon")
+    parser.add_argument("--registry-port", type=int, help="port of a disposable loopback test registry")
     args = parser.parse_args()
-    if args.docker_load and not args.guest:
-        parser.error("--docker-load requires --guest")
+    if (args.docker_load or args.registry_port is not None) and not args.guest:
+        parser.error("runtime image checks require --guest")
+    if args.registry_port is not None and not 1 <= args.registry_port <= 65535:
+        parser.error("invalid test registry port")
     with tempfile.TemporaryDirectory(prefix="rsctf-patch-build-") as temporary:
-        check(args.binary.resolve(strict=True), pathlib.Path(temporary), args.guest, args.docker_load)
+        check(args.binary.resolve(strict=True), pathlib.Path(temporary), args.guest, args.docker_load, args.registry_port)

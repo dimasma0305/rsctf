@@ -40,6 +40,11 @@ service's PostgreSQL-backed history. It checks the other team's history too.
 The Compose harness verifies the read-only agent mount, patch persistence
 after recreation, and discovery from a standalone Compose download.
 
+The [patch VM test](../../../../scripts/test-ad-patch-context.py) compares the
+guest's archive, OCI manifest, and Docker config digests to the exported bytes.
+CI runs the fixture using its Docker image ID and reads the same manifest
+back by digest from a disposable loopback registry.
+
 Same-origin SSH address selection is tested in
 [endpoint.rs](../../../../src/services/ad/ssh/endpoint.rs). The ignored
 `same_origin_ssh_kernel_regression` runs the production INPUT rules through

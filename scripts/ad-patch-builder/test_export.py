@@ -16,7 +16,7 @@ import uuid
 import psycopg
 from psycopg import sql
 
-from build import private_archive
+from build import ImageReceipt, private_archive
 from export import export_candidate
 
 
@@ -33,7 +33,8 @@ class ExportTests(unittest.TestCase):
         for connection in (self.db, self.other):
             connection.execute(sql.SQL("SET search_path TO {}").format(schema))
         self.db.execute('''
-            CREATE TABLE "AdPatchCandidates"(service_id int PRIMARY KEY, revision int, digest text, archive_bytes int);
+            CREATE TABLE "AdPatchCandidates"(service_id int PRIMARY KEY, revision int, digest text, archive_bytes int,
+                                             manifest_digest text, config_digest text);
             CREATE TABLE "AdPatchCandidateChunks"(service_id int, part int, payload bytea, PRIMARY KEY(service_id,part));
             CREATE TABLE "AdPatchBuilds"(service_id int, revision int, attempt uuid, status text);
             CREATE TABLE "AdPatchBuildEligibleServices"(service_id int PRIMARY KEY);
@@ -54,7 +55,7 @@ class ExportTests(unittest.TestCase):
         return export_candidate(self.db, 1, 4, self.attempt, self.path)
 
     def test_verified_private_file_does_not_replace_an_existing_file(self):
-        self.assertEqual(self.export(), self.digest)
+        self.assertEqual(self.export(), ImageReceipt(self.digest, None, None))
         self.assertEqual(self.path.read_bytes(), self.data)
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
         self.path.write_bytes(b"existing")
@@ -70,6 +71,12 @@ class ExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ready candidate"):
             self.export()
         self.assertFalse(self.path.exists())
+
+    def test_export_uses_image_identity_from_selected_candidate(self):
+        manifest, config = ("sha256:" + c * 64 for c in "ab")
+        self.db.execute('UPDATE "AdPatchCandidates" SET manifest_digest=%s, config_digest=%s',
+                        (manifest, config))
+        self.assertEqual(self.export(), ImageReceipt(self.digest, manifest, config))
 
     def test_concurrent_exports_publish_only_one_file(self):
         barrier = Barrier(2, timeout=10)
