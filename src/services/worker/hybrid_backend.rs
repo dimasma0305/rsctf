@@ -87,6 +87,24 @@ impl ContainerManager for HybridWorkerContainerManager {
         }
     }
 
+    async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
+        if Self::is_worker_id(id) {
+            return Ok(false);
+        }
+        self.local.has_ad_data_volumes(id).await
+    }
+
+    async fn repair_ad_volumes(
+        &self,
+        previous: &str,
+        spec: &ContainerSpec,
+    ) -> AppResult<Option<ContainerInfo>> {
+        if Self::is_worker_id(previous) {
+            return Ok(None);
+        }
+        self.local.repair_ad_volumes(previous, spec).await
+    }
+
     async fn create_workload(
         &self,
         spec: ValidatedWorkloadSpec,

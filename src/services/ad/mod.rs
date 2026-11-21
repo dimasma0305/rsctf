@@ -22,4 +22,6 @@ pub mod scoring;
 pub(crate) mod service_lifecycle;
 pub(crate) mod snapshots;
 pub mod ssh;
+#[cfg(test)]
+mod volume_repair_tests;
 pub mod vpn;

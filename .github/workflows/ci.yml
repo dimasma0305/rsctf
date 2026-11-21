@@ -1140,6 +1140,8 @@ jobs:
             native_round_publication_records_each_managed_service_acknowledgement
             provisioning_cannot_publish_after_the_round_changes
             reconcile_preserves_uncertain_backends_and_reclaimed_reset
+            docker_repair_preserves_each_teams_anonymous_data_volume
+            stopped_service_can_transfer_its_slot_on_a_full_host
             image_history_tracks_distinct_publications_and_protects_only_retained_images
             stale_conditional_delete_cannot_destroy_a_real_replacement_runtime
             newly_issued_sessions_work_immediately_after_a_cached_credential_rotation

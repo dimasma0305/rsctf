@@ -67,6 +67,98 @@ impl ProvisionFlag {
         pool: &sqlx::PgPool,
         endpoint: ManagedBackendPublication<'_>,
     ) -> AppResult<bool> {
+        self.publish_over(pool, endpoint, None).await
+    }
+
+    /// Called under the team/service publication lock. Keep the stopped donor
+    /// attached until its verified successor is committed.
+    pub(crate) async fn repair_data_volumes(
+        &self,
+        state: &crate::app_state::SharedState,
+        service: &crate::models::data::ad_team_service::Model,
+        spec: &crate::services::container::ContainerSpec,
+        donor: &str,
+    ) -> AppResult<Option<String>> {
+        if !state.containers.has_ad_data_volumes(donor).await? {
+            return Ok(None);
+        }
+        crate::services::traffic::fence_container_capture_stop(state, donor).await?;
+        let info = state
+            .containers
+            .repair_ad_volumes(donor, spec)
+            .await?
+            .ok_or_else(|| {
+                AppError::conflict("The service's data volumes changed before repair")
+            })?;
+        if info.ip.is_empty() || info.status != "running" {
+            state.containers.destroy(&info.id).await?;
+            return Err(AppError::unavailable(
+                "The replacement service has no running endpoint",
+            ));
+        }
+        let endpoint = ManagedBackendPublication {
+            game_id: service.game_id,
+            participation_id: service.participation_id,
+            challenge_id: service.challenge_id,
+            host: &info.ip,
+            port: info.port,
+            backend_id: &info.id,
+            image_ref: &spec.image,
+        };
+        self.publish_volume_repair(state, endpoint, donor).await?;
+        Ok(Some(info.id))
+    }
+
+    async fn publish_volume_repair(
+        &self,
+        state: &crate::app_state::SharedState,
+        endpoint: ManagedBackendPublication<'_>,
+        donor: &str,
+    ) -> AppResult<()> {
+        match self.publish_over(state.pg(), endpoint, Some(donor)).await {
+            Ok(true) => {}
+            Ok(false) => {
+                state.containers.destroy(endpoint.backend_id).await?;
+                return Err(AppError::conflict(
+                    "The service changed during volume recovery",
+                ));
+            }
+            Err(error) => {
+                // A commit can succeed even when its acknowledgement is lost.
+                // If this read also fails, leave both holders intact for retry.
+                let committed: bool = sqlx::query_scalar(
+                    r#"SELECT EXISTS(
+                    SELECT 1 FROM "AdTeamServices" WHERE game_id=$1 AND participation_id=$2
+                      AND challenge_id=$3 AND container_id=$4 AND host=$5 AND port=$6)"#,
+                )
+                .bind(endpoint.game_id)
+                .bind(endpoint.participation_id)
+                .bind(endpoint.challenge_id)
+                .bind(endpoint.backend_id)
+                .bind(endpoint.host)
+                .bind(endpoint.port)
+                .fetch_one(state.pg())
+                .await
+                .map_err(|e| AppError::internal(e.to_string()))?;
+                if !committed {
+                    state.containers.destroy(endpoint.backend_id).await?;
+                    return Err(error);
+                }
+            }
+        }
+        // Generic orphan cleanup also removes the stopped donor after a crash.
+        if let Err(error) = state.containers.destroy(donor).await {
+            tracing::warn!(backend_id=donor,%error,"published volume repair; old container awaits cleanup");
+        }
+        Ok(())
+    }
+
+    async fn publish_over(
+        &self,
+        pool: &sqlx::PgPool,
+        endpoint: ManagedBackendPublication<'_>,
+        donor: Option<&str>,
+    ) -> AppResult<bool> {
         // Round writers take the exclusive game lock. Different team services
         // can publish together and never wait behind a writer holding it.
         let mut control = crate::utils::single_flight::PgAdvisoryLock::try_acquire_shared(
@@ -88,6 +180,24 @@ impl ProvisionFlag {
             return Err(AppError::conflict(
                 "The A&D round changed while the service was starting",
             ));
+        }
+        if let Some(id) = donor {
+            let retained = sqlx::query_scalar::<_, i32>(
+                r#"SELECT id FROM "AdTeamServices" WHERE game_id=$1 AND participation_id=$2
+                   AND challenge_id=$3 AND container_id=$4
+                   AND (published_image_backend=$4 OR (published_image_backend IS NULL AND published_image_ref IS NULL))
+                   AND host='' AND port=0 FOR UPDATE"#,
+            )
+            .bind(endpoint.game_id)
+            .bind(endpoint.participation_id)
+            .bind(endpoint.challenge_id)
+            .bind(id)
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(|e| AppError::internal(e.to_string()))?;
+            if retained.is_none() {
+                return Ok(false);
+            }
         }
         let published = publish_managed_backend_if_eligible(connection, endpoint).await?;
         control

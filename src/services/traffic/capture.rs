@@ -30,8 +30,8 @@ mod spec;
 mod teardown;
 
 pub(crate) use retention::purge_expired_captures;
-pub(crate) use teardown::destroy_container_after_capture_fence;
 pub use teardown::stop_container_capture;
+pub(crate) use teardown::{destroy_container_after_capture_fence, fence_container_capture_stop};
 
 use config::{
     capture_device, capture_enabled, capture_filename, capture_limits, join_capture_thread,

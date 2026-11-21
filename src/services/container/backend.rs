@@ -162,6 +162,20 @@ pub trait ContainerManager: Send + Sync {
 
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo>;
 
+    async fn has_ad_data_volumes(&self, _id: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Start a replacement while a stopped hosted service still owns its data.
+    /// None leaves ordinary provisioning in charge of stateless workloads.
+    async fn repair_ad_volumes(
+        &self,
+        _previous: &str,
+        _spec: &ContainerSpec,
+    ) -> AppResult<Option<ContainerInfo>> {
+        Ok(None)
+    }
+
     async fn create_workload(
         &self,
         _spec: ValidatedWorkloadSpec,

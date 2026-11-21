@@ -70,6 +70,54 @@ fn is_retryable(error: &AppError) -> bool {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn stopped_service_can_transfer_its_slot_on_a_full_host() {
+    let fixture = Fixture::new().await;
+    let pool = fixture.replica().await;
+    let host = "full-host";
+    let limits = LocalCapacity {
+        cpu_millis: None,
+        memory_bytes: 2 * GIB,
+        slots: Some(2),
+    };
+    for team in ["donor", "other"] {
+        store::reserve(&pool, host, &limits, &reservation(team, 1000, GIB))
+            .await
+            .unwrap();
+        store::attach(&pool, host, team, team).await.unwrap();
+    }
+    let oversized = reservation("successor", 1000, GIB + 1);
+    assert!(is_retryable(
+        &store::reserve_replacing(&pool, host, &limits, &oversized, Some("donor"))
+            .await
+            .unwrap_err()
+    ));
+    assert_eq!(store::usage(&pool, host).await.unwrap().2, 2);
+    let request = reservation("successor", 1000, GIB);
+    for _ in 0..2 {
+        store::reserve_replacing(&pool, host, &limits, &request, Some("donor"))
+            .await
+            .unwrap();
+        store::attach(&pool, host, &request.key, "new-container")
+            .await
+            .unwrap();
+        assert_eq!(store::usage(&pool, host).await.unwrap(), (2000, 2 * GIB, 2));
+    }
+    assert!(
+        store::reserve(&pool, host, &limits, &reservation("third", 1000, GIB))
+            .await
+            .is_err()
+    );
+    store::release_backend(&pool, host, "new-container")
+        .await
+        .unwrap();
+    store::release_backend(&pool, host, "other").await.unwrap();
+    assert_eq!(store::usage(&pool, host).await.unwrap().2, 0);
+    pool.close().await;
+    fixture.drop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn two_replicas_cannot_both_admit_the_last_slot() {
     let fixture = Fixture::new().await;
     let host = "host-a";

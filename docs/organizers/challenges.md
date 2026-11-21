@@ -153,6 +153,15 @@ transaction. If that worker stops, its successor can publish the same container
 with its files intact. A round change during launch makes RSCTF
 discard the stale replacement. Existing services begin recording history at
 their next publication. Keep portable digests available in your own registry.
+
+For automatic repair of a stopped local Docker service, put team data in
+image-declared anonymous volumes at `/data` or `/var/lib/<name>`. RSCTF verifies
+the team's stopped container and reattaches those volumes on the same Docker
+runtime with the same image. It keeps the stopped container
+until the replacement endpoint is saved. Files in the container's writable
+layer start fresh. If a service with a recognized data path has additional
+mounts that RSCTF cannot verify, repair stops and leaves the data attached.
+This recovery applies to automatic repair of a stopped service.
 Activation and rollback across hosted runtimes are still in development.
 
 On the trusted worker host, an organizer can export a ready build to a new

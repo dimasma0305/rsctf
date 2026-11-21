@@ -142,6 +142,59 @@ impl CapacityGatedDockerManager {
         }
     }
 
+    async fn create_reserved(
+        &self,
+        spec: ContainerSpec,
+        donor: Option<&str>,
+    ) -> AppResult<ContainerInfo> {
+        let request = Reservation::for_spec(&spec)?;
+        match donor {
+            Some(id) => {
+                store::reserve_replacing(
+                    &self.pool,
+                    &self.host_key,
+                    &self.capacity,
+                    &request,
+                    Some(id),
+                )
+                .await?
+            }
+            None => store::reserve(&self.pool, &self.host_key, &self.capacity, &request).await?,
+        }
+        match self.inner.create_with_donor(spec, donor).await {
+            Ok(info) => {
+                if let Err(error) =
+                    store::attach(&self.pool, &self.host_key, &request.key, &info.id).await
+                {
+                    // The inventory reconciliation re-attaches by operation
+                    // label; an unlabeled launch ages out after its grace.
+                    tracing::warn!(
+                        reservation = %request.key,
+                        backend_id = %info.id,
+                        %error,
+                        "failed to attach local container reservation"
+                    );
+                }
+                Ok(info)
+            }
+            // The repaired workload may already exist after a lost response.
+            // The deterministic operation and inventory reconcile its slot.
+            Err(error) if donor.is_some() => Err(error),
+            Err(error) => {
+                if let Err(release_error) =
+                    store::release_key(&self.pool, &self.host_key, &request.key).await
+                {
+                    tracing::warn!(
+                        reservation = %request.key,
+                        error = %release_error,
+                        "failed to release local container reservation after launch failure"
+                    );
+                }
+                Err(error)
+            }
+        }
+    }
+
     pub fn capacity(&self) -> LocalCapacity {
         self.capacity
     }
@@ -235,37 +288,22 @@ impl ContainerManager for CapacityGatedDockerManager {
     }
 
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
-        let request = Reservation::for_spec(&spec)?;
-        store::reserve(&self.pool, &self.host_key, &self.capacity, &request).await?;
-        match self.inner.create(spec).await {
-            Ok(info) => {
-                if let Err(error) =
-                    store::attach(&self.pool, &self.host_key, &request.key, &info.id).await
-                {
-                    // The inventory reconciliation re-attaches by operation
-                    // label; an unlabeled launch ages out after its grace.
-                    tracing::warn!(
-                        reservation = %request.key,
-                        backend_id = %info.id,
-                        %error,
-                        "failed to attach local container reservation"
-                    );
-                }
-                Ok(info)
-            }
-            Err(error) => {
-                if let Err(release_error) =
-                    store::release_key(&self.pool, &self.host_key, &request.key).await
-                {
-                    tracing::warn!(
-                        reservation = %request.key,
-                        error = %release_error,
-                        "failed to release local container reservation after launch failure"
-                    );
-                }
-                Err(error)
-            }
-        }
+        self.create_reserved(spec, None).await
+    }
+
+    async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
+        self.inner.has_ad_data_volumes(id).await
+    }
+
+    async fn repair_ad_volumes(
+        &self,
+        previous: &str,
+        spec: &ContainerSpec,
+    ) -> AppResult<Option<ContainerInfo>> {
+        let Some((id, repair)) = self.inner.ad_volume_repair_spec(previous, spec).await? else {
+            return Ok(None);
+        };
+        self.create_reserved(repair, Some(&id)).await.map(Some)
     }
 
     async fn destroy(&self, id: &str) -> AppResult<()> {

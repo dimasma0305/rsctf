@@ -12,7 +12,7 @@ pub(crate) struct LiveService(pub(crate) String);
 
 impl Drop for LiveService {
     fn drop(&mut self) {
-        let _ = Command::new("docker").args(["rm", "-f", &self.0]).output();
+        let _ = Command::new("docker").args(["rm", "-fv", &self.0]).output();
     }
 }
 

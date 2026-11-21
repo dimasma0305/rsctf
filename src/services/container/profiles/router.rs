@@ -208,6 +208,38 @@ impl ContainerManager for ProfileRouter {
         Ok(info)
     }
 
+    async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
+        let (owner, raw) = self.route(id)?;
+        owner.has_ad_data_volumes(raw).await
+    }
+
+    async fn repair_ad_volumes(
+        &self,
+        previous: &str,
+        spec: &ContainerSpec,
+    ) -> AppResult<Option<ContainerInfo>> {
+        let (owner, raw) = self.route(previous)?;
+        self.selected(spec.runtime_profile.as_deref())?;
+        let selected_handle = match spec.runtime_profile.as_deref() {
+            Some(id) => Self::handle(&self.entries[id].0, raw),
+            None => raw.to_owned(),
+        };
+        if selected_handle != previous {
+            return Err(AppError::conflict(
+                "The previous service's data volumes belong to a different runtime profile",
+            ));
+        }
+        let mut local = spec.clone();
+        let profile = local.runtime_profile.take();
+        let Some(mut info) = owner.repair_ad_volumes(raw, &local).await? else {
+            return Ok(None);
+        };
+        if let Some(id) = profile {
+            info.id = Self::handle(&self.entries[&id].0, &info.id);
+        }
+        Ok(Some(info))
+    }
+
     async fn create_workload(
         &self,
         spec: ValidatedWorkloadSpec,

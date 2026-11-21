@@ -592,7 +592,8 @@ pub(crate) async fn ensure_ad_containers(
             let prepared_flag =
                 crate::services::ad_engine::ProvisionFlag::read(st.pg(), game.id, p.id, c.id)
                     .await?;
-            let flag = match (&prepared_flag.official, operation_id.as_deref()) {
+            let seed = retired_backend.or(operation_id.as_deref());
+            let flag = match (&prepared_flag.official, seed) {
                 (Some(flag), _) => Ok(flag.clone()),
                 (None, Some(operation_id)) => {
                     crate::utils::flag_generator::generate_retryable_ad_flag(
@@ -611,10 +612,6 @@ pub(crate) async fn ensure_ad_containers(
                     continue;
                 }
             };
-            if let Some(cid) = retired_backend {
-                // Keep the team's files if an invalid stored flag prevents repair.
-                crate::services::traffic::destroy_container_after_capture_fence(st, cid).await?;
-            }
             let mut spec = ContainerSpec::ad_service(
                 image.clone(),
                 ContainerResourceLimits {
@@ -631,6 +628,33 @@ pub(crate) async fn ensure_ad_containers(
             );
             spec.runtime_profile = c.runtime_profile.clone();
             spec.operation_id = operation_id;
+            if let Some((service, cid)) = existing.as_ref().zip(retired_backend) {
+                match prepared_flag
+                    .repair_data_volumes(st, service, &spec, cid)
+                    .await
+                {
+                    Ok(Some(id)) => {
+                        launched += 1;
+                        distributed.release().await?;
+                        if c.enable_traffic_capture {
+                            crate::services::traffic::start_container_capture(st, &id).await?;
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::warn!(challenge = c.id, participation = p.id, backend_id = %cid,
+                                %error, "could not recover A&D service data volumes");
+                        failures += 1;
+                        distributed.release().await?;
+                        if is_manual_operation_conflict(&error, reconcile_operation_id) {
+                            return Err(error);
+                        }
+                        continue;
+                    }
+                    Ok(None) => {}
+                }
+                crate::services::traffic::destroy_container_after_capture_fence(st, cid).await?;
+            }
             let info = match st.containers.create(spec).await {
                 Ok(i) => i,
                 Err(error) => {

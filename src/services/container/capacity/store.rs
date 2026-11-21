@@ -66,6 +66,16 @@ pub async fn reserve(
     capacity: &LocalCapacity,
     request: &Reservation,
 ) -> AppResult<()> {
+    reserve_replacing(pool, host_key, capacity, request, None).await
+}
+
+pub(super) async fn reserve_replacing(
+    pool: &sqlx::PgPool,
+    host_key: &str,
+    capacity: &LocalCapacity,
+    request: &Reservation,
+    stopped_donor: Option<&str>,
+) -> AppResult<()> {
     if request.cpu_millis <= 0 || request.memory_bytes <= 0 || request.slots <= 0 {
         return Err(AppError::internal(
             "container capacity request must be positive",
@@ -128,6 +138,20 @@ pub async fn reserve(
     .execute(&mut *tx)
     .await
     .map_err(database_error)?;
+    if let Some(id) = stopped_donor {
+        // Transfer the stopped workload's allocation in the same transaction.
+        // Admission failure keeps both the donor and its original reservation.
+        sqlx::query(
+            r#"DELETE FROM "LocalContainerReservations"
+            WHERE host_key=$1 AND backend_id=$2 AND reservation_key<>$3"#,
+        )
+        .bind(host_key)
+        .bind(id)
+        .bind(&request.key)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+    }
     release_unlaunched_stale(&mut tx, host_key).await?;
     let used = sqlx::query_as::<_, Usage>(
         r#"SELECT COALESCE(SUM(cpu_millis), 0)::BIGINT AS cpu_millis,
