@@ -1,3 +1,6 @@
+#[path = "tests/docker_publication.rs"]
+mod docker_publication;
+
 use super::{
     cap_flag_publication_deadlines, deliver_initial_round_flags, delivery_order_key,
     invalid_stored_flag_outcome, managed_flag_command, run_delivery_attempts,
