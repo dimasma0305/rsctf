@@ -20,7 +20,6 @@ fn eligible(
 ) -> bool {
     if !crate::services::challenge_images::is_local_image_id(&image.id)
         || image.created >= cutoff.timestamp()
-        || !image.repo_digests.is_empty()
         || references.by_image_id.contains_key(&image.id)
         || image.labels.get(IMAGE_SCOPE_LABEL).map(String::as_str) != Some(scope)
         || !image.labels.get(IMAGE_REFERENCE_LABEL).is_some_and(|name| {
@@ -30,11 +29,35 @@ fn eligible(
     {
         return false;
     }
-    let marker = cleanup_tag(scope, &image.id);
-    image.repo_tags.is_empty()
-        || image.repo_tags.iter().any(|tag| {
-            crate::services::challenge_builds::canonical_image_reference(Some(tag)) == marker
-        })
+    if image.repo_tags.is_empty() {
+        return image.repo_digests.is_empty();
+    }
+    marker_can_be_removed(image, &cleanup_tag(scope, &image.id))
+}
+
+fn marker_can_be_removed(image: &ImageSummary, marker: &str) -> bool {
+    use crate::services::challenge_builds::canonical_image_reference;
+    let tags: Vec<_> = image
+        .repo_tags
+        .iter()
+        .map(|tag| canonical_image_reference(Some(tag)))
+        .collect();
+    if !tags.iter().any(|tag| tag == marker) {
+        return false;
+    }
+    // Docker's containerd store synthesizes a RepoDigest for a local tag,
+    // including our temporary marker. Only untag the marker when each digest
+    // is explained by a present tag on this exact manifest. Keep digest-only
+    // references and manifests whose identity the daemon cannot establish.
+    let repositories: std::collections::HashSet<_> = tags
+        .iter()
+        .filter_map(|tag| tag.rsplit_once(':').map(|(repository, _)| repository))
+        .collect();
+    image.repo_digests.iter().all(|digest| {
+        canonical_image_reference(Some(digest))
+            .split_once('@')
+            .is_some_and(|(repository, id)| id == image.id && repositories.contains(repository))
+    })
 }
 
 pub(super) async fn collect(
@@ -208,4 +231,31 @@ async fn remove_marker(
     Ok(removed
         .iter()
         .any(|item| item.deleted.as_ref() == Some(&image.id)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marker_cleanup_preserves_independent_digest_only_references() {
+        let id = format!("sha256:{}", "a".repeat(64));
+        let marker = cleanup_tag("fixture", &id);
+        let mut image = ImageSummary {
+            id: id.clone(),
+            repo_tags: vec![
+                marker.clone(),
+                "example.test:5000/team/service:ready".into(),
+            ],
+            repo_digests: vec![format!("example.test:5000/team/service@{id}")],
+            ..Default::default()
+        };
+        assert!(marker_can_be_removed(&image, &marker));
+        image.repo_tags.pop();
+        assert!(!marker_can_be_removed(&image, &marker));
+        image.repo_digests = vec![format!("rsctf-cleanup/fixture@{id}")];
+        assert!(marker_can_be_removed(&image, &marker));
+        image.repo_digests = vec![format!("rsctf-cleanup/fixture@sha256:{}", "b".repeat(64))];
+        assert!(!marker_can_be_removed(&image, &marker));
+    }
 }

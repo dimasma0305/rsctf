@@ -90,6 +90,11 @@ async fn pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_o
     let checker = fixture.build(&scope, "checker");
     let active = fixture.build(&scope, "active");
     let obsolete = fixture.build(&scope, "obsolete");
+    let interrupted = fixture.build(&scope, "interrupted before marker removal");
+    fixture.tag(
+        &interrupted,
+        format!("rsctf-cleanup/{scope}:{}", &interrupted[7..]),
+    );
     let late_pin = fixture.build(&scope, "pin committed after reference inventory");
     let original_patch_image = fixture.build(&scope, "original image after organizer rebuild");
     let published = fixture.build(&scope, "published after mark");
@@ -191,7 +196,10 @@ async fn pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_o
         .await
         .unwrap();
         assert!(report.messages.is_empty(), "{:?}", report.messages);
-        assert_eq!(report.images_removed, 1);
+        assert_eq!(report.images_removed, 2);
+        assert!(
+            matches!(daemon.inspect_image(&interrupted).await, Err(ref e) if docker_not_found(e))
+        );
         assert!(matches!(daemon.inspect_image(&obsolete).await, Err(ref e) if docker_not_found(e)));
         assert!(matches!(daemon.inspect_image(&marker).await, Err(ref e) if docker_not_found(e)));
         for id in [
