@@ -9,7 +9,8 @@ const RETIRE_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices"
 const PUBLISH_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices" service
        SET host = $3, port = $4, container_id = $5::text,
            last_reset_at = clock_timestamp(), status = $8,
-           published_image_backend = $5::text, published_image_ref = $12
+           published_image_backend = CASE WHEN $12::text IS NOT NULL THEN $5::text END,
+           published_image_ref = $12
       FROM "Participations" participation,
            "Teams" team, "GameChallenges" challenge, "Games" game
      WHERE service.id = $1
@@ -68,6 +69,7 @@ pub(crate) struct ServiceResetPreparation {
 /// Checker persistence and this mutation share the per-game control lock. If a
 /// real verdict committed first it remains evidence; otherwise reset downtime is
 /// an explicit zero-credit Offline sample, never a carry-forward InternalError.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_service_reset(
     db: &DatabaseConnection,
     game_id: i32,
@@ -75,6 +77,7 @@ pub(crate) async fn prepare_service_reset(
     expected_backend_id: Option<&str>,
     job_id: uuid::Uuid,
     lease_token: uuid::Uuid,
+    image_ref: &str,
     reason: &str,
 ) -> AppResult<ServiceResetPreparation> {
     let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
@@ -200,6 +203,7 @@ pub(crate) async fn prepare_service_reset(
         lease_token,
         serde_json::json!({
             "resetPrepared": true,
+            "preparedImageRef": image_ref,
             "preparedRoundId": round_id,
             "retiredBackendId": retired_container_id,
         }),
@@ -228,7 +232,7 @@ pub(crate) async fn publish_service_reset(
     container_id: &str,
     prepared_round_id: Option<i32>,
     require_running_game: bool,
-    image_ref: &str,
+    image_ref: Option<&str>,
 ) -> AppResult<bool> {
     if !valid_replacement_endpoint(host, port, container_id) {
         return Err(AppError::internal(

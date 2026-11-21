@@ -25,6 +25,7 @@ async fn resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically(
         VALUES ($1,'AdReset','reset-fixture',900001,$1,'fixture',1,$2,now()+interval '1 minute')
     "#).bind(job).bind(lease).execute(pool).await.unwrap();
 
+    let image = format!("sha256:{}", "a".repeat(64));
     let prepare = |backend, token| {
         prepare_service_reset(
             &db,
@@ -33,6 +34,7 @@ async fn resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically(
             Some(backend),
             job,
             token,
+            &image,
             "fixture retirement",
         )
     };
@@ -67,7 +69,7 @@ async fn resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically(
             0,
             "running".into(),
             false,
-            json!({"preparedRoundId": 900108, "retiredBackendId": "running", "resetPrepared": true})
+            json!({"preparedImageRef":image,"preparedRoundId": 900108, "retiredBackendId": "running", "resetPrepared": true})
         )
     );
     let unaffected: i64 =

@@ -34,6 +34,8 @@ struct ResetJobInput {
     #[serde(default)]
     retired_backend_id: Option<String>,
     #[serde(default)]
+    prepared_image_ref: Option<String>,
+    #[serde(default)]
     replacement_backend_id: Option<String>,
 }
 
@@ -187,8 +189,11 @@ pub async fn execute_job(
         }
     }
 
-    let image = crate::services::challenge_images::runtime_image(st, &challenge)?;
-    let (prepared_round_id, current_flag) = if replacement_checkpointed || recovering_preparation {
+    let resuming = replacement_checkpointed || recovering_preparation;
+    let pinned = input.prepared_image_ref.as_deref().filter(|_| resuming);
+    let image =
+        crate::services::challenge_images::runtime_image_with_checkpoint(st, &challenge, pinned)?;
+    let (prepared_round_id, current_flag) = if resuming {
         let flag = match input.prepared_round_id {
             Some(round_id) => sqlx::query_scalar::<_, String>(
                 r#"SELECT flag FROM "AdFlags"
@@ -234,6 +239,7 @@ pub async fn execute_job(
             input.expected_backend_id.as_deref(),
             job.id,
             claimed.lease_token,
+            &image,
             reason,
         )
         .await?;
@@ -308,7 +314,9 @@ pub async fn execute_job(
         &backend_id,
         prepared_round_id,
         true,
-        &image,
+        // A worker from before image checkpointing may already have launched
+        // its replacement against a different organizer build.
+        (!resuming || pinned.is_some()).then_some(image.as_str()),
     )
     .await;
     match published {

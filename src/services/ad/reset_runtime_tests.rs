@@ -266,6 +266,7 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
         Some(&starting.0),
         job.id,
         first.lease_token,
+        &image,
         "fixture restart",
     )
     .await
@@ -281,6 +282,18 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
         docker(&["inspect", "--format", "{{.State.Status}}", &starting.0]),
         "running"
     );
+    // An organizer rebuild after retirement must not change the image this
+    // operation launches or cause its already staged local image to be pruned.
+    sqlx::raw_sql(
+        r#"SET LOCAL rsctf.maintenance_writer='on';
+           UPDATE "GameChallenges" SET build_image_digest='sha256:' || repeat('f',64) WHERE id=900031"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let protected: bool = sqlx::query_scalar(r#"SELECT EXISTS(SELECT 1 FROM "AdProtectedLocalImages" WHERE challenge_id=900031 AND image_id=$1)"#)
+        .bind(&image).fetch_one(pool).await.unwrap();
+    assert!(protected);
     let recovered = claim().await.unwrap().unwrap();
     assert_ne!(recovered.lease_token, first.lease_token);
     let (shutdown, rx) = tokio::sync::watch::channel(false);
@@ -292,6 +305,10 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
     assert_eq!(result["reset"], true);
     let restored = row(900041).await.unwrap();
     let replacement = LiveService(restored["container_id"].as_str().unwrap().to_owned());
+    assert_eq!(
+        docker(&["inspect", "--format", "{{.Image}}", &replacement.0]),
+        image
+    );
     assert_eq!(restored["published_image_ref"], image);
     assert_eq!(restored["published_image_backend"], replacement.0);
     assert!(restored["previous_image_ref"].is_null());

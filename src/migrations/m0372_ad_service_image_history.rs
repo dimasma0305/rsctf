@@ -34,6 +34,10 @@ CREATE INDEX IF NOT EXISTS ix_ad_service_published_local_image
 CREATE INDEX IF NOT EXISTS ix_ad_service_previous_local_image
     ON "AdTeamServices" (lower(previous_image_ref)) WHERE previous_image_ref IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS ix_ad_reset_prepared_local_image
+    ON "ControlPlaneJobs" (lower(input->>'preparedImageRef'))
+    WHERE kind='AdReset' AND status IN (0,1) AND input ? 'preparedImageRef';
+
 CREATE OR REPLACE VIEW "AdProtectedLocalImages" AS
 SELECT lower(s.runtime_image_ref) AS image_id,c.id AS challenge_id
   FROM "AdPatchStarters" s JOIN "GameChallenges" c ON c.id=s.challenge_id
@@ -49,7 +53,12 @@ SELECT lower(s.published_image_ref),s.challenge_id FROM "AdTeamServices" s JOIN 
  WHERE lower(s.published_image_ref) LIKE 'sha256:%' AND g.end_time_utc>clock_timestamp()
 UNION
 SELECT lower(s.previous_image_ref),s.challenge_id FROM "AdTeamServices" s JOIN "Games" g ON g.id=s.game_id
- WHERE lower(s.previous_image_ref) LIKE 'sha256:%' AND g.end_time_utc>clock_timestamp();
+ WHERE lower(s.previous_image_ref) LIKE 'sha256:%' AND g.end_time_utc>clock_timestamp()
+UNION
+SELECT lower(j.input->>'preparedImageRef'),j.challenge_id FROM "ControlPlaneJobs" j JOIN "Games" g ON g.id=j.game_id
+ WHERE j.kind='AdReset' AND j.status IN (0,1) AND j.challenge_id IS NOT NULL
+   AND j.input ? 'preparedImageRef' AND lower(j.input->>'preparedImageRef') LIKE 'sha256:%'
+   AND g.end_time_utc>clock_timestamp();
 "#;
 
 #[async_trait::async_trait]
