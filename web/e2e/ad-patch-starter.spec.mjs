@@ -11,6 +11,47 @@ let server
 test.beforeAll(async () => { server = await serveAccountBuild(resolve(repositoryRoot, 'web/build')) })
 test.afterAll(async () => { await server?.close() })
 
+test('team resets its hosted service and sees the completed result without crypto.randomUUID', async ({ page }) => {
+  const game = createCompetitionFixture()
+  game.challenges[0].type = 'AttackDefense'
+  Object.assign(game.responses['/api/game/901/challenges/9001'], { type: 'AttackDefense', adSelfHosted: false })
+  const sent = []
+  let polls = 0
+  await page.addInitScript(() => Object.defineProperty(crypto, 'randomUUID', { value: undefined }))
+  await page.route('**/*', async route => {
+    const req = route.request()
+    const url = new URL(req.url())
+    if (url.origin !== server.origin) return route.abort()
+    const path = url.pathname.toLowerCase()
+    if (!path.startsWith('/api/') && !path.startsWith('/hub')) return route.continue()
+    if (path === '/api/game/901/ad/state') return route.fulfill({ json: {
+      flagsReady: true, currentRound: 1, services: [{ adTeamServiceId: 91, challengeId: 9001,
+        canReset: true, selfHosted: false, containerIp: '127.0.0.1', containerPort: 8080 }],
+    } })
+    if (path === '/api/game/901/ad/services/91/reset' && req.method() === 'POST') {
+      sent.push(req.headers()['idempotency-key'])
+      return route.fulfill({ status: 202, json: { id: 'reset-job', status: 'Queued' } })
+    }
+    if (path === '/api/game/901/ad/resetjobs/reset-job') {
+      polls++
+      return route.fulfill({ json: { id: 'reset-job', status: 'Succeeded', result: { reset: polls === 1 } } })
+    }
+    const result = game.fixture(url.pathname + url.search, req.method())
+    return route.fulfill({ status: result.status ?? 200, json: result.body ?? null })
+  })
+  await page.goto(server.origin + '/games/901/challenges#9001')
+  const reset = page.getByRole('button', { name: 'Reset', exact: true })
+  await reset.click()
+  await expect(page.getByText('Your service has been rebuilt.')).toBeVisible()
+  // The second request belongs to a fresh visit after a different operation.
+  await page.reload()
+  await reset.click()
+  await expect(page.getByText('Another operation already replaced your service.')).toBeVisible()
+  expect(polls).toBe(2)
+  expect(new Set(sent).size).toBe(2)
+  for (const id of sent) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+})
+
 test('team opens private BYOC source history and pages back to the legacy agent', async ({ page }) => {
   const game = createCompetitionFixture()
   game.challenges[0].type = 'AttackDefense'

@@ -542,9 +542,10 @@
   "notification": {
     "ad": {
       "attack_accepted": "Attack accepted (epoch evidence recorded)",
-      "reset_queued": {
-        "title": "Reset queued",
-        "message": "Container will rebuild in seconds."
+      "reset_finished": {
+        "title": "Reset finished",
+        "message": "Your service has been rebuilt.",
+        "already_replaced": "Another operation already replaced your service."
       }
     },
     "connected": {

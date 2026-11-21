@@ -402,7 +402,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
           if (controller.signal.aborted) throw error
           job = (await api.game.gameAdResetJobByOperation(gameId, operationId, { signal: controller.signal })).data
         }
-        await waitForControlJob(
+        const completed = await waitForControlJob(
           job,
           controller.signal,
           async (jobId, signal) => (await api.game.gameAdResetJob(gameId, jobId, { signal })).data
@@ -410,8 +410,10 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
         showNotification({
           color: 'teal',
           icon: <Icon path={mdiRestart} size={1} />,
-          title: t('game.notification.ad.reset_queued.title', 'Reset queued'),
-          message: t('game.notification.ad.reset_queued.message', 'Container will rebuild in seconds.'),
+          title: t('game.notification.ad.reset_finished.title', 'Reset finished'),
+          message: completed.result?.reset === false
+            ? t('game.notification.ad.reset_finished.already_replaced', 'Another operation already replaced your service.')
+            : t('game.notification.ad.reset_finished.message', 'Your service has been rebuilt.'),
         })
         await mutateState()
       } catch (e) {

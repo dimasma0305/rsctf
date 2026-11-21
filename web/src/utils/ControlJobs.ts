@@ -1,11 +1,12 @@
 import api, { type ControlJobModel } from '@Api'
+import { createUuid } from './Uuid'
 
 const TERMINAL = new Set(['Succeeded', 'Failed', 'Cancelled'])
 const BASE_DELAY_MS = 750
 const MAX_DELAY_MS = 15_000
 const MAX_WAIT_MS = 15 * 60_000
 
-export const createOperationId = (): string => crypto.randomUUID()
+export const createOperationId = (): string => createUuid()
 
 export const startControlJob = async (
   operationId: string,
