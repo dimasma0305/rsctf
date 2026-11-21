@@ -134,6 +134,7 @@ async fn docker_repair_preserves_each_teams_anonymous_data_volume() {
         );
         docker(&["exec", &replacement.0, "test", "!", "-e", "/tmp/ephemeral"]);
         assert!(docker(&["exec", &replacement.0, "printenv", "RSCTF_FLAG"]) == flag);
+        assert!(docker(&["exec", &replacement.0, "cat", "/flag"]) == flag);
         assert_eq!(id(900042).await.unwrap(), peer.0);
         assert_eq!(docker(&["exec", &peer.0, "cat", "/data/marker"]), "peer");
         assert!(!Command::new("docker")
@@ -355,6 +356,7 @@ async fn reset_running_service_to_starter(
     .await
     .unwrap();
     assert!(docker(&["exec", &candidate.0, "printenv", "RSCTF_FLAG"]) == flag);
+    assert!(docker(&["exec", &candidate.0, "cat", "/flag"]) == flag);
     assert!(!Command::new("docker")
         .args(["inspect", peer])
         .output()
@@ -416,6 +418,7 @@ async fn reset_running_service_to_starter(
     let restored = snapshot().await.unwrap();
     let running = LiveService(restored[0]["container_id"].as_str().unwrap().to_owned());
     assert_eq!(restored[0]["previous_image_ref"], target.0);
+    assert!(docker(&["exec", &running.0, "cat", "/flag"]) == flag);
     assert_eq!(
         docker(&["inspect", "--format", "{{.Image}}", &running.0]),
         prior
@@ -429,6 +432,23 @@ async fn reset_running_service_to_starter(
         docker(&["exec", &running.0, "printenv", "RSCTF_FLAG"]),
         flag
     );
+    // A stale value on disk must never count as an acknowledgement when the
+    // challenge user cannot write the file.
+    docker(&[
+        "exec",
+        "-u",
+        "0",
+        &running.0,
+        "sh",
+        "-c",
+        "echo stale >/flag && chmod 0444 /flag",
+    ]);
+    assert!(
+        super::engine::initialize_official_flag_file(state, &running.0, Some(&flag))
+            .await
+            .is_err()
+    );
+    assert_eq!(docker(&["exec", &running.0, "cat", "/flag"]), "stale");
     state.containers.destroy(&running.0).await.unwrap();
     assert!(!Command::new("docker")
         .args(["volume", "inspect", &original_data])

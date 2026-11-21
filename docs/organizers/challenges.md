@@ -148,7 +148,10 @@ and its official flag before removing the old container. If the round has
 ended or its flag is missing, the surviving container keeps its files.
 A stopped service's address is withdrawn so it cannot route
 players to a different workload. Before publishing the replacement endpoint,
-RSCTF records the container ID on the reset job and the service in one
+RSCTF writes the current round's flag to the replacement's
+`RSCTF_FLAG_FILE` and reads it back before advertising the endpoint. This also
+applies to automatic repairs during a round. Existing scoring receipts keep
+their original backend identity. RSCTF records the container ID on the reset job and the service in one
 transaction. If that worker stops, its successor can publish the same container
 with its files intact. A round change during launch makes RSCTF
 discard the stale replacement. Existing services begin recording history at

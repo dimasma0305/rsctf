@@ -345,7 +345,7 @@ pub async fn execute_job(
         None if recovering_preparation => retained_backend,
         None => None,
     };
-    spec.flag = Some(flag);
+    spec.flag = Some(flag.clone());
     let volume_donor = retired.filter(|_| preserve_volumes);
     let info = if let Some(id) = volume_donor {
         crate::services::traffic::fence_container_capture_stop(st, id).await?;
@@ -371,6 +371,18 @@ pub async fn execute_job(
         st.containers.create(spec).await?
     };
     let backend_id = info.id.clone();
+    if let Err(error) = crate::services::ad_engine::initialize_official_flag_file(
+        st,
+        &backend_id,
+        prepared_round_id.map(|_| flag.as_str()),
+    )
+    .await
+    {
+        // The candidate has never been published. A volume donor still holds
+        // the team's current files and must survive a failed acknowledgement.
+        st.containers.destroy(&backend_id).await?;
+        return Err(error);
+    }
     if volume_donor.is_none() {
         crate::services::ad_engine::checkpoint_reset_replacement(
             st.pg(),

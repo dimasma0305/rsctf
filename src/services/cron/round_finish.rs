@@ -1,5 +1,6 @@
 use crate::app_state::SharedState;
 use crate::models::data::game;
+use crate::services::ad_engine::managed_flag_command;
 use crate::utils::error::AppResult;
 use futures::StreamExt;
 
@@ -257,18 +258,6 @@ async fn deliver_managed_flag(
         }
     })
     .await
-}
-
-fn managed_flag_command(flag: &str) -> Vec<String> {
-    // The flag is passed as argv[1], never interpolated into the shell
-    // program. Existing containers without RSCTF_FLAG_FILE use /flag.
-    vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        "umask 022 && printf '%s\\n' \"$1\" > \"${RSCTF_FLAG_FILE:-/flag}\" && cat \"${RSCTF_FLAG_FILE:-/flag}\"".to_string(),
-        "rsctf-flag".to_string(),
-        flag.to_string(),
-    ]
 }
 
 async fn deliver_round_flag(

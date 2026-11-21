@@ -3,6 +3,50 @@ use crate::services::ad::service_lifecycle::{
 };
 use crate::utils::error::{AppError, AppResult};
 
+pub(crate) fn managed_flag_command(flag: &str) -> Vec<String> {
+    // The flag is passed as argv[1], never interpolated into the shell
+    // program. Existing containers without RSCTF_FLAG_FILE use /flag.
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "umask 022 && printf '%s\\n' \"$1\" > \"${RSCTF_FLAG_FILE:-/flag}\" && cat \"${RSCTF_FLAG_FILE:-/flag}\"".to_string(),
+        "rsctf-flag".to_string(),
+        flag.to_string(),
+    ]
+}
+
+/// A newly created workload receives a compatibility environment value. File-based
+/// services also need the current official flag before their endpoint goes live.
+/// This readback does not issue or amend a scored round receipt.
+pub(crate) async fn initialize_official_flag_file(
+    state: &crate::app_state::SharedState,
+    backend_id: &str,
+    flag: Option<&str>,
+) -> AppResult<()> {
+    let Some(flag) = flag else {
+        return Ok(());
+    };
+    let policy = super::FlagDeliveryPolicy::from_env().map_err(AppError::internal)?;
+    for attempt in 1..=policy.attempts() {
+        let write = state
+            .containers
+            .exec(backend_id, managed_flag_command(flag));
+        match tokio::time::timeout(policy.attempt_timeout(), write).await {
+            Ok(Ok(output)) if output.trim_end_matches(['\r', '\n']) == flag => return Ok(()),
+            // A timed-out exec may still write later. Discard this unpublished
+            // candidate before the next round can reuse its flag file.
+            Err(_) => break,
+            _ => {}
+        }
+        if attempt < policy.attempts() {
+            tokio::time::sleep(policy.retry_backoff(attempt)).await;
+        }
+    }
+    Err(AppError::unavailable(
+        "The replacement service did not confirm its current flag file",
+    ))
+}
+
 /// Warmup, a late arrival without a flag, and the official flag for a round
 /// are distinct states. Never publish a workload prepared for a stale state.
 #[derive(Default, PartialEq)]
@@ -109,6 +153,12 @@ impl ProvisionFlag {
             backend_id: &info.id,
             image_ref: &spec.image,
         };
+        if let Err(error) =
+            initialize_official_flag_file(state, &info.id, self.official.as_deref()).await
+        {
+            state.containers.destroy(&info.id).await?;
+            return Err(error);
+        }
         self.publish_volume_repair(state, endpoint, donor).await?;
         Ok(Some(info.id))
     }

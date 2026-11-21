@@ -1112,7 +1112,14 @@ jobs:
           docker build --tag rsctf-architecture-smoke:ci \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
           export RSCTF_REAL_DOCKER_RETRY_IMAGE="$(docker image inspect rsctf-architecture-smoke:ci --format '{{.Id}}')"
-          export RSCTF_TEST_CONTAINER_IMAGE="$RSCTF_REAL_DOCKER_RETRY_IMAGE"
+          # Reuse the HTTP smoke service with the hosted A&D flag-file contract.
+          docker build --tag rsctf-ad-state-smoke:ci - <<'DOCKERFILE'
+          FROM rsctf-architecture-smoke:ci
+          USER root
+          RUN touch /flag && chown nobody:nogroup /flag
+          USER nobody
+          DOCKERFILE
+          export RSCTF_TEST_CONTAINER_IMAGE="$(docker image inspect rsctf-ad-state-smoke:ci --format '{{.Id}}')"
           export RSCTF_DOCKER_PROXY_BIND="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
           export RSCTF_DOCKER_SCOPE=ci-architecture
           export RSCTF_PATCH_TEST_REDIS_IMAGE=redis:8-alpine

@@ -203,6 +203,7 @@ async fn player_reset_restores_the_registered_starter_after_an_organizer_rebuild
     );
     assert_eq!(restored["published_image_ref"], original);
     assert_eq!(restored["previous_image_ref"], rebuilt.0);
+    assert!(docker(&["exec", &replacement.0, "cat", "/flag"]) == flag);
     assert_eq!(
         docker(&["exec", &replacement.0, "printenv", "RSCTF_FLAG"]),
         flag
@@ -366,6 +367,7 @@ async fn player_reset_restores_the_registered_starter_after_an_organizer_rebuild
         rebuilt.0
     );
     assert_eq!(reverted["previous_image_ref"], original);
+    assert!(docker(&["exec", &final_service.0, "cat", "/flag"]) == flag);
     assert_eq!(
         docker(&["exec", &final_service.0, "printenv", "RSCTF_FLAG"]),
         flag
