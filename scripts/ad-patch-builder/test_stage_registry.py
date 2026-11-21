@@ -118,7 +118,21 @@ def check(archive, manifest, config, docker_pull=False):
                     (client / "config.json").write_bytes(auth.read_bytes())
                     docker = ["docker", "--config", str(client)]
                     try:
-                        subprocess.run([*docker, "pull", ref], check=True, timeout=60)
+                        runtime_test = os.environ.get("RSCTF_PATCH_PULL_TEST")
+                        if runtime_test:
+                            db.execute('CREATE TABLE "Configs"(config_key text PRIMARY KEY, value text)')
+                            db.execute('''INSERT INTO "Configs" VALUES ('RegistryConfig:ServerAddress',%s),
+                                ('RegistryConfig:UserName','fixture'),('RegistryConfig:Password',%s)''',
+                                       ("https://" + host + "/", password))
+                            result = subprocess.run([runtime_test, "cold_docker_pull_uses_only_the_configured_registry_credential",
+                                                     "--ignored", "--nocapture"],
+                                                    env={**os.environ, "RSCTF_TEST_PRIVATE_PULL_SCHEMA": schema,
+                                                         "RSCTF_TEST_PRIVATE_PULL_REF": ref}, check=True,
+                                                    stdout=subprocess.PIPE, text=True, timeout=90)
+                            assert "1 passed;" in result.stdout, "runtime registry regression did not execute"
+                            print("Verified a cold Docker runtime pull with the platform registry credential.")
+                        else:
+                            subprocess.run([*docker, "pull", ref], check=True, timeout=60)
                         info, = json.loads(subprocess.check_output([*docker, "image", "inspect", ref], timeout=15))
                         assert info["Id"] == config and ref in info["RepoDigests"]
                         subprocess.run([*docker, "run", "--rm", "--pull=never", "--network=none",

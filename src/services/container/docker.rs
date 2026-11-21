@@ -271,7 +271,11 @@ pub(super) fn clamped_image_health_config(image: &ImageInspect) -> Option<Health
 /// absent; a daemon-local image id cannot be pulled and must already exist.
 /// Both the inspect and the pull go through Docker admission so a preflight
 /// cannot starve live provisioning of daemon slots.
-pub(super) async fn pull_immutable_image(docker: &Docker, image: &str) -> AppResult<()> {
+pub(super) async fn pull_immutable_image(
+    manager: &DockerContainerManager,
+    image: &str,
+) -> AppResult<()> {
+    let docker = manager.client()?;
     if docker_admission()
         .read("inspect_image", docker.inspect_image(image))
         .await?
@@ -284,23 +288,7 @@ pub(super) async fn pull_immutable_image(docker: &Docker, image: &str) -> AppRes
             "The daemon-local image id is absent from this container host; rebuild the challenge.",
         ));
     }
-    let options = bollard::image::CreateImageOptions {
-        from_image: image.to_string(),
-        ..Default::default()
-    };
-    let last_error = docker_admission()
-        .pull("create_image", async {
-            let mut pull = docker.create_image(Some(options), None, None);
-            let mut last_error = None;
-            while let Some(item) = pull.next().await {
-                if let Err(error) = item {
-                    last_error = Some(error.to_string());
-                    break;
-                }
-            }
-            last_error
-        })
-        .await?;
+    let last_error = manager.pull_repository_digest(image).await?;
     docker_admission()
         .read("inspect_image", docker.inspect_image(image))
         .await?

@@ -151,6 +151,9 @@ jobs:
           docker buildx build --platform linux/amd64 --output "type=local,dest=$RUNNER_TEMP/patch-guest" scripts/ad-patch-builder
           python3 -m venv "$RUNNER_TEMP/patch-worker"
           "$RUNNER_TEMP/patch-worker/bin/pip" install -r scripts/ad-patch-builder/requirements.txt
+          pull_test="$(cargo test --all-features --locked --lib --no-run --message-format=json |
+            jq -ers '[.[] | select(.reason=="compiler-artifact" and .target.name=="rsctf" and .profile.test and .executable!=null) | .executable] | unique | select(length==1) | first')"
+          export RSCTF_PATCH_PULL_TEST="$pull_test"
           python3 scripts/test-ad-patch-context.py ./target/debug/rsctf --guest "$RUNNER_TEMP/patch-guest" --docker-load \
             --registry-port "${{ job.services.patchregistry.ports['5000'] }}" --stage-python "$RUNNER_TEMP/patch-worker/bin/python"
           "$RUNNER_TEMP/patch-worker/bin/python" scripts/ad-patch-builder/test_export.py

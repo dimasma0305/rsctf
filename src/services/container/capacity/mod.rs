@@ -129,10 +129,11 @@ impl CapacityGatedDockerManager {
     }
 
     pub fn with_capacity(
-        inner: DockerContainerManager,
+        mut inner: DockerContainerManager,
         pool: sqlx::PgPool,
         capacity: LocalCapacity,
     ) -> Self {
+        inner.pull_settings = Some(pool.clone());
         Self {
             inner,
             pool,

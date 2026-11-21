@@ -205,7 +205,10 @@ patch-worker/bin/python scripts/ad-patch-builder/stage.py \
 ```
 
 The watcher checks for eligible builds on startup and waits 30 seconds between
-passes. It transfers one team's latest ready candidate at a time. A failed
+passes. For local Docker, enter the registry's host (including its port) and
+read-only account in **Administration → Settings → Pull credentials**. The host
+must match the registry in the image digest. Docker also needs to trust its TLS
+certificate. The watcher transfers one team's latest ready candidate at a time. A failed
 transfer is retried on a later pass while other teams can continue. On restart
 it skips builds with a recorded registry digest. Configure a process supervisor
 to restart it if the database connection drops. The team chooses when to deploy.

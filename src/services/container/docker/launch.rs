@@ -20,7 +20,9 @@ impl DockerContainerManager {
         let inspected_image = match self.inspect_image(&spec.image).await? {
             Ok(image) => image,
             Err(_) if crate::services::challenge_images::is_repository_digest(&spec.image) => {
-                self.pull_repository_digest(&spec.image).await?;
+                if let Some(error) = self.pull_repository_digest(&spec.image).await? {
+                    tracing::warn!(image = %spec.image, %error, "immutable image pull failed");
+                }
                 self.inspect_image(&spec.image).await?.map_err(|error| {
                     tracing::error!(image = %spec.image, %error, "immutable repository image remains unavailable after pull");
                     AppError::unavailable(

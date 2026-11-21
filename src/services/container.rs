@@ -302,6 +302,8 @@ pub struct DockerContainerManager {
     /// Cached daemon capability used by both the create path and admin warning.
     storage_quota_enforced: std::sync::Arc<tokio::sync::OnceCell<bool>>,
     allow_unbounded_storage: bool,
+    /// Platform pull settings, consulted only for a cold registry digest on a managed host.
+    pull_settings: Option<sqlx::PgPool>,
     /// Live Docker client handle populated by [`Self::connect`].
     docker: Option<Docker>,
 }
@@ -326,6 +328,7 @@ impl DockerContainerManager {
                 std::env::var("RSCTF_DOCKER_ALLOW_UNBOUNDED_STORAGE").as_deref(),
             )?,
             docker: Some(docker),
+            pull_settings: None,
         })
     }
 
@@ -434,7 +437,7 @@ impl ContainerManager for DockerContainerManager {
     }
 
     async fn pull_image(&self, image: &str) -> AppResult<()> {
-        docker::pull_immutable_image(self.client()?, image).await
+        docker::pull_immutable_image(self, image).await
     }
 
     async fn list_managed(&self) -> Vec<String> {
