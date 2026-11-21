@@ -139,7 +139,7 @@ pub(super) async fn check(
             .env("RSCTF_DATABASE_URL", url.as_str())
             .kill_on_drop(true);
         worker = Some(command.spawn().unwrap());
-        worker_command = Some(command);
+        worker_command = Some((command, url));
     } else {
         let mut db = pool.acquire().await.unwrap();
         sqlx::query("SELECT pg_advisory_lock(1734271011,10)")
@@ -208,7 +208,8 @@ pub(super) async fn check(
                 .await
                 .is_err()
         );
-        let mut worker = worker_command.unwrap().spawn().unwrap();
+        let (mut command, url) = worker_command.unwrap();
+        let mut worker = command.spawn().unwrap();
         wait_status(pool, 6, "Ready").await;
         assert!(
             crate::services::ad::patches::claimed_source(pool, attempt, old_claim)
@@ -231,6 +232,36 @@ pub(super) async fn check(
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0].len(), 1024 * 1024);
         assert_eq!(hex::encode(sha2::Sha256::digest(parts.concat())), digest);
+        let exported =
+            std::env::temp_dir().join(format!("rsctf-patch-test-{}.oci.tar", Uuid::new_v4()));
+        let mut export =
+            tokio::process::Command::new(std::env::var("RSCTF_PATCH_WORKER_PYTHON").unwrap());
+        export
+            .args([
+                "scripts/ad-patch-builder/export.py",
+                "--service",
+                "30",
+                "--revision",
+                "6",
+                "--attempt",
+            ])
+            .arg(attempt.to_string())
+            .arg("--output")
+            .arg(&exported)
+            .env("RSCTF_DATABASE_URL", url.as_str())
+            .kill_on_drop(true);
+        let result = export.output().await.unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap().trim(),
+            format!("sha256:{digest}")
+        );
+        assert_eq!(tokio::fs::read(&exported).await.unwrap(), parts.concat());
+        tokio::fs::remove_file(&exported).await.unwrap();
         let failed = json(post(&bad).await).await;
         wait_status(pool, 7, "Failed").await;
         // A replay cannot re-run a failed Dockerfile unless the requester
@@ -306,6 +337,8 @@ pub(super) async fn check(
             "Ready"
         );
         assert_eq!(json(read(&good).await).await["status"], "Replaced");
+        assert!(!export.output().await.unwrap().status.success());
+        assert!(!exported.exists());
         let cached: i64 =
             sqlx::query_scalar(r#"SELECT count(*) FROM "AdPatchCandidates" WHERE service_id=30"#)
                 .fetch_one(pool)

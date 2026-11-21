@@ -117,6 +117,19 @@ that caps retained candidate archives at 6.25 GiB. PostgreSQL also needs room
 for transactions, WAL, and vacuum. A failed build retains the previous candidate.
 Activation and rollback across hosted runtimes are still in development.
 
+On the trusted worker host, an organizer can export a ready build to a new
+private file. Use the team's service ID, revision number, and attempt UUID
+from its build status. The export checks the archive size and SHA-256 digest
+and stops if a newer build replaces the selected one during transfer.
+
+```sh
+patch-worker/bin/python scripts/ad-patch-builder/export.py \
+  --service "$service_id" --revision "$revision" --attempt "$attempt" --output candidate.oci.tar
+```
+
+The command prints the archive digest. The team's running service continues
+serving its current revision during the export.
+
 To rehearse with five hosted services, generate a separate hidden event from
 the bundled example repository. Each service comes with a starter ZIP, a
 working repair and a build-failure case.

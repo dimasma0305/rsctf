@@ -67,6 +67,9 @@ submits a saved commit through the [team-scoped build endpoint](../../../../src/
 The [challenge worker](../../../../scripts/ad-patch-builder/worker.py) claims the request and replaces
 the private candidate after verification. The [PostgreSQL and VM regression](../../../../src/controllers/game/ad/patch_preview/tests/history/builds.rs)
 checks ownership, replay, failure and candidate retention.
+The [private image export](../../../../scripts/ad-patch-builder/export.py) selects one service,
+revision and build attempt. Its [PostgreSQL regressions](../../../../scripts/ad-patch-builder/test_export.py)
+cover corruption, replacement during transfer and competing output files.
 The [failed-build regression](../../../../src/services/challenge_builds/archive_tests/failed_candidate.rs)
 checks the Docker tag and the running service's data across an interrupted build,
 candidate cleanup, and retry. The [Docker transport](../../../../src/services/challenge_builds/docker_io.rs)

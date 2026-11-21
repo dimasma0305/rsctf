@@ -1,7 +1,7 @@
 """Build a saved defensive patch on a disposable, offline Linux x86-64 guest."""
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import ctypes
 import errno
 import hashlib
@@ -115,11 +115,13 @@ def build_to(args, scratch, candidate, source=None):
         return copy_result(disk, candidate)
 
 
-def build(args):
-    if args.output.exists():
+@contextmanager
+def private_archive(path):
+    """Publish a complete private archive once, even with competing writers."""
+    if path.exists():
         raise FileExistsError("patch output already exists")
     with ExitStack() as stack:
-        directory = os.open(args.output.parent, os.O_DIRECTORY)
+        directory = os.open(path.parent, os.O_DIRECTORY)
         stack.callback(os.close, directory)
         try:
             fd = os.open(".", os.O_TMPFILE | os.O_WRONLY, 0o600, dir_fd=directory)
@@ -128,13 +130,17 @@ def build(args):
                 raise ValueError("use a local worker output directory supporting O_TMPFILE") from error
             raise
         candidate = stack.enter_context(os.fdopen(fd, "wb"))
-        digest = build_to(args, args.output.parent, candidate)
+        yield candidate
         candidate.flush()
         os.fsync(candidate.fileno())
         # Link the verified inode exactly once. A concurrent winner is preserved.
-        os.link(f"/proc/self/fd/{candidate.fileno()}", args.output.name, dst_dir_fd=directory)
+        os.link(f"/proc/self/fd/{candidate.fileno()}", path.name, dst_dir_fd=directory)
         os.fsync(directory)
-        return digest
+
+
+def build(args):
+    with private_archive(args.output) as candidate:
+        return build_to(args, args.output.parent, candidate)
 
 
 def main():
