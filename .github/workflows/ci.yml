@@ -147,7 +147,7 @@ jobs:
       - name: Test offline defensive patch VM
         run: |
           python3 scripts/ad-patch-builder/test_result.py
-          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios python3-venv skopeo docker-registry
+          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios python3-venv skopeo docker-registry apache2-utils
           docker buildx build --platform linux/amd64 --output "type=local,dest=$RUNNER_TEMP/patch-guest" scripts/ad-patch-builder
           python3 -m venv "$RUNNER_TEMP/patch-worker"
           "$RUNNER_TEMP/patch-worker/bin/pip" install -r scripts/ad-patch-builder/requirements.txt
