@@ -154,7 +154,15 @@ mod tests {
     fn exporter_has_a_fixed_small_series_budget() {
         let out = render(50, 12);
         assert!(out.len() < 20_000);
-        assert!(out.lines().filter(|line| !line.starts_with('#')).count() < 200);
+        let samples = out.lines().filter(|line| !line.starts_with('#'));
+        // Each of the ten fixed control-job kinds has four gauges and one counter.
+        assert_eq!(samples.clone().count(), 201);
+        assert_eq!(
+            samples
+                .filter(|line| line.contains("{kind=\"AdActivate\"}"))
+                .count(),
+            5
+        );
         assert!(out.contains("rsctf_database_pool_connections 50\n"));
     }
 }
