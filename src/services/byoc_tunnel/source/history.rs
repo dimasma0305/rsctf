@@ -20,6 +20,8 @@ struct Event {
     first_seen: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
     last_seen: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tracked_files: Option<usize>,
     changes: Vec<Change>,
 }
 
@@ -91,6 +93,7 @@ pub(crate) async fn history(
                 status: row.state,
                 first_seen: row.first_seen,
                 last_seen: row.last_seen,
+                tracked_files: observed.then_some(files.len()),
                 changes: diff,
             });
         }

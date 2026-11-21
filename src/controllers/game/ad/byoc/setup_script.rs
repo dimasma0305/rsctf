@@ -80,9 +80,12 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         // Remove only the two files this installer owns. This safely unlinks a
         // pre-planted output symlink and ensures a rerun cannot retain an old
         // world-readable mode despite the restrictive umask.
+        "if [ -L service-src ]; then echo 'Refusing a symlinked challenge source directory.' >&2; exit 1; fi".into(),
+        "if [ ! -d service-src ]; then mkdir -m 755 service-src; fi".into(),
         "rm -f docker-compose.yml rsctf-ad.conf".into(),
         "".into(),
         "SERVICE_IMAGE=\"\"".into(),
+        "SOURCE_LOCATION=\"./service-src on this machine\"".into(),
         "echo '[1/4] Fetching the real service image from the game server (best-effort)...'".into(),
     ]);
 
@@ -124,7 +127,7 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         );
     }
 
-    // Select between two fully-rendered, encoded compose documents. Keeping
+    // Select between rendered, encoded Compose documents. Keeping
     // server-provided values out of an executable heredoc prevents a newline,
     // quote, `$()`, or heredoc-marker payload from becoming shell syntax.
     let fallback_compose = build_setup_compose(game_id, challenge_id, ctx, None);
@@ -134,16 +137,41 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
         .filter(|image| !image.is_empty())
         .map(|image| {
             let reviewed_image = reviewed_service_image_name(game_id, challenge_id, image);
-            build_setup_compose(game_id, challenge_id, ctx, Some(&reviewed_image))
+            let digest = Sha256::digest(image.as_bytes());
+            let volume = format!("source-{}", hex::encode(&digest[..8]));
+            let shared = super::compose::setup_compose(
+                game_id,
+                challenge_id,
+                ctx,
+                Some(&reviewed_image),
+                Some(&volume),
+            );
+            (
+                build_setup_compose(game_id, challenge_id, ctx, Some(&reviewed_image)),
+                shared,
+                volume,
+            )
         });
     lines.push("".into());
     lines.push("echo '[2/4] Writing docker-compose.yml...'".into());
     lines.push("if [ -n \"$SERVICE_IMAGE\" ]; then".into());
-    if let Some(real_compose) = real_compose {
+    if let Some((host, shared, volume)) = real_compose {
+        lines.push("  workdir=$(docker image inspect --format '{{.Config.WorkingDir}}' \"$SERVICE_IMAGE\" 2>/dev/null || true)".into());
+        // Preserve an older service's writable layer when upgrading the observer.
+        lines.push(format!("  if mounts=$(docker container inspect --format '{{{{json .Mounts}}}}' 'rsctf-byoc-{game_id}-{challenge_id}-service' 2>/dev/null); then"));
+        lines.push(format!("    case \"$mounts\" in *'rsctf-byoc-{game_id}-{challenge_id}_source-'*) ;; *) workdir='' ;; esac"));
+        lines.push("  fi".into());
+        lines.push("  case \"$workdir\" in".into());
+        lines.push("    /app|/srv/app|/opt/app|/usr/src/app|/var/www/html|/rsctf-source)".into());
+        lines.push("      SOURCE_LOCATION=\"$workdir inside the service container\"".into());
+        // Only the service's exact mount line matches. The agent mount stays read-only.
+        let encoded = base64::engine::general_purpose::STANDARD.encode(shared);
+        lines.push(format!("      printf '%s' '{}' | base64 -d | sed \"s|^      - {volume}:/rsctf-source$|      - {volume}:$workdir|\" > docker-compose.yml ;;", encoded));
         lines.push(format!(
-            "  {}",
-            encoded_file_command("docker-compose.yml", real_compose.as_bytes())
+            "    *) {} ;;",
+            encoded_file_command("docker-compose.yml", host.as_bytes())
         ));
+        lines.push("  esac".into());
     } else {
         lines.push("  echo 'internal error: service image selection is inconsistent' >&2".into());
         lines.push("  exit 1".into());
@@ -181,6 +209,7 @@ pub(super) fn build_setup_script(game_id: i32, challenge_id: i32, ctx: &ByocCont
     lines.push(
         "echo 'Done — watch the platform; your status should go green within a tick.'".into(),
     );
+    lines.push("echo \"Source history watches $SOURCE_LOCATION every minute.\"".into());
     lines.push("".into());
     lines.join("\n")
 }

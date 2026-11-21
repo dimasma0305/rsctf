@@ -4608,6 +4608,7 @@ export interface ByocSourceHistoryPage {
   events: {
     revision: number;
     status: "observed" | "notRegistered" | "unavailable" | "legacyAgent";
+    trackedFiles?: number;
     firstSeen: number;
     lastSeen: number;
     changes: { path: string; kind: "registered" | "unregistered" | "created" | "deleted" | "modified" | "present" | "missing" }[];

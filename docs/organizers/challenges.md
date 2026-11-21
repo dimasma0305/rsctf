@@ -119,18 +119,32 @@ Activation and rollback across hosted runtimes are still in development.
 
 ## BYOC source history
 
-A team can register files from the source directory it uses for its service. Put
-their relative paths in `.rsctf-files`, one per line. For example, a team can
-list `Dockerfile` and `src/app.py`. Enable the read-only `/rsctf-source` mount
-in the generated Compose file, point its host side at that directory, and run
-`docker compose -f docker-compose.yml up -d rsctf-agent` from the bundle directory.
+Source history starts with the agent when the team runs the downloaded
+`setup.sh` or starts the downloaded Compose file with `docker compose up -d`.
 
-The agent checks the list every minute and hashes files whose metadata changed.
-It reports paths, Git SHA-256 blob IDs, executable permissions, and missing files.
-File contents stay with the team. Each service supports up to 128 registered
-paths, 8 MiB per file and 64 MiB in total. An unreadable file or unsafe link
-makes the sample unavailable. Source history records what the agent observed
-between samples. Changes made and reverted inside one interval can go unseen.
+- For a fresh installation with a reviewed image whose Dockerfile uses
+  `WORKDIR /app`, `/srv/app`, `/opt/app`, `/usr/src/app`, `/var/www/html` or
+  `/rsctf-source`, setup shares that directory with the agent read-only.
+  Docker seeds a volume from the image once per image revision. Edits inside
+  the running service persist across container recreation with the same volume.
+  Allow disk space for one copy of that directory per installed revision.
+- The standalone Compose file, placeholder, other image layouts, and existing
+  services upgraded from a bundle without a source volume use `./service-src`
+  next to the Compose file. Put the service's build context there to observe
+  host-side patches. Edits elsewhere in those containers are outside coverage.
+
+The agent checks common source files and build manifests once per minute.
+It skips hidden paths and dependency directories such as `node_modules` and
+`vendor`. To select exact paths, put a `.rsctf-files` list in the watched
+directory, one relative path per line. An empty list disables observation.
+Existing bundles with an explicit list retain that behavior.
+
+Only paths, Git SHA-256 blob IDs and executable permissions are reported.
+Contents stay with the team. The agent reuses hashes for unchanged files.
+Each scan supports 128 files, 8 MiB per file and 64 MiB total. Discovery visits
+up to 2,048 entries and 16 levels of directories. If a limit is exceeded, the
+agent reports that the source could not be read. A change reverted between
+samples can go unseen.
 
 Teams can open **Source history** on their BYOC challenge during the game.
 Platform admins can open it on the team's service in **A&D Operations**.

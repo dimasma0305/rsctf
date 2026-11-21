@@ -49,8 +49,7 @@ impl Snapshot {
         let report: WireReport = serde_json::from_slice(bytes).ok()?;
         match (report.status.as_str(), report.files) {
             ("observed", Some(files)) => {
-                if files.is_empty()
-                    || files.len() > 128
+                if files.len() > 128
                     || files.iter().any(|(name, id)| {
                         name.len() > 240
                             || name.trim() != name

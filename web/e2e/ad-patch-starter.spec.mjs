@@ -42,7 +42,7 @@ test('team opens private BYOC source history and pages back to the legacy agent'
   expect(reads).toHaveLength(0)
   await open.click()
   const dialog = page.getByRole('dialog', { name: 'Source history' })
-  await expect(dialog.getByText('Registered files observed')).toBeVisible()
+  await expect(dialog.getByText('Watching challenge source')).toBeVisible()
   await dialog.locator('summary').click()
   await expect(dialog.getByText('src/app.py')).toBeVisible()
   await dialog.getByRole('button', { name: 'Older reports' }).click()

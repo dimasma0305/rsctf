@@ -1,4 +1,5 @@
-//! Sample only the source files the team explicitly registered in its read-only mount.
+//! Observe challenge source in a scoped, read-only mount.
+mod discovery;
 use ring::digest::{Context, SHA256};
 use rustix::fs::{openat2, Mode, OFlags, ResolveFlags};
 use serde::Serialize;
@@ -62,6 +63,7 @@ impl From<&Metadata> for Stamp {
 
 #[derive(Default)]
 struct Scanner {
+    auto_discover: bool,
     previous: BTreeMap<String, (Stamp, Identity)>,
     #[cfg(test)]
     hashed_bytes: u64,
@@ -93,7 +95,7 @@ fn reader(pinned: &File) -> io::Result<File> {
     File::open(format!("/proc/self/fd/{}", pinned.as_raw_fd()))
 }
 
-fn paths(text: &str) -> io::Result<BTreeSet<&str>> {
+fn paths(text: &str) -> io::Result<BTreeSet<String>> {
     let mut paths = BTreeSet::new();
     for path in text.lines().filter(|s| !s.is_empty()) {
         if path.len() > 240
@@ -104,7 +106,7 @@ fn paths(text: &str) -> io::Result<BTreeSet<&str>> {
             || path
                 .split('/')
                 .any(|s| matches!(s, "" | "." | "..") || s.eq_ignore_ascii_case(".git"))
-            || !paths.insert(path)
+            || !paths.insert(path.to_owned())
             || paths.len() > MAX_FILES
         {
             return Err(invalid());
@@ -142,34 +144,44 @@ impl Scanner {
             .read(true)
             .custom_flags((OFlags::DIRECTORY | OFlags::NOFOLLOW).bits() as i32)
             .open(path);
-        let registration = root.and_then(|root| {
-            let (file, stamp) = pin(&root, REGISTRATION, MAX_MANIFEST)?;
-            Ok((root, file, stamp))
-        });
-        let (root, manifest, stamp) = match registration {
-            Ok(registered) => registered,
+        let root = match root {
+            Ok(root) => root,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 self.previous.clear();
                 return Ok(Observation::NotRegistered);
             }
             Err(e) => return Err(e),
         };
-        let mut text = String::new();
-        reader(&manifest)?
-            .take(MAX_MANIFEST + 1)
-            .read_to_string(&mut text)?;
-        if text.len() as u64 != stamp.size {
-            return Err(invalid());
-        }
-        let paths = paths(&text)?;
+        let manifest = || match pin(&root, REGISTRATION, MAX_MANIFEST) {
+            Ok(file) => Ok(Some(file)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        };
+        let (paths, registration) = match manifest()? {
+            Some((file, stamp)) => {
+                let mut text = String::new();
+                reader(&file)?
+                    .take(MAX_MANIFEST + 1)
+                    .read_to_string(&mut text)?;
+                if text.len() as u64 != stamp.size {
+                    return Err(invalid());
+                }
+                (paths(&text)?, Some(stamp))
+            }
+            None if self.auto_discover => (discovery::discover(&root)?, None),
+            None => {
+                self.previous.clear();
+                return Ok(Observation::NotRegistered);
+            }
+        };
         let mut files = Files::new();
         let mut next = BTreeMap::new();
         let mut total = 0;
         for path in paths {
-            let (pinned, stamp) = match pin(&root, path, MAX_FILE) {
+            let (pinned, stamp) = match pin(&root, &path, MAX_FILE) {
                 Ok(file) => file,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    files.insert(path.to_owned(), None);
+                    files.insert(path, None);
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -178,7 +190,7 @@ impl Scanner {
             if total > MAX_TOTAL {
                 return Err(invalid());
             }
-            let identity = match self.previous.get(path) {
+            let identity = match self.previous.get(&path) {
                 Some((old, identity)) if *old == stamp => identity.clone(),
                 _ => {
                     let id = hash(&pinned, stamp)?;
@@ -189,16 +201,16 @@ impl Scanner {
                     id
                 }
             };
-            files.insert(path.to_owned(), Some(identity.clone()));
-            next.insert(path.to_owned(), (stamp, identity));
+            files.insert(path.clone(), Some(identity.clone()));
+            next.insert(path, (stamp, identity));
         }
         // An editor may replace the registration while a large file is being
         // hashed. Discard that scan and retry with the new list on the next tick.
-        if pin(&root, REGISTRATION, MAX_MANIFEST)?.1 != stamp {
+        if manifest()?.map(|(_, stamp)| stamp) != registration {
             return Err(invalid());
         }
         self.previous = next;
-        Ok(if files.is_empty() {
+        Ok(if files.is_empty() && registration.is_some() {
             Observation::NotRegistered
         } else {
             Observation::Observed { files }
@@ -274,7 +286,11 @@ pub(crate) async fn send(mut stream: yamux::Stream, reports: &Reports) {
 }
 
 pub(crate) async fn monitor(sender: watch::Sender<CachedReport>) {
-    let mut scanner = Scanner::default();
+    let new_scanner = || Scanner {
+        auto_discover: std::env::var("RSCTF_BYOC_SOURCE_DISCOVERY").as_deref() == Ok("auto"),
+        ..Scanner::default()
+    };
+    let mut scanner = new_scanner();
     let mut previous = Observation::Pending;
     loop {
         let next = tokio::task::spawn_blocking(move || {
@@ -287,7 +303,7 @@ pub(crate) async fn monitor(sender: watch::Sender<CachedReport>) {
         let current;
         (scanner, current) = match next {
             Ok(pair) => pair,
-            Err(_) => (Scanner::default(), Observation::Unavailable),
+            Err(_) => (new_scanner(), Observation::Unavailable),
         };
         if previous != current {
             log_changes(&previous, &current);

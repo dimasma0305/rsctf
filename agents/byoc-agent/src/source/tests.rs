@@ -141,3 +141,55 @@ fn steady_state_reuses_fingerprints_and_only_hashes_changed_files() {
     assert_eq!(scanner.hashed_bytes, 16 * 1024 * 1024 + 7);
     println!("64 registered files, 16 MiB: first scan {cold:?}, mean unchanged scan {warm:?} over 25 samples; 0 payload bytes rehashed until an edit, then 7 bytes.");
 }
+
+#[test]
+fn automatic_source_follows_edits_without_a_manifest_and_respects_overrides() {
+    let root = Root::new();
+    let outside = Root::new();
+    let mut scanner = Scanner {
+        auto_discover: true,
+        ..Default::default()
+    };
+    let read = |scanner: &mut Scanner| match scanner.sample(&root.0).unwrap() {
+        Observation::Observed { files } => files,
+        other => panic!("expected an observed workspace, got {other:?}"),
+    };
+    assert!(read(&mut scanner).is_empty());
+    for directory in ["src", ".git", "node_modules", "secrets"] {
+        fs::create_dir(root.0.join(directory)).unwrap();
+        fs::write(root.0.join(directory).join("main.py"), b"first").unwrap();
+    }
+    fs::write(root.0.join(".env"), b"private").unwrap();
+    fs::write(root.0.join("rsctf-ad.conf"), b"private").unwrap();
+    fs::write(outside.0.join("escaped.py"), b"outside").unwrap();
+    symlink(&outside.0, root.0.join("lib")).unwrap();
+    symlink(outside.0.join("escaped.py"), root.0.join("alias.py")).unwrap();
+    let initial = read(&mut scanner);
+    assert_eq!(initial.keys().collect::<Vec<_>>(), ["src/main.py"]);
+    fs::write(root.0.join("src/main.py"), b"next").unwrap();
+    assert_ne!(initial, read(&mut scanner));
+    fs::remove_file(root.0.join("src/main.py")).unwrap();
+    assert!(read(&mut scanner).is_empty());
+    fs::write(root.0.join("Dockerfile"), b"FROM scratch").unwrap();
+    root.manifest(b"only-this\n");
+    assert_eq!(
+        read(&mut scanner),
+        BTreeMap::from([("only-this".into(), None)])
+    );
+    root.manifest(b"");
+    assert_eq!(scanner.sample(&root.0).unwrap(), Observation::NotRegistered);
+}
+
+#[test]
+fn automatic_source_rejects_partial_snapshots_when_over_budget() {
+    let root = Root::new();
+    let mut scanner = Scanner {
+        auto_discover: true,
+        ..Default::default()
+    };
+    for n in 0..=MAX_FILES {
+        fs::write(root.0.join(format!("{n}.rs")), b"").unwrap();
+    }
+    assert!(scanner.sample(&root.0).is_err());
+    assert!(scanner.previous.is_empty());
+}

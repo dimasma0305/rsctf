@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn private_report_accepts_only_bounded_registered_metadata() {
+    assert!(Snapshot::decode(br#"{"status":"observed","files":{}}"#).is_some());
     let hash = "a".repeat(64);
     let file = serde_json::json!({"blob":hash,"executable":true});
     let sample = |name: &str, id: serde_json::Value| {

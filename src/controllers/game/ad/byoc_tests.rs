@@ -144,6 +144,8 @@ fn generated_tunnel_agents_drop_linux_privilege_by_default() {
             .split("  rsctf-agent:")
             .nth(1)
             .expect("agent service");
+        assert!(agent.contains("      RSCTF_BYOC_SOURCE_DISCOVERY: auto"));
+        assert!(agent.contains("\n      - ./service-src:/rsctf-source:ro"));
         assert!(agent.contains("    read_only: true"));
         assert!(agent.contains("    cap_drop:\n      - ALL"));
         assert!(agent.contains("    security_opt:\n      - no-new-privileges:true"));
@@ -617,7 +619,8 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
             "#!/bin/sh\n\
              case \"$1:$2\" in\n\
                load:) cat >/dev/null; printf '%s\\n' 'Loaded image ID: {LOADED_ID}' ;;\n\
-               image:inspect) [ \"$5\" = '{LOADED_ID}' ] || exit 21; printf '%s\\n' '{LOADED_ID}' ;;\n\
+               image:inspect) if [ \"$4\" = '{{{{.Config.WorkingDir}}}}' ]; then printf '/app\\n'; else [ \"$5\" = '{LOADED_ID}' ] || exit 21; printf '%s\\n' '{LOADED_ID}'; fi ;;\n\
+               container:inspect) [ -n \"$RSCTF_TEST_PRIOR_MOUNTS\" ] || exit 1; printf '%s\\n' \"$RSCTF_TEST_PRIOR_MOUNTS\" ;;\n\
                image:tag) printf '%s\\n%s\\n' \"$3\" \"$4\" > \"$RSCTF_TEST_TAG_LOG\" ;;\n\
                compose:--env-file) [ \"$3:$4:$5:$6:$7\" = '/dev/null:-f:docker-compose.yml:up:-d' ] || exit 23; [ \"$COMPOSE_PROJECT_NAME\" = 'rsctf-byoc-17-23' ] || exit 24; cp docker-compose.yml \"$RSCTF_TEST_COMPOSE_LOG\" ;;\n\
                *) exit 22 ;;\n\
@@ -640,14 +643,18 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
     let mut path = std::ffi::OsString::from(bin.as_os_str());
     path.push(":");
     path.push(std::env::var_os("PATH").unwrap_or_default());
-    let output = Command::new("sh")
-        .args(["-c", &script])
-        .current_dir(&root)
-        .env("PATH", path)
-        .env("RSCTF_TEST_TAG_LOG", &tag_log)
-        .env("RSCTF_TEST_COMPOSE_LOG", &compose_log)
-        .output()
-        .expect("emulate generated installer");
+    let run_setup = |prior: &str| {
+        Command::new("sh")
+            .args(["-c", &script])
+            .current_dir(&root)
+            .env("PATH", &path)
+            .env("RSCTF_TEST_PRIOR_MOUNTS", prior)
+            .env("RSCTF_TEST_TAG_LOG", &tag_log)
+            .env("RSCTF_TEST_COMPOSE_LOG", &compose_log)
+            .output()
+            .expect("emulate generated installer")
+    };
+    let output = run_setup("");
     assert!(
         output.status.success(),
         "installer emulation failed; stdout={} stderr={}",
@@ -670,6 +677,10 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
     assert!(compose.contains(&format!("image: {}", compose_scalar(&reviewed))));
     assert!(compose.contains("    pull_policy: never"));
     assert!(!compose.contains(&compose_scalar(&immutable)));
+    assert!(compose.contains(":/app\n"));
+    assert!(compose.contains("        target: /rsctf-source\n        read_only: true"));
+    assert!(compose.contains("volume: { nocopy: true }"));
+    assert!(output_dir.join("service-src").is_dir());
     for sensitive in ["docker-compose.yml", "rsctf-ad.conf"] {
         let metadata =
             std::fs::symlink_metadata(output_dir.join(sensitive)).expect("read protected output");
@@ -687,6 +698,17 @@ fn successful_setup_tags_docker_loads_exact_result_before_compose_starts() {
             & 0o077,
         0
     );
+
+    assert!(run_setup(r#"[{"Name":"rsctf-byoc-17-23_flag"}]"#)
+        .status
+        .success());
+    let upgraded = std::fs::read_to_string(&compose_log).unwrap();
+    assert!(!upgraded.contains(":/app\n"));
+    assert!(upgraded.contains("      - ./service-src:/rsctf-source:ro"));
+    assert!(run_setup(r#"[{"Name":"rsctf-byoc-17-23_source-abc"}]"#)
+        .status
+        .success());
+    assert_eq!(std::fs::read_to_string(&compose_log).unwrap(), compose);
 
     std::fs::remove_dir_all(root).expect("clean emulation directory");
 }

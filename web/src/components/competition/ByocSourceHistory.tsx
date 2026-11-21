@@ -49,7 +49,7 @@ function History(props: Props & { before?: number, setBefore: (value?: number) =
   if (error) return <Button onClick={() => void mutate().catch(() => {})}>{t('game.byoc.source.retry', 'Retry source history')}</Button>
   if (!data) return <Text role="status">{t('game.byoc.source.loading', 'Loading source history…')}</Text>
   const labels = {
-    observed: t('game.byoc.source.observed', 'Registered files observed'),
+    observed: t('game.byoc.source.observed', 'Watching challenge source'),
     unavailable: t('game.byoc.source.unavailable', 'Source could not be read'),
     notRegistered: t('game.byoc.source.unregistered', 'No source files registered'),
     legacyAgent: t('game.byoc.source.legacy', 'Agent version does not report source'),
@@ -57,7 +57,7 @@ function History(props: Props & { before?: number, setBefore: (value?: number) =
   const kinds = {
     present: t('game.byoc.source.present', 'Present'), missing: t('game.byoc.source.missing', 'Missing'),
     created: t('game.byoc.source.created', 'Created'), deleted: t('game.byoc.source.deleted', 'Deleted'),
-    registered: t('game.byoc.source.registered', 'Registered'), unregistered: t('game.byoc.source.removed', 'Unregistered'),
+    registered: t('game.byoc.source.registered', 'Started tracking'), unregistered: t('game.byoc.source.removed', 'Stopped tracking'),
     modified: t('game.byoc.source.modified', 'Modified'),
   }
   const latest = data.events[0]
@@ -67,7 +67,8 @@ function History(props: Props & { before?: number, setBefore: (value?: number) =
       {Date.now() - latest.lastSeen > 180000 ? t('game.byoc.source.stale', 'Reports are out of date.') + ' ' : ''}
       {t('game.byoc.source.last', 'Last report {{time}}', { time: new Date(latest.lastSeen).toLocaleString() })}
     </Text>}
-    {latest?.status === 'notRegistered' && <Text size="sm">{t('game.byoc.source.setup', 'Mount the service source read-only at /rsctf-source in the agent and list the files to track in .rsctf-files.')}</Text>}
+    {latest?.status === 'observed' && latest.trackedFiles === 0 && <Text size="sm">{t('game.byoc.source.waiting', 'Waiting for source files in the watched directory.')}</Text>}
+    {latest?.status === 'notRegistered' && <Text size="sm">{t('game.byoc.source.setup', 'New BYOC bundles enable source history on startup. If you use .rsctf-files, list the paths you want to track.')}</Text>}
     {data.events.map(event => <div key={event.revision}>
       <Text size="sm" fw={600}>{labels[event.status]}</Text>
       <Text size="xs" c="dimmed">{new Date(event.firstSeen).toLocaleString()}</Text>
