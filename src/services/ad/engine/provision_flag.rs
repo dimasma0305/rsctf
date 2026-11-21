@@ -12,6 +12,25 @@ pub(crate) struct ProvisionFlag {
 }
 
 impl ProvisionFlag {
+    /// A reset is tied to the prepared round. Only a warmup reset can use a
+    /// bootstrap flag; a service joining mid-round has a separate provision path.
+    pub(crate) fn into_reset_flag(
+        self,
+        prepared_round_id: Option<i32>,
+    ) -> AppResult<Option<String>> {
+        if self.round_id != prepared_round_id {
+            return Err(AppError::conflict(
+                "The A&D round changed after reset preparation",
+            ));
+        }
+        if self.round_id.is_some() && self.official.is_none() {
+            return Err(AppError::conflict(
+                "The prepared round flag is missing for this service",
+            ));
+        }
+        Ok(self.official)
+    }
+
     pub(crate) async fn read<'e>(
         executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
         game_id: i32,
@@ -83,6 +102,20 @@ impl ProvisionFlag {
 mod tests {
     use super::*;
 
+    #[test]
+    fn resetting_uses_a_bootstrap_flag_only_during_the_prepared_warmup() {
+        assert_eq!(
+            ProvisionFlag::default().into_reset_flag(None).unwrap(),
+            None
+        );
+        assert!(ProvisionFlag::default().into_reset_flag(Some(7)).is_err());
+        let late = ProvisionFlag {
+            round_id: Some(7),
+            official: None,
+        };
+        assert!(late.into_reset_flag(Some(7)).is_err());
+    }
+
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
     async fn provisioning_cannot_publish_after_the_round_changes() {
@@ -124,6 +157,13 @@ mod tests {
         assert!(matches!(
             warmup.publish(pool, endpoint).await,
             Err(AppError::Conflict(_))
+        ));
+        let missing = ProvisionFlag::read(pool, fixture.game_id, i32::MAX, 900031)
+            .await
+            .unwrap();
+        assert!(matches!(
+            missing.into_reset_flag(Some(900108)),
+            Err(AppError::Conflict(message)) if message.contains("flag is missing")
         ));
         let official = read().await.unwrap();
         assert_eq!(official.round_id, Some(900108));

@@ -3,6 +3,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::utils::error::AppError;
+
 use crate::services::ad::reset_fixture::{docker, docker_state, LiveService};
 use crate::services::ad::scoring::test_fixture::ad_scoring_fixture;
 use crate::services::container::docker_installation_scope;
@@ -159,7 +161,6 @@ async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
         "fixture reset",
     )
     .await;
-    docker(&["image", "rm", &tag]);
     assert_eq!(
         prepared.unwrap().retired_container_id.as_ref(),
         Some(&live.0)
@@ -179,6 +180,32 @@ async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
         .unwrap();
     assert_ne!(claimed.lease_token, reclaimed.lease_token);
     let checkpoint = snapshot().await.unwrap();
+    // The original worker stopped during this round. Its replacement must
+    // discover that the round ended while the old team's files still exist.
+    sqlx::raw_sql(
+        r#"SET LOCAL rsctf.maintenance_writer='on';
+        UPDATE "AdRounds" SET finalized=TRUE WHERE id=900108"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let stale = super::execute_job(&state, &reclaimed).await;
+    docker(&["image", "rm", &tag]);
+    assert!(
+        matches!(stale, Err(AppError::Conflict(ref message)) if message.contains("round changed"))
+    );
+    assert_eq!(snapshot().await.unwrap(), checkpoint);
+    assert_eq!(
+        docker(&["exec", &live.0, "cat", "/tmp/reset-note"]),
+        "team-data"
+    );
+    sqlx::raw_sql(
+        r#"SET LOCAL rsctf.maintenance_writer='on';
+        UPDATE "AdRounds" SET finalized=FALSE WHERE id=900108"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
     let error = super::execute_job(&state, &reclaimed).await.unwrap_err();
     assert!(
         error

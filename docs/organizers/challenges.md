@@ -142,7 +142,10 @@ container stops, automatic repair uses the team's last published image and its
 current round flag. Before removing a stopped Docker container or resuming an
 interrupted reset that still has its old container, RSCTF checks that Docker
 can load the selected image. If staging fails, the old container and its files
-stay on the host. A stopped service's address is withdrawn so it cannot route
+stay on the host. On resuming a reset, RSCTF also checks the prepared round
+and its official flag before removing the old container. If the round has
+ended or its flag is missing, the surviving container keeps its files.
+A stopped service's address is withdrawn so it cannot route
 players to a different workload. Before publishing the replacement endpoint,
 RSCTF records the container ID on the reset job and the service in one
 transaction. If that worker stops, its successor can publish the same container

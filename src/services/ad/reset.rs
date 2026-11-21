@@ -224,56 +224,52 @@ pub async fn execute_job(
             .profile_pull_image(challenge.runtime_profile.as_deref(), &image)
             .await?;
     }
-    let (prepared_round_id, current_flag) = if resuming {
-        let flag = match input.prepared_round_id {
-            Some(round_id) => sqlx::query_scalar::<_, String>(
-                r#"SELECT flag FROM "AdFlags"
-                    WHERE round_id = $1 AND team_service_id = $2"#,
-            )
-            .bind(round_id)
-            .bind(service.id)
-            .fetch_optional(st.pg())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?,
-            None => None,
-        };
-        if recovering_preparation {
-            crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
-            if let Some(retired_backend_id) = retained_backend {
-                crate::services::traffic::destroy_container_after_capture_fence(
-                    st,
-                    retired_backend_id,
-                )
-                .await?;
-            }
-        }
-        (input.prepared_round_id, flag)
+    let prepared = if resuming {
+        None
     } else {
         let reason = if input.player_policy {
             "service reset before checker completion"
         } else {
             "administrator restart before checker completion"
         };
-        let replacement = crate::services::ad_engine::prepare_service_reset(
-            &st.db,
-            job.game_id,
-            service.id,
-            input.expected_backend_id.as_deref(),
-            job.id,
-            claimed.lease_token,
-            &image,
-            reason,
+        Some(
+            crate::services::ad_engine::prepare_service_reset(
+                &st.db,
+                job.game_id,
+                service.id,
+                input.expected_backend_id.as_deref(),
+                job.id,
+                claimed.lease_token,
+                &image,
+                reason,
+            )
+            .await?,
         )
-        .await?;
-        crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
-        if let Some(container_id) = &replacement.retired_container_id {
-            crate::services::traffic::destroy_container_after_capture_fence(st, container_id)
-                .await?;
-        }
-        (replacement.prepared_round_id, replacement.current_flag)
     };
+    if !replacement_checkpointed {
+        crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    }
+    let prepared_round_id = prepared
+        .as_ref()
+        .map_or(input.prepared_round_id, |p| p.prepared_round_id);
+    let current_flag = crate::services::ad_engine::ProvisionFlag::read(
+        st.pg(),
+        job.game_id,
+        part.id,
+        challenge.id,
+    )
+    .await?
+    .into_reset_flag(prepared_round_id)?;
+    if prepared
+        .as_ref()
+        .is_some_and(|p| p.current_flag != current_flag)
+    {
+        return Err(AppError::conflict(
+            "The A&D flag changed after reset preparation",
+        ));
+    }
     let flag = match current_flag {
-        Some(flag) => crate::utils::flag_generator::validate_stored_ad_flag(flag)?,
+        Some(flag) => flag,
         None => {
             let salt = crate::utils::flag_generator::team_hash_salt(&game.private_key);
             let team_hash =
@@ -284,6 +280,14 @@ pub async fn execute_job(
             )?
         }
     };
+    let retired = match &prepared {
+        Some(p) => p.retired_container_id.as_deref(),
+        None if recovering_preparation => retained_backend,
+        None => None,
+    };
+    if let Some(container_id) = retired {
+        crate::services::traffic::destroy_container_after_capture_fence(st, container_id).await?;
+    }
     let mut spec = ContainerSpec::ad_service(
         image.clone(),
         ContainerResourceLimits {
