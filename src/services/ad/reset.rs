@@ -308,8 +308,10 @@ pub async fn execute_job(
     if !replacement_checkpointed {
         if let Some(id) = source {
             preserve_volumes |= st.containers.has_ad_data_volumes(id).await?;
-            if preserve_volumes {
-                st.containers.check_ad_volume_reset(id, &spec).await?;
+            if preserve_volumes || activation {
+                st.containers
+                    .check_ad_volume_reset(id, &spec, preserve_volumes)
+                    .await?;
             }
         } else if preserve_volumes {
             return Err(AppError::conflict(

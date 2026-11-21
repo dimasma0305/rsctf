@@ -45,10 +45,16 @@ impl DockerContainerManager {
     ) -> AppResult<Option<(String, ContainerSpec, bool)>> {
         let docker = self.client()?;
         let Some(old) = self.inspect_scoped_container(docker, previous).await? else {
+            if change == AdVolumeChange::Reset {
+                return Err(AppError::conflict(
+                    "The service volume donor disappeared before reset",
+                ));
+            }
             return Ok(None);
         };
         let mounts = old.mounts.as_deref().unwrap_or_default();
-        if !has_persistent_mount(mounts) {
+        let persistent = has_persistent_mount(mounts);
+        if !persistent && change == AdVolumeChange::RepairStopped {
             return Ok(None);
         }
         let mismatch = || {
@@ -60,12 +66,21 @@ impl DockerContainerManager {
             .inspect_image(&spec.image)
             .await?
             .map_err(|_| mismatch())?;
-        let declared = image
-            .config
-            .as_ref()
-            .and_then(|c| c.volumes.as_ref())
-            .ok_or_else(mismatch)?;
+        let declared = image.config.as_ref().ok_or_else(mismatch)?.volumes.as_ref();
         let config = old.config.as_ref().ok_or_else(mismatch)?;
+        if !persistent {
+            // Docker creates a new anonymous volume for each target VOLUME.
+            // Accepting one here would make rolling back to the starter unsafe.
+            if declared.is_some_and(|v| !v.is_empty())
+                || config.volumes.as_ref().is_some_and(|v| !v.is_empty())
+            {
+                return Err(AppError::conflict(
+                    "Patch and starter must declare the same application volumes",
+                ));
+            }
+            return Ok(None);
+        }
+        let declared = declared.ok_or_else(mismatch)?;
         let old_volumes = config.volumes.as_ref().ok_or_else(mismatch)?;
         let running = match old.state.as_ref().and_then(|s| s.status) {
             Some(ContainerStateStatusEnum::EXITED) => false,

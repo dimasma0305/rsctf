@@ -187,7 +187,12 @@ pub trait ContainerManager: Send + Sync {
     }
 
     /// Verify the target and donor before the reset withdraws the live endpoint.
-    async fn check_ad_volume_reset(&self, _id: &str, _spec: &ContainerSpec) -> AppResult<()> {
+    async fn check_ad_volume_reset(
+        &self,
+        _id: &str,
+        _spec: &ContainerSpec,
+        _preserve_volumes: bool,
+    ) -> AppResult<()> {
         Err(AppError::conflict(
             "This runtime cannot transfer team data volumes",
         ))

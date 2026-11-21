@@ -249,11 +249,18 @@ impl ContainerManager for ProfileRouter {
         Ok(Some(info))
     }
 
-    async fn check_ad_volume_reset(&self, previous: &str, spec: &ContainerSpec) -> AppResult<()> {
+    async fn check_ad_volume_reset(
+        &self,
+        previous: &str,
+        spec: &ContainerSpec,
+        preserve_volumes: bool,
+    ) -> AppResult<()> {
         let (owner, raw) = self.volume_owner(previous, spec.runtime_profile.as_deref())?;
         let mut local = spec.clone();
         local.runtime_profile = None;
-        owner.check_ad_volume_reset(raw, &local).await
+        owner
+            .check_ad_volume_reset(raw, &local, preserve_volumes)
+            .await
     }
 
     async fn create_workload(

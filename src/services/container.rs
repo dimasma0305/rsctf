@@ -489,12 +489,20 @@ impl ContainerManager for DockerContainerManager {
         self.create_with_donor(repair, Some(&id)).await.map(Some)
     }
 
-    async fn check_ad_volume_reset(&self, id: &str, spec: &ContainerSpec) -> AppResult<()> {
-        self.ad_volume_repair_spec(id, spec, AdVolumeChange::Reset)
-            .await?
-            .ok_or_else(|| {
-                AppError::conflict("The service data volume disappeared before reset")
-            })?;
+    async fn check_ad_volume_reset(
+        &self,
+        id: &str,
+        spec: &ContainerSpec,
+        preserve_volumes: bool,
+    ) -> AppResult<()> {
+        let donor = self
+            .ad_volume_repair_spec(id, spec, AdVolumeChange::Reset)
+            .await?;
+        if donor.is_some() != preserve_volumes {
+            return Err(AppError::conflict(
+                "The service data volumes changed before reset",
+            ));
+        }
         Ok(())
     }
 

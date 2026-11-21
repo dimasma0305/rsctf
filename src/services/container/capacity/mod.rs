@@ -312,8 +312,15 @@ impl ContainerManager for CapacityGatedDockerManager {
         self.create_reserved(repair, Some(&id)).await.map(Some)
     }
 
-    async fn check_ad_volume_reset(&self, id: &str, spec: &ContainerSpec) -> AppResult<()> {
-        self.inner.check_ad_volume_reset(id, spec).await
+    async fn check_ad_volume_reset(
+        &self,
+        id: &str,
+        spec: &ContainerSpec,
+        preserve_volumes: bool,
+    ) -> AppResult<()> {
+        self.inner
+            .check_ad_volume_reset(id, spec, preserve_volumes)
+            .await
     }
 
     async fn destroy(&self, id: &str) -> AppResult<()> {
