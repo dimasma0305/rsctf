@@ -395,6 +395,23 @@ impl ContainerManager for WorkerContainerManager {
         true
     }
 
+    async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
+        let handle = parse_worker_handle(id)
+            .ok_or_else(|| AppError::bad_request("invalid worker container identity"))?;
+        let (workload, spec) = self
+            .current_rollout_workload(handle)
+            .await?
+            .ok_or_else(|| {
+                AppError::conflict(
+                    "The worker workload changed before its storage could be checked",
+                )
+            })?;
+        if workload.generation != handle.generation {
+            return Err(AppError::conflict("The worker workload revision changed"));
+        }
+        Ok(spec.team_data_mount.is_some())
+    }
+
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
         require_jeopardy_game_kind(spec.game_kind)?;
         validate_container_spec(&spec)?;
@@ -495,6 +512,12 @@ impl ContainerManager for WorkerContainerManager {
             }
             if workload.desired_state == WorkloadDesiredState::Absent {
                 return Ok(());
+            }
+            // A team handle identifies the revision being retired. A delayed
+            // cleanup must never follow an in-place patch to its new generation.
+            if workload.owner_kind == "ad-team-service" && workload.generation != handle.generation
+            {
+                return Err(AppError::conflict("The worker workload revision changed"));
             }
             match self
                 .store

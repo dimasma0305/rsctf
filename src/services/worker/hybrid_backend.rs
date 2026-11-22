@@ -96,7 +96,7 @@ impl ContainerManager for HybridWorkerContainerManager {
 
     async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
         if Self::is_worker_id(id) {
-            return Ok(false);
+            return self.worker.has_ad_data_volumes(id).await;
         }
         self.local.has_ad_data_volumes(id).await
     }

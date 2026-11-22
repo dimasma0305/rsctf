@@ -1,4 +1,6 @@
 use super::*;
+use crate::services::container::ContainerManager;
+use crate::services::worker::{WorkerContainerManager, WorkerHandle};
 use crate::services::worker_store::{DefinitionUpdateOutcome, UpdateWorkload};
 use rsctf_worker_protocol::{FlagTarget, GameKind, ObservedWorkloadState, ReplicaStatus};
 
@@ -21,6 +23,85 @@ fn ad_request(worker: Uuid, mount: Option<&str>) -> PlaceWorkload {
         .unwrap();
     request.definition.spec = serde_json::to_value(validated).unwrap();
     request
+}
+
+fn next_definition(request: &PlaceWorkload) -> WorkloadDefinition {
+    let mut next = request.definition.clone();
+    next.spec["services"][0]["environment"] = json!({"REVISION":"next"});
+    let validated: ValidatedWorkloadSpec = serde_json::from_value(next.spec.clone()).unwrap();
+    next.spec_hash_sha256 = hex::decode(validated.spec_hash().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    next
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn stale_team_cleanup_preserves_the_next_revision_and_its_mount() {
+    let fixture = AuthorityFixture::create().await;
+    let store = WorkerStore::new(fixture.pool.clone());
+    let backend = WorkerContainerManager::new(store.clone());
+    let authority = PostgresWorkerAuthority::new(store.clone(), Duration::from_secs(30));
+    let initial = fixture.insert_current_session().await;
+    connect(&authority, &initial, true, true).await;
+    for mount in [None, Some("/data")] {
+        let request = ad_request(initial.worker_id, mount);
+        assert!(matches!(
+            store.place_workload(&request).await.unwrap(),
+            PlacementOutcome::Placed(_)
+        ));
+        let previous = WorkerHandle {
+            workload_id: request.id,
+            assignment_id: request.assignment_id,
+            generation: 1,
+        };
+        assert_eq!(
+            backend
+                .has_ad_data_volumes(&previous.encode())
+                .await
+                .unwrap(),
+            mount.is_some()
+        );
+        assert!(matches!(
+            store
+                .update_workload_definition(&UpdateWorkload {
+                    id: request.id,
+                    assignment_id: request.assignment_id,
+                    expected_generation: 1,
+                    definition: next_definition(&request),
+                })
+                .await
+                .unwrap(),
+            DefinitionUpdateOutcome::Updated { generation: 2 }
+        ));
+        let current = WorkerHandle {
+            generation: 2,
+            ..previous
+        }
+        .encode();
+        assert!(matches!(
+            backend.destroy(&previous.encode()).await,
+            Err(crate::utils::error::AppError::Conflict(_))
+        ));
+        assert!(backend
+            .has_ad_data_volumes(&previous.encode())
+            .await
+            .is_err());
+        assert_eq!(
+            backend.has_ad_data_volumes(&current).await.unwrap(),
+            mount.is_some()
+        );
+        backend.destroy(&current).await.unwrap();
+        backend.destroy(&current).await.unwrap();
+        let deleted = store.get_workload(request.id).await.unwrap().unwrap();
+        assert_eq!(deleted.generation, 3);
+        assert_eq!(
+            deleted.desired_state,
+            crate::services::worker_store::WorkloadDesiredState::Absent
+        );
+    }
+    fixture.destroy().await;
 }
 
 async fn connect(
@@ -136,21 +217,13 @@ async fn ad_placement_routes_and_reconnect_preserve_stateful_assignment() {
             Err(other) => panic!("unexpected stream failure: {other}"),
         }
         if !compatible {
-            let mut replacement = mounted.definition.clone();
-            replacement.spec["services"][0]["environment"] = json!({"REVISION":"next"});
-            let next: ValidatedWorkloadSpec =
-                serde_json::from_value(replacement.spec.clone()).unwrap();
-            replacement.spec_hash_sha256 = hex::decode(next.spec_hash().unwrap())
-                .unwrap()
-                .try_into()
-                .unwrap();
             assert_eq!(
                 store
                     .update_workload_definition(&UpdateWorkload {
                         id: mounted.id,
                         assignment_id: mounted.assignment_id,
                         expected_generation: 1,
-                        definition: replacement
+                        definition: next_definition(&mounted),
                     })
                     .await
                     .unwrap(),
