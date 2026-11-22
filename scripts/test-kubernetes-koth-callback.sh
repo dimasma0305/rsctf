@@ -142,6 +142,46 @@ spec:
     count/services: "0"
 YAML
 
+kubectl create --namespace rsctf-retry -f - <<YAML
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: team-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 16Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: team-storage-donor
+  labels:
+    rsctf.managed: "true"
+    rsctf.container: team-storage-donor
+    rsctf.scope: ${retry_scope}
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+  volumes:
+    - name: data
+      persistentVolumeClaim: {claimName: team-data}
+  containers:
+    - name: app
+      image: curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6
+      command: ["sh", "-ec", "cat /proc/sys/kernel/random/uuid > /data/installation && exec sleep 3600"]
+      volumeMounts: [{name: data, mountPath: /data}]
+      readinessProbe:
+        exec: {command: ["sh", "-ec", "test -s /data/installation"]}
+        periodSeconds: 1
+YAML
+kubectl wait -n rsctf-retry --for=condition=Ready pod/team-storage-donor --timeout=180s
+donor_uid="$(kubectl get pod -n rsctf-retry team-storage-donor -o jsonpath='{.metadata.uid}')"
+donor_record="$(kubectl exec -n rsctf-retry team-storage-donor -- cat /data/installation)"
+[[ -n "$donor_uid" && -n "$donor_record" ]]
+
 RSCTF_K8S_NAMESPACE='rsctf-retry' \
 RSCTF_K8S_PUBLIC_ENTRY='192.0.2.10' \
 RSCTF_K8S_NETWORK_POLICY_ENFORCED='true' \
@@ -150,6 +190,9 @@ RSCTF_K8S_AD_INGRESS_CIDRS='192.0.2.0/24' \
 RSCTF_K8S_REJECTION_NAMESPACE='rsctf-rejection' \
 RSCTF_K8S_LIVE_RETRY='1' \
   run_rust_test services::k8s::retry_tests::real_kubernetes_legacy_retry_and_authoritative_rollback
+
+[[ "$(kubectl get pod -n rsctf-retry team-storage-donor -o jsonpath='{.metadata.uid}')" == "$donor_uid" ]]
+[[ "$(kubectl exec -n rsctf-retry team-storage-donor -- cat /data/installation)" == "$donor_record" ]]
 
 kubectl apply -f - <<'YAML'
 apiVersion: v1

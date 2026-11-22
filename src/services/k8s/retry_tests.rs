@@ -12,6 +12,50 @@ use super::*;
 type ResourceStore = Arc<Mutex<HashMap<String, serde_json::Value>>>;
 
 #[tokio::test]
+async fn ad_replacement_checks_actual_pod_storage_before_withdrawing_the_donor() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+    let (manager, resources) = mock_manager(ServiceFailure::None);
+    let created = manager.create(retry_spec(false)).await.unwrap();
+    let id = created.id;
+    let path = format!("/api/v1/namespaces/rsctf-challenges/pods/{id}");
+    assert!(!manager.has_ad_data_volumes(&id).await.unwrap());
+    for (volume, safe) in [
+        (serde_json::json!({"configMap":{"name":"settings"}}), true),
+        (serde_json::json!({"secret":{"secretName":"cert"}}), true),
+        (serde_json::json!({"projected":{"sources":[]}}), true),
+        (serde_json::json!({"downwardAPI":{"items":[]}}), true),
+        (
+            serde_json::json!({"persistentVolumeClaim":{"claimName":"team-a"}}),
+            false,
+        ),
+        (serde_json::json!({"emptyDir":{}}), false),
+        (serde_json::json!({"hostPath":{"path":"/data"}}), false),
+    ] {
+        let mut volume = volume;
+        volume["name"] = serde_json::json!("application");
+        resources.lock().unwrap().get_mut(&path).unwrap()["spec"]["volumes"] =
+            serde_json::json!([volume]);
+        let result = manager.has_ad_data_volumes(&id).await;
+        if safe {
+            assert!(!result.unwrap());
+        } else {
+            assert!(matches!(result, Err(AppError::Conflict(_))));
+        }
+    }
+    let pod = resources.lock().unwrap().get(&path).unwrap().clone();
+    let mut foreign = pod;
+    foreign["spec"]["volumes"] = serde_json::json!([]);
+    foreign["metadata"]["labels"]["rsctf.scope"] = serde_json::json!("other-installation");
+    resources.lock().unwrap().insert(path.clone(), foreign);
+    assert!(matches!(
+        manager.has_ad_data_volumes(&id).await,
+        Err(AppError::Conflict(_))
+    ));
+    assert!(resources.lock().unwrap().remove(&path).is_some());
+    assert!(!manager.has_ad_data_volumes(&id).await.unwrap());
+}
+
+#[tokio::test]
 async fn microvm_launch_pins_runtime_class_and_never_falls_back_on_class_removal() {
     let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let (mut manager, resources) = mock_manager(ServiceFailure::None);
@@ -528,6 +572,10 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
     let manager = KubernetesContainerManager::connect()
         .await
         .expect("connect to the disposable Kubernetes cluster");
+    let storage = manager.has_ad_data_volumes("team-storage-donor").await;
+    assert!(
+        matches!(storage, Err(AppError::Conflict(ref message)) if message.contains("cannot transfer"))
+    );
     let spec = ContainerSpec {
         runtime_profile: None,
         game_kind: rsctf_worker_protocol::GameKind::AttackDefense,
@@ -585,6 +633,7 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         .await
         .expect("adopt the previous release's workload name");
     assert_eq!(adopted.id, legacy_name);
+    assert!(!manager.has_ad_data_volumes(&adopted.id).await.unwrap());
     let mut changed = spec.clone();
     changed.image = format!("registry.example/changed@sha256:{}", "b".repeat(64));
     assert!(matches!(

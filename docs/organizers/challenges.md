@@ -170,6 +170,12 @@ Files in the container's writable layer start fresh. Unverified persistent
 mounts leave the reset pending or rejected with the team's data still attached.
 The replacement reads the current contents of those volumes, so both image
 versions must be able to read the team's stored data format.
+
+On Kubernetes, reset and automatic repair inspect the existing Pod. If it
+has a persistent volume claim, an `emptyDir`, or another application volume,
+RSCTF keeps the Pod so the organizer can recover the team's files. Projected
+configuration such as ConfigMaps and Secrets can be recreated.
+
 For a hosted challenge with player resets enabled, **Restore previous image**
 selects the last different image that actually served that team. The platform
 pins the selection in its rollback job and verifies the current service before

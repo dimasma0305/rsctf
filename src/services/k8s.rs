@@ -365,6 +365,35 @@ impl ContainerManager for KubernetesContainerManager {
         Some(true)
     }
 
+    async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
+        let Some(pod) = self.pods().get_opt(id).await.map_err(|error| {
+            AppError::unavailable(format!("Could not inspect A&D Pod storage: {error}"))
+        })?
+        else {
+            return Ok(false);
+        };
+        if !orphans::owned_identity(&pod.metadata, id, &self.scope) {
+            return Err(AppError::conflict("A&D Pod belongs to a different runtime"));
+        }
+        let spec = pod
+            .spec
+            .ok_or_else(|| AppError::conflict("Missing A&D Pod specification"))?;
+        // A cluster admission controller can add volumes after we submit the
+        // Pod. Only API-projected configuration is safe to recreate. Even
+        // emptyDir can contain team writes until the Pod is deleted.
+        if spec.volumes.unwrap_or_default().iter().any(|volume| {
+            volume.config_map.is_none()
+                && volume.secret.is_none()
+                && volume.projected.is_none()
+                && volume.downward_api.is_none()
+        }) {
+            return Err(AppError::conflict(
+                "The A&D Pod has storage this runtime cannot transfer. Preserve the team's data before replacing the Pod.",
+            ));
+        }
+        Ok(false)
+    }
+
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
         crate::services::container::validate_container_spec(&spec)?;
         self.validate_runtime_class().await?;
