@@ -36,6 +36,7 @@ export const databaseExclusions = Object.freeze([
   'stale_conditional_delete_cannot_destroy_a_real_replacement_runtime',
   'real_docker_large_file_and_fifo_are_bounded_without_exec',
   'services::container::profiles::real_tests::', // Docker/Kata lifecycle gates run in normal CI.
+  'services::k8s::team_claim::tests::real_team_storage_survives_recreation', // The Kind job provisions the CSI driver.
   'live_daemon_response_is_streamed_and_decoded',
   'target_fk_deletes_scoped_tokens',
   'ownership_constraints_are_validated_cascades',
