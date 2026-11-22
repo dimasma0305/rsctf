@@ -78,14 +78,14 @@ async fn remote_round_publication_binds_team_generation_round_and_readback() {
         .unwrap();
     let mut state = runtime_state(&fixture.pool, Arc::new(NoopContainerManager));
     Arc::get_mut(&mut state).unwrap().workers = Some(workers.clone());
-    let previous = Some(RoundCursor {
+    let previous = RoundCursor {
         id: 900108,
         number: 8,
-    });
+    };
     assert!(prepare_round(
         &state.db,
         fixture.game_id,
-        previous,
+        Some(previous),
         Some(false),
         chrono::Utc::now()
     )
@@ -94,7 +94,7 @@ async fn remote_round_publication_binds_team_generation_round_and_readback() {
     let round = prepare_round(
         &state.db,
         fixture.game_id,
-        previous,
+        Some(previous),
         Some(true),
         chrono::Utc::now(),
     )
@@ -127,7 +127,7 @@ async fn remote_round_publication_binds_team_generation_round_and_readback() {
     let mut wrong = first.clone();
     wrong.flag.clone_from(&second.flag);
     assert!(!deliver(&state, round.id, &wrong, targets[0], timeout).await);
-    assert!(!deliver(&state, previous.unwrap().id, first, targets[0], timeout).await);
+    assert!(!deliver(&state, previous.id, first, targets[0], timeout).await);
     assert!(
         !deliver(
             &state,
