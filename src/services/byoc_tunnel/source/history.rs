@@ -72,8 +72,25 @@ pub(crate) async fn history(
     service: Option<i32>,
     page: Page,
 ) -> AppResult<Response> {
+    read(db, service, page, HistoryTable::Byoc).await
+}
+
+pub(crate) async fn ssh_history(
+    db: &mut sqlx::PgConnection,
+    service: i32,
+    page: Page,
+) -> AppResult<Response> {
+    read(db, Some(service), page, HistoryTable::HostedSsh).await
+}
+
+async fn read(
+    db: &mut sqlx::PgConnection,
+    service: Option<i32>,
+    page: Page,
+    table: HistoryTable,
+) -> AppResult<Response> {
     let _permit = crate::utils::upload::reserve_buffered(8 * 1024 * 1024)?;
-    let rows=sqlx::query_as::<_,Row>(r#"SELECT revision,state,files,first_seen,last_seen FROM "AdByocSourceHistory" WHERE service_id=$1 AND revision<$2 ORDER BY revision DESC LIMIT 9"#)
+    let rows=sqlx::query_as::<_,Row>(&format!("SELECT revision,state,files,first_seen,last_seen FROM {} WHERE service_id=$1 AND revision<$2 ORDER BY revision DESC LIMIT 9",table.sql_name()))
         .bind(service).bind(page.before.unwrap_or(i64::MAX)).fetch_all(db).await.map_err(db_error)?;
     let more = rows.len() > 8;
     let mut previous = None;

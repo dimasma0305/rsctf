@@ -91,6 +91,12 @@ export function AdPatchStarterInput({ gameId, challengeId, started, disabled }: 
               : t('admin.ad.patch_starter.no_image', 'An original runtime image was never recorded for this ZIP.')}
         </Text>
       )}
+      {!!data?.sshSources?.length && <details>
+        <summary>{t('admin.ad.patch_starter.ssh_sources', 'Registered SSH source files ({{count}})', { count: data.sshSources.length })}</summary>
+        <ul>{data.sshSources.map(({ sourcePath, containerPath }) => (
+          <li key={sourcePath} style={{ overflowWrap: 'anywhere' }}><code>{sourcePath}</code> → <code>{containerPath}</code></li>
+        ))}</ul>
+      </details>}
       {error ? (
         <Group>
           <Text size="sm" role="alert">{t('admin.ad.patch_starter.load_error', 'Could not load the saved starter.')}</Text>

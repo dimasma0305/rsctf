@@ -1858,7 +1858,7 @@ const AdOps: FC = () => {
                                     </Badge>
                                   </Tooltip>
                                 )}
-                                {cell.selfHosted && user?.role === Role.Admin && <ByocSourceHistory gameId={numId} serviceId={cell.adTeamServiceId} />}
+                                {user?.role === Role.Admin && <ByocSourceHistory hostedSsh={!cell.selfHosted} gameId={numId} serviceId={cell.adTeamServiceId} />}
                                 {cell.containerIp && (
                                   <CopyButton value={`${cell.containerIp}:${cell.containerPort ?? ''}`}>
                                     {({ copied, copy }) => (

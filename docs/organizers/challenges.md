@@ -22,6 +22,32 @@ You can replace the starter before the game begins. RSCTF keeps one ZIP per
 challenge in PostgreSQL, up to 72 MiB, shared across all teams. Saving a starter
 prepares the original source for comparison and leaves running services in place.
 
+To register files that teams edit over SSH, include `.rsctf-ssh.json` at the
+root of the organizer's starter ZIP before kickoff. List each source file
+beside its location in the running container. For example, a Dockerfile that
+copies `src/exercise.py` to `/app/exercise.py` uses this entry:
+
+```json
+[
+  { "sourcePath": "src/exercise.py", "containerPath": "/app/exercise.py" }
+]
+```
+
+After saving, expand **Registered SSH source files** to check the paths.
+Registration is optional and accepts up to 32 regular files from the starter
+ZIP. The list is pinned at kickoff. This setting records the organizer's
+choice of paths. Open **SSH edit history** on the team's challenge or in the
+admin A&D operations table to see which registered files changed. RSCTF samples
+the service when a hosted Docker shell opens, once per minute while it is open,
+and when it closes. Multiple saves between samples appear as one change.
+
+The private history retains 128 observations per team service. Unchanged files
+update the last-seen time. Each observation stores Git content hashes and
+executable bits. An unreadable or oversized file (over 240 KiB) marks the
+sample unavailable. Docker also reports files on a tmpfs mount as unavailable.
+Downloadable source revisions and image rollback use the
+separate ZIP workflow.
+
 When you save a starter before the game, the editor also records the challenge's
 successful build by its immutable image reference. If you upload the ZIP first,
 the editor shows **Build the challenge image** until the first successful build

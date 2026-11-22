@@ -32,6 +32,7 @@ pub struct FileChange {
 
 #[derive(Debug, Clone)]
 pub struct ContainerFile {
+    pub executable: bool,
     pub bytes: Vec<u8>,
     pub size: u64,
     pub truncated: bool,

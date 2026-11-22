@@ -13,14 +13,53 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 fn zip(text: &[u8], compression: zip::CompressionMethod) -> Vec<u8> {
+    archive(&[("Dockerfile", text)], compression)
+}
+
+fn archive(entries: &[(&str, &[u8])], compression: zip::CompressionMethod) -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    zip.start_file(
-        "Dockerfile",
-        zip::write::SimpleFileOptions::default().compression_method(compression),
-    )
-    .unwrap();
-    zip.write_all(text).unwrap();
+    for &(name, bytes) in entries {
+        zip.start_file(
+            name,
+            zip::write::SimpleFileOptions::default().compression_method(compression),
+        )
+        .unwrap();
+        zip.write_all(bytes).unwrap();
+    }
     zip.finish().unwrap().into_inner()
+}
+
+fn ssh_starter(registration: &[u8]) -> Vec<u8> {
+    archive(
+        &[
+            ("Dockerfile", b"FROM scratch\n"),
+            ("src/main.py", b"print(1)\n"),
+            (".rsctf-ssh.json", registration),
+        ],
+        zip::CompressionMethod::Stored,
+    )
+}
+
+#[test]
+fn ssh_registration_requires_unique_starter_files_and_normalized_container_paths() {
+    let mapping = |source: &str, target: &str| serde_json::json!({"sourcePath":source,"containerPath":target});
+    let valid = mapping("src/main.py", "/srv/game/main.py");
+    for entries in [
+        serde_json::json!([mapping("absent.py", "/srv/file")]),
+        serde_json::json!([mapping(".rsctf-ssh.json", "/srv/file")]),
+        serde_json::json!([mapping("src/main.py", "srv/main.py")]),
+        serde_json::json!([mapping("src/main.py", "/srv/../etc/config")]),
+        serde_json::json!([mapping("src/main.py", "/proc/self/environ")]),
+        serde_json::json!([mapping("src/main.py", "/srv//main.py")]),
+        serde_json::json!([valid, mapping("Dockerfile", "/srv/game/main.py")]),
+        serde_json::json!([valid, mapping("src/main.py", "/srv/other.py")]),
+    ] {
+        assert!(
+            Registration::from_zip(&ssh_starter(entries.to_string().as_bytes())).is_err(),
+            "{entries}"
+        );
+    }
+    assert!(Registration::from_zip(&ssh_starter(&vec![b' '; 16 * 1024 + 1])).is_err());
 }
 
 async fn request(
@@ -84,6 +123,10 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
         .await
         .unwrap();
         sqlx::raw_sql(crate::migrations::m0371_ad_patch_starter_images::UP_SQL)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(crate::migrations::m0378_ad_ssh_sources::UP_SQL)
             .execute(&db.pool)
             .await
             .unwrap();
@@ -165,6 +208,28 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
     assert_eq!(legacy.0, StatusCode::OK);
     assert!(legacy.1["runtimeImageRef"].is_null());
     assert_eq!(legacy.1["awaitingImageBuild"], false);
+    assert!(legacy.1.get("sshSources").is_none());
+    let paths =
+        serde_json::json!([{"sourcePath":"src/main.py","containerPath":"/srv/game/main.py"}]);
+    let registered = ssh_starter(paths.to_string().as_bytes());
+    let previous = legacy.1["treeId"].as_str();
+    let saved = request(
+        &router,
+        "PUT",
+        15,
+        Some(&user),
+        registered.clone(),
+        previous,
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
+    assert_eq!(saved.1["sshSources"], paths);
+    assert_eq!(
+        request(&router, "GET", 15, Some(&user), vec![], None)
+            .await
+            .1["sshSources"],
+        paths
+    );
     sqlx::query(r#"DELETE FROM "GameChallenges" WHERE id=15"#)
         .execute(&db.pool)
         .await
@@ -230,9 +295,11 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
     );
     assert!(!protected(first_image.clone()).await.unwrap());
     assert!(protected(next_image.clone()).await.unwrap());
+    let r1 = Registration::from_zip(&v1).unwrap();
+    let r2 = Registration::from_zip(&v2).unwrap();
     let (a, b) = tokio::join!(
-        register(&db.pool, &user, 1, 14, &v1, &tree, None),
-        register(&db.pool, &user, 1, 14, &v2, &second, None),
+        register(&db.pool, &user, 1, 14, &v1, &r1, None),
+        register(&db.pool, &user, 1, 14, &v2, &r2, None),
     );
     assert!(matches!(
         (&a, &b),
@@ -242,6 +309,14 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
         .execute(&db.pool)
         .await
         .unwrap();
+    sqlx::query(r#"INSERT INTO "GameChallenges"(id,game_id,"Type",ad_self_hosted,deletion_pending) VALUES(16,1,4,false,false)"#)
+        .execute(&db.pool).await.unwrap();
+    assert_eq!(
+        request(&router, "PUT", 16, Some(&user), registered, None)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
     sqlx::query(r#"UPDATE "GameChallenges" SET build_status=1,build_image_digest=$1 WHERE id=14"#)
         .bind(&first_image)
         .execute(&db.pool)

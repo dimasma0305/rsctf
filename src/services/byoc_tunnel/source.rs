@@ -10,7 +10,7 @@ use std::time::Duration;
 const WIRE_LIMIT: usize = 64 * 1024;
 const KEEP: i64 = 128;
 mod history;
-pub(crate) use history::{history, Page};
+pub(crate) use history::{history, ssh_history, Page};
 #[cfg(test)]
 mod tests;
 static COLLECTORS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
@@ -36,6 +36,21 @@ async fn poll_reports<F: std::future::Future<Output = ()>>(
 struct FileIdentity {
     blob: String,
     executable: bool,
+}
+
+#[derive(Clone, Copy)]
+enum HistoryTable {
+    Byoc,
+    HostedSsh,
+}
+
+impl HistoryTable {
+    fn sql_name(self) -> &'static str {
+        match self {
+            Self::Byoc => r#""AdByocSourceHistory""#,
+            Self::HostedSsh => r#""AdHostedSshSourceHistory""#,
+        }
+    }
 }
 type Files = BTreeMap<String, Option<FileIdentity>>;
 
@@ -203,25 +218,74 @@ fn db_error(e: sqlx::Error) -> AppError {
 
 // The caller holds the same per-service transaction lock as tunnel replacement.
 async fn store(db: &mut sqlx::PgConnection, service: i32, snapshot: &Snapshot) -> AppResult<()> {
+    store_in(db, service, snapshot, HistoryTable::Byoc).await
+}
+
+pub(crate) async fn store_ssh(
+    db: &mut sqlx::PgConnection,
+    service: i32,
+    observed: Option<BTreeMap<String, Option<(String, bool)>>>,
+) -> AppResult<()> {
+    let snapshot = match observed {
+        Some(files) => Snapshot {
+            state: "observed",
+            files: files
+                .into_iter()
+                .map(|(path, entry)| {
+                    (
+                        path,
+                        entry.map(|(blob, executable)| FileIdentity { blob, executable }),
+                    )
+                })
+                .collect(),
+        },
+        None => Snapshot::empty("unavailable"),
+    };
+    store_in(db, service, &snapshot, HistoryTable::HostedSsh).await
+}
+
+async fn store_in(
+    db: &mut sqlx::PgConnection,
+    service: i32,
+    snapshot: &Snapshot,
+    table: HistoryTable,
+) -> AppResult<()> {
+    let table = table.sql_name();
     let files =
         serde_json::to_string(&snapshot.files).map_err(|e| AppError::internal(e.to_string()))?;
-    let previous = sqlx::query_as::<_,(i64,bool)>(r#"SELECT revision, state=$2 AND files=$3 FROM "AdByocSourceHistory" WHERE service_id=$1 ORDER BY revision DESC LIMIT 1"#)
+    let previous = sqlx::query_as::<_,(i64,bool)>(&format!("SELECT revision, state=$2 AND files=$3 FROM {table} WHERE service_id=$1 ORDER BY revision DESC LIMIT 1"))
         .bind(service).bind(snapshot.state).bind(&files).fetch_optional(&mut *db).await.map_err(db_error)?;
     if let Some((revision, true)) = previous {
-        sqlx::query(r#"UPDATE "AdByocSourceHistory" SET last_seen=clock_timestamp() WHERE service_id=$1 AND revision=$2"#)
-            .bind(service).bind(revision).execute(db).await.map_err(db_error)?;
+        sqlx::query(&format!(
+            "UPDATE {table} SET last_seen=clock_timestamp() WHERE service_id=$1 AND revision=$2"
+        ))
+        .bind(service)
+        .bind(revision)
+        .execute(db)
+        .await
+        .map_err(db_error)?;
         return Ok(());
     }
     let revision = previous.map_or(1, |(n, _)| n + 1);
-    sqlx::query(r#"INSERT INTO "AdByocSourceHistory"(service_id,revision,state,files) VALUES ($1,$2,$3,$4)"#)
-        .bind(service).bind(revision).bind(snapshot.state).bind(files).execute(&mut *db).await.map_err(db_error)?;
+    sqlx::query(&format!(
+        "INSERT INTO {table}(service_id,revision,state,files) VALUES ($1,$2,$3,$4)"
+    ))
+    .bind(service)
+    .bind(revision)
+    .bind(snapshot.state)
+    .bind(files)
+    .execute(&mut *db)
+    .await
+    .map_err(db_error)?;
     if revision > KEEP {
-        sqlx::query(r#"DELETE FROM "AdByocSourceHistory" WHERE service_id=$1 AND revision <= $2"#)
-            .bind(service)
-            .bind(revision - KEEP)
-            .execute(db)
-            .await
-            .map_err(db_error)?;
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE service_id=$1 AND revision <= $2"
+        ))
+        .bind(service)
+        .bind(revision - KEEP)
+        .execute(db)
+        .await
+        .map_err(db_error)?;
     }
     Ok(())
 }

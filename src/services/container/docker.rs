@@ -92,6 +92,12 @@ pub(super) fn parse_file_archive(archive: &[u8], limit: usize) -> AppResult<Cont
             return Err(AppError::bad_request("Only regular files can be previewed"));
         }
         let size = entry.size();
+        let executable = entry
+            .header()
+            .mode()
+            .map_err(|_| AppError::bad_request("Invalid container file mode"))?
+            & 0o111
+            != 0;
         let take = u64::try_from(limit).unwrap_or(u64::MAX).min(size);
         let mut bytes = Vec::with_capacity(usize::try_from(take).unwrap_or(limit));
         entry.take(take).read_to_end(&mut bytes).map_err(|error| {
@@ -103,6 +109,7 @@ pub(super) fn parse_file_archive(archive: &[u8], limit: usize) -> AppResult<Cont
             ));
         }
         return Ok(ContainerFile {
+            executable,
             truncated: size > bytes.len() as u64,
             size,
             bytes,
@@ -128,6 +135,26 @@ impl DockerContainerManager {
             .inspect_scoped_container(docker, id)
             .await?
             .ok_or_else(|| AppError::not_found(format!("container not found: {id}")))?;
+        // The archive API can expose the underlying directory of a tmpfs
+        // mount, even while a running process sees a completely different file.
+        let requested = std::path::Path::new(path);
+        let tmpfs = info
+            .host_config
+            .as_ref()
+            .and_then(|config| config.tmpfs.as_ref());
+        if tmpfs.is_some_and(|mounts| mounts.keys().any(|mount| requested.starts_with(mount)))
+            || info.mounts.iter().flatten().any(|mount| {
+                mount.typ == Some(bollard::models::MountPointTypeEnum::TMPFS)
+                    && mount
+                        .destination
+                        .as_deref()
+                        .is_some_and(|mount| requested.starts_with(mount))
+            })
+        {
+            return Err(AppError::bad_request(
+                "Docker cannot inspect live files on a tmpfs mount",
+            ));
+        }
         let canonical_id = info
             .id
             .as_deref()

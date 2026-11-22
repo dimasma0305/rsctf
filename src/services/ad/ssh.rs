@@ -469,11 +469,13 @@ fn new_bastion_handler(
         exec_input: None,
         shell_slot: None,
         byoc_exec: None,
+        observer_guard: None,
         source_ip,
     }
 }
 
 struct BastionHandler {
+    observer_guard: Option<tokio_util::sync::DropGuard>,
     st: SharedState,
     /// Bounds even unauthenticated TCP/auth work before any database lookup.
     #[allow(dead_code)]
@@ -562,14 +564,14 @@ impl BastionHandler {
             .await
             .map_err(|_| "database error")?
             .ok_or("no A&D service for that challenge on your team")?;
-        let container = svc
+        let backend = svc
             .container_id
             .filter(|c| !c.is_empty())
             .ok_or("your container isn't running yet — ask the operator to Ensure containers")?;
         let container = self
             .st
             .containers
-            .resolve_interactive_exec_target(&container)
+            .resolve_interactive_exec_target(&backend)
             .await
             .map_err(|error| {
                 tracing::warn!(participation = pid, challenge = cid, %error,
@@ -625,7 +627,20 @@ impl BastionHandler {
 
         // Pump container output → SSH channel until the shell exits.
         let st = self.st.clone();
+        let observer = crate::services::ad::patches::ssh_observer::Session {
+            st: st.clone(),
+            game: challenge.game_id,
+            participation: pid,
+            challenge: cid,
+            service: svc.id,
+            backend,
+        };
+        let closed = tokio_util::sync::CancellationToken::new();
+        self.observer_guard = Some(closed.clone().drop_guard());
+        let pump_guard = closed.clone().drop_guard();
+        tokio::spawn(observer.watch(closed));
         tokio::spawn(async move {
+            let _pump_guard = pump_guard;
             let revoked = wait_for_ssh_revocation(st, key_id, pid, cid, fingerprint);
             tokio::pin!(revoked);
             let lifetime = tokio::time::sleep(SSH_SESSION_TIMEOUT);
@@ -896,6 +911,9 @@ impl Handler for BastionHandler {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod source_session_tests;
 
 #[cfg(test)]
 mod tests {

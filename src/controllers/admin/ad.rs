@@ -115,14 +115,21 @@ pub fn router() -> Router<SharedState> {
             "/api/ad/admin/{game_id}/Services/{service_id}/ByocSource",
             crate::middlewares::rate_limiter::limited(
                 crate::middlewares::rate_limiter::Policy::Query,
-                get(byoc_source_history),
+                get(source_history::<true>),
+            ),
+        )
+        .route(
+            "/api/ad/admin/{game_id}/Services/{service_id}/SshSource",
+            crate::middlewares::rate_limiter::limited(
+                crate::middlewares::rate_limiter::Policy::Query,
+                get(source_history::<false>),
             ),
         )
         // Retained for client compatibility; the handler rejects manual writes.
         .route("/api/ad/admin/{game_id}/Round/Advance", post(advance_round))
 }
 
-async fn byoc_source_history(
+async fn source_history<const BYOC: bool>(
     State(st): State<SharedState>,
     AdminUser(_): AdminUser,
     Path((game, service)): Path<(i32, i32)>,
@@ -133,10 +140,14 @@ async fn byoc_source_history(
         .begin()
         .await
         .map_err(|e| AppError::internal(e.to_string()))?;
-    let service=sqlx::query_scalar::<_,i32>(r#"SELECT s.id FROM "AdTeamServices" s JOIN "GameChallenges" c ON c.id=s.challenge_id AND c.game_id=s.game_id WHERE s.game_id=$1 AND s.id=$2 AND c.ad_self_hosted AND c."Type"=$3 FOR SHARE OF s,c"#)
-        .bind(game).bind(service).bind(ChallengeType::AttackDefense as i16).fetch_optional(&mut *db).await
-        .map_err(|e| AppError::internal(e.to_string()))?.ok_or_else(||AppError::not_found("Self-hosted service not found"))?;
-    crate::services::byoc_tunnel::source::history(&mut db, Some(service), page).await
+    let service=sqlx::query_scalar::<_,i32>(r#"SELECT s.id FROM "AdTeamServices" s JOIN "GameChallenges" c ON c.id=s.challenge_id AND c.game_id=s.game_id WHERE s.game_id=$1 AND s.id=$2 AND c.ad_self_hosted=$4 AND c."Type"=$3 FOR SHARE OF s,c"#)
+        .bind(game).bind(service).bind(ChallengeType::AttackDefense as i16).bind(BYOC).fetch_optional(&mut *db).await
+        .map_err(|e| AppError::internal(e.to_string()))?.ok_or_else(||AppError::not_found("Team service not found"))?;
+    if BYOC {
+        crate::services::byoc_tunnel::source::history(&mut db, Some(service), page).await
+    } else {
+        crate::services::byoc_tunnel::source::ssh_history(&mut db, service, page).await
+    }
 }
 
 // ---------------------------------------------------------------------------

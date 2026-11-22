@@ -57,7 +57,7 @@ pub(crate) struct ForensicsPermit<'a> {
     // Transaction-scoped advisory locks make the operation limit effective
     // across web replicas. Cancellation drops the transaction and releases all
     // locks instead of leaving a session-level lease in the pool.
-    _distributed: Transaction<'a, Postgres>,
+    pub(crate) transaction: Transaction<'a, Postgres>,
 }
 
 struct ForensicsAdmission {
@@ -143,7 +143,7 @@ impl ForensicsAdmission {
             if acquired == weight {
                 return Ok(ForensicsPermit {
                     _local: local,
-                    _distributed: tx,
+                    transaction: tx,
                 });
             }
         }

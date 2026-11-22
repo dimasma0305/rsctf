@@ -4578,6 +4578,7 @@ export interface ChallengeAuditFile {
 
 /** Stored ZIP for the original source of a hosted A&D challenge. */
 export interface RegisteredAdPatchStarter extends AdPatchStarter {
+  sshSources?: { sourcePath: string; containerPath: string }[];
   runtimeImageRef: string | null;
   awaitingImageBuild: boolean;
 }
@@ -5757,6 +5758,10 @@ export class Api<
     byocSourceHistory: (game: number, service: number, before?: number, params: RequestParams = {}) =>
       this.request<ByocSourceHistoryPage, RequestResponse>({
         path: `/api/ad/admin/${game}/Services/${service}/ByocSource`, method: "GET", query: { before }, format: "json", ...params,
+      }),
+    sshSourceHistory: (game: number, service: number, before?: number, params: RequestParams = {}) =>
+      this.request<ByocSourceHistoryPage, RequestResponse>({
+        path: `/api/ad/admin/${game}/Services/${service}/SshSource`, method: "GET", query: { before }, format: "json", ...params,
       }),
     /**
      * @description Get admin dashboard stats
@@ -11952,6 +11957,10 @@ export class Api<
     byocSourceHistory: (game: number, challenge: number, before?: number, params: RequestParams = {}) =>
       this.request<ByocSourceHistoryPage, RequestResponse>({
         path: `/api/Game/${game}/Ad/Byoc/Source/${challenge}`, method: "GET", query: { before }, format: "json", ...params,
+      }),
+    sshSourceHistory: (game: number, challenge: number, before?: number, params: RequestParams = {}) =>
+      this.request<ByocSourceHistoryPage, RequestResponse>({
+        path: `/api/game/${game}/ad/challenges/${challenge}/ssh-source`, method: "GET", query: { before }, format: "json", ...params,
       }),
 
     saveAdPatchRevision: (id: number, challenge: number, service: number, zip: File, expected: number, params: RequestParams = {}) =>

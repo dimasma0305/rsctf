@@ -661,6 +661,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
       {/* SSH-jump reaches the RSCTF-hosted container; for self-hosted (BYOC) there
           is none (the team's service is on their own machine), so hide the hint. */}
       {!isSelfHosted && renderSshHint()}
+      {active && !isSelfHosted && !stateFailure && <ByocSourceHistory hostedSsh gameId={gameId} challengeId={challengeId} />}
 
       {active && !isSelfHosted && !stateFailure && (
         <AdPatchPreviewPanel key={`${gameId}:${service.adTeamServiceId}`} gameId={gameId} challengeId={challengeId} serviceId={service.adTeamServiceId} />

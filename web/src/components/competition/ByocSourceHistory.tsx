@@ -8,13 +8,13 @@ import { useChallengePolling } from '@Hooks/useChallengePolling'
 import { useUser } from '@Hooks/useUser'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 
-type Props = { gameId: number } & ({ challengeId: number } | { serviceId: number })
+type Props = { gameId: number; hostedSsh?: boolean } & ({ challengeId: number } | { serviceId: number })
 const privateCache = { provider: () => new Map() }
 
 export function ByocSourceHistory(props: Props) {
   const { t } = useTranslation()
   const [opened, setOpened] = useState(false)
-  const title = t('game.byoc.source.history', 'Source history')
+  const title = props.hostedSsh ? t('game.ad.ssh.history', 'SSH edit history') : t('game.byoc.source.history', 'Source history')
   return <>
     <Button size="compact-xs" variant="subtle" onClick={() => setOpened(true)}>{title}</Button>
     {opened && <AccessibleModal opened onClose={() => setOpened(false)} title={title} size="lg">
@@ -39,17 +39,18 @@ function History(props: Props & { before?: number, setBefore: (value?: number) =
   const { gameId } = props
   const admin = 'serviceId' in props
   const id = admin ? props.serviceId : props.challengeId
+  const method = props.hostedSsh ? 'sshSourceHistory' : 'byocSourceHistory'
   const request = useCallback(async (signal: AbortSignal) => assertJsonResponse(await (
-    admin ? api.admin.byocSourceHistory(gameId, id, before, { signal }) : api.game.byocSourceHistory(gameId, id, before, { signal })
-  )), [admin, gameId, id, before])
+    admin ? api.admin[method](gameId, id, before, { signal }) : api.game[method](gameId, id, before, { signal })
+  )), [admin, method, gameId, id, before])
   const { data, error, mutate } = useChallengePolling({
-    key: `byoc-source:${admin ? 'admin' : 'team'}:${gameId}:${id}:${before ?? 'latest'}`,
+    key: `${method}:${admin ? 'admin' : 'team'}:${gameId}:${id}:${before ?? 'latest'}`,
     active: true, refreshInterval: before ? 0 : 60000, request,
   })
   if (error) return <Button onClick={() => void mutate().catch(() => {})}>{t('game.byoc.source.retry', 'Retry source history')}</Button>
   if (!data) return <Text role="status">{t('game.byoc.source.loading', 'Loading source history…')}</Text>
   const labels = {
-    observed: t('game.byoc.source.observed', 'Watching challenge source'),
+    observed: props.hostedSsh ? t('game.ad.ssh.observed', 'SSH source observed') : t('game.byoc.source.observed', 'Watching challenge source'),
     unavailable: t('game.byoc.source.unavailable', 'Source could not be read'),
     notRegistered: t('game.byoc.source.unregistered', 'No source files registered'),
     legacyAgent: t('game.byoc.source.legacy', 'Agent version does not report source'),
@@ -62,9 +63,11 @@ function History(props: Props & { before?: number, setBefore: (value?: number) =
   }
   const latest = data.events[0]
   return <Stack gap="sm">
-    {!latest && <Text>{t('game.byoc.source.empty', 'No agent reports received yet.')}</Text>}
+    {!latest && <Text>{props.hostedSsh
+      ? t('game.ad.ssh.empty', 'No SSH edits have been recorded. Source files must be registered before kickoff.')
+      : t('game.byoc.source.empty', 'No agent reports received yet.')}</Text>}
     {!before && latest && <Text size="sm" role="status">
-      {Date.now() - latest.lastSeen > 180000 ? t('game.byoc.source.stale', 'Reports are out of date.') + ' ' : ''}
+      {!props.hostedSsh && Date.now() - latest.lastSeen > 180000 ? t('game.byoc.source.stale', 'Reports are out of date.') + ' ' : ''}
       {t('game.byoc.source.last', 'Last report {{time}}', { time: new Date(latest.lastSeen).toLocaleString() })}
     </Text>}
     {latest?.status === 'observed' && latest.trackedFiles === 0 && <Text size="sm">{t('game.byoc.source.waiting', 'Waiting for source files in the watched directory.')}</Text>}

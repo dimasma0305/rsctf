@@ -24,6 +24,20 @@ pub(super) mod activity;
 pub(super) mod builds;
 pub(super) mod revisions;
 pub(super) mod source;
+pub(super) async fn ssh_history(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((game, challenge)): Path<(i32, i32)>,
+    axum::extract::Query(page): axum::extract::Query<crate::services::byoc_tunnel::source::Page>,
+) -> AppResult<Response> {
+    let who = caller(&st, &user, game).await?;
+    let (mut roster, service, _) = lock_source(st.pg(), who, challenge).await?;
+    let response =
+        crate::services::byoc_tunnel::source::ssh_history(roster.transaction_mut(), service, page)
+            .await?;
+    roster.release().await?;
+    Ok(response)
+}
 #[cfg(test)]
 mod tests;
 

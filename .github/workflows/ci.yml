@@ -1142,6 +1142,7 @@ jobs:
             starter_http_scope_replay_and_concurrent_registration
             finalized_rounds_release_only_opted_in_challenge_counts
             player_download_preview_and_revocation_during_upload
+            hosted_and_byoc_source_history_is_team_private
             buildkit_accepts_checked_out_patch_revision
             buildkit_failed_patch_candidate_preserves_active_image_and_service
             pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_outputs
@@ -1152,6 +1153,8 @@ jobs:
             player_reset_restores_the_registered_starter_after_an_organizer_rebuild
             query_preserves_fresh_tail_and_filters_services
             native_round_publication_records_each_managed_service_acknowledgement
+            registered_edits_keep_separate_private_histories_in_docker
+            hosted_team_ssh_disconnect_records_only_its_registered_source
             provisioning_cannot_publish_after_the_round_changes
             reconcile_preserves_uncertain_backends_and_reclaimed_reset
             docker_repair_preserves_each_teams_anonymous_data_volume

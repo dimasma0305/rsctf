@@ -102,6 +102,45 @@ test('team opens private BYOC source history and pages back to the legacy agent'
   expect(reads).toContain('2')
 })
 
+test('team can see sampled SSH edits to the same registered file', async ({ page }) => {
+  const game = createCompetitionFixture()
+  game.challenges[0].type = 'AttackDefense'
+  Object.assign(game.responses['/api/game/901/challenges/9001'], { type: 'AttackDefense', adSelfHosted: false })
+  const reads = []
+  await page.route('**/*', async route => {
+    const req = route.request()
+    const url = new URL(req.url())
+    if (url.origin !== server.origin) return route.abort()
+    const path = url.pathname.toLowerCase()
+    if (!path.startsWith('/api/') && !path.startsWith('/hub')) return route.continue()
+    if (path === '/api/game/901/ad/state') return route.fulfill({ json: {
+      flagsReady: true, currentRound: 1, services: [{ adTeamServiceId: 91, challengeId: 9001,
+        selfHosted: false, containerIp: '127.0.0.1', containerPort: 8080 }],
+    } })
+    if (path === '/api/game/901/ad/challenges/9001/ssh-source') {
+      reads.push(path)
+      const at = Date.now() - 3600000
+      return route.fulfill({ json: { before: null, events: [2, 1].map(revision => ({
+        revision, firstSeen: at + revision, lastSeen: at + revision, status: 'observed',
+        changes: [{ path: 'exercise.py', kind: revision === 1 ? 'present' : 'modified' }],
+      })) } })
+    }
+    const result = game.fixture(url.pathname + url.search, req.method())
+    return route.fulfill({ status: result.status ?? 200, json: result.body ?? null })
+  })
+  await page.goto(server.origin + '/games/901/challenges#9001')
+  const open = page.getByRole('button', { name: 'SSH edit history', exact: true })
+  await expect(open).toBeVisible()
+  expect(reads).toHaveLength(0)
+  await open.click()
+  const dialog = page.getByRole('dialog', { name: 'SSH edit history' })
+  await expect(dialog.getByText('SSH source observed')).toHaveCount(2)
+  await dialog.locator('summary').first().click()
+  await expect(dialog.getByText('Modified', { exact: false }).first()).toBeVisible()
+  await expect(dialog.getByText('Reports are out of date.', { exact: false })).toHaveCount(0)
+  expect(reads).toHaveLength(1)
+})
+
 test('admin opens the selected team’s BYOC reports from the operations table', async ({ page }) => {
   const reads = []
   await page.route('**/*', async route => {
@@ -161,6 +200,9 @@ test('organizer registers a starter and sees the original after the event starts
   const challenge = '/api/edit/games/19/challenges/74'
   const zip = new JSZip()
   zip.file('Dockerfile', 'FROM scratch\n')
+  const sshSources = [{ sourcePath: 'src/game.py', containerPath: '/app/game.py' }]
+  zip.file('src/game.py', 'print(1)\n')
+  zip.file('.rsctf-ssh.json', JSON.stringify(sshSources))
   const bytes = await zip.generateAsync({ type: 'nodebuffer' })
   const file = { name: 'starter.zip', mimeType: 'application/zip', buffer: bytes }
   let starter = null
@@ -182,7 +224,7 @@ test('organizer registers a starter and sees the original after the event starts
     if (url.pathname === challenge + '/patch-starter') {
       if (req.method() === 'PUT') {
         writes.push({ expected: req.headers()['x-rsctf-expected-tree'], type: req.headers()['content-type'], body: req.postDataBuffer() })
-        starter = { treeId: 'a'.repeat(64), archiveBytes: bytes.length, runtimeImageRef: null, awaitingImageBuild: true }
+        starter = { treeId: 'a'.repeat(64), archiveBytes: bytes.length, runtimeImageRef: null, awaitingImageBuild: true, sshSources }
       }
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(starter) })
     }
@@ -197,6 +239,8 @@ test('organizer registers a starter and sees the original after the event starts
   expect(writes).toHaveLength(0)
   await panel.getByRole('button', { name: 'Save starter ZIP' }).click()
   await expect(panel.getByRole('status')).toContainText('aaaaaaaaaaaa')
+  await panel.getByText('Registered SSH source files (1)').click()
+  await expect(panel.getByText('/app/game.py', { exact: true })).toBeVisible()
   await input.setInputFiles(file)
   await panel.getByRole('button', { name: 'Replace starter ZIP' }).click()
   await expect.poll(() => writes.length).toBe(2)

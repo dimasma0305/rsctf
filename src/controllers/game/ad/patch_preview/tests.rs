@@ -149,6 +149,19 @@ async fn finalized_rounds_release_only_opted_in_challenge_counts() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn hosted_and_byoc_source_history_is_team_private() {
+    let Fixture {
+        db, state, user, ..
+    } = fixture().await;
+    let router = super::super::web_router()
+        .merge(crate::controllers::admin::ad::router())
+        .with_state(state);
+    byoc_history::check(&db.pool, &router, &user).await;
+    db.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn player_download_preview_and_revocation_during_upload() {
     let Fixture {
         db,
@@ -157,10 +170,7 @@ async fn player_download_preview_and_revocation_during_upload() {
         source,
     } = fixture().await;
     let original = PatchManifest::from_zip(&source).unwrap().tree_id();
-    let router = super::super::web_router()
-        .merge(crate::controllers::admin::ad::router())
-        .with_state(state);
-    byoc_history::check(&db.pool, &router, &user).await;
+    let router = super::super::web_router().with_state(state);
     let get = |challenge, resource| {
         request(
             &router,

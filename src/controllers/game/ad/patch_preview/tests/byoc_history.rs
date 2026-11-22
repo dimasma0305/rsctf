@@ -57,4 +57,60 @@ pub(super) async fn check(pool: &PgPool, router: &Router, user: &CurrentUser) {
         .status(),
         StatusCode::NOT_FOUND
     );
+    sqlx::raw_sql(crate::migrations::m0378_ad_ssh_sources::UP_SQL)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"INSERT INTO "AdTeamServices" VALUES (25,1,6,10);
+      INSERT INTO "AdHostedSshSourceHistory"(service_id,revision,state,files) VALUES
+      (20,1,'observed','{"own.py":null}'), (25,1,'observed','{"peer.py":null}')"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let team_route = "/api/game/1/ad/challenges/10/ssh-source";
+    assert_eq!(
+        get(router, team_route, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = get(router, team_route, Some(user)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    let bytes = to_bytes(response.into_body(), 8192).await.unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text.contains("own.py") && !text.contains("peer.py"));
+    let peer = "/api/ad/admin/1/Services/25/SshSource";
+    assert_eq!(
+        get(router, peer, Some(user)).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let response = get(router, peer, Some(&admin)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 8192).await.unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text.contains("peer.py") && !text.contains("own.py"));
+    assert_eq!(
+        get(
+            router,
+            "/api/ad/admin/2/Services/25/SshSource",
+            Some(&admin)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(
+            router,
+            "/api/ad/admin/1/Services/21/SshSource",
+            Some(&admin)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
 }

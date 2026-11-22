@@ -132,6 +132,7 @@ let fixtureGame = null;
 let authorizationGameId = null;
 let fixtureChallenge = null;
 let fixtureAdChallenge = null;
+let fixtureHostedChallenge = null;
 let fixtureContainerChallenge = null;
 let fixtureParticipation = null;
 let fixtureUsers = null;
@@ -1896,6 +1897,13 @@ async function eventFixture() {
     "flag{admin_ad_placeholder}",
   ]);
   await A.setChallenge(fixtureGame, fixtureAdChallenge, { isEnabled: true });
+  fixtureHostedChallenge = await A.createChallenge(fixtureGame, {
+    title: `admin-hosted-history-${tag}`,
+    category: "Misc",
+    type: "AttackDefense",
+  });
+  await A.addFlags(fixtureGame, fixtureHostedChallenge, ["flag{admin_hosted_placeholder}"]);
+  await A.setChallenge(fixtureGame, fixtureHostedChallenge, { adSelfHosted: false, isEnabled: true });
 
   const solve = await A.api(
     "POST",
@@ -3250,6 +3258,15 @@ async function adAdminLifecycle() {
     `/api/ad/admin/${fixtureGame}/Services/${serviceId}/ByocSource`,
   );
   requireCondition(Array.isArray(sourceHistory.json?.events), "missing BYOC source history");
+  const hosted = await call("POST", "/api/ad/admin/{game_id}/Services", `/api/ad/admin/${fixtureGame}/Services`, {
+    body: { participationId: fixtureParticipation, challengeId: fixtureHostedChallenge, host: "admin-hosted.invalid", port: 31337 },
+  });
+  const hostedHistory = await call(
+    "GET",
+    "/api/ad/admin/{game_id}/Services/{service_id}/SshSource",
+    `/api/ad/admin/${fixtureGame}/Services/${hosted.json.adTeamServiceId}/SshSource`,
+  );
+  requireCondition(hostedHistory.json?.events?.length === 0, "new hosted service already has SSH edit history");
   await adminApi("POST", `/api/ad/admin/${fixtureGame}/Services`, {
     body: {
       participationId: fixtureParticipation,
