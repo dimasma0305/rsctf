@@ -731,17 +731,17 @@ impl WorkerRuntime for DockerRuntime {
                 "workload spec hash does not match payload",
             ));
         }
-        let replica_count = command
+        let expected_replicas = command
             .spec
             .services
             .iter()
             .map(|service| usize::from(service.replicas))
             .sum::<usize>();
-        if replica_count > self.max_network_endpoints {
+        if expected_replicas > self.max_network_endpoints {
             return Err(RuntimeError::new(
                 CommandErrorCode::InvalidSpec,
                 format!(
-                    "workload has {replica_count} replicas but this Docker address pool supports at most {} containers per isolated network",
+                    "workload has {expected_replicas} replicas but this Docker address pool supports at most {} containers per isolated network",
                     self.max_network_endpoints
                 ),
             ));
@@ -782,6 +782,9 @@ impl WorkerRuntime for DockerRuntime {
             }
         }
 
+        let previous_network = self
+            .assigned_network(command.fence, &command.spec_hash)
+            .await?;
         let replacing_generation = existing.iter().any(|container| {
             label(container.labels.as_ref(), LABEL_GENERATION)
                 .and_then(|value| value.parse::<u64>().ok())
@@ -799,22 +802,15 @@ impl WorkerRuntime for DockerRuntime {
         self.flag_delivery.register(&command).await?;
         if replacing_generation {
             self.remove_containers(&existing).await?;
-            self.remove_assignment_networks(command.fence.assignment_id)
-                .await?;
         }
         let network = self
             .ensure_network(
                 command.fence,
                 &command.spec_hash,
                 command.spec.platform.operating_system,
+                previous_network,
             )
             .await?;
-        let expected_replicas = command
-            .spec
-            .services
-            .iter()
-            .map(|service| usize::from(service.replicas))
-            .sum::<usize>();
         let mut current = self.existing_containers(command.fence.workload_id).await?;
         for service in &command.spec.services {
             let image = image_string(&service.image);
@@ -900,14 +896,18 @@ impl WorkerRuntime for DockerRuntime {
             }
             matching.push(container);
         }
+        let network = self
+            .assigned_network(command.fence, &command.spec_hash)
+            .await?;
         if record_tombstone {
             self.tombstones
                 .record(command.fence, &command.spec_hash)
                 .await?;
         }
         self.remove_containers(&matching).await?;
-        self.remove_assignment_networks(command.fence.assignment_id)
-            .await?;
+        if let Some((network, _)) = network {
+            self.remove_network(&network).await?;
+        }
         self.invalidate_workload_endpoints(command.fence.workload_id);
         self.flag_delivery.forget(command.fence).await?;
         Ok(WorkloadStatus {

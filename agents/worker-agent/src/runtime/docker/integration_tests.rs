@@ -289,6 +289,7 @@ async fn exercise_lifecycle(
         }),
     })?;
     let spec_hash = spec.spec_hash()?;
+    check_interrupted_network_replacement(&runtime, &spec, worker_id).await?;
     let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
     loop {
         let status = runtime
@@ -496,6 +497,99 @@ async fn exercise_lifecycle(
     require(
         runtime.inventory().await?.is_empty(),
         "workload remained in inventory after teardown",
+    )
+}
+
+async fn check_interrupted_network_replacement(
+    runtime: &DockerRuntime,
+    spec: &ValidatedWorkloadSpec,
+    worker_id: Uuid,
+) -> TestResult {
+    use rsctf_worker_protocol::CommandErrorCode;
+
+    let fence = WorkloadFence {
+        workload_id: Uuid::new_v4(),
+        assignment_id: Uuid::new_v4(),
+        generation: 3,
+    };
+    let hash = spec.spec_hash()?;
+    let network = super::network_name(fence);
+    // Simulate a crash after network creation but before the first container.
+    let original = runtime
+        .docker
+        .create_network(bollard::network::CreateNetworkOptions {
+            name: network.clone(),
+            driver: "bridge".to_owned(),
+            internal: true,
+            labels: super::base_labels(worker_id, fence, &hash),
+            ..Default::default()
+        })
+        .await?
+        .id;
+    let absent = EnsureAbsent {
+        command_id: Uuid::new_v4(),
+        fence,
+        spec_hash: hash.clone(),
+        timeout_ms: 30_000,
+    };
+    let mut stale = absent.clone();
+    stale.fence.generation -= 1;
+    let mut conflict = absent.clone();
+    conflict.spec_hash = "0".repeat(64);
+    let mut collision = absent.clone();
+    collision.fence.workload_id = Uuid::from_u128(fence.workload_id.as_u128() ^ 1);
+    for (command, expected) in [
+        (stale, CommandErrorCode::StaleGeneration),
+        (conflict, CommandErrorCode::SpecConflict),
+        (collision, CommandErrorCode::StaleAssignment),
+    ] {
+        require(
+            runtime
+                .ensure_absent(command)
+                .await
+                .err()
+                .is_some_and(|e| e.code == expected),
+            "late teardown accepted an incompatible orphan network",
+        )?;
+    }
+    let inspect = || {
+        runtime.docker.inspect_network(
+            &network,
+            None::<bollard::network::InspectNetworkOptions<String>>,
+        )
+    };
+    require(
+        inspect().await?.id == original,
+        "rejected teardown changed the orphan network",
+    )?;
+    runtime.tombstones.reject_stale_present(fence).await?;
+    let next = WorkloadFence {
+        generation: fence.generation + 1,
+        ..fence
+    };
+    runtime
+        .ensure_workload(EnsureWorkload {
+            command_id: Uuid::new_v4(),
+            fence: next,
+            spec_hash: hash.clone(),
+            timeout_ms: 30_000,
+            spec: spec.clone(),
+        })
+        .await?;
+    let replacement = inspect().await?;
+    require(
+        replacement.id.is_some() && replacement.id != original,
+        "successor reused the obsolete network",
+    )?;
+    runtime
+        .ensure_absent(EnsureAbsent {
+            fence: next,
+            ..absent
+        })
+        .await?;
+    require(
+        inspect().await.is_err_and(|e| is_not_found(&e)),
+        "accepted teardown left the successor network behind",
     )
 }
 
