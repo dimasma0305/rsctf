@@ -64,6 +64,7 @@ mod profiles;
 mod readiness;
 #[cfg(test)]
 mod retry_tests;
+mod storage;
 #[cfg(test)]
 use launch::sanitize_image;
 use launch::{
@@ -375,22 +376,7 @@ impl ContainerManager for KubernetesContainerManager {
         if !orphans::owned_identity(&pod.metadata, id, &self.scope) {
             return Err(AppError::conflict("A&D Pod belongs to a different runtime"));
         }
-        let spec = pod
-            .spec
-            .ok_or_else(|| AppError::conflict("Missing A&D Pod specification"))?;
-        // A cluster admission controller can add volumes after we submit the
-        // Pod. Only API-projected configuration is safe to recreate. Even
-        // emptyDir can contain team writes until the Pod is deleted.
-        if spec.volumes.unwrap_or_default().iter().any(|volume| {
-            volume.config_map.is_none()
-                && volume.secret.is_none()
-                && volume.projected.is_none()
-                && volume.downward_api.is_none()
-        }) {
-            return Err(AppError::conflict(
-                "The A&D Pod has storage this runtime cannot transfer. Preserve the team's data before replacing the Pod.",
-            ));
-        }
+        storage::check_replacement(&pod)?;
         Ok(false)
     }
 
@@ -422,6 +408,7 @@ impl ContainerManager for KubernetesContainerManager {
             .map(|identity| (identity.name, identity.uid))
             .unwrap_or((default_name, default_uid));
         let ad_internal = spec.ad_network.is_some();
+        let team_service = spec.game_kind == rsctf_worker_protocol::GameKind::AttackDefense;
         let isolated = spec.network_mode == crate::utils::enums::NetworkMode::Isolated;
         let internal_only = ad_internal || spec.proxy_only;
         let ad_config = if ad_internal {
@@ -648,12 +635,24 @@ impl ContainerManager for KubernetesContainerManager {
                 // would expose that ambiguous Pod, so retain the policy for
                 // adoption or fail-closed orphan reconciliation.
                 if !is_ambiguous_create_error(&e) {
+                    // Admission can reject the request before returning an
+                    // AlreadyExists response for an earlier attempt's Pod.
+                    if team_service {
+                        self.has_ad_data_volumes(&name).await?;
+                    }
                     self.rollback_operation_workload(&name).await;
                 }
                 return Err(AppError::internal(format!("failed to create pod: {e}")));
             }
         };
+        let check_cleanup = || {
+            if team_service {
+                storage::check_replacement(&created_pod)?;
+            }
+            Ok::<(), AppError>(())
+        };
         let Some(pod_uid) = created_pod.metadata.uid.clone() else {
+            check_cleanup()?;
             self.rollback_new_pod(&pods, &name, policy_created, adopted)
                 .await;
             return Err(AppError::internal(
@@ -665,6 +664,7 @@ impl ContainerManager for KubernetesContainerManager {
             .as_ref()
             .and_then(|status| status.phase.as_deref());
         if phase_liveness(pod_phase) == ContainerLiveness::Stopped {
+            check_cleanup()?;
             if adopted {
                 orphans::rollback_owned(
                     pods.clone(),
@@ -744,6 +744,7 @@ impl ContainerManager for KubernetesContainerManager {
                             (service, true)
                         }
                         Ok(_) => {
+                            check_cleanup()?;
                             self.rollback_new_pod(&pods, &name, policy_created, adopted)
                                 .await;
                             return Err(AppError::conflict(
@@ -751,6 +752,7 @@ impl ContainerManager for KubernetesContainerManager {
                             ));
                         }
                         Err(error) => {
+                            check_cleanup()?;
                             self.rollback_new_pod(&pods, &name, policy_created, adopted)
                                 .await;
                             return Err(error);
@@ -762,8 +764,10 @@ impl ContainerManager for KubernetesContainerManager {
                     // write. Retain stable-operation resources so the exact
                     // retry can adopt them without changing the Pod owner UID.
                     if spec.operation_id.is_some() && !is_ambiguous_create_error(&e) {
+                        check_cleanup()?;
                         self.rollback_operation_workload(&name).await;
                     } else if spec.operation_id.is_none() {
+                        check_cleanup()?;
                         self.rollback_new_pod(&pods, &name, policy_created, adopted)
                             .await;
                     }
@@ -780,6 +784,7 @@ impl ContainerManager for KubernetesContainerManager {
                 .and_then(|s| s.cluster_ip.clone())
                 .filter(|ip| !ip.is_empty() && ip != "None");
             let Some(cluster_ip) = cluster_ip else {
+                check_cleanup()?;
                 if !service_adopted {
                     let _ = services.delete(&name, &DeleteParams::default()).await;
                 }
@@ -791,6 +796,7 @@ impl ContainerManager for KubernetesContainerManager {
             };
             if let Some(service_cidr) = ad_config.as_ref().map(|config| &config.service_cidr) {
                 if !service_ip_is_routed(&cluster_ip, service_cidr) {
+                    check_cleanup()?;
                     if !service_adopted {
                         let _ = services.delete(&name, &DeleteParams::default()).await;
                     }

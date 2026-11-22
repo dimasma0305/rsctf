@@ -203,6 +203,9 @@ On Kubernetes, reset and automatic repair inspect the existing Pod. If it
 has a persistent volume claim, an `emptyDir`, or another application volume,
 RSCTF keeps the Pod so the organizer can recover the team's files. Projected
 configuration such as ConfigMaps and Secrets can be recreated.
+If retrying a launch finds a stopped Pod with application storage, the error
+names the claim or volume. The same check runs if Kubernetes rejects the
+Service for that Pod. You can inspect the storage before retrying.
 
 For a hosted challenge with player resets enabled, **Restore previous image**
 selects the last different image that actually served that team. The platform

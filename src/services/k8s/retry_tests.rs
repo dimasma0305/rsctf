@@ -555,6 +555,57 @@ async fn terminal_adopted_pod_is_removed_before_the_operation_key_rotates() {
 }
 
 #[tokio::test]
+async fn ad_retry_retains_team_storage_on_terminal_pod_or_service_rejection() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+    let _environment = RestoreEnv::set(&[
+        ("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12"),
+        ("RSCTF_K8S_AD_INGRESS_CIDRS", "192.0.2.0/24"),
+    ]);
+    let mut spec = retry_spec(false);
+    spec.game_kind = rsctf_worker_protocol::GameKind::AttackDefense;
+    spec.ad_network = Some("rsctf-ad".into());
+    let (manager, resources) = mock_manager(ServiceFailure::None);
+    let id = manager.create(spec.clone()).await.unwrap().id;
+    let path = format!("/api/v1/namespaces/rsctf-challenges/pods/{id}");
+    {
+        let mut store = resources.lock().unwrap();
+        let pod = store.get_mut(&path).unwrap();
+        pod["spec"]["volumes"] = serde_json::json!([{
+            "name": "application", "persistentVolumeClaim": {"claimName": "team-records"}
+        }]);
+        pod["status"]["phase"] = serde_json::json!("Failed");
+    }
+    let snapshot = resources.lock().unwrap().clone();
+    let error = manager.create(spec.clone()).await.unwrap_err();
+    assert!(matches!(error, AppError::Conflict(reason) if reason.contains("team-records")));
+    assert_eq!(*resources.lock().unwrap(), snapshot);
+
+    // The Pod survived an interrupted creation, but the Service did not.
+    // A quota rejection on retry must preserve the Pod and its isolation.
+    let (rejected, resources) = mock_manager(ServiceFailure::ApiOnce);
+    let mut running = snapshot;
+    running
+        .remove(&format!(
+            "/api/v1/namespaces/rsctf-challenges/services/{id}"
+        ))
+        .unwrap();
+    running.get_mut(&path).unwrap()["status"]["phase"] = serde_json::json!("Running");
+    *resources.lock().unwrap() = running.clone();
+    let error = rejected.create(spec.clone()).await.unwrap_err();
+    assert!(matches!(error, AppError::Conflict(reason) if reason.contains("team-records")));
+    assert_eq!(*resources.lock().unwrap(), running);
+
+    let (stateless, resources) = mock_manager(ServiceFailure::ApiOnce);
+    running.get_mut(&path).unwrap()["spec"]["volumes"] = serde_json::json!([]);
+    *resources.lock().unwrap() = running;
+    assert!(matches!(
+        stateless.create(spec).await,
+        Err(AppError::Internal(_))
+    ));
+    assert!(resources.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 #[ignore = "requires a disposable Kubernetes cluster prepared by the live regression script"]
 async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
     const IMAGE: &str = "registry.k8s.io/e2e-test-images/agnhost@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85";
@@ -647,6 +698,9 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
 
     let mut cidr_bound = spec.clone();
     cidr_bound.operation_id = Some("rsctf-live-service-cidr".to_string());
+    cidr_bound.image =
+        "curlimages/curl@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6"
+            .into();
     let current = manager
         .create(cidr_bound.clone())
         .await
@@ -657,14 +711,56 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         Err(AppError::Conflict(_))
     ));
     std::env::set_var("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12");
-    // Pod status is owned by kubelet; a test-side status patch can be reverted
-    // immediately and cannot deterministically represent a terminal workload.
-    // The mock regression above covers terminal adoption. Keep this live test
-    // focused on API-server adoption, configuration fencing, and exact cleanup.
+    let labels = manager
+        .pods()
+        .get(&current.id)
+        .await
+        .unwrap()
+        .metadata
+        .labels
+        .unwrap();
     manager
         .destroy(&current.id)
         .await
         .expect("clean up the Service-CIDR retry fixture");
+    // Model a persisted, admission-mutated Pod left from an interrupted
+    // launch. Let the actual kubelet run the command to completion.
+    let completed: Pod = serde_json::from_value(serde_json::json!({
+        "metadata": {"name": current.id, "labels": labels},
+        "spec": {
+            "restartPolicy": "Never", "automountServiceAccountToken": false,
+            "volumes": [{"name":"data","persistentVolumeClaim":{"claimName":"team-data","readOnly":true}}],
+            "containers": [{
+                "name":current.id, "image":cidr_bound.image, "securityContext":challenge_security_context(),
+                "command":["sh","-ec","test -s /data/installation"],
+                "volumeMounts":[{"name":"data","mountPath":"/data","readOnly":true}]
+            }]
+        }
+    })).unwrap();
+    let completed = manager
+        .pods()
+        .create(&PostParams::default(), &completed)
+        .await
+        .unwrap();
+    let expected_uid = completed.metadata.uid.unwrap();
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let pod = manager.pods().get(&current.id).await.unwrap();
+            match pod.status.and_then(|s| s.phase).as_deref() {
+                Some("Succeeded") => break,
+                Some("Failed") => panic!("fixture could not read the team data"),
+                _ => tokio::time::sleep(Duration::from_millis(500)).await,
+            }
+        }
+    })
+    .await
+    .expect("kubelet did not finish the storage fixture");
+    let error = manager.create(cidr_bound).await.unwrap_err();
+    assert!(matches!(error, AppError::Conflict(reason) if reason.contains("team-data")));
+    assert_eq!(
+        manager.pods().get(&current.id).await.unwrap().metadata.uid,
+        Some(expected_uid)
+    );
 
     let quota_namespace = std::env::var("RSCTF_K8S_REJECTION_NAMESPACE")
         .expect("rejection namespace configured by the live script");
