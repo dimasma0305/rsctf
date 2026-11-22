@@ -339,6 +339,13 @@ export const EDIT_OPERATIONS = Object.freeze([
       responseKind: "challenge",
     },
   ),
+  operation("edit_patch_activity_get", "GET", "/api/edit/games/{id}/ad/patch-activity", {
+    params: { id: "adGameId" },
+  }),
+  operation("edit_patch_activity_set", "PUT", "/api/edit/games/{id}/ad/patch-activity", {
+    params: { id: "adGameId" },
+    mutation: true,
+  }),
   operation("edit_patch_starter_get", "GET", "/api/edit/games/{id}/challenges/{cId}/patch-starter", {
     params: { id: "adGameId", cId: "adChallengeId" },
   }),

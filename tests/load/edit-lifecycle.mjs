@@ -1051,6 +1051,20 @@ async function prepareAdFixture() {
   identities.managerGameIds.add(context.adGameId);
   A.seedCohort(context.adGameId, 3);
 
+  const policy = await call("edit_patch_activity_get", { jwt: identities.managerJwt });
+  requireCondition(
+    policy.model.editable && policy.model.enabled === false && policy.model.revision === 0,
+    "new A&D fixture should have private, editable patch activity",
+  );
+  const updatedPolicy = await call("edit_patch_activity_set", {
+    jwt: identities.managerJwt,
+    body: { enabled: true, expectedRevision: policy.model.revision },
+  });
+  requireCondition(
+    updatedPolicy.model.enabled === true && updatedPolicy.model.revision === 1,
+    "organizer could not enable delayed patch activity",
+  );
+
   const paused = await call("edit_ad_scoring_pause", {
     jwt: identities.managerJwt,
   });
