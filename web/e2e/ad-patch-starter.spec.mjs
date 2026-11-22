@@ -31,10 +31,11 @@ test('closed hosted challenge shows paged file statuses on a narrow screen', asy
   })
   await page.goto(server.origin + '/games/901/challenges#9001')
   await expect(page.getByText('Owls · Revision 3')).toBeVisible()
-  await page.getByRole('button', { name: 'Next page' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByRole('button', { name: 'Next page' }).click()
   await expect(page.getByText('Finches · Revision 1')).toBeVisible()
   await expect(page.getByRole('listitem').filter({ hasText: 'src/example.py · Deleted' })).toBeVisible()
-  await page.getByRole('button', { name: 'First page' }).click()
+  await dialog.getByRole('button', { name: 'First page' }).click()
   await expect(page.getByText('Owls · Revision 3')).toBeVisible()
 })
 
