@@ -97,7 +97,7 @@ async fn player_kubernetes_patch_activation_and_rollbacks() {
     let first = state.containers.create(spec).await.unwrap();
     let installed = state
         .containers
-        .exec(&first.id, vec!["cat".into(), "/data/flag".into()])
+        .exec(&first.id, vec!["cat".into(), "/flag".into()])
         .await
         .unwrap();
     assert_eq!(installed.trim(), flag);
@@ -248,7 +248,7 @@ async fn player_kubernetes_patch_activation_and_rollbacks() {
                 [
                     "sh",
                     "-ec",
-                    "printenv RSCTF_TEST_REVISION && cat /data/installation /data/flag",
+                    "printenv RSCTF_TEST_REVISION && cat /data/installation /flag",
                 ]
                 .map(String::from)
                 .to_vec(),

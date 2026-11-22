@@ -55,11 +55,10 @@ test_team_player_api() (
   node="$cluster_name-control-plane"
   registry_id=''
   postgres_id=''
-  source_id=''
   tags=()
   references=()
   cleanup_team_api() {
-    for container in "$source_id" "$postgres_id" "$registry_id"; do
+    for container in "$postgres_id" "$registry_id"; do
       if [[ -n "$container" ]]; then docker rm -fv "$container" >/dev/null; fi
     done
     if (( ${#tags[@]} )); then docker image rm "${tags[@]}" >/dev/null; fi
@@ -78,13 +77,20 @@ test_team_player_api() (
   capabilities = ["pull", "resolve"]
 TOML
   repo="$registry/rsctf/service-900041"
-  docker pull "$starter"
-  source_id="$(docker create "$starter")"
+  mkdir "$local_assets/player-image"
+  touch "$local_assets/player-image/flag"
+  cat >"$local_assets/player-image/Dockerfile" <<'DOCKERFILE'
+ARG BASE
+FROM ${BASE}
+COPY --chown=10000:10000 --chmod=0600 flag /flag
+ARG REVISION
+ENV RSCTF_TEST_REVISION=${REVISION}
+DOCKERFILE
   for revision in starter previous patched; do
     tag="$repo:$revision"
-    docker commit --change 'ENV RSCTF_FLAG_FILE=/data/flag' \
-      --change "ENV RSCTF_TEST_REVISION=$revision" "$source_id" "$tag" >/dev/null
+    docker build --build-arg "BASE=$starter" --build-arg "REVISION=$revision" -t "$tag" "$local_assets/player-image"
     tags+=("$tag")
+    docker run --rm --network none --user 10000:10000 --entrypoint sh "$tag" -ec 'test -f /flag && test -w /flag'
     docker push "$tag"
     # Docker's local repoDigests array can contain sibling tags' digests. Read
     # the manifest currently published at this tag from the fixture registry.
@@ -94,6 +100,7 @@ TOML
     [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
     references+=("$repo@$digest")
   done
+  docker exec "$node" crictl pull "${references[1]}"
   config="$(docker image inspect --format '{{.Id}}' "$repo:patched")"
   password="$(openssl rand -hex 24)"
   postgres_id="$(docker run -d -p 127.0.0.1::5432 -e "POSTGRES_PASSWORD=$password" postgres:18-alpine)"
@@ -109,5 +116,10 @@ TOML
     RSCTF_K8S_TEST_STARTER="${references[0]}" RSCTF_K8S_TEST_REVISION_ONE="${references[1]}" \
     RSCTF_K8S_TEST_REVISION_TWO="${references[2]}" RSCTF_K8S_TEST_CANDIDATE_CONFIG="$config" \
     RSCTF_K8S_READINESS_PROBE=true RSCTF_K8S_LIVE_STORAGE=1 \
-    run_rust_test controllers::game::ad::player_reset_tests::kubernetes::player_kubernetes_patch_activation_and_rollbacks
+    run_rust_test controllers::game::ad::player_reset_tests::kubernetes::player_kubernetes_patch_activation_and_rollbacks || {
+      kubectl get pods,pvc -n rsctf-retry
+      kubectl get events -n rsctf-retry --field-selector type=Warning \
+        -o 'custom-columns=OBJECT:.involvedObject.name,REASON:.reason,COUNT:.count'
+      return 1
+    }
 )
