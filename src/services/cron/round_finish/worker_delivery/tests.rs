@@ -9,6 +9,10 @@ use crate::services::{
 use rsctf_worker_protocol::{CommandResult, ControlEnvelope, ControlMessage};
 use std::{collections::HashSet, sync::Arc};
 
+#[cfg(target_os = "linux")]
+#[path = "tests/live_agent.rs"]
+mod live_agent;
+
 async fn register_targets(pool: &PgPool, context: &SessionContext) -> Vec<WorkerHandle> {
     sqlx::raw_sql(
         r#"UPDATE "Games" SET end_time_utc=now()+interval '1 hour', ad_tick_seconds=120;

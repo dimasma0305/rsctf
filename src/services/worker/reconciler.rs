@@ -8,7 +8,7 @@ use rsctf_worker_protocol::{
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use super::{WorkerError, WorkerService};
+use super::{WorkerError, WorkerRegistry, WorkerResult, WorkerService};
 use crate::services::worker_store::{DueWorkload, WorkerStore, WorkloadDesiredState};
 
 const RECONCILE_INTERVAL: Duration = Duration::from_millis(500);
@@ -170,7 +170,7 @@ async fn reconcile_batch(store: &WorkerStore, service: &WorkerService) {
                 continue;
             }
         };
-        let dispatch = service.send(due_workload.workload.worker_id, message).await;
+        let dispatch = dispatch_selected(service.registry(), &due_workload, message).await;
         if should_defer_retry(&dispatch) {
             if let Err(error) = store
                 .mark_dispatched(
@@ -199,6 +199,18 @@ async fn reconcile_batch(store: &WorkerStore, service: &WorkerService) {
             Ok(_) => unreachable!("successful dispatches defer retry"),
         }
     }
+}
+
+async fn dispatch_selected(
+    registry: &WorkerRegistry,
+    due: &DueWorkload,
+    message: ControlMessage,
+) -> WorkerResult<Uuid> {
+    let selected = due.session.fence;
+    let fence = selected.try_into()?;
+    registry
+        .send_to_session(selected.worker_id, &fence, message)
+        .await
 }
 
 fn should_defer_retry(dispatch: &Result<Uuid, WorkerError>) -> bool {
@@ -251,6 +263,7 @@ mod tests {
     };
 
     fn due(desired_state: WorkloadDesiredState) -> DueWorkload {
+        let worker_id = Uuid::new_v4();
         let workload_id = Uuid::new_v4();
         let assignment_id = Uuid::new_v4();
         let spec = json!({
@@ -272,7 +285,7 @@ mod tests {
                 id: workload_id,
                 owner_kind: "container".into(),
                 owner_key: "test".into(),
-                worker_id: Uuid::new_v4(),
+                worker_id,
                 assignment_id,
                 generation: 1,
                 definition: WorkloadDefinition {
@@ -299,7 +312,7 @@ mod tests {
             },
             session: WorkerSession {
                 fence: SessionFence {
-                    worker_id: Uuid::new_v4(),
+                    worker_id,
                     session_id: Uuid::new_v4(),
                     session_epoch: 1,
                 },
@@ -324,6 +337,48 @@ mod tests {
             present_command.workload_fence(),
             absent_command.workload_fence()
         );
+    }
+
+    #[tokio::test]
+    async fn replaced_session_receives_neither_old_create_nor_old_cleanup() {
+        let registry = WorkerRegistry::new(Default::default());
+        let mut row = due(WorkloadDesiredState::Present);
+        let selected = row.session.fence;
+        let _first = registry
+            .register_control(
+                selected.worker_id,
+                Uuid::new_v4(),
+                selected.try_into().unwrap(),
+            )
+            .await
+            .unwrap();
+        let replacement = SessionFence {
+            session_id: Uuid::new_v4(),
+            session_epoch: 2,
+            ..selected
+        };
+        let mut second = registry
+            .register_control(
+                selected.worker_id,
+                Uuid::new_v4(),
+                replacement.try_into().unwrap(),
+            )
+            .await
+            .unwrap();
+        for state in [WorkloadDesiredState::Present, WorkloadDesiredState::Absent] {
+            row.workload.desired_state = state;
+            let result = dispatch_selected(&registry, &row, command_for(&row).unwrap()).await;
+            assert!(matches!(result, Err(WorkerError::StaleSession)));
+        }
+        assert!(second.outbound.try_recv().is_err());
+        row.session.fence = replacement;
+        let id = dispatch_selected(&registry, &row, command_for(&row).unwrap())
+            .await
+            .unwrap();
+        let sent = second.outbound.try_recv().unwrap();
+        assert_eq!(id, sent.message_id);
+        assert_eq!(sent.session_epoch, 2);
+        assert!(matches!(sent.body, ControlMessage::EnsureAbsent(_)));
     }
 
     #[test]

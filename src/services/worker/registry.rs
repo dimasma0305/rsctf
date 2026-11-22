@@ -152,6 +152,19 @@ impl WorkerRegistry {
     }
 
     pub async fn send(&self, worker_id: Uuid, body: ControlMessage) -> WorkerResult<Uuid> {
+        let context = self
+            .session_context(worker_id)
+            .await
+            .ok_or(WorkerError::Offline)?;
+        self.send_to_session(worker_id, &context.fence, body).await
+    }
+
+    pub(crate) async fn send_to_session(
+        &self,
+        worker_id: Uuid,
+        fence: &SessionFence,
+        body: ControlMessage,
+    ) -> WorkerResult<Uuid> {
         if !matches!(
             &body,
             ControlMessage::InventoryRequest(_)
@@ -163,18 +176,10 @@ impl WorkerRegistry {
                 "server attempted to send a worker-only control message",
             ));
         }
-        let session = self
-            .sessions
-            .read()
-            .await
-            .get(&worker_id)
-            .cloned()
-            .ok_or(WorkerError::Offline)?;
         if let ControlMessage::WriteFlag(command) = body {
-            return self
-                .write_flag_confirmed(worker_id, &session.context.fence, command)
-                .await;
+            return self.write_flag_confirmed(worker_id, fence, command).await;
         }
+        let session = self.current(worker_id, fence).await?;
         let message_id = Uuid::new_v4();
         let tracked = lifecycle_command(&body, message_id);
         self.enqueue(&session, message_id, body, tracked).await?;

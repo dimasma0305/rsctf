@@ -57,6 +57,8 @@ async fn binding(
                    AND node.lease_expires_at > clock_timestamp()
                    AND node.certificate_expires_at > clock_timestamp()
                    AND node.capabilities @> '{"verifiedFlagDelivery":true,"writeFlag":true}'::jsonb
+                   AND (work.spec ->> 'teamDataMount' IS NULL
+                        OR node.capabilities @> '{"teamDataMount":true}'::jsonb)
             WHERE service.id = $2 AND service.participation_id = $3 AND service.challenge_id = $4
               AND service.container_id = $12 AND NOT round.finalized
               AND round.pipeline_completed_at IS NULL AND round.end_time_utc > clock_timestamp()

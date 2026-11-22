@@ -14,9 +14,11 @@ pub(super) struct CandidateWorker {
     pub(super) lease_expires_at: DateTime<Utc>,
 }
 
-const CANDIDATE_WORKER_SQL: &str = r#"SELECT node.id, node.session_id, node.session_epoch,
+const CANDIDATE_WORKER_SQL: &str = concat!(
+    r#"SELECT node.id, node.session_id, node.session_epoch,
            node.lease_expires_at
       FROM "WorkerNodes" node
+      CROSS JOIN (SELECT $10::jsonb AS spec, 'Present' AS desired_state) workload
       CROSS JOIN LATERAL (
           SELECT COALESCE(SUM(workload.reserved_cpu_millis), 0)::BIGINT
                      AS cpu_millis,
@@ -58,13 +60,17 @@ const CANDIDATE_WORKER_SQL: &str = r#"SELECT node.id, node.session_id, node.sess
        AND node.runtime_kind = $3
        AND ($4::UUID IS NULL OR node.id = $4)
        AND node.labels @> $5
+       AND "#,
+    include_str!("ad_session_capabilities.sql"),
+    r#"
        AND node.capacity_cpu_millis >= reserved.cpu_millis + $6
        AND node.capacity_memory_bytes >= reserved.memory_bytes + $7
        AND node.capacity_slots >= reserved.slots + $8
   ORDER BY node.capacity_memory_bytes - reserved.memory_bytes ASC,
            node.capacity_cpu_millis - reserved.cpu_millis ASC,
            node.capacity_slots - reserved.slots ASC,
-           node.id"#;
+           node.id"#
+);
 
 pub(super) const MAX_PLACEMENT_LOCK_RETRIES: u32 = 32;
 
@@ -90,9 +96,29 @@ pub(super) async fn select_candidate(
         .bind(request.definition.reservation.memory_bytes)
         .bind(request.definition.reservation.slots)
         .bind(required_replicas)
+        .bind(request.definition.patch_placement_fields())
         .fetch_optional(&mut **transaction)
         .await
         .map_err(database_error)
+}
+
+pub(super) fn validate_owner<'a>(
+    kind: &'a str,
+    key: &'a str,
+) -> Result<(&'a str, &'a str), WorkerStoreError> {
+    let kind = kind.trim();
+    let key = key.trim();
+    if kind.is_empty() || kind.chars().count() > 64 {
+        return Err(WorkerStoreError::InvalidInput(
+            "workload owner kind must contain 1 to 64 characters".to_owned(),
+        ));
+    }
+    if key.is_empty() || key.chars().count() > 512 {
+        return Err(WorkerStoreError::InvalidInput(
+            "workload owner key must contain 1 to 512 characters".to_owned(),
+        ));
+    }
+    Ok((kind, key))
 }
 
 pub(super) fn placement_retry_delay(id: Uuid, attempt: u32) -> Duration {

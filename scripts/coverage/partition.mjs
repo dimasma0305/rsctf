@@ -29,6 +29,7 @@ function verifyResults(text, expected) {
 // Exactly the current coverage job's environment-only exclusions, not a new
 // classification of which database or authorization regressions are important.
 export const databaseExclusions = Object.freeze([
+  'live_remote_agent_publishes_two_team_round_receipts', // Linux worker CI runs this against a dedicated Docker daemon and matching agent.
   'downloaded_byoc_bundle_observes_in_container_patches', // Runs with Docker Compose and the matching agent in Rust CI.
   'cold_docker_pull_uses_only_the_configured_registry_credential', // Runs against the authenticated TLS registry in Rust CI.
   'same_origin_ssh_kernel_regression', // Privileged network namespace gate runs in runtime CI.

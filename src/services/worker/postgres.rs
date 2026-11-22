@@ -24,6 +24,18 @@ mod validation;
 use heartbeat::HeartbeatWrites;
 use validation::*;
 
+impl TryFrom<StoreSessionFence> for SessionFence {
+    type Error = WorkerError;
+
+    fn try_from(stored: StoreSessionFence) -> WorkerResult<Self> {
+        Ok(Self {
+            session_id: stored.session_id,
+            session_epoch: u64::try_from(stored.session_epoch)
+                .map_err(|_| WorkerError::Authority("negative worker session epoch".into()))?,
+        })
+    }
+}
+
 /// PostgreSQL-backed identity, session and workload authority for the live
 /// worker transport. The transport owns sockets; this type owns every durable
 /// authorization decision and fencing check.
@@ -235,11 +247,7 @@ impl WorkerAuthority for PostgresWorkerAuthority {
             .await
             .map_err(store_error)?
             .ok_or(WorkerError::Authentication)?;
-        let fence = SessionFence {
-            session_id: session.fence.session_id,
-            session_epoch: u64::try_from(session.fence.session_epoch)
-                .map_err(|_| WorkerError::Authority("negative worker session epoch".into()))?,
-        };
+        let fence = session.fence.try_into()?;
         self.heartbeat_writes.opened(peer.worker_id, fence);
         Ok(fence)
     }
@@ -509,7 +517,7 @@ impl WorkerAuthority for PostgresWorkerAuthority {
         // One indexed query revalidates the live session, route publication,
         // assignment and generation together. This is the user-facing stream
         // open path, so do not repeat separate node/workload/ready round trips.
-        let spec = sqlx::query_scalar::<_, serde_json::Value>(
+        let spec = sqlx::query_scalar::<_, serde_json::Value>(concat!(
             r#"SELECT workload.spec
                  FROM "WorkerWorkloads" workload
                  JOIN "WorkerNodes" node ON node.id = workload.worker_id
@@ -519,6 +527,9 @@ impl WorkerAuthority for PostgresWorkerAuthority {
                   AND workload.generation = $4
                   AND workload.desired_state = 'Present'
                   AND workload.observed_state = 'Ready'
+                  AND "#,
+            include_str!("../worker_store/workloads/ad_session_capabilities.sql"),
+            r#"
                   AND workload.observed_session_epoch = node.session_epoch
                   AND node.session_id = $5
                   AND node.session_epoch = $6
@@ -546,8 +557,8 @@ impl WorkerAuthority for PostgresWorkerAuthority {
                            AND (node.capabilities ->> 'maxWorkloadReplicas')::NUMERIC
                                BETWEEN workload.required_replicas AND 512
                       ELSE FALSE
-                  END"#,
-        )
+                  END"#
+        ))
         .bind(fence.workload_id)
         .bind(session.worker_id)
         .bind(fence.assignment_id)

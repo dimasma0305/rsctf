@@ -263,6 +263,14 @@ pub struct WorkloadDefinition {
 }
 
 impl WorkloadDefinition {
+    /// The placement scan only uses these fields, including on lock retries.
+    pub(super) fn patch_placement_fields(&self) -> Value {
+        serde_json::json!({
+            "gameKind": self.spec.get("gameKind"),
+            "teamDataMount": self.spec.get("teamDataMount"),
+        })
+    }
+
     /// Validate the durable specification and return its derived replica count.
     pub(crate) fn validate(&self) -> Result<i32, WorkerStoreError> {
         if !self.spec.is_object() {

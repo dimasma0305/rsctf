@@ -417,10 +417,21 @@ jobs:
 
   worker-plane-linux:
     name: Worker plane (Linux)
-    needs: plan
+    needs: [plan, rust]
     if: needs.plan.outputs.worker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: rsctf_test
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rsctf_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -436,7 +447,7 @@ jobs:
           targets: x86_64-unknown-linux-musl
 
       - name: Install musl linker
-        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools libpcap-dev
 
       - name: Restore worker build cache
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
@@ -488,6 +499,24 @@ jobs:
             RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$second_id" RSCTF_WORKER_TEST_FLAG_UID=65534 \
             cargo test --manifest-path agents/worker-agent/Cargo.toml --locked \
             docker_workload_lifecycle_when_image_is_configured -- --nocapture
+
+      - name: Download server tests built from the same commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-server-${{ github.sha }}
+          path: ci-artifacts
+
+      - name: Score a round through a real worker and two team containers
+        env:
+          RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test
+        run: |
+          test "$(cat ci-artifacts/source-sha)" = "$GITHUB_SHA"
+          chmod 0755 ci-artifacts/rsctf-tests
+          export RSCTF_TEST_LIVE_AD_WORKER_BIN="$PWD/agents/worker-agent/target/x86_64-unknown-linux-musl/release/rsctf-worker-agent"
+          export RSCTF_WORKER_TEST_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:starter --format '{{.Id}}')"
+          name=services::cron::round_finish::worker_delivery::tests::live_agent::live_remote_agent_publishes_two_team_round_receipts
+          ./ci-artifacts/rsctf-tests --ignored --exact "$name" --list | grep -Fx "$name: test"
+          ./ci-artifacts/rsctf-tests --ignored --exact "$name" --nocapture
 
   worker-plane-windows:
     name: Worker compatibility (Windows)

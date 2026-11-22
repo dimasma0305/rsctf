@@ -105,7 +105,10 @@ test('database/Redis fixtures must be independent disposable loopback services',
 test('coverage keeps the established environment-only exclusions and complete instrumented target selection', () => {
   const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8')
   const job = workflow.split('  coverage:\n')[1].split('\n  byoc-agent:\n')[0]
+  const worker = workflow.split('  worker-plane-linux:\n')[1].split('\n  worker-plane-windows:\n')[0]
+  assert.match(worker, /live_remote_agent_publishes_two_team_round_receipts[\s\S]*rsctf-tests --ignored --exact "\$name" --nocapture/)
   assert.deepEqual(databaseExclusions, [
+    'live_remote_agent_publishes_two_team_round_receipts',
     'downloaded_byoc_bundle_observes_in_container_patches',
     'cold_docker_pull_uses_only_the_configured_registry_credential',
     'same_origin_ssh_kernel_regression',

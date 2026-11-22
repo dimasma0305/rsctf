@@ -15,7 +15,9 @@ use super::{
 };
 
 mod placement;
-use placement::{placement_retry_delay, select_candidate, MAX_PLACEMENT_LOCK_RETRIES};
+use placement::{
+    placement_retry_delay, select_candidate, validate_owner, MAX_PLACEMENT_LOCK_RETRIES,
+};
 mod quarantine;
 use quarantine::bounded_quarantine_message;
 mod row;
@@ -99,22 +101,6 @@ struct DispatchIdentity {
     lease_expires_at: DateTime<Utc>,
 }
 
-fn validate_owner<'a>(kind: &'a str, key: &'a str) -> Result<(&'a str, &'a str), WorkerStoreError> {
-    let kind = kind.trim();
-    let key = key.trim();
-    if kind.is_empty() || kind.chars().count() > 64 {
-        return Err(WorkerStoreError::InvalidInput(
-            "workload owner kind must contain 1 to 64 characters".to_owned(),
-        ));
-    }
-    if key.is_empty() || key.chars().count() > 512 {
-        return Err(WorkerStoreError::InvalidInput(
-            "workload owner key must contain 1 to 512 characters".to_owned(),
-        ));
-    }
-    Ok((kind, key))
-}
-
 fn validate_batch(limit: i64) -> Result<(), WorkerStoreError> {
     if !(1..=1_000).contains(&limit) {
         return Err(WorkerStoreError::InvalidInput(
@@ -175,13 +161,16 @@ impl WorkerStore {
         &self,
         workload_id: Uuid,
     ) -> Result<Option<WorkerSession>, WorkerStoreError> {
-        let row = sqlx::query_as::<_, (Uuid, Uuid, i64, DateTime<Utc>)>(
+        let row = sqlx::query_as::<_, (Uuid, Uuid, i64, DateTime<Utc>)>(concat!(
             r#"SELECT node.id, node.session_id, node.session_epoch,
                       node.lease_expires_at
                  FROM "WorkerWorkloads" workload
                  JOIN "WorkerNodes" node ON node.id = workload.worker_id
                 WHERE workload.id = $1
                   AND workload.desired_state = 'Present'
+                  AND "#,
+            include_str!("workloads/ad_session_capabilities.sql"),
+            r#"
                   AND workload.observed_state = 'Ready'
                   AND workload.observed_session_epoch = node.session_epoch
                   AND node.session_id IS NOT NULL
@@ -209,8 +198,8 @@ impl WorkerStore {
                            AND (node.capabilities ->> 'maxWorkloadReplicas')::NUMERIC
                                BETWEEN workload.required_replicas AND 512
                       ELSE FALSE
-                  END"#,
-        )
+                  END"#
+        ))
         .bind(workload_id)
         .fetch_optional(&self.pool)
         .await
@@ -429,12 +418,15 @@ impl WorkerStore {
             transaction.commit().await.map_err(database_error)?;
             return Ok(DefinitionUpdateOutcome::Stale);
         }
-        let capacity = sqlx::query_as::<_, (bool, bool)>(
+        let capacity = sqlx::query_as::<_, (bool, bool)>(concat!(
             r#"SELECT
                    node.platform_os = $3
                    AND node.platform_architecture = $4
                    AND node.runtime_kind = $5
                    AND node.labels @> $6
+                   AND "#,
+            include_str!("workloads/ad_session_capabilities.sql"),
+            r#"
                    AND CASE
                        WHEN jsonb_typeof(
                            node.capabilities -> 'maxWorkloadReplicas'
@@ -449,6 +441,7 @@ impl WorkerStore {
                    AND node.capacity_memory_bytes >= reserved.memory_bytes + $9
                    AND node.capacity_slots >= reserved.slots + $10 AS has_capacity
                  FROM "WorkerNodes" node
+                 CROSS JOIN (SELECT $11::jsonb AS spec, 'Present' AS desired_state) workload
                  CROSS JOIN LATERAL (
                      SELECT COALESCE(SUM(workload.reserved_cpu_millis), 0)::BIGINT
                                 AS cpu_millis,
@@ -464,8 +457,8 @@ impl WorkerStore {
                         )
                  ) reserved
                 WHERE node.id = $1
-                FOR UPDATE OF node"#,
-        )
+                FOR UPDATE OF node"#
+        ))
         .bind(worker_id)
         .bind(request.id)
         .bind(request.definition.required_os.as_str())
@@ -476,6 +469,7 @@ impl WorkerStore {
         .bind(request.definition.reservation.cpu_millis)
         .bind(request.definition.reservation.memory_bytes)
         .bind(request.definition.reservation.slots)
+        .bind(request.definition.patch_placement_fields())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -823,7 +817,7 @@ impl WorkerStore {
         limit: i64,
     ) -> Result<Vec<DueWorkload>, WorkerStoreError> {
         validate_batch(limit)?;
-        let dispatches = sqlx::query_as::<_, DispatchIdentity>(
+        let dispatches = sqlx::query_as::<_, DispatchIdentity>(concat!(
             r#"SELECT workload.id, workload.worker_id, node.session_id,
                       node.session_epoch, node.lease_expires_at
                  FROM "WorkerWorkloads" workload
@@ -854,6 +848,9 @@ impl WorkerStore {
                                BETWEEN workload.required_replicas AND 512
                       ELSE FALSE
                   END
+                  AND "#,
+            include_str!("workloads/ad_session_capabilities.sql"),
+            r#"
                   AND workload.reconcile_quarantine_generation IS DISTINCT FROM
                       workload.generation
                   AND workload.updated_at <= CASE
@@ -869,8 +866,8 @@ impl WorkerStore {
                           AND workload.observed_state <> 'Absent')
                   )
              ORDER BY workload.updated_at, workload.id
-                LIMIT $2"#,
-        )
+                LIMIT $2"#
+        ))
         .bind(retry_before)
         .bind(limit)
         .fetch_all(&self.pool)

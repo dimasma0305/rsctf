@@ -475,7 +475,14 @@ impl WorkerService {
                                 .handle_inventory_snapshot(&reader_context, snapshot_id, items)
                                 .await?;
                             for command in cleanup {
-                                match registry.send(reader_context.worker_id, command).await {
+                                match registry
+                                    .send_to_session(
+                                        reader_context.worker_id,
+                                        &reader_context.fence,
+                                        command,
+                                    )
+                                    .await
+                                {
                                     Ok(_) => {}
                                     Err(WorkerError::Busy) => {
                                         tracing::warn!(

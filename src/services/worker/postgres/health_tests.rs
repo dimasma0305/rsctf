@@ -17,6 +17,9 @@ use crate::services::worker_store::{
     WorkerAdministrativeState, WorkerStoreError, WorkloadDefinition,
 };
 
+#[path = "health_tests/ad_placement.rs"]
+mod ad_placement;
+
 pub(super) fn complete_capabilities() -> WorkerCapabilities {
     WorkerCapabilities {
         storage_quota_enforced: None,
