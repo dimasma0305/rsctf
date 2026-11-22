@@ -74,6 +74,9 @@ The [registry staging command](../../../../scripts/ad-patch-builder/stage.py)
 transfers the same build to its private service repository and records the verified digest.
 Its challenge watcher resumes pending transfers using the same eligibility and receipt checks.
 The [TLS registry test](../../../../scripts/ad-patch-builder/test_stage_registry.py) uses a real VM output and PostgreSQL.
+The [retention command](../../../../scripts/ad-patch-builder/retain.py) pins database-referenced
+manifests before offline collection. The [collection regression](../../../../scripts/ad-patch-builder/test_retention.py)
+pulls the retained images from the restarted registry and checks that an obsolete image was reclaimed.
 It exercises the [Docker digest pull](../../../../src/services/container/docker/image.rs) with the platform's
 registry-specific pull account on an empty runtime cache.
 The [team activation endpoint](../../../../src/controllers/game/ad/patch_preview/activation.rs)

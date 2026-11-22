@@ -15,8 +15,25 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from stage import stage_candidate
+from stage import skopeo, stage_candidate
 from test_export import CandidateFixture
+import test_retention
+
+
+def wait_for_registry(proc, host, cert):
+    context = ssl.create_default_context(cafile=str(cert))
+    for _ in range(100):
+        try:
+            with urlopen(f"https://{host}/v2/", context=context, timeout=1):
+                raise AssertionError("registry accepted an anonymous request")
+        except HTTPError as error:
+            assert error.code == 401
+            return
+        except OSError:
+            if proc.poll() is not None:
+                raise RuntimeError("loopback registry exited during startup")
+            time.sleep(.1)
+    raise RuntimeError("loopback TLS registry did not start")
 
 
 def check(archive, manifest, config, docker_pull=False):
@@ -24,6 +41,7 @@ def check(archive, manifest, config, docker_pull=False):
     try:
         fixture.setUp()
         db, root = fixture.db, fixture.path.parent
+        test_retention.create_tables(db)
         data = archive.read_bytes()
         db.execute('UPDATE "AdPatchCandidates" SET archive_bytes=%s,digest=%s,manifest_digest=%s,config_digest=%s',
                    (len(data), hashlib.sha256(data).hexdigest(), manifest, config))
@@ -55,7 +73,9 @@ def check(archive, manifest, config, docker_pull=False):
         policy = root / ".config" / "containers"
         policy.mkdir(parents=True)
         (policy / "policy.json").write_text(json.dumps({"default": [{"type": "reject"}], "transports": {
-            "oci-archive": {"": [{"type": "insecureAcceptAnything"}]}}}))
+            "oci-archive": {"": [{"type": "insecureAcceptAnything"}]},
+            "oci": {str(root / "versions"): [{"type": "insecureAcceptAnything"}]},
+            "docker": {host + "/rsctf": [{"type": "insecureAcceptAnything"}]}}}))
         empty_auth = root / "empty-auth.json"
         empty_auth.write_text('{"auths":{}}')
         auth = root / "auth.json"
@@ -65,20 +85,7 @@ def check(archive, manifest, config, docker_pull=False):
         with subprocess.Popen(["docker-registry", "serve", registry], stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL) as proc:
             try:
-                context = ssl.create_default_context(cafile=str(cert))
-                for _ in range(100):
-                    try:
-                        with urlopen(f"https://{host}/v2/", context=context, timeout=1):
-                            raise AssertionError("registry accepted an anonymous request")
-                    except HTTPError as error:
-                        assert error.code == 401
-                        break
-                    except OSError:
-                        if proc.poll() is not None:
-                            raise RuntimeError("loopback registry exited during startup")
-                        time.sleep(.1)
-                else:
-                    raise RuntimeError("loopback TLS registry did not start")
+                wait_for_registry(proc, host, cert)
 
                 args = (db, 1, 4, fixture.attempt, host + "/rsctf", auth)
                 with patch.dict(os.environ, HOME=str(root), XDG_CONFIG_HOME=str(policy.parent)):
@@ -91,7 +98,7 @@ def check(archive, manifest, config, docker_pull=False):
                     env = {**os.environ, "RSCTF_DATABASE_URL": os.environ["RSCTF_TEST_DATABASE_URL"],
                            "PGOPTIONS": f"-c search_path={schema}"}
                     command = [sys.executable, str(Path(__file__).with_name("stage.py")),
-                               "--watch-challenge", "11", "--repository", host + "/rsctf",
+                               "--watch-challenge", "11", "--repository", host + "/rsctf", "--retain-images",
                                "--cert-dir", str(trust), "--authfile", str(auth)]
                     watcher = subprocess.Popen(command, env=env)
                     try:
@@ -108,8 +115,13 @@ def check(archive, manifest, config, docker_pull=False):
                         watcher.terminate()
                         watcher.wait(timeout=5)
                     assert ref == host + "/rsctf/service-1@" + manifest
+                    # The watcher has protected the digest before publishing its receipt.
+                    with patch('retain.skopeo', wraps=skopeo) as client:
+                        assert test_retention.pin(db, host + "/rsctf", auth, trust) == 1
+                        assert all(call.args[0][0] != 'copy' for call in client.call_args_list)
                     assert stage_candidate(*args, trust) == ref
                     assert db.execute('SELECT registry_image_ref FROM "AdPatchCandidates"').fetchone() == (ref,)
+                    live, obsolete = test_retention.prepare(fixture, root, archive, ref, auth, trust)
                 if docker_pull:
                     # The CI registry and Docker daemon share this loopback address.
                     # Use only this registry's disposable credential.
@@ -140,6 +152,16 @@ def check(archive, manifest, config, docker_pull=False):
                                         "--memory=64m", ref, "/service"], check=True, timeout=30)
                     finally:
                         subprocess.run([*docker, "image", "rm", ref], capture_output=True, timeout=30)
+            finally:
+                proc.terminate()
+                proc.wait(timeout=10)
+        test_retention.collect(registry, root / "blobs")
+        with subprocess.Popen(["docker-registry", "serve", registry], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL) as proc:
+            try:
+                wait_for_registry(proc, host, cert)
+                with patch.dict(os.environ, HOME=str(root), XDG_CONFIG_HOME=str(policy.parent)):
+                    test_retention.check_pulls(live, obsolete, auth, trust)
             finally:
                 proc.terminate()
                 proc.wait(timeout=10)

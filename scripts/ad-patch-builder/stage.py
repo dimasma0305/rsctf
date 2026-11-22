@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
@@ -14,34 +13,9 @@ import uuid
 
 import psycopg
 
-from build import DEADLINE_SECONDS
 from export import export_candidate
-
-
-def service_repository(prefix, service):
-    host, sep, namespace = prefix.partition("/")
-    label = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
-    address = re.fullmatch(rf"({label}(?:\.{label})*)(?::([0-9]{{1,5}}))?", host)
-    # Short names without a port can silently select Docker Hub.
-    if (not address or not sep or (host != "localhost" and "." not in host and ":" not in host)
-            or (address[2] and not 1 <= int(address[2]) <= 65535)
-            or not re.fullmatch(r"[a-z0-9]+(?:(?:[._/]|__|-+)[a-z0-9]+)*", namespace)
-            or not 0 < service <= 2147483647):
-        raise ValueError("expected an explicit registry host and lowercase repository namespace")
-    repository = f"{prefix}/service-{service}"
-    if len(repository) > 255:
-        raise ValueError("registry repository name is too long")
-    return repository
-
-
-def skopeo(arguments, **options):
-    # The registry client has no use for the worker's PostgreSQL credentials.
-    allowed = ("PATH", "HOME", "LD_LIBRARY_PATH", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "TMPDIR",
-               "REGISTRY_AUTH_FILE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy",
-               "https_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR")
-    env = {key: os.environ[key] for key in allowed if key in os.environ}
-    subprocess.run(["skopeo", "--tmpdir", tempfile.gettempdir(), *arguments], env=env, check=True, timeout=DEADLINE_SECONDS,
-                   stderr=subprocess.DEVNULL, **options)
+from registry import registry_writer, service_repository, skopeo
+from retain import pin_candidate
 
 
 def verify_manifest(source, receipt, options):
@@ -76,20 +50,16 @@ def push_candidate(image, repository, receipt, authfile, cert_dir):
     verify_manifest(remote, receipt, ["--tls-verify=true", *credentials, *trust])
 
 
-def stage_candidate(db, service, revision, attempt, prefix, authfile=None, cert_dir=None, *, challenge=None):
+def stage_candidate(db, service, revision, attempt, prefix, authfile=None, cert_dir=None, *,
+                    challenge=None, retain_images=False):
     repository = service_repository(prefix, service)
     if not db.autocommit:
         raise ValueError("staging requires an autocommit database connection")
-    # Serialize registry writers for this service without blocking scoring or builds.
-    if not db.execute("SELECT pg_try_advisory_lock(1734271013,%s)", (service,)).fetchone()[0]:
-        raise ValueError("another registry transfer is running for this service")
-    try:
-        return stage_locked(db, service, revision, attempt, repository, authfile, cert_dir, challenge)
-    finally:
-        db.execute("SELECT pg_advisory_unlock(1734271013,%s)", (service,))
+    with registry_writer(db, service):
+        return stage_locked(db, service, revision, attempt, repository, authfile, cert_dir, challenge, retain_images)
 
 
-def stage_locked(db, service, revision, attempt, repository, authfile, cert_dir, challenge):
+def stage_locked(db, service, revision, attempt, repository, authfile, cert_dir, challenge, retain_images):
     with tempfile.TemporaryDirectory(prefix="rsctf-stage-") as work:
         image = Path(work) / "candidate.oci.tar"
         receipt = export_candidate(db, service, revision, attempt, image, challenge)
@@ -102,6 +72,8 @@ def stage_locked(db, service, revision, attempt, repository, authfile, cert_dir,
         if existing is None or existing[0] not in (None, ref):
             raise ValueError("candidate was replaced or already staged to a different repository")
         push_candidate(image, repository, receipt, authfile, cert_dir)
+    if retain_images:
+        pin_candidate(db, repository, receipt.manifest_digest, authfile, cert_dir)
     # No transaction or row lock spans registry I/O. A superseding build,
     # withdrawn permission or different successful staging invalidates this write.
     recorded = db.execute('''UPDATE "AdPatchCandidates" c SET registry_image_ref=%s
@@ -118,7 +90,7 @@ def stage_locked(db, service, revision, attempt, repository, authfile, cert_dir,
     return ref
 
 
-def stage_pending(db, challenge, prefix, authfile=None, cert_dir=None):
+def stage_pending(db, challenge, prefix, authfile=None, cert_dir=None, *, retain_images=False):
     # Visit each service at most once per pass, including on registry failure.
     # Keep only one row in memory. Successful receipts survive process restarts.
     after = 0
@@ -133,7 +105,8 @@ def stage_pending(db, challenge, prefix, authfile=None, cert_dir=None):
             return
         after, revision, attempt = candidate
         try:
-            stage_candidate(db, after, revision, attempt, prefix, authfile, cert_dir, challenge=challenge)
+            stage_candidate(db, after, revision, attempt, prefix, authfile, cert_dir,
+                            challenge=challenge, retain_images=retain_images)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             # Log only the attempt and category. Registry diagnostics may contain credentials.
             print(f"Registry transfer for {attempt} deferred ({type(error).__name__})", file=sys.stderr, flush=True)
@@ -149,6 +122,8 @@ def main():
     parser.add_argument("--repository", required=True, help="private registry host and repository namespace")
     parser.add_argument("--authfile", type=Path, help="containers authentication file for the private registry")
     parser.add_argument("--cert-dir", type=Path, help="registry CA and optional client certificate directory")
+    parser.add_argument("--retain-images", action="store_true",
+                        help="maintain bounded retention tags in the dedicated patch registry before publishing a build")
     args = parser.parse_args()
     if args.service is not None and (args.attempt is None or args.revision is None):
         parser.error("--service requires --revision and --attempt")
@@ -162,10 +137,11 @@ def main():
                 if not db.execute("SELECT pg_try_advisory_lock(1734271014,%s)", (args.watch_challenge,)).fetchone()[0]:
                     raise ValueError("another registry watcher owns this challenge")
                 while True:
-                    stage_pending(db, args.watch_challenge, args.repository, args.authfile, args.cert_dir)
+                    stage_pending(db, args.watch_challenge, args.repository, args.authfile, args.cert_dir,
+                                  retain_images=args.retain_images)
                     time.sleep(30)
             ref = stage_candidate(db, args.service, args.revision, args.attempt,
-                                  args.repository, args.authfile, args.cert_dir)
+                                  args.repository, args.authfile, args.cert_dir, retain_images=args.retain_images)
     except psycopg.Error as error:
         sys.exit(f"could not stage private build (PostgreSQL {error.sqlstate or 'connection error'})")
     except subprocess.SubprocessError:

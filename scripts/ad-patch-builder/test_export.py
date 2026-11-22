@@ -180,6 +180,15 @@ class StagingTests(CandidateFixture):
             self.stage()
         self.assertIsNone(self.stored_ref())
 
+    def test_failed_retention_does_not_publish_and_next_watcher_pass_retries(self):
+        with patch("stage.push_candidate"), patch("stage.pin_candidate", side_effect=OSError("offline")):
+            stage_pending(self.db, 11, self.prefix, retain_images=True)
+        self.assertIsNone(self.stored_ref())
+        with patch("stage.push_candidate"), patch("stage.pin_candidate") as pins:
+            stage_pending(self.db, 11, self.prefix, retain_images=True)
+            pins.assert_called_once_with(self.db, self.prefix + "/service-1", self.manifest, None, None)
+        self.assertEqual(self.stored_ref(), self.prefix + "/service-1@" + self.manifest)
+
     def test_watcher_retries_after_restart_and_one_bad_transfer_does_not_block_a_team(self):
         self.db.execute('''INSERT INTO "AdPatchBuilds" VALUES (2,4,%s,'Ready')''', (uuid.uuid4(),))
         self.db.execute('''INSERT INTO "AdPatchCandidates" SELECT 2,revision,digest,archive_bytes,

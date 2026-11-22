@@ -234,9 +234,47 @@ RSCTF rechecks the selected build attempt and its registry digest. If you
 change the runtime profile, a team can deploy a ZIP only when both its
 running service and the selected profile use Docker. Services still on
 Kubernetes keep serving while the organizer manages their migration.
-Keep active, previous and starter
-digests available when applying your registry's retention policy. A transfer
-that loses eligibility can leave unreferenced data for registry garbage collection.
+
+#### Reclaim space in a dedicated patch registry
+
+Patch images are pushed by digest. A registry policy that deletes untagged
+manifests can remove a team's active or rollback image. For a self-hosted Docker
+Distribution registry dedicated to a single RSCTF patch namespace, use the
+following sequence in your registry maintenance job.
+
+Add `--retain-images` to your `stage.py --watch-challenge` or single-build
+command to update retention tags as new builds arrive. The watcher verifies
+the required tags before publishing each build to players. If tagging fails,
+the watcher retries on its next pass. The namespace-wide maintenance pass
+also covers builds staged before this option was enabled.
+
+1. Pause staging and changes to hosted services, challenges and patch jobs.
+   Keep writers paused until collection finishes. The registry must still accept
+   tag writes during the next step.
+2. Run the command below against the platform database and require a successful
+   exit. Its account needs pull and push access. The host's skopeo policy must
+   allow the dedicated patch namespace as a source.
+3. Stop the registry or switch all registry replicas to read-only mode. Run
+   Distribution's `registry garbage-collect --delete-untagged <registry-config>`
+   against that registry's storage. Restore write access and resume RSCTF
+   writers after it finishes. Distribution collects across its entire store;
+   use this sequence only for a store dedicated to these patch images.
+
+```sh
+patch-worker/bin/python scripts/ad-patch-builder/retain.py \
+  --repository registry.example.org/private-event --authfile "$registry_authfile"
+```
+
+The command reuses `rsctf-retain-*` tags for the current candidate, active
+and previous images, organizer images, and images needed by pending or running
+patch, reset and rollback jobs. It verifies each manifest by digest and reads
+the database references again before reporting success. Reserve those tags for
+RSCTF. A repository with live references keeps numbered slots up to its
+historical peak of simultaneously referenced manifests, plus one bootstrap tag.
+In repositories
+whose last database reference has been removed, old retention tags remain until
+the organizer retires the event registry. Docker-local image IDs use the
+platform's local image retention. Apply `--cert-dir` when using a private CA.
 
 To rehearse with five hosted services, generate a separate hidden event from
 the bundled example repository. Each service includes a starter ZIP, two
