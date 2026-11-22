@@ -4578,6 +4578,7 @@ export interface ChallengeAuditFile {
 
 /** Stored ZIP for the original source of a hosted A&D challenge. */
 export interface RegisteredAdPatchStarter extends AdPatchStarter {
+  dataMount?: string | null;
   sshSources?: { sourcePath: string; containerPath: string; retainContent?: boolean; shareAfterClose?: boolean }[];
   runtimeImageRef: string | null;
   awaitingImageBuild: boolean;

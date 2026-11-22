@@ -91,6 +91,11 @@ export function AdPatchStarterInput({ gameId, challengeId, started, disabled }: 
               : t('admin.ad.patch_starter.no_image', 'An original runtime image was never recorded for this ZIP.')}
         </Text>
       )}
+      {data?.dataMount && (
+        <Text size="sm" style={{ overflowWrap: 'anywhere' }}>
+          {t('admin.ad.patch_starter.data_mount', 'Kubernetes team data directory')} · <code>{data.dataMount}</code>
+        </Text>
+      )}
       {!!data?.sshSources?.length && <details>
         <summary>{t('admin.ad.patch_starter.ssh_sources', 'Registered SSH source files ({{count}})', { count: data.sshSources.length })}</summary>
         <ul>{data.sshSources.map(({ sourcePath, containerPath, retainContent, shareAfterClose }) => (

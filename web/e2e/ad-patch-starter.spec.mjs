@@ -258,6 +258,7 @@ test('organizer registers a starter and sees the original after the event starts
   const sshSources = [{ sourcePath: 'src/game.py', containerPath: '/app/game.py' }]
   zip.file('src/game.py', 'print(1)\n')
   zip.file('.rsctf-ssh.json', JSON.stringify(sshSources))
+  zip.file('.rsctf-data-dir', '/var/lib/rehearsal\n')
   const bytes = await zip.generateAsync({ type: 'nodebuffer' })
   const file = { name: 'starter.zip', mimeType: 'application/zip', buffer: bytes }
   let starter = null
@@ -279,7 +280,7 @@ test('organizer registers a starter and sees the original after the event starts
     if (url.pathname === challenge + '/patch-starter') {
       if (req.method() === 'PUT') {
         writes.push({ expected: req.headers()['x-rsctf-expected-tree'], type: req.headers()['content-type'], body: req.postDataBuffer() })
-        starter = { treeId: 'a'.repeat(64), archiveBytes: bytes.length, runtimeImageRef: null, awaitingImageBuild: true, sshSources }
+        starter = { treeId: 'a'.repeat(64), archiveBytes: bytes.length, runtimeImageRef: null, awaitingImageBuild: true, sshSources, dataMount: '/var/lib/rehearsal' }
       }
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(starter) })
     }
@@ -294,6 +295,7 @@ test('organizer registers a starter and sees the original after the event starts
   expect(writes).toHaveLength(0)
   await panel.getByRole('button', { name: 'Save starter ZIP' }).click()
   await expect(panel.getByRole('status')).toContainText('aaaaaaaaaaaa')
+  await expect(panel.getByText('Kubernetes team data directory · /var/lib/rehearsal')).toBeVisible()
   await panel.getByText('Registered SSH source files (1)').click()
   await expect(panel.getByText('/app/game.py', { exact: true })).toBeVisible()
   await input.setInputFiles(file)
