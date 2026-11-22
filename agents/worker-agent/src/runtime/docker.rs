@@ -585,7 +585,9 @@ impl DockerRuntime {
                 Ok(archive)
             })
             .await??;
-        archive_contains_contents(archive, expected.to_vec()).await
+        let os = self.platform().operating_system;
+        let (_, filename) = split_guest_path(path, os)?;
+        archive_matches_file(archive, filename, expected.to_vec(), os).await
     }
 
     async fn current_status(&self, fence: WorkloadFence) -> Result<WorkloadStatus, RuntimeError> {

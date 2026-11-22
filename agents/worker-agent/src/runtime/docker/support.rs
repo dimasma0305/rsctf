@@ -25,6 +25,8 @@ use super::{
     LABEL_SPEC_HASH, LABEL_WORKER, LABEL_WORKLOAD,
 };
 
+#[cfg(test)]
+mod flag_archive_tests;
 mod storage;
 pub(super) use storage::{
     effective_writable_layer_limit, verify_storage_quota_support, writable_layer_storage_opt,
@@ -40,7 +42,6 @@ pub(super) struct ContainerReplicaPlan<'a> {
 }
 
 pub(super) const MAX_FLAG_ARCHIVE_BYTES: usize = 1024 * 1024;
-const MAX_FLAG_ARCHIVE_ENTRIES: usize = 64;
 const DAEMON_OWNER_VOLUME: &str = "rsctf-worker-owner";
 const LABEL_DAEMON_OWNER: &str = "io.rsctf.worker.daemon-owner";
 
@@ -586,9 +587,11 @@ pub(super) async fn make_single_file_archive(
     })?
 }
 
-pub(super) async fn archive_contains_contents(
+pub(super) async fn archive_matches_file(
     bytes: Vec<u8>,
+    filename: String,
     expected: Vec<u8>,
+    os: OperatingSystem,
 ) -> Result<bool, RuntimeError> {
     if bytes.len() > MAX_FLAG_ARCHIVE_BYTES {
         return Err(RuntimeError::new(
@@ -598,46 +601,45 @@ pub(super) async fn archive_contains_contents(
     }
     tokio::task::spawn_blocking(move || {
         let mut archive = tar::Archive::new(Cursor::new(bytes));
-        let entries = archive.entries().map_err(|error| {
+        let mut entries = archive.entries().map_err(|error| {
             RuntimeError::new(
                 CommandErrorCode::Internal,
                 format!("read flag verification archive: {error}"),
             )
         })?;
-        for (index, entry) in entries.enumerate() {
-            if index >= MAX_FLAG_ARCHIVE_ENTRIES {
-                return Err(RuntimeError::new(
-                    CommandErrorCode::InvalidSpec,
-                    "flag verification archive contains too many entries",
-                ));
-            }
-            let entry = entry.map_err(|error| {
+        let Some(entry) = entries.next() else {
+            return Ok(false);
+        };
+        let entry = entry.map_err(|error| {
+            RuntimeError::new(
+                CommandErrorCode::Internal,
+                format!("read flag verification entry: {error}"),
+            )
+        })?;
+        let path = entry.path_bytes();
+        let name = path.strip_prefix(b"./").unwrap_or(&path);
+        let name_matches = if os == OperatingSystem::Windows {
+            name.eq_ignore_ascii_case(filename.as_bytes())
+        } else {
+            name == filename.as_bytes()
+        };
+        if !name_matches
+            || !entry.header().entry_type().is_file()
+            || entry.size() != expected.len() as u64
+        {
+            return Ok(false);
+        }
+        let mut contents = Vec::with_capacity(expected.len());
+        entry
+            .take(expected.len() as u64 + 1)
+            .read_to_end(&mut contents)
+            .map_err(|error| {
                 RuntimeError::new(
                     CommandErrorCode::Internal,
-                    format!("read flag verification entry: {error}"),
+                    format!("read verified flag contents: {error}"),
                 )
             })?;
-            if !entry.header().entry_type().is_file() {
-                continue;
-            }
-            if entry.size() != expected.len() as u64 {
-                continue;
-            }
-            let mut contents = Vec::with_capacity(expected.len());
-            entry
-                .take(expected.len() as u64 + 1)
-                .read_to_end(&mut contents)
-                .map_err(|error| {
-                    RuntimeError::new(
-                        CommandErrorCode::Internal,
-                        format!("read verified flag contents: {error}"),
-                    )
-                })?;
-            if contents == expected {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(contents == expected && entries.next().is_none())
     })
     .await
     .map_err(|error| {
@@ -958,10 +960,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flag_archive_parser_rejects_oversize_and_skips_large_entries() {
-        assert!(archive_contains_contents(
+    async fn flag_archive_parser_rejects_oversize_and_large_entries() {
+        assert!(archive_matches_file(
             vec![0_u8; MAX_FLAG_ARCHIVE_BYTES + 1],
+            "flag".into(),
             b"flag".to_vec(),
+            OperatingSystem::Linux,
         )
         .await
         .is_err());
@@ -980,8 +984,13 @@ mod tests {
             builder.finish().unwrap();
         }
         assert!(archive.len() <= MAX_FLAG_ARCHIVE_BYTES);
-        assert!(!archive_contains_contents(archive, b"flag".to_vec())
-            .await
-            .unwrap());
+        assert!(!archive_matches_file(
+            archive,
+            "flag".into(),
+            b"flag".to_vec(),
+            OperatingSystem::Linux
+        )
+        .await
+        .unwrap());
     }
 }
