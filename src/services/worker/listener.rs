@@ -320,13 +320,7 @@ impl WorkerService {
             },
         };
         let (registration, cleanup) = self
-            .prepare_control_session(
-                &context,
-                &welcome,
-                hello.capabilities.inventory,
-                &mut tls,
-                cleanup,
-            )
+            .prepare_control_session(&context, &welcome, &hello.capabilities, &mut tls, cleanup)
             .await?;
         drop((handshake_permit, peer_permit));
         self.run_control(tls, registration, hello.capabilities.inventory, cleanup)
@@ -337,7 +331,7 @@ impl WorkerService {
         &self,
         context: &SessionContext,
         welcome: &ServerWelcome,
-        inventory_enabled: bool,
+        capabilities: &rsctf_worker_protocol::WorkerCapabilities,
         writer: &mut W,
         cleanup: SessionCleanup,
     ) -> WorkerResult<(SessionRegistration, SessionCleanup)>
@@ -350,6 +344,7 @@ impl WorkerService {
                 .register_authenticated_control(
                     context.clone(),
                     usize::from(welcome.limits.max_data_lanes),
+                    capabilities.write_flag && capabilities.verified_flag_delivery,
                 )
                 .await?;
             tokio::time::timeout(
@@ -358,7 +353,7 @@ impl WorkerService {
             )
             .await
             .map_err(|_| WorkerError::Protocol("control welcome timed out"))??;
-            if inventory_enabled {
+            if capabilities.inventory {
                 self.registry
                     .request_inventory(
                         context.worker_id,

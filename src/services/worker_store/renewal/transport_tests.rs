@@ -66,6 +66,7 @@ async fn connect(
                 team_data_mount: false,
                 ensure_workload: true,
                 write_flag: true,
+                verified_flag_delivery: true,
                 tcp_proxy: true,
                 interactive_exec: false,
                 inventory: true,
@@ -166,6 +167,7 @@ async fn scenario() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (stop, shutdown) = watch::channel(false);
+    let registry = service.registry().clone();
     let task = tokio::spawn(async move { service.serve(listener, Arc::new(tls), shutdown).await });
     let (mut first, welcome) = connect(
         address,
@@ -181,6 +183,39 @@ async fn scenario() {
         csr_pem: csr,
     };
     let issued = renew(&mut first, &welcome, request.clone()).await;
+    // A command in flight during certificate rotation must be retried on the
+    // replacement session, even when the worker accepted it on the old one.
+    let mut flag = WriteFlag {
+        command_id: uuid::Uuid::new_v4(),
+        fence: WorkloadFence {
+            workload_id: uuid::Uuid::new_v4(),
+            assignment_id: uuid::Uuid::new_v4(),
+            generation: 1,
+        },
+        flag_sequence: 1,
+        target: FlagTarget {
+            service: "app".into(),
+            path: "/run/test-flag".into(),
+        },
+        value: "test fixture".into(),
+        timeout_ms: 5_000,
+    };
+    let pending = registry.write_flag_confirmed(worker.worker_id, &welcome.session, flag.clone());
+    tokio::pin!(pending);
+    let old_request = tokio::select! {
+        request = next_flag_request(&mut first) => request,
+        _ = &mut pending => panic!("unconfirmed delivery completed"),
+    };
+    let mut accepted = ControlEnvelope::new(
+        welcome.session.session_epoch,
+        ControlMessage::CommandAck(CommandAck {
+            command_id: flag.command_id,
+            disposition: AckDisposition::Accepted,
+            detail: None,
+        }),
+    );
+    accepted.reply_to = Some(old_request.message_id);
+    write_json_frame(&mut first, &accepted).await.unwrap();
     drop(first);
     // The caller lost its reply and persisted no replacement: old certificate
     // reconnect + exact operation must recover the same signed certificate.
@@ -194,6 +229,29 @@ async fn scenario() {
     .await
     .unwrap();
     assert!(recovered_welcome.session.session_epoch > welcome.session.session_epoch);
+    assert!(pending.await.is_err());
+    flag.command_id = uuid::Uuid::new_v4();
+    let retry =
+        registry.write_flag_confirmed(worker.worker_id, &recovered_welcome.session, flag.clone());
+    let acknowledge = async {
+        let received = next_flag_request(&mut recovery).await;
+        assert!(
+            matches!(&received.body, ControlMessage::WriteFlag(received_flag) if received_flag == &flag)
+        );
+        let mut reply = ControlEnvelope::new(
+            recovered_welcome.session.session_epoch,
+            ControlMessage::CommandResult(CommandResult {
+                command_id: flag.command_id,
+                success: true,
+                error: None,
+            }),
+        );
+        reply.reply_to = Some(received.message_id);
+        write_json_frame(&mut recovery, &reply).await.unwrap();
+        received.message_id
+    };
+    let (receipt, message_id) = tokio::join!(retry, acknowledge);
+    assert_eq!(receipt.unwrap(), message_id);
     assert_eq!(
         renew(&mut recovery, &recovered_welcome, request).await,
         issued
@@ -238,4 +296,15 @@ async fn scenario() {
     stop.send(true).unwrap();
     task.await.unwrap().unwrap();
     fixture.destroy().await;
+}
+
+async fn next_flag_request(stream: &mut TlsStream<TcpStream>) -> ControlEnvelope {
+    loop {
+        let envelope: ControlEnvelope = read_json_frame(stream).await.unwrap();
+        match envelope.body {
+            ControlMessage::WriteFlag(_) => return envelope,
+            ControlMessage::InventoryRequest(_) => continue,
+            _ => panic!("unexpected worker control request"),
+        }
+    }
 }

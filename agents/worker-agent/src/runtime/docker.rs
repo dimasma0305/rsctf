@@ -580,6 +580,7 @@ impl WorkerRuntime for DockerRuntime {
         WorkerCapabilities {
             ensure_workload: true,
             write_flag: true,
+            verified_flag_delivery: true,
             tcp_proxy: true,
             interactive_exec: false,
             inventory: true,

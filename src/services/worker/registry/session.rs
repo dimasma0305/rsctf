@@ -58,6 +58,7 @@ pub(crate) struct SessionRegistration {
 pub(super) struct SessionEntry {
     pub(super) context: SessionContext,
     pub(super) max_data_lanes: usize,
+    pub(super) verified_flag_delivery: bool,
     pub(super) control: mpsc::Sender<ControlEnvelope>,
     pub(super) shutdown: watch::Sender<bool>,
     pub(super) lanes: RwLock<HashMap<u16, DataLane>>,
@@ -81,12 +82,14 @@ impl SessionEntry {
     pub(super) fn new(
         context: SessionContext,
         max_data_lanes: usize,
+        verified_flag_delivery: bool,
         control: mpsc::Sender<ControlEnvelope>,
         shutdown: watch::Sender<bool>,
     ) -> Self {
         Self {
             context,
             max_data_lanes,
+            verified_flag_delivery,
             control,
             shutdown,
             lanes: RwLock::new(HashMap::new()),

@@ -104,6 +104,11 @@ across an interrupted reset and the [publication tests](../../../../src/services
 cover retention and older servers.
 The [organizer policy](../../../../src/controllers/edit/ad/patch_activity.rs) controls the [delayed deployment counts and closed-game archive](../../../../src/controllers/game/ad/patch_preview/activity.rs). The [archive panel](../../../../web/src/components/competition/AdPatchArchive.tsx) displays marked starter paths for revisions that reached publication. The [HTTP regression](../../../../src/controllers/game/ad/patch_preview/tests/activity.rs) checks round finalization, practice mode, division visibility, and pagination.
 
+The [worker flag delivery receipt](../../../../src/services/worker/registry/flag_delivery.rs)
+binds file readback to the request and worker session. Its
+[regressions](../../../../src/services/worker/registry/flag_delivery/tests.rs)
+cover partial replica failure, accepted commands, timeouts, and reconnects.
+
 The [private revision history](../../../../src/controllers/game/ad/patch_preview/revisions.rs)
 stores [content-addressed source](../../../../src/services/ad/patches/revisions.rs) for one hosted team service.
 The [revision download](../../../../src/controllers/game/ad/patch_preview/source.rs) checks team access

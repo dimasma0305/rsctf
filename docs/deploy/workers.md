@@ -906,6 +906,12 @@ one reconciliation on the upgraded agent before its first file delivery.
 On Linux the delivered file has mode `0600`. Set the image's Dockerfile
 `USER` to the account that reads it. Docker assigns the file to that user.
 
+For a confirmed file delivery, the server requires the connected agent to
+advertise `verifiedFlagDelivery`. It waits for the final result for that request
+on the same session. An accepted command can still fail if a replica disappears
+or the file cannot be read back. A timeout or reconnect leaves delivery
+unconfirmed.
+
 Whenever RSCTF supplies a runtime flag, `flagTarget.service` is mandatory and
 must select exactly one service. V1 injects the value as `RSCTF_FLAG` only into
 that service. `flagTarget.path` is validated and reserved for future competitive

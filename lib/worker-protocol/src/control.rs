@@ -56,6 +56,9 @@ pub struct WorkerCapabilities {
     pub team_data_mount: bool,
     pub ensure_workload: bool,
     pub write_flag: bool,
+    /// Successful WriteFlag results confirm readback on every registered replica.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub verified_flag_delivery: bool,
     pub tcp_proxy: bool,
     pub interactive_exec: bool,
     pub inventory: bool,
@@ -477,6 +480,22 @@ mod tests {
         json.as_object_mut().unwrap().remove("maxWorkloadReplicas");
         let decoded: WorkerCapabilities = serde_json::from_value(json).unwrap();
         assert_eq!(decoded.max_workload_replicas, 0);
+    }
+
+    #[test]
+    fn verified_flag_delivery_requires_explicit_advertisement() {
+        let mut wire = serde_json::to_value(WorkerCapabilities {
+            write_flag: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(wire.get("verifiedFlagDelivery").is_none());
+        let legacy: WorkerCapabilities = serde_json::from_value(wire.clone()).unwrap();
+        assert!(!legacy.verified_flag_delivery);
+        wire["verifiedFlagDelivery"] = true.into();
+        let upgraded: WorkerCapabilities = serde_json::from_value(wire.clone()).unwrap();
+        assert!(upgraded.verified_flag_delivery);
+        assert_eq!(serde_json::to_value(upgraded).unwrap(), wire);
     }
 
     #[test]

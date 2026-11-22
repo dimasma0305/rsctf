@@ -23,6 +23,7 @@ pub(super) fn complete_capabilities() -> WorkerCapabilities {
         team_data_mount: false,
         ensure_workload: true,
         write_flag: true,
+        verified_flag_delivery: true,
         tcp_proxy: true,
         interactive_exec: false,
         inventory: true,

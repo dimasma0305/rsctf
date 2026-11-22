@@ -28,6 +28,7 @@ async fn negotiated_data_lane_limit_is_enforced_per_session() {
                 fence: session_fence,
             },
             1,
+            false,
         )
         .await
         .unwrap();
@@ -59,6 +60,7 @@ async fn replacement_session_uses_its_own_negotiated_lane_limit() {
                 fence: old_fence,
             },
             4,
+            false,
         )
         .await
         .unwrap();
@@ -72,6 +74,7 @@ async fn replacement_session_uses_its_own_negotiated_lane_limit() {
                 fence: new_fence,
             },
             1,
+            false,
         )
         .await
         .unwrap();
