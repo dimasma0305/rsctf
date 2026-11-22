@@ -54,9 +54,11 @@ test('team resets its hosted service and sees the completed result without crypt
 
 test('team opens private BYOC source history and pages back to the legacy agent', async ({ page }) => {
   const game = createCompetitionFixture()
+  await page.clock.install({ time: game.now + 600_000 })
   game.challenges[0].type = 'AttackDefense'
   Object.assign(game.responses['/api/game/901/challenges/9001'], { type: 'AttackDefense', adSelfHosted: true })
   const reads = []
+  let lastSeen = game.now - 150_000
   await page.route('**/*', async route => {
     const req = route.request()
     const url = new URL(req.url())
@@ -75,7 +77,7 @@ test('team opens private BYOC source history and pages back to the legacy agent'
       const before = url.searchParams.get('before')
       reads.push(before)
       return route.fulfill({ json: { before: before ? null : 2, events: [{
-        revision: before ? 1 : 2, firstSeen: Date.now(), lastSeen: Date.now(),
+        revision: before ? 1 : 2, firstSeen: lastSeen, lastSeen,
         status: before ? 'legacyAgent' : 'observed', changes: before ? [] : [{ path: 'src/app.py', kind: 'modified' }],
       }] } })
     }
@@ -95,11 +97,21 @@ test('team opens private BYOC source history and pages back to the legacy agent'
   await open.click()
   const dialog = page.getByRole('dialog', { name: 'Source history' })
   await expect(dialog.getByText('Watching challenge source')).toBeVisible()
+  const stale = dialog.getByText('Reports are out of date.', { exact: false })
+  await expect(stale).toHaveCount(0)
+  await page.clock.fastForward(40_000)
+  await expect(stale).toBeVisible()
+  expect(reads).toEqual([null])
   await dialog.locator('summary').click()
   await expect(dialog.getByText('src/app.py')).toBeVisible()
   await dialog.getByRole('button', { name: 'Older reports' }).click()
   await expect(dialog.getByText('Agent version does not report source')).toBeVisible()
+  await expect(stale).toHaveCount(0)
   expect(reads).toContain('2')
+  lastSeen = game.now + 40_000
+  await dialog.getByRole('button', { name: 'Latest reports' }).click()
+  await expect(dialog.getByText('Watching challenge source')).toBeVisible()
+  await expect(stale).toHaveCount(0)
 })
 
 test('team can see sampled SSH edits to the same registered file', async ({ page }) => {

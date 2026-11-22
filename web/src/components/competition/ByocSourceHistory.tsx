@@ -7,6 +7,7 @@ import { AccessibleModal } from '@Components/AccessibleModal'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
 import { useUser } from '@Hooks/useUser'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
+import { useServerNow } from '@Utils/ServerClock'
 
 type Props = { gameId: number; hostedSsh?: boolean } & ({ challengeId: number } | { serviceId: number })
 const privateCache = { provider: () => new Map() }
@@ -31,6 +32,12 @@ function PrivateHistory(props: Props) {
 function Pages(props: Props) {
   const [before, setBefore] = useState<number>()
   return <History key={before ?? 'latest'} {...props} before={before} setBefore={setBefore} />
+}
+
+function StaleReportWarning({ lastSeen }: { lastSeen: number }) {
+  const { t } = useTranslation()
+  const now = useServerNow()
+  return now.valueOf() - lastSeen >= 3 * 60_000 ? <>{t('game.byoc.source.stale', 'Reports are out of date.')} </> : null
 }
 
 function History(props: Props & { before?: number, setBefore: (value?: number) => void }) {
@@ -67,7 +74,7 @@ function History(props: Props & { before?: number, setBefore: (value?: number) =
       ? t('game.ad.ssh.empty', 'No SSH edits have been recorded. Source files must be registered before kickoff.')
       : t('game.byoc.source.empty', 'No agent reports received yet.')}</Text>}
     {!before && latest && <Text size="sm" role="status">
-      {!props.hostedSsh && Date.now() - latest.lastSeen > 180000 ? t('game.byoc.source.stale', 'Reports are out of date.') + ' ' : ''}
+      {!props.hostedSsh && <StaleReportWarning lastSeen={latest.lastSeen} />}
       {t('game.byoc.source.last', 'Last report {{time}}', { time: new Date(latest.lastSeen).toLocaleString() })}
     </Text>}
     {latest?.status === 'observed' && latest.trackedFiles === 0 && <Text size="sm">{t('game.byoc.source.waiting', 'Waiting for source files in the watched directory.')}</Text>}
