@@ -123,6 +123,9 @@ impl ProvisionFlag {
         spec: &crate::services::container::ContainerSpec,
         donor: &str,
     ) -> AppResult<Option<String>> {
+        // Returning None lets the caller remove a stateless donor. Its
+        // writable layer still belongs to the team if the next launch is invalid.
+        crate::services::container::validate_container_spec(spec)?;
         if !state.containers.has_ad_data_volumes(donor).await? {
             return Ok(None);
         }

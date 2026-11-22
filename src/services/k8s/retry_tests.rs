@@ -87,6 +87,12 @@ async fn microvm_launch_pins_runtime_class_and_never_falls_back_on_class_removal
     );
     resources.lock().unwrap().remove(class_path);
     let count = resources.lock().unwrap().len();
+    assert!(matches!(
+        manager
+            .profile_pull_image(None, &retry_spec(false).image)
+            .await,
+        Err(AppError::ServiceUnavailable(_))
+    ));
     assert!(manager.create(retry_spec(false)).await.is_err());
     assert_eq!(resources.lock().unwrap().len(), count);
     // Clearing the class cannot adopt a pod created under VM isolation.

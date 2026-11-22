@@ -174,6 +174,10 @@ repair, the old container and its files stay on the host. On resuming a
 reset, RSCTF also checks the prepared round
 and its official flag before removing the old container. If the round has
 ended or its flag is missing, the surviving container keeps its files.
+If the saved challenge settings exceed the deployment's current resource
+limits, reset and rollback keep the live service online. Adjust the settings
+and retry. On Kubernetes, a missing or invalid Kata RuntimeClass also stops
+replacement before RSCTF removes the existing Pod.
 A stopped service's address is withdrawn so it cannot route
 players to a different workload. Before publishing the replacement endpoint,
 RSCTF writes the current round's flag to the replacement's

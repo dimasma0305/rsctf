@@ -366,6 +366,12 @@ impl ContainerManager for KubernetesContainerManager {
         Some(true)
     }
 
+    async fn pull_image(&self, image: &str) -> AppResult<()> {
+        // The kubelet pulls the image on scheduling. Check the destination
+        // now so a missing Kata class is reported before A&D retires its Pod.
+        self.validate_image_target(image).await
+    }
+
     async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
         let Some(pod) = self.pods().get_opt(id).await.map_err(|error| {
             AppError::unavailable(format!("Could not inspect A&D Pod storage: {error}"))
@@ -382,12 +388,7 @@ impl ContainerManager for KubernetesContainerManager {
 
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
         crate::services::container::validate_container_spec(&spec)?;
-        self.validate_runtime_class().await?;
-        if !crate::services::challenge_images::is_repository_digest(&spec.image) {
-            return Err(AppError::bad_request(
-                "Kubernetes challenge images must use a portable repository digest",
-            ));
-        }
+        self.validate_image_target(&spec.image).await?;
         // Unique, DNS-safe resource name + the app label that ties the Service
         // to this pod (RSCTF uses a per-instance ResourceId label/selector).
         let (default_name, default_uid) =

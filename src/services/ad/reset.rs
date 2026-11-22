@@ -277,14 +277,6 @@ pub async fn execute_job(
         .retired_backend_id
         .as_deref()
         .filter(|retired| service.container_id.as_deref() == Some(*retired));
-    // A durable preparation records which image to use. A reclaimed job may
-    // run after that image disappeared, while the retired container still
-    // holds the team's files. Stage the image again before removing it.
-    if !resuming || (recovering_preparation && retained_backend.is_some()) {
-        st.containers
-            .profile_pull_image(challenge.runtime_profile.as_deref(), &image)
-            .await?;
-    }
     let mut spec = ContainerSpec::ad_service(
         image.clone(),
         ContainerResourceLimits {
@@ -299,6 +291,17 @@ pub async fn execute_job(
     );
     spec.runtime_profile = challenge.runtime_profile.clone();
     spec.operation_id = Some(format!("ad-reset:{}", job.operation_id));
+    // Live challenge settings and deployment limits can change between launches.
+    // Check the replacement while the team's existing endpoint still serves.
+    crate::services::container::validate_container_spec(&spec)?;
+    // A durable preparation records which image to use. A reclaimed job may
+    // run after that image disappeared, while the retired container still
+    // holds the team's files. Stage the image again before removing it.
+    if !resuming || (recovering_preparation && retained_backend.is_some()) {
+        st.containers
+            .profile_pull_image(challenge.runtime_profile.as_deref(), &image)
+            .await?;
+    }
     let source = if resuming {
         retained_backend
     } else {

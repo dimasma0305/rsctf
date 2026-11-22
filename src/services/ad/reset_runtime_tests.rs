@@ -150,6 +150,32 @@ async fn missing_reset_image_preserves_live_endpoint_and_scoring() {
         .profile_pull_image(None, &replacement)
         .await
         .unwrap();
+    // The image exists, but the saved memory request exceeds this deployment's limit.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL rsctf.maintenance_writer='on'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"UPDATE "GameChallenges" SET build_image_digest=$1,memory_limit=2147483647 WHERE id=900031"#,
+    )
+    .bind(&replacement)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    for _ in 0..2 {
+        let error = super::execute_job(&state, &claimed).await.unwrap_err();
+        assert!(
+            matches!(error, AppError::BadRequest(ref message) if message.contains("container memory"))
+        );
+        assert_eq!(snapshot().await.unwrap(), original);
+        assert!(client.get(&url).send().await.unwrap().status().is_success());
+    }
+    sqlx::query(r#"UPDATE "GameChallenges" SET memory_limit=256 WHERE id=900031"#)
+        .execute(pool)
+        .await
+        .unwrap();
     let prepared = crate::services::ad_engine::prepare_service_reset(
         &state.db,
         fixture.game_id,
@@ -238,6 +264,15 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
         .await
         .unwrap();
     let state = docker_state(&runtime_pool);
+    // This test exercises the per-tick reconcile, after topology setup.
+    state
+        .containers
+        .ensure_network(
+            &crate::services::ad_vpn::services_network(),
+            &crate::services::ad_vpn::services_cidr(),
+        )
+        .await
+        .unwrap();
     let scope = docker_installation_scope();
     let starting = LiveService(docker(&[
         "create",
@@ -364,7 +399,21 @@ async fn reconcile_preserves_uncertain_backends_and_reclaimed_reset() {
         .execute(&mut *tx)
         .await
         .unwrap();
+    sqlx::query(r#"UPDATE "GameChallenges" SET memory_limit=2147483647 WHERE id=900031"#)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
+    assert_eq!(reconcile().await.unwrap(), (0, 2));
+    assert_eq!(row(900041).await.unwrap(), stopped);
+    assert_eq!(
+        docker(&["inspect", "--format", "{{.State.Status}}", &starting.0]),
+        "exited"
+    );
+    sqlx::query(r#"UPDATE "GameChallenges" SET memory_limit=256 WHERE id=900031"#)
+        .execute(pool)
+        .await
+        .unwrap();
     assert_eq!(reconcile().await.unwrap(), (1, 1));
     let repaired = row(900041).await.unwrap();
     assert_ne!(repaired["container_id"], starting.0);

@@ -261,9 +261,8 @@ pub trait ContainerManager: Send + Sync {
         true
     }
 
-    /// Make an immutable image available ahead of a launch. Backends whose
-    /// runtime pulls during creation (trusted workers, Kubernetes) succeed
-    /// without doing anything; only a local daemon pulls eagerly.
+    /// Prepare an immutable image ahead of a launch. Docker pulls eagerly.
+    /// Kubernetes checks the configured runtime class before scheduling the pull.
     async fn pull_image(&self, _image: &str) -> AppResult<()> {
         Ok(())
     }

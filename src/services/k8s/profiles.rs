@@ -25,6 +25,15 @@ impl KubernetesContainerManager {
         }
     }
 
+    pub(super) async fn validate_image_target(&self, image: &str) -> AppResult<()> {
+        if !crate::services::challenge_images::is_repository_digest(image) {
+            return Err(AppError::bad_request(
+                "Kubernetes challenge images must use a portable repository digest",
+            ));
+        }
+        self.validate_runtime_class().await
+    }
+
     pub(super) async fn validate_runtime_class(&self) -> AppResult<()> {
         let Some(name) = &self.runtime_class else {
             return Ok(());
