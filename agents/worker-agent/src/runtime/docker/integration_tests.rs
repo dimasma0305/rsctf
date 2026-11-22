@@ -348,6 +348,14 @@ async fn exercise_lifecycle(
             timeout_ms: 10_000,
         })
         .await?;
+    for (_, id) in &challenge_replicas {
+        require(
+            !runtime
+                .verify_guest_file(id, "/tmp", b"RSCTF{worker_smoke}")
+                .await?,
+            "directory containing the flag was accepted as the flag file",
+        )?;
+    }
 
     let absent = runtime
         .ensure_absent(EnsureAbsent {
