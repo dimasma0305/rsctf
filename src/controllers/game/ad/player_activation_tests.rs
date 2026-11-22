@@ -68,6 +68,8 @@ pub(super) async fn check(
         .unwrap();
     sqlx::query(r#"INSERT INTO "AdPatchRevisions" VALUES(900041,1,repeat('b',64),repeat('a',64),repeat('c',64),$1,now())"#)
         .bind(captain).execute(&mut *tx).await.unwrap();
+    sqlx::query(r#"INSERT INTO "AdSharedPatchChanges"(service_id,revision,changes) VALUES(900041,1,'[{"path":"app.py","kind":"Modified"}]')"#)
+        .execute(&mut *tx).await.unwrap();
     sqlx::query(
         r#"INSERT INTO "AdPatchBuilds"(service_id,revision,attempt,profile,status)
         VALUES(900041,1,$1,repeat('a',64),'Ready')"#,
@@ -185,6 +187,12 @@ pub(super) async fn check(
         crate::services::ad::reset::execute_job(state, &job).await,
         Err(crate::utils::error::AppError::Conflict(_))
     ));
+    assert!(!sqlx::query_scalar::<_, bool>(
+        r#"SELECT published FROM "AdSharedPatchChanges" WHERE service_id=900041 AND revision=1"#
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap());
     assert_eq!(read().await.unwrap(), before);
     sqlx::query(r#"UPDATE "AdPatchBuilds" SET status='Ready' WHERE attempt=$1"#)
         .bind(attempt)
@@ -198,6 +206,12 @@ pub(super) async fn check(
         true
     );
     let (host, port, backend, _) = read().await.unwrap();
+    assert!(sqlx::query_scalar::<_, bool>(
+        r#"SELECT published FROM "AdSharedPatchChanges" WHERE service_id=900041 AND revision=1"#
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap());
     let service = LiveService(backend);
     assert!(!host.is_empty() && port > 0);
     assert_eq!(

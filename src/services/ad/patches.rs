@@ -81,14 +81,14 @@ fn git_object(kind: &str, bytes: &[u8]) -> [u8; 32] {
     digest.finalize().into()
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub enum ChangeKind {
     Added,
     Modified,
     Deleted,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct PatchChange {
     pub path: String,
     pub kind: ChangeKind,

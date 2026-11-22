@@ -302,6 +302,7 @@ pub(crate) async fn publish_service_reset(
     require_patch_access: bool,
     runtime_profile: Option<&str>,
     volume_transfer: Option<ResetVolumeTransfer<'_>>,
+    activated_revision: Option<i32>,
 ) -> AppResult<bool> {
     if !valid_replacement_endpoint(host, port, container_id) {
         return Err(AppError::internal(
@@ -331,6 +332,11 @@ pub(crate) async fn publish_service_reset(
         .map_err(|error| AppError::internal(error.to_string()))?
         .rows_affected()
         == 1;
+    if let Some(revision) = activated_revision.filter(|_| published) {
+        sqlx::query(r#"UPDATE "AdSharedPatchChanges" SET published=true WHERE service_id=$1 AND revision=$2 AND NOT published"#)
+            .bind(service_id).bind(revision).execute(&mut **control.transaction_mut()).await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
     if let Some(transfer) = volume_transfer.filter(|_| published) {
         // Commit the replacement receipt and the donor-to-successor endpoint
         // switch together. Until then the service row still owns the donor.

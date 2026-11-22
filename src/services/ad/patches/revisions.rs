@@ -15,6 +15,7 @@ pub(crate) struct SourceBlob {
 
 pub(crate) struct SourceTree {
     pub oid: String,
+    pub shared_changes: Vec<super::PatchChange>,
     /// Sorted (path, Git blob ID, permissions) tuples. Directory trees are
     /// implicit, exactly as in PatchManifest::tree_id.
     pub manifest: String,
@@ -56,9 +57,31 @@ impl PatchManifest {
 }
 
 impl SourceTree {
-    pub fn prepare(original: &[u8], candidate: Bytes) -> anyhow::Result<Self> {
+    pub fn prepare(
+        original: &[u8],
+        candidate: Bytes,
+        sources: &[super::ssh_sources::SshSource],
+    ) -> anyhow::Result<Self> {
         let starter = PatchManifest::from_zip(original).map_err(anyhow::Error::msg)?;
         let manifest = PatchManifest::from_zip(&candidate).map_err(anyhow::Error::msg)?;
+        // Only the trusted starter may select public paths. Team archives can
+        // add arbitrary filenames and change their own registration file.
+        let shared_changes = sources
+            .iter()
+            .filter(|source| source.share_after_close)
+            .filter_map(|source| {
+                let original = starter.0.get(&source.source_path)?;
+                let kind = match manifest.0.get(&source.source_path) {
+                    Some(file) if file == original => return None,
+                    Some(_) => super::ChangeKind::Modified,
+                    None => super::ChangeKind::Deleted,
+                };
+                Some(super::PatchChange {
+                    path: source.source_path.clone(),
+                    kind,
+                })
+            })
+            .collect();
         let sources = starter_sources(starter, &mut zip::ZipArchive::new(Cursor::new(original))?)?;
         let mut entries = Vec::with_capacity(manifest.0.len());
         let mut blobs = BTreeMap::<String, SourceBlob>::new();
@@ -108,6 +131,7 @@ impl SourceTree {
         }
         Ok(Self {
             oid: manifest.tree_id(),
+            shared_changes,
             manifest: serde_json::to_string(&entries)?,
             blobs: blobs.into_values().collect(),
             zip_header_bytes,

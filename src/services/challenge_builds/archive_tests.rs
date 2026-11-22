@@ -45,7 +45,7 @@ async fn buildkit_accepts_checked_out_patch_revision() {
         &[("Dockerfile", dockerfile), ("updated", b"recovered source")],
         zip::CompressionMethod::Deflated,
     );
-    let tree = SourceTree::prepare(&original, candidate.into()).unwrap();
+    let tree = SourceTree::prepare(&original, candidate.into(), &[]).unwrap();
     let mut checkout = Checkout::start(
         PatchManifest::from_record(&tree.manifest).unwrap(),
         &tree.oid,

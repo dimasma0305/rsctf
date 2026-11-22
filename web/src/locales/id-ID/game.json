@@ -1,6 +1,16 @@
 {
   "ad": {
     "patch": {
+      "archive": "Patch yang diterapkan",
+      "archive_help": "Perubahan dari starter untuk file yang dipilih penyelenggara.",
+      "archive_revision": "{{team}} · Revisi {{revision}}",
+      "archive_modified": "Diubah",
+      "archive_deleted": "Dihapus",
+      "archive_first": "Halaman pertama",
+      "archive_next": "Halaman berikutnya",
+      "archive_retry": "Muat ulang arsip patch",
+      "archive_marked": "Status file dibagikan setelah acara ditutup jika berbagi aktivitas patch diaktifkan",
+      "archive_notice": "Setelah acara dan mode latihan ditutup, tim sedivisi dapat melihat status file bertanda shareAfterClose di starter untuk ZIP yang berhasil diterapkan.",
       "ssh_recover": "Unduh ZIP awal dengan editan SSH (revisi {{number}})",
       "ssh_retained": "Disertakan dalam ZIP pemulihan tim",
       "activity": "Aktivitas patch semua tim",

@@ -90,6 +90,29 @@ async fn lock_source(
     i32,
     Option<Starter>,
 )> {
+    let (mut roster, service) = lock_team_service(pool, who, challenge).await?;
+    let db = &mut **roster.transaction_mut();
+    let (tree, size) = sqlx::query_as::<_, (Option<String>, Option<i32>)>(
+        r#"SELECT starter.tree_id, starter.archive_bytes FROM "Games" g
+             LEFT JOIN "AdPatchStarters" starter ON starter.challenge_id = $2
+            WHERE g.id = $1 AND g.start_time_utc <= clock_timestamp() AND clock_timestamp() < g.end_time_utc"#,
+    ).bind(who.game_id).bind(challenge).fetch_optional(&mut *db).await.map_err(revisions::db_error)?
+        .ok_or_else(|| AppError::not_found("Patch source is available during the game"))?;
+    Ok((
+        roster,
+        service,
+        tree.zip(size).map(|(tree_id, archive_bytes)| Starter {
+            tree_id,
+            archive_bytes,
+        }),
+    ))
+}
+
+async fn lock_team_service(
+    pool: &PgPool,
+    who: LiveParticipationIdentity<'_>,
+    challenge: i32,
+) -> AppResult<(crate::utils::single_flight::PgAdvisoryLock, i32)> {
     let mut roster = live_roster::try_acquire_participation_fence(
         pool,
         who.user_id,
@@ -125,22 +148,7 @@ async fn lock_source(
     .await
     .map_err(|e| AppError::internal(e.to_string()))?
     .ok_or_else(|| AppError::not_found("Hosted team service not found"))?;
-    // Read the clock after taking the locks. Practice and archived access do
-    // not extend the competition's source-sharing window.
-    let (tree, size) = sqlx::query_as::<_, (Option<String>, Option<i32>)>(
-        r#"SELECT starter.tree_id, starter.archive_bytes FROM "Games" g
-             LEFT JOIN "AdPatchStarters" starter ON starter.challenge_id = $2
-            WHERE g.id = $1 AND g.start_time_utc <= clock_timestamp() AND clock_timestamp() < g.end_time_utc"#,
-    ).bind(who.game_id).bind(challenge).fetch_optional(&mut *db).await.map_err(|e| AppError::internal(e.to_string()))?
-        .ok_or_else(|| AppError::not_found("Patch source is available during the game"))?;
-    Ok((
-        roster,
-        service,
-        tree.zip(size).map(|(tree_id, archive_bytes)| Starter {
-            tree_id,
-            archive_bytes,
-        }),
-    ))
+    Ok((roster, service))
 }
 
 fn missing() -> AppError {

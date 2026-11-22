@@ -95,6 +95,12 @@ async fn fixture() -> Fixture {
         .execute(&db.pool)
         .await
         .unwrap();
+    for migration in [
+        crate::migrations::m0378_ad_ssh_sources::UP_SQL,
+        crate::migrations::m0380_ad_shared_patch_changes::UP_SQL,
+    ] {
+        sqlx::raw_sql(migration).execute(&db.pool).await.unwrap();
+    }
     let user = CurrentUser {
         id: Uuid::new_v4(),
         name: "player".into(),

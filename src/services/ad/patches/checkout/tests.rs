@@ -65,7 +65,7 @@ fn checkout_restores_renames_modes_empty_and_binary_files() {
         ("empty", b"", 0o755, Deflated),
         ("assets/bin", b"\0\xffdata", 0o644, Stored),
     ]);
-    let tree = SourceTree::prepare(&starter, Bytes::from(target)).unwrap();
+    let tree = SourceTree::prepare(&starter, Bytes::from(target), &[]).unwrap();
     let blobs = rows(&tree, usize::MAX);
     assert_eq!(blobs.len(), 2);
     let output = restore(&starter, &tree, blobs).unwrap();
@@ -93,7 +93,7 @@ fn checkout_requires_complete_intact_source_and_pinned_starter() {
         ("Dockerfile", b"FROM scratch\n", 0o644, Stored),
         ("asset", b"a private asset", 0o644, Stored),
     ]);
-    let tree = SourceTree::prepare(&starter, Bytes::from(target)).unwrap();
+    let tree = SourceTree::prepare(&starter, Bytes::from(target), &[]).unwrap();
     assert!(restore(&starter, &tree, vec![])
         .unwrap_err()
         .to_string()
@@ -131,7 +131,7 @@ fn checkout_preserves_resubmission_budget_when_many_paths_reuse_a_stored_blob() 
         ("c", &payload, 0o644, Deflated),
     ]);
     let cap = candidate.len();
-    let tree = SourceTree::prepare(&starter, Bytes::from(candidate)).unwrap();
+    let tree = SourceTree::prepare(&starter, Bytes::from(candidate), &[]).unwrap();
     assert!(rows(&tree, usize::MAX).is_empty());
     let blobs = rows(&tree, cap);
     assert_eq!(blobs.len(), 1);

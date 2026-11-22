@@ -18,6 +18,8 @@ pub(crate) struct SshSource {
     pub container_path: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub retain_content: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub share_after_close: bool,
 }
 
 impl PatchManifest {

@@ -75,9 +75,12 @@ pub async fn save(
             AppError::bad_request("Send the last seen revision number, or 0 for the first revision")
         })?;
     let (candidate, permit) = read_patch_zip(request, starter.archive_bytes as usize).await?;
-    let original = load(st.pg(), challenge, &starter).await?;
+    let (original, sources) = sqlx::query_as::<_, (Vec<u8>,sqlx::types::Json<Vec<crate::services::ad::patches::ssh_sources::SshSource>>)>(
+        r#"SELECT archive,ssh_sources FROM "AdPatchStarters" WHERE challenge_id=$1 AND tree_id=$2 AND archive_bytes=$3"#,
+    ).bind(challenge).bind(&starter.tree_id).bind(starter.archive_bytes)
+        .fetch_optional(st.pg()).await.map_err(db_error)?.ok_or_else(missing)?;
     let (tree, _permit) = tokio::task::spawn_blocking(move || {
-        SourceTree::prepare(&original, candidate).map(|tree| (tree, permit))
+        SourceTree::prepare(&original, candidate, &sources).map(|tree| (tree, permit))
     })
     .await
     .map_err(|e| AppError::internal(e.to_string()))?
@@ -225,11 +228,25 @@ async fn save_on(
         Some(who.user_id),
         now.timestamp(),
     );
-    sqlx::query_as::<_, Revision>(r#"INSERT INTO "AdPatchRevisions" (service_id,revision,tree_id,parent_id,commit_id,actor_id,created_at)
+    let saved = sqlx::query_as::<_, Revision>(r#"INSERT INTO "AdPatchRevisions" (service_id,revision,tree_id,parent_id,commit_id,actor_id,created_at)
         SELECT $1,$2,$3,$4,$5,$6,$7 FROM "Games" WHERE id=$8 AND start_time_utc <= clock_timestamp() AND end_time_utc > clock_timestamp()
         RETURNING revision,commit_id,parent_id,tree_id,created_at"#)
         .bind(service).bind(expected + 1).bind(tree.oid).bind(parent_id).bind(commit).bind(who.user_id).bind(now).bind(who.game_id)
-        .fetch_optional(db).await.map_err(db_error)?.ok_or_else(|| AppError::conflict("The game has ended."))
+        .fetch_optional(&mut *db).await.map_err(db_error)?.ok_or_else(|| AppError::conflict("The game has ended."))?;
+    if !tree.shared_changes.is_empty() {
+        sqlx::query(
+            r#"INSERT INTO "AdSharedPatchChanges"(service_id,revision,changes)
+             SELECT $1,$2,$3 FROM "AdPatchActivityPolicies" WHERE game_id=$4 AND enabled"#,
+        )
+        .bind(service)
+        .bind(saved.revision)
+        .bind(sqlx::types::Json(tree.shared_changes))
+        .bind(who.game_id)
+        .execute(db)
+        .await
+        .map_err(db_error)?;
+    }
+    Ok(saved)
 }
 
 async fn store_tree(db: &mut PgConnection, service: i32, tree: &SourceTree) -> AppResult<()> {

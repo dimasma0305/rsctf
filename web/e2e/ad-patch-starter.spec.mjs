@@ -11,6 +11,33 @@ let server
 test.beforeAll(async () => { server = await serveAccountBuild(resolve(repositoryRoot, 'web/build')) })
 test.afterAll(async () => { await server?.close() })
 
+test('closed hosted challenge shows paged file statuses on a narrow screen', async ({ page }) => {
+  const game = createCompetitionFixture()
+  game.responses['/api/game/901'].end = Date.now() - 60000
+  Object.assign(game.responses['/api/game/901/challenges/9001'], { type: 'AttackDefense', adSelfHosted: false })
+  await page.setViewportSize({ width: 320, height: 800 })
+  await page.route('**/api/**', async (route) => {
+    const req = route.request()
+    const url = new URL(req.url())
+    if (url.pathname.endsWith('/patch-archive')) {
+      const next = url.searchParams.get('afterTeam') === '2' && url.searchParams.get('afterRevision') === '3'
+      return route.fulfill({ json: { hasMore: !next, revisions: [{
+        teamId: next ? 7 : 2, teamName: next ? 'Finches' : 'Owls', revision: next ? 1 : 3,
+        changes: [{ path: 'src/example.py', kind: next ? 'Deleted' : 'Modified' }],
+      }] } })
+    }
+    const result = game.fixture(url.pathname + url.search, req.method())
+    return route.fulfill({ status: result.status ?? 200, json: result.body ?? null })
+  })
+  await page.goto(server.origin + '/games/901/challenges#9001')
+  await expect(page.getByText('Owls · Revision 3')).toBeVisible()
+  await page.getByRole('button', { name: 'Next page' }).click()
+  await expect(page.getByText('Finches · Revision 1')).toBeVisible()
+  await expect(page.getByRole('listitem').filter({ hasText: 'src/example.py · Deleted' })).toBeVisible()
+  await page.getByRole('button', { name: 'First page' }).click()
+  await expect(page.getByText('Owls · Revision 3')).toBeVisible()
+})
+
 test('team resets its hosted service and sees the completed result without crypto.randomUUID', async ({ page }) => {
   const game = createCompetitionFixture()
   game.challenges[0].type = 'AttackDefense'

@@ -457,6 +457,11 @@ pub async fn execute_job(
                 job: job.id,
                 lease: claimed.lease_token,
             }),
+            if activation {
+                input.candidate_revision
+            } else {
+                None
+            },
         )
     };
     let published = match publish().await {

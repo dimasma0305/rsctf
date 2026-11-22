@@ -66,6 +66,10 @@ fn common_router() -> Router<SharedState> {
             limited(Policy::Query, get(patch_preview::activity::list)),
         )
         .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-archive",
+            limited(Policy::Query, get(patch_preview::activity::archive)),
+        )
+        .route(
             "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions",
             limited(
                 Policy::Query,

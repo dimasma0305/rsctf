@@ -1,6 +1,16 @@
 {
   "ad": {
     "patch": {
+      "archive": "Deployed patches",
+      "archive_help": "Changes from the starter for files selected by the organizer.",
+      "archive_revision": "{{team}} · Revision {{revision}}",
+      "archive_modified": "Modified",
+      "archive_deleted": "Deleted",
+      "archive_first": "First page",
+      "archive_next": "Next page",
+      "archive_retry": "Reload patch archive",
+      "archive_marked": "File status shared after close when patch activity is enabled",
+      "archive_notice": "For deployed ZIPs, teams in your division can see the status of files marked shareAfterClose in the starter once the event and practice close.",
       "ssh_recover": "Download starter with SSH edits (revision {{number}})",
       "ssh_retained": "Included in team recovery ZIPs",
       "activity": "Patch activity across teams",

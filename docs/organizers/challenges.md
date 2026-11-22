@@ -98,7 +98,9 @@ RSCTF shares the starter across teams and stores each additional file's
 contents once per team service, even when the file is renamed. Each service
 can keep up to 4096 revisions and 512 MiB of source blobs and manifests.
 
-To share deployment counts, enable **Share patch activity** in the A&D game settings before the event starts. The default is off. For each hosted ZIP challenge, players can see how many deployments succeeded in a round once another round finishes. Pausing the round scheduler also pauses publication. Team identities and source files stay private.
+To share deployment counts, enable **Share patch activity** in the A&D game settings before the event starts. The default is off. For each hosted ZIP challenge, players can see how many deployments took effect in a round once another round finishes. Pausing the scheduler also pauses publication.
+
+To share a file’s change history after the competition, add `"shareAfterClose": true` to its entry in the organizer’s `.rsctf-ssh.json` before kickoff. With **Share patch activity** enabled, accepted teams in the same division can open the archived challenge to see the deploying team, revision number, and which marked starter paths were modified or deleted. Each comparison uses the original starter. The archive opens after the game ends, all rounds are final, and practice mode is off. File contents, team-added filenames, SSH observations and BYOC reports stay private.
 
 Run `rsctf challenge patch-preview current.zip candidate.zip` to review the
 files added, modified, or deleted in a candidate patch. Both ZIPs need a

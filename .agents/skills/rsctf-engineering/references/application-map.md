@@ -102,7 +102,7 @@ records the current and previous distinct image at endpoint publication. The
 [runtime regression](../../../../src/services/ad/reset_runtime_tests.rs) checks reconciliation
 across an interrupted reset and the [publication tests](../../../../src/services/ad/service_lifecycle_tests.rs)
 cover retention and older servers.
-The [organizer policy](../../../../src/controllers/edit/ad/patch_activity.rs) controls the [delayed deployment counts](../../../../src/controllers/game/ad/patch_preview/activity.rs). The [HTTP regression](../../../../src/controllers/game/ad/patch_preview/tests/activity.rs) checks round finalization and player visibility.
+The [organizer policy](../../../../src/controllers/edit/ad/patch_activity.rs) controls the [delayed deployment counts and closed-game archive](../../../../src/controllers/game/ad/patch_preview/activity.rs). The [archive panel](../../../../web/src/components/competition/AdPatchArchive.tsx) displays marked starter paths for revisions that reached publication. The [HTTP regression](../../../../src/controllers/game/ad/patch_preview/tests/activity.rs) checks round finalization, practice mode, division visibility, and pagination.
 
 The [private revision history](../../../../src/controllers/game/ad/patch_preview/revisions.rs)
 stores [content-addressed source](../../../../src/services/ad/patches/revisions.rs) for one hosted team service.
