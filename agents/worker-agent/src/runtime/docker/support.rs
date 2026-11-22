@@ -33,6 +33,7 @@ pub(super) use storage::{
 };
 
 pub(super) struct ContainerReplicaPlan<'a> {
+    pub(super) team_volume: Option<&'a super::team_volume::TeamVolume>,
     pub(super) fence: WorkloadFence,
     pub(super) spec_hash: &'a str,
     pub(super) network: &'a str,

@@ -17,17 +17,6 @@ pub struct TeamStorage {
     pub initialize_round_flag: bool,
 }
 
-pub(crate) fn application_data_path(path: &str) -> bool {
-    path == "/data"
-        || path.strip_prefix("/var/lib/").is_some_and(|part| {
-            !part.is_empty()
-                && part.len() <= 128
-                && part
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
-        })
-}
-
 impl super::ContainerSpec {
     pub(crate) fn set_ad_launch_flag(&mut self, flag: String, official_round: bool) {
         self.flag = Some(flag);

@@ -51,6 +51,9 @@ pub struct WorkerCapabilities {
     /// Actual runtime disk-quota support; older agents leave this unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_quota_enforced: Option<bool>,
+    /// This worker can retain an A&D assignment's registered application directory.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub team_data_mount: bool,
     pub ensure_workload: bool,
     pub write_flag: bool,
     pub tcp_proxy: bool,
@@ -479,6 +482,12 @@ mod tests {
     #[test]
     fn quota_capability_distinguishes_unsupported_from_older_agents() {
         let mut value = serde_json::to_value(WorkerCapabilities::default()).unwrap();
+        assert!(value.get("teamDataMount").is_none());
+        assert!(
+            !serde_json::from_value::<WorkerCapabilities>(value.clone())
+                .unwrap()
+                .team_data_mount
+        );
         assert_eq!(
             serde_json::from_value::<WorkerCapabilities>(value.clone())
                 .unwrap()

@@ -21,6 +21,8 @@ use uuid::Uuid;
 use super::{is_not_found, DockerRuntime, LABEL_MANAGED, LABEL_WORKER};
 use crate::runtime::{RuntimeOptions, WorkerRuntime};
 
+mod team_data;
+
 const DAEMON_OWNER_VOLUME: &str = "rsctf-worker-owner";
 const LABEL_DAEMON_OWNER: &str = "io.rsctf.worker.daemon-owner";
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -177,6 +179,34 @@ async fn cleanup_owned_resources(
         Err(error) => errors.push(format!("list owned test networks: {error}")),
     }
 
+    let volume_filters = HashMap::from([(
+        "label".to_owned(),
+        vec![
+            super::team_volume::LABEL_ALLOCATION.to_owned(),
+            format!("{LABEL_WORKER}={worker}"),
+        ],
+    )]);
+    match docker
+        .list_volumes(Some(bollard::volume::ListVolumesOptions {
+            filters: volume_filters,
+        }))
+        .await
+    {
+        Ok(found) => {
+            for volume in found.volumes.unwrap_or_default() {
+                if let Err(e) = docker
+                    .remove_volume(&volume.name, Some(RemoveVolumeOptions { force: false }))
+                    .await
+                {
+                    if !is_not_found(&e) {
+                        errors.push(format!("remove test team volume: {e}"));
+                    }
+                }
+            }
+        }
+        Err(error) => errors.push(format!("list owned test team volumes: {error}")),
+    }
+
     match docker.inspect_volume(DAEMON_OWNER_VOLUME).await {
         Ok(volume)
             if volume.labels.get(LABEL_DAEMON_OWNER).map(String::as_str)
@@ -283,6 +313,7 @@ async fn exercise_lifecycle(
             service: "challenge".to_string(),
             port: "service".to_string(),
         },
+        team_data_mount: None,
         flag_target: Some(FlagTarget {
             service: "challenge".to_string(),
             path: "/tmp/flag".to_string(),
@@ -290,6 +321,7 @@ async fn exercise_lifecycle(
     })?;
     let spec_hash = spec.spec_hash()?;
     check_interrupted_network_replacement(&runtime, &spec, worker_id).await?;
+    team_data::check(&runtime, &spec, options).await?;
     let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
     loop {
         let status = runtime

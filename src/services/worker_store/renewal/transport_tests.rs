@@ -63,6 +63,7 @@ async fn connect(
             },
             capabilities: WorkerCapabilities {
                 storage_quota_enforced: None,
+                team_data_mount: false,
                 ensure_workload: true,
                 write_flag: true,
                 tcp_proxy: true,

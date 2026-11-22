@@ -473,10 +473,19 @@ jobs:
       - name: Test Docker worker lifecycle
         shell: bash
         run: |
-          docker build --tag rsctf-worker-smoke:ci \
+          docker build --tag rsctf-worker-smoke:base \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
-          image_id="$(docker image inspect rsctf-worker-smoke:ci --format '{{.Id}}')"
-          RSCTF_WORKER_TEST_IMAGE_ID="$image_id" RSCTF_WORKER_TEST_FLAG_UID=65534 \
+          fixture=agents/worker-agent/tests/fixtures/team-data.Dockerfile
+          for revision in starter patch second; do
+            docker build --tag "rsctf-worker-smoke:$revision" --label "io.rsctf.test.revision=$revision" - < "$fixture"
+          done
+          image_id="$(docker image inspect rsctf-worker-smoke:starter --format '{{.Id}}')"
+          patch_id="$(docker image inspect rsctf-worker-smoke:patch --format '{{.Id}}')"
+          second_id="$(docker image inspect rsctf-worker-smoke:second --format '{{.Id}}')"
+          test "$patch_id" != "$image_id"
+          test "$second_id" != "$patch_id"
+          RSCTF_WORKER_TEST_IMAGE_ID="$image_id" RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$patch_id" \
+            RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$second_id" RSCTF_WORKER_TEST_FLAG_UID=65534 \
             cargo test --manifest-path agents/worker-agent/Cargo.toml --locked \
             docker_workload_lifecycle_when_image_is_configured -- --nocapture
 

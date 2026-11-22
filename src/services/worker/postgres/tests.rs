@@ -233,6 +233,7 @@ pub(crate) fn spec() -> ValidatedWorkloadSpec {
             service: "challenge".into(),
             port: "service".into(),
         },
+        team_data_mount: None,
         flag_target: None,
     }
     .try_into()

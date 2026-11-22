@@ -7,16 +7,14 @@ use bollard::container::{
     Config, CreateContainerOptions, DownloadFromContainerOptions, ListContainersOptions,
     NetworkingConfig, RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
 };
-use bollard::image::CreateImageOptions;
-use bollard::models::{EndpointSettings, HealthConfig};
+use bollard::models::EndpointSettings;
 use bollard::Docker;
 use dashmap::{DashMap, DashSet};
 use futures_util::{StreamExt, TryStreamExt};
 use rsctf_worker_protocol::{
-    CommandErrorCode, EnsureAbsent, EnsureWorkload, ImageIdentity, InventoryItem,
-    ObservedWorkloadState, OperatingSystem, Platform, ResourceUsage, RuntimeDescriptor,
-    RuntimeKind, TcpProxyRequest, WorkerCapabilities, WorkerCapacity, WorkloadFence,
-    WorkloadStatus, WriteFlag,
+    CommandErrorCode, EnsureAbsent, EnsureWorkload, InventoryItem, ObservedWorkloadState,
+    OperatingSystem, Platform, ResourceUsage, RuntimeDescriptor, RuntimeKind, TcpProxyRequest,
+    WorkerCapabilities, WorkerCapacity, WorkloadFence, WorkloadStatus, WriteFlag,
 };
 use tokio::net::TcpStream;
 use uuid::Uuid;
@@ -28,10 +26,13 @@ mod endpoints;
 mod flag_delivery;
 mod flag_upload;
 mod health;
+mod images;
 mod inventory;
 mod networks;
 mod preflight;
+mod state_file;
 mod support;
+mod team_volume;
 mod tombstones;
 mod windows_acl;
 use admission::DockerAdmission;
@@ -74,6 +75,8 @@ pub struct DockerRuntime {
     max_network_endpoints: usize,
     docker_root: std::path::PathBuf,
     minimum_free_bytes: u64,
+    state_dir: std::path::PathBuf,
+    allow_unbounded_storage: bool,
     writable_layer_bytes: Option<u64>,
     round_robin: DashMap<EndpointCacheKey, AtomicU64>,
     endpoint_cache: DashMap<EndpointCacheKey, Vec<EndpointTarget>>,
@@ -152,6 +155,8 @@ impl DockerRuntime {
             max_network_endpoints,
             docker_root,
             minimum_free_bytes: options.minimum_free_bytes,
+            state_dir: state_dir.to_owned(),
+            allow_unbounded_storage: options.allow_unbounded_storage,
             writable_layer_bytes,
             round_robin: DashMap::new(),
             endpoint_cache: DashMap::new(),
@@ -161,68 +166,6 @@ impl DockerRuntime {
         };
         runtime.audit_windows_endpoints().await?;
         Ok(runtime)
-    }
-
-    /// Resolve the runnable image name and the health check it ships, pulling
-    /// a registry digest that is not yet present.
-    async fn ensure_image(
-        &self,
-        image: &ImageIdentity,
-    ) -> Result<(String, Option<HealthConfig>), RuntimeError> {
-        let image_name = match image {
-            ImageIdentity::RegistryDigest { repository, digest } => {
-                format!("{repository}@{digest}")
-            }
-            ImageIdentity::WorkerLocal {
-                worker_id,
-                image_id,
-            } => {
-                if *worker_id != self.worker_id {
-                    return Err(RuntimeError::new(
-                        CommandErrorCode::InvalidSpec,
-                        "worker-local image belongs to a different worker",
-                    ));
-                }
-                image_id.clone()
-            }
-        };
-
-        match self
-            .admission
-            .read("inspect_image", self.docker.inspect_image(&image_name))
-            .await?
-        {
-            Ok(inspected) => return Ok((image_name, image_health_config(&inspected))),
-            Err(error) if is_not_found(&error) => {}
-            Err(error) => return Err(docker_error("inspect image", error)),
-        }
-        if matches!(image, ImageIdentity::WorkerLocal { .. }) {
-            return Err(RuntimeError::new(
-                CommandErrorCode::NotFound,
-                "worker-local image is not present on this Docker daemon",
-            ));
-        }
-
-        let options = CreateImageOptions {
-            from_image: image_name.clone(),
-            ..Default::default()
-        };
-        // Progress frames are drained and discarded so a slow registry cannot
-        // grow memory; the pull deadline drops the stream on expiry.
-        self.admission
-            .pull("create_image", async {
-                let mut progress = self.docker.create_image(Some(options), None, None);
-                while progress.try_next().await?.is_some() {}
-                Ok::<(), bollard::errors::Error>(())
-            })
-            .await?
-            .map_err(|error| docker_error("pull image", error))?;
-        let inspected = self
-            .docker
-            .inspect_image(&image_name)
-            .await
-            .map_err(|error| docker_error("inspect pulled image", error))?;
-        Ok((image_name, image_health_config(&inspected)))
     }
 
     async fn existing_containers(
@@ -305,8 +248,10 @@ impl DockerRuntime {
             service,
             expected_replicas,
             operating_system,
+            team_volume,
         } = plan;
-        let (image, image_health) = self.ensure_image(&service.image).await?;
+        let (image, inspected) = self.ensure_image(&service.image).await?;
+        let image_health = image_health_config(&inspected);
         let name = container_name(fence, &service.name, replica);
         let mut labels = base_labels(self.worker_id, fence, spec_hash);
         labels.insert(LABEL_SERVICE.to_string(), service.name.clone());
@@ -343,7 +288,7 @@ impl DockerRuntime {
             aliases: Some(vec![service.name.clone()]),
             ..Default::default()
         };
-        let host_config = workload_host_config(
+        let mut host_config = workload_host_config(
             operating_system,
             network,
             service.resources.cpu_millis,
@@ -353,6 +298,9 @@ impl DockerRuntime {
                 service.resources.storage_bytes,
             ),
         );
+        if let Some(volume) = team_volume {
+            host_config.mounts = Some(vec![volume.mount()]);
+        }
         let config = Config {
             image: Some(image),
             env: Some(
@@ -391,6 +339,11 @@ impl DockerRuntime {
         if operating_system == OperatingSystem::Windows {
             self.secure_new_windows_container(&created.id, network)
                 .await?;
+        }
+        if let Some(volume) = team_volume {
+            // Docker can auto-create an empty named volume while attaching a
+            // mount. Check the allocation labels again before starting a writer.
+            self.verify_team_volume(volume).await?;
         }
         self.admission
             .lifecycle(
@@ -634,6 +587,8 @@ impl WorkerRuntime for DockerRuntime {
             max_data_lanes: 4,
             max_workload_replicas: workload_replica_capacity(self.max_network_endpoints),
             storage_quota_enforced: Some(self.writable_layer_bytes.is_some()),
+            team_data_mount: self.platform.operating_system == OperatingSystem::Linux
+                && self.allow_unbounded_storage,
         }
     }
 
@@ -799,6 +754,9 @@ impl WorkerRuntime for DockerRuntime {
             }
             self.check_free_space().await?;
         }
+        let team_volume = self
+            .prepare_team_volume(&command, !existing.is_empty())
+            .await?;
         self.flag_delivery.register(&command).await?;
         if replacing_generation {
             self.remove_containers(&existing).await?;
@@ -836,6 +794,7 @@ impl WorkerRuntime for DockerRuntime {
                             service,
                             expected_replicas,
                             operating_system: command.spec.platform.operating_system,
+                            team_volume: team_volume.as_ref(),
                         },
                         replica,
                     )
@@ -899,6 +858,7 @@ impl WorkerRuntime for DockerRuntime {
         let network = self
             .assigned_network(command.fence, &command.spec_hash)
             .await?;
+        let team_volume = self.team_volume_for_removal(&command).await?;
         if record_tombstone {
             self.tombstones
                 .record(command.fence, &command.spec_hash)
@@ -910,6 +870,9 @@ impl WorkerRuntime for DockerRuntime {
         }
         self.invalidate_workload_endpoints(command.fence.workload_id);
         self.flag_delivery.forget(command.fence).await?;
+        if let Some(volume) = team_volume {
+            self.remove_team_volume(&volume).await?;
+        }
         Ok(WorkloadStatus {
             fence: command.fence,
             spec_hash: command.spec_hash,

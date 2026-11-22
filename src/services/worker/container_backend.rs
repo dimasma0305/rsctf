@@ -441,6 +441,7 @@ impl ContainerManager for WorkerContainerManager {
                 service: "challenge".into(),
                 port: "service".into(),
             },
+            team_data_mount: None,
             flag_target: Some(FlagTarget {
                 service: "challenge".into(),
                 path: "/flag".into(),
@@ -782,6 +783,7 @@ mod tests {
                 service: "app".into(),
                 port: "http".into(),
             },
+            team_data_mount: None,
             flag_target: flag_target.then(|| FlagTarget {
                 service: "app".into(),
                 path: "/flag".into(),

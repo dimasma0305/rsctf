@@ -13,9 +13,14 @@ Docker, Kubernetes, database, or HTTP implementation.
   by one status byte and raw bytes.
 - `ValidatedWorkloadSpec` enforces immutable images, bounded resources, named ports,
   and game-mode safety gates. Only stateless Jeopardy services may have replicas.
-  Attack/Defense and King-of-the-Hill fields remain in the wire model, but the
-  current remote worker runtime accepts Jeopardy workloads only; competitive-mode
-  containers stay on the configured local Docker/Kubernetes backend.
+  The platform currently places Jeopardy workloads on trusted workers. Hosted
+  A&D and KotH use the configured local Docker or Kubernetes backend.
+- A Linux A&D workload can declare an optional `teamDataMount` of `/data` or
+  `/var/lib/<application>`. The worker retains a private Docker volume across
+  generations of that assignment and releases it on final teardown. A worker
+  configured to require disk quotas rejects this mount because the local volume
+  driver cannot enforce a per-team size limit. Use this field only with a worker
+  advertising the `teamDataMount` capability. Older agents omit the capability.
 
 The protocol revision is solely a wire-compatibility identifier. It does not version
 or otherwise change scoring.

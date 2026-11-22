@@ -701,6 +701,7 @@ mod tests {
                 service: "app".into(),
                 port: "http".into(),
             },
+            team_data_mount: None,
             flag_target: Some(FlagTarget {
                 service: "app".into(),
                 path: "/flag".into(),

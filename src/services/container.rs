@@ -55,7 +55,7 @@ mod naming;
 mod operation_lookup;
 mod policy;
 mod team_storage;
-pub(crate) use team_storage::application_data_path;
+pub(crate) use rsctf_worker_protocol::application_data_path;
 pub use team_storage::TeamStorage;
 pub mod profiles;
 #[cfg(test)]

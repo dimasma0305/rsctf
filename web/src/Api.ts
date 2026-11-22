@@ -2142,6 +2142,7 @@ export interface WorkloadSpec {
   services: WorkerServiceSpec[];
   primaryEndpoint: WorkerEndpointRef;
   flagTarget?: WorkerFlagTarget | null;
+  teamDataMount?: string | null;
 }
 
 /** Result of applying the saved workload definition to active worker instances. */
