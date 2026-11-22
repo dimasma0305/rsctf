@@ -355,6 +355,40 @@ async fn exercise_lifecycle(
         timeout_ms: 10_000,
     };
     runtime.write_flag(flag.clone()).await?;
+    // A later service in a replacement can reference a missing image. The
+    // current listeners and registered delivery target must both survive.
+    let mut replacement = spec.clone().into_inner();
+    replacement.services[1].image = ImageIdentity::WorkerLocal {
+        worker_id,
+        image_id: format!("sha256:{}", "0".repeat(64)),
+    };
+    let replacement = ValidatedWorkloadSpec::try_from(replacement)?;
+    let error = runtime
+        .ensure_workload(EnsureWorkload {
+            command_id: Uuid::new_v4(),
+            fence: WorkloadFence {
+                generation: fence.generation + 1,
+                ..fence
+            },
+            spec_hash: replacement.spec_hash()?,
+            timeout_ms: READY_TIMEOUT.as_millis() as u64,
+            spec: replacement,
+        })
+        .await
+        .unwrap_err();
+    require(
+        error.code == rsctf_worker_protocol::CommandErrorCode::NotFound,
+        "expected missing replacement image",
+    )?;
+    runtime
+        .open_tcp(&TcpProxyRequest {
+            fence,
+            service: "sidecar".to_string(),
+            port: "service".to_string(),
+            replica: None,
+        })
+        .await?;
+    runtime.write_flag(flag.clone()).await?;
     if let Ok(uid) = std::env::var("RSCTF_WORKER_TEST_FLAG_UID") {
         use bollard::exec::{CreateExecOptions, StartExecResults};
         use futures_util::TryStreamExt;

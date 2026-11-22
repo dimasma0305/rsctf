@@ -782,12 +782,21 @@ impl WorkerRuntime for DockerRuntime {
             }
         }
 
-        self.flag_delivery.register(&command).await?;
         let replacing_generation = existing.iter().any(|container| {
             label(container.labels.as_ref(), LABEL_GENERATION)
                 .and_then(|value| value.parse::<u64>().ok())
                 != Some(command.fence.generation)
         });
+        if replacing_generation {
+            // Stage every image before changing the serving generation or its
+            // flag receipt. A missing sidecar must leave the whole donor up.
+            self.check_free_space().await?;
+            for service in &command.spec.services {
+                self.ensure_image(&service.image).await?;
+            }
+            self.check_free_space().await?;
+        }
+        self.flag_delivery.register(&command).await?;
         if replacing_generation {
             self.remove_containers(&existing).await?;
             self.remove_assignment_networks(command.fence.assignment_id)
