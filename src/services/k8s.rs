@@ -45,7 +45,7 @@ use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, PostParams};
-use kube::core::{ApiResource, DynamicObject, ErrorResponse};
+use kube::core::ErrorResponse;
 use kube::{Client, Config};
 
 use crate::services::container::{
@@ -64,14 +64,16 @@ mod profiles;
 mod readiness;
 #[cfg(test)]
 mod retry_tests;
+#[cfg(test)]
+pub(crate) use retry_tests::mock_storage_manager;
 mod storage;
+mod team_claim;
 #[cfg(test)]
 use launch::sanitize_image;
 use launch::{
     challenge_security_context, fingerprint_policy_labels, kubernetes_launch_fingerprint,
     service_owner_matches_pod, service_type, stamp_policy_labels, workload_name_and_uid,
 };
-use metrics::{parse_cpu_cores, parse_memory_bytes};
 use network::{
     ad_network_config, ad_network_policy, isolated_network_policy, isolated_proxy_network_policy,
     network_policy_required, proxy_network_policy, rollback_created_policy, service_ip_is_routed,
@@ -214,74 +216,6 @@ impl KubernetesContainerManager {
         Api::namespaced(self.client.clone(), &self.namespace)
     }
 
-    /// Fetch live CPU / memory usage for a pod from the `metrics.k8s.io`
-    /// aggregated API (served by metrics-server), summed across the pod's
-    /// containers.
-    ///
-    /// `PodMetrics` is not a compiled-in `k8s-openapi` type, so it is queried as
-    /// a dynamic resource (`GET
-    /// /apis/metrics.k8s.io/v1beta1/namespaces/{ns}/pods/{name}`) and the
-    /// `containers[].usage.{cpu,memory}` quantities are parsed out of the raw
-    /// JSON. Returns `(memory_bytes, cpu_cores)`; either component is `None` when
-    /// no container reported that metric. The whole call degrades to
-    /// `(None, None)` on any transport / parse error (metrics-server absent,
-    /// RBAC denied, metrics not yet scraped, …) so `query` never fails on it.
-    async fn fetch_pod_metrics(&self, id: &str) -> (Option<u64>, Option<f64>) {
-        // Type-erased handle onto the metrics.k8s.io PodMetrics resource. The
-        // plural is `pods`, giving the standard `.../namespaces/{ns}/pods/{name}`
-        // path that metrics-server serves.
-        let ar = ApiResource {
-            group: "metrics.k8s.io".to_string(),
-            version: "v1beta1".to_string(),
-            api_version: "metrics.k8s.io/v1beta1".to_string(),
-            kind: "PodMetrics".to_string(),
-            plural: "pods".to_string(),
-        };
-        let api: Api<DynamicObject> =
-            Api::namespaced_with(self.client.clone(), &self.namespace, &ar);
-
-        let obj = match api.get(id).await {
-            Ok(obj) => obj,
-            Err(_) => return (None, None),
-        };
-
-        // `DynamicObject::data` holds every top-level field other than
-        // `metadata`; for PodMetrics that includes the `containers` array.
-        let containers = match obj.data.get("containers").and_then(|c| c.as_array()) {
-            Some(c) => c,
-            None => return (None, None),
-        };
-
-        let mut total_mem: u64 = 0;
-        let mut total_cpu: f64 = 0.0;
-        let mut have_mem = false;
-        let mut have_cpu = false;
-        for c in containers {
-            let usage = match c.get("usage") {
-                Some(u) => u,
-                None => continue,
-            };
-            if let Some(bytes) = usage
-                .get("memory")
-                .and_then(|v| v.as_str())
-                .and_then(parse_memory_bytes)
-            {
-                total_mem = total_mem.saturating_add(bytes);
-                have_mem = true;
-            }
-            if let Some(cores) = usage
-                .get("cpu")
-                .and_then(|v| v.as_str())
-                .and_then(parse_cpu_cores)
-            {
-                total_cpu += cores;
-                have_cpu = true;
-            }
-        }
-
-        (have_mem.then_some(total_mem), have_cpu.then_some(total_cpu))
-    }
-
     async fn rollback_new_pod(
         &self,
         pods: &Api<Pod>,
@@ -383,6 +317,37 @@ impl ContainerManager for KubernetesContainerManager {
             return Err(AppError::conflict("A&D Pod belongs to a different runtime"));
         }
         storage::check_replacement(&pod)?;
+        Ok(false)
+    }
+
+    async fn prepare_team_claim(
+        &self,
+        _profile: Option<&str>,
+        data: &crate::services::container::TeamStorage,
+        mib: i32,
+    ) -> AppResult<String> {
+        let claim = self
+            .team_claim(data, data.claim_uid.is_none().then_some(mib))
+            .await?;
+        Ok(claim.uid)
+    }
+
+    async fn ad_donor_needs_transfer(&self, id: &str, next: &ContainerSpec) -> AppResult<bool> {
+        let Some(data) = &next.team_storage else {
+            return self.has_ad_data_volumes(id).await;
+        };
+        let claim = self.team_claim(data, None).await?;
+        if let Some(pod) = self
+            .pods()
+            .get_opt(id)
+            .await
+            .map_err(|e| AppError::unavailable(format!("Could not inspect A&D Pod: {e}")))?
+        {
+            if !orphans::owned_identity(&pod.metadata, id, &self.scope) {
+                return Err(AppError::conflict("A&D Pod belongs to a different runtime"));
+            }
+            claim.check_replacement(&pod, id)?;
+        }
         Ok(false)
     }
 
@@ -558,7 +523,7 @@ impl ContainerManager for KubernetesContainerManager {
             ..Default::default()
         };
 
-        let pod = Pod {
+        let mut pod = Pod {
             metadata: ObjectMeta {
                 name: Some(name.clone()),
                 namespace: Some(self.namespace.clone()),
@@ -575,6 +540,24 @@ impl ContainerManager for KubernetesContainerManager {
             status: None,
         };
 
+        let team_claim = match &spec.team_storage {
+            Some(data) => {
+                if !team_service || !ad_internal {
+                    return Err(AppError::bad_request(
+                        "Team storage requires a hosted A&D service",
+                    ));
+                }
+                if data.claim_uid.is_none() {
+                    return Err(AppError::conflict(
+                        "Missing registration for the team storage claim",
+                    ));
+                }
+                let claim = self.team_claim(data, None).await?;
+                claim.mount(&mut pod);
+                Some(claim)
+            }
+            None => None,
+        };
         // Install isolation before the selected pod exists, eliminating the
         // startup window in which an attacker-controlled image could reach the
         // cluster or Internet. The unique selector makes a crash-orphaned policy
@@ -646,8 +629,13 @@ impl ContainerManager for KubernetesContainerManager {
                 return Err(AppError::internal(format!("failed to create pod: {e}")));
             }
         };
+        if let Some(claim) = &team_claim {
+            claim.check_replacement(&created_pod, &name)?;
+        }
         let check_cleanup = || {
-            if team_service {
+            if let Some(claim) = &team_claim {
+                claim.check_replacement(&created_pod, &name)?;
+            } else if team_service {
                 storage::check_replacement(&created_pod)?;
             }
             Ok::<(), AppError>(())
@@ -844,11 +832,18 @@ impl ContainerManager for KubernetesContainerManager {
             (node_ip, node_port)
         };
 
+        let status = if let Some(claim) = &team_claim {
+            claim
+                .wait_ready(&pods, &name, &pod_uid, &spec.image)
+                .await?
+        } else {
+            readiness::status(&created_pod)
+        };
         Ok(ContainerInfo {
             id: name,
             ip,
             port,
-            status: readiness::status(&created_pod).to_string(),
+            status: status.to_string(),
         })
     }
 

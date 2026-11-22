@@ -126,7 +126,11 @@ impl ProvisionFlag {
         // Returning None lets the caller remove a stateless donor. Its
         // writable layer still belongs to the team if the next launch is invalid.
         crate::services::container::validate_container_spec(spec)?;
-        if !state.containers.has_ad_data_volumes(donor).await? {
+        if !state
+            .containers
+            .ad_donor_needs_transfer(donor, spec)
+            .await?
+        {
             return Ok(None);
         }
         crate::services::traffic::fence_container_capture_stop(state, donor).await?;

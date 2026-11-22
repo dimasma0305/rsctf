@@ -5,12 +5,17 @@ use crate::utils::error::{AppError, AppResult};
 /// Admission can add storage after the platform submits a Pod. Inspect the
 /// persisted spec, including for terminal Pods recovered by a retried launch.
 pub(super) fn check_replacement(pod: &Pod) -> AppResult<()> {
+    check_remaining_volumes(pod, None)
+}
+
+pub(super) fn check_remaining_volumes(pod: &Pod, verified: Option<&str>) -> AppResult<()> {
     let spec = pod
         .spec
         .as_ref()
         .ok_or_else(|| AppError::conflict("Missing A&D Pod specification"))?;
     for volume in spec.volumes.iter().flatten() {
-        if volume.config_map.is_some()
+        if Some(volume.name.as_str()) == verified
+            || volume.config_map.is_some()
             || volume.secret.is_some()
             || volume.projected.is_some()
             || volume.downward_api.is_some()

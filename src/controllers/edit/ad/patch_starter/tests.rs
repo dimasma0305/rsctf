@@ -41,6 +41,29 @@ fn ssh_starter(registration: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn data_directory_is_an_optional_single_normalized_application_path() {
+    for (bytes, valid) in [
+        (b"/data\r\n".as_slice(), true),
+        (b"/var/lib/rehearsal", true),
+        (b"/data/../root", false),
+        (b"/", false),
+        (b"/var/lib/a\n/var/lib/b", false),
+    ] {
+        let zip = archive(
+            &[("Dockerfile", b"FROM scratch"), (".rsctf-data-dir", bytes)],
+            zip::CompressionMethod::Stored,
+        );
+        assert_eq!(Registration::from_zip(&zip).is_ok(), valid);
+    }
+    assert!(
+        Registration::from_zip(&zip(b"FROM scratch", zip::CompressionMethod::Stored))
+            .unwrap()
+            .data_mount
+            .is_none()
+    );
+}
+
+#[test]
 fn ssh_registration_requires_unique_starter_files_and_normalized_container_paths() {
     let mapping = |source: &str, target: &str| serde_json::json!({"sourcePath":source,"containerPath":target});
     let valid = mapping("src/main.py", "/srv/game/main.py");
@@ -98,13 +121,15 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
         CREATE TABLE "Games" (id INTEGER PRIMARY KEY, start_time_utc TIMESTAMPTZ, deletion_pending BOOLEAN);
         CREATE TABLE "GameChallenges" (id INTEGER PRIMARY KEY, game_id INTEGER, "Type" SMALLINT, ad_self_hosted BOOLEAN, deletion_pending BOOLEAN);
         CREATE TABLE "AdTeamServices" (id INTEGER PRIMARY KEY, game_id INTEGER, challenge_id INTEGER);
+        CREATE TABLE "Participations" (id INTEGER PRIMARY KEY);
         INSERT INTO "Games" VALUES (1, now()+interval '1 day', false), (2, now()+interval '1 day', false);
         INSERT INTO "GameChallenges" VALUES (10,1,4,false,false),(11,1,4,true,false),(12,2,4,false,false),(13,1,0,false,false),(14,1,4,false,false);
         ALTER TABLE "Games" ADD COLUMN end_time_utc TIMESTAMPTZ DEFAULT now()+interval '2 days';
         ALTER TABLE "GameChallenges" ADD COLUMN build_status SMALLINT NOT NULL DEFAULT 0,
             ADD COLUMN build_image_digest TEXT;
         INSERT INTO "GameChallenges" (id,game_id,"Type",ad_self_hosted,deletion_pending)
-            VALUES (15,1,4,false,false);
+            VALUES (15,1,4,false,false),(17,1,4,false,false);
+        INSERT INTO "Participations" VALUES (1),(2);
     "#).execute(&db.pool).await.unwrap();
     for _ in 0..2 {
         sqlx::raw_sql(crate::migrations::m0366_ad_patch_starters::UP_SQL)
@@ -127,6 +152,10 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
             .await
             .unwrap();
         sqlx::raw_sql(crate::migrations::m0378_ad_ssh_sources::UP_SQL)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(crate::migrations::m0381_ad_team_storage::UP_SQL)
             .execute(&db.pool)
             .await
             .unwrap();
@@ -153,11 +182,72 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
         Arc::new(crate::services::cache::InMemoryCache::new()),
         Arc::new(crate::storage::LocalBlobStorage::new(root)),
         crate::services::token::TokenService::new("0123456789abcdef0123456789abcdef", 60),
-        Arc::new(crate::services::container::NoopContainerManager),
+        Arc::new(crate::services::k8s::mock_storage_manager()),
     );
-    let router = crate::controllers::edit::router().with_state(st);
+    let router = crate::controllers::edit::router().with_state(st.clone());
     let v1 = zip(b"FROM scratch\n", zip::CompressionMethod::Stored);
     let v2 = zip(b"FROM scratch\n# v2\n", zip::CompressionMethod::Stored);
+    let with_data = archive(
+        &[
+            ("Dockerfile", b"FROM scratch"),
+            (".rsctf-data-dir", b"/data\n"),
+        ],
+        zip::CompressionMethod::Stored,
+    );
+    let (status, registered) = request(&router, "PUT", 17, Some(&user), with_data, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(registered["dataMount"], "/data");
+    assert_eq!(
+        request(&router, "GET", 17, Some(&user), vec![], None)
+            .await
+            .1["dataMount"],
+        "/data"
+    );
+    use crate::services::container::{ContainerResourceLimits, ContainerSpec, TeamStorage};
+    let spec = ContainerSpec::ad_service(
+        format!("example.test/app@sha256:{}", "a".repeat(64)),
+        ContainerResourceLimits {
+            memory_limit: 128,
+            cpu_count: 1,
+            storage_limit: 64,
+        },
+        8000,
+        1,
+        false,
+        String::new(),
+    );
+    let configure = |mut spec: ContainerSpec, participation| {
+        let state = &st;
+        async move {
+            TeamStorage::configure(state, &mut spec, 1, participation, 17)
+                .await
+                .unwrap();
+            spec.team_storage.unwrap()
+        }
+    };
+    let (first, retry, other) = tokio::join!(
+        configure(spec.clone(), 1),
+        configure(spec.clone(), 1),
+        configure(spec, 2)
+    );
+    assert!(first.claim_uid.is_some());
+    assert_eq!(first.allocation_id, retry.allocation_id);
+    assert_eq!(first.claim_uid, retry.claim_uid);
+    assert_ne!(first.allocation_id, other.allocation_id);
+    assert_ne!(first.claim_uid, other.claim_uid);
+    assert_eq!(
+        request(
+            &router,
+            "PUT",
+            17,
+            Some(&user),
+            v2.clone(),
+            registered["treeId"].as_str()
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
     for method in ["GET", "PUT"] {
         assert_eq!(
             request(&router, method, 10, None, v1.clone(), None).await.0,

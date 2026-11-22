@@ -29,6 +29,7 @@ pub(super) fn replacement_container_spec(
         flag: Some(spec.runtime_flag.clone().unwrap_or_default()),
         ad_network: Some(crate::services::ad_vpn::services_network()),
         allow_egress: spec.allow_egress,
+        team_storage: None,
         control_plane_callback_ports: reporter
             .map(|runtime| runtime.callback_ports.clone())
             .unwrap_or_default(),

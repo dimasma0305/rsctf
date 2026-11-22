@@ -296,6 +296,19 @@ impl ContainerManager for CapacityGatedDockerManager {
         self.inner.has_ad_data_volumes(id).await
     }
 
+    async fn prepare_team_claim(
+        &self,
+        profile: Option<&str>,
+        storage: &crate::services::container::TeamStorage,
+        mib: i32,
+    ) -> AppResult<String> {
+        self.inner.prepare_team_claim(profile, storage, mib).await
+    }
+
+    async fn ad_donor_needs_transfer(&self, id: &str, next: &ContainerSpec) -> AppResult<bool> {
+        self.inner.ad_donor_needs_transfer(id, next).await
+    }
+
     async fn repair_ad_volumes(
         &self,
         previous: &str,

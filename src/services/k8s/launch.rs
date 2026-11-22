@@ -90,6 +90,8 @@ struct KubernetesLaunchIdentity<'a> {
     network_policy: Option<&'a NetworkPolicySpec>,
     ad_service_cidr: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    team_storage: Option<&'a crate::services::container::TeamStorage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     readiness_probe: Option<k8s_openapi::api::core::v1::Probe>,
 }
 
@@ -109,6 +111,7 @@ pub(super) fn kubernetes_launch_fingerprint(
         security_context,
         network_policy: private_policy.and_then(|policy| policy.spec.as_ref()),
         ad_service_cidr,
+        team_storage: spec.team_storage.as_ref(),
         readiness_probe: super::readiness::probe(spec.expose_port),
     };
     let bytes = serde_json::to_vec(&canonical)

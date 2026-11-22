@@ -194,6 +194,9 @@ RSCTF_K8S_LIVE_RETRY='1' \
 [[ "$(kubectl get pod -n rsctf-retry team-storage-donor -o jsonpath='{.metadata.uid}')" == "$donor_uid" ]]
 [[ "$(kubectl exec -n rsctf-retry team-storage-donor -- cat /data/installation)" == "$donor_record" ]]
 
+source "$(dirname "$0")/test-kubernetes-team-storage.sh"
+test_team_storage
+
 kubectl apply -f - <<'YAML'
 apiVersion: v1
 kind: Pod

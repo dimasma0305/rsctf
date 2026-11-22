@@ -25,11 +25,14 @@ pub(crate) struct RegisteredStarter {
     #[sqlx(json)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ssh_sources: Vec<SshSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_mount: Option<String>,
 }
 
 struct Registration {
     tree_id: String,
     ssh_sources: Vec<SshSource>,
+    data_mount: Option<String>,
 }
 
 impl Registration {
@@ -38,7 +41,32 @@ impl Registration {
         Ok(Self {
             tree_id: manifest.tree_id(),
             ssh_sources: manifest.ssh_sources(archive)?,
+            data_mount: Self::data_mount(archive)?,
         })
+    }
+
+    fn data_mount(archive: &[u8]) -> Result<Option<String>, String> {
+        use std::io::{Cursor, Read};
+        let mut zip = zip::ZipArchive::new(Cursor::new(archive)).map_err(|e| e.to_string())?;
+        let file = match zip.by_name(".rsctf-data-dir") {
+            Ok(file) => file,
+            Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        let mut text = String::new();
+        file.take(257)
+            .read_to_string(&mut text)
+            .map_err(|_| "Invalid .rsctf-data-dir")?;
+        let path = text
+            .strip_suffix("\r\n")
+            .or_else(|| text.strip_suffix('\n'))
+            .unwrap_or(&text);
+        if !crate::services::container::application_data_path(path) {
+            return Err(
+                ".rsctf-data-dir must contain /data or one directory under /var/lib".into(),
+            );
+        }
+        Ok(Some(path.to_owned()))
     }
 }
 
@@ -62,10 +90,10 @@ pub async fn get(
     Path((game_id, challenge_id)): Path<(i32, i32)>,
 ) -> AppResult<Json<Option<RegisteredStarter>>> {
     manager_or_admin(&st, &user, game_id).await?;
-    let (tree, size, runtime_image_ref, awaiting_image_build, ssh_sources) =
-        sqlx::query_as::<_, (Option<String>, Option<i32>, Option<String>, bool, sqlx::types::Json<Vec<SshSource>>)>(
+    let (tree, size, runtime_image_ref, awaiting_image_build, ssh_sources, data_mount) =
+        sqlx::query_as::<_, (Option<String>, Option<i32>, Option<String>, bool, sqlx::types::Json<Vec<SshSource>>, Option<String>)>(
             r#"SELECT starter.tree_id, starter.archive_bytes, starter.runtime_image_ref,
-                  COALESCE(starter.awaiting_image_build,FALSE), COALESCE(starter.ssh_sources,'[]'::jsonb)
+                  COALESCE(starter.awaiting_image_build,FALSE), COALESCE(starter.ssh_sources,'[]'::jsonb), starter.data_mount
              FROM "GameChallenges" c JOIN "Games" g ON g.id = c.game_id
              LEFT JOIN "AdPatchStarters" starter ON starter.challenge_id = c.id
             WHERE c.id = $1 AND c.game_id = $2 AND c."Type" = $3
@@ -87,6 +115,7 @@ pub async fn get(
             runtime_image_ref,
             awaiting_image_build,
             ssh_sources: ssh_sources.0,
+            data_mount,
         }
     })))
 }
@@ -181,7 +210,7 @@ async fn register(
     .map_err(db_error)?
     .ok_or_else(|| AppError::not_found("Hosted A&D challenge not found"))?;
     let current = sqlx::query_as::<_, RegisteredStarter>(
-        r#"SELECT tree_id, archive_bytes, runtime_image_ref, awaiting_image_build, ssh_sources FROM "AdPatchStarters" WHERE challenge_id=$1"#,
+        r#"SELECT tree_id, archive_bytes, runtime_image_ref, awaiting_image_build, ssh_sources, data_mount FROM "AdPatchStarters" WHERE challenge_id=$1"#,
     )
     .bind(challenge_id)
     .fetch_optional(&mut *tx)
@@ -191,6 +220,7 @@ async fn register(
         // A lost-response retry (including a repacked archive) retains the original bytes.
         if current.source.tree_id == registration.tree_id
             && current.ssh_sources == registration.ssh_sources
+            && current.data_mount == registration.data_mount
         {
             return Ok(current);
         }
@@ -203,24 +233,30 @@ async fn register(
         return Err(AppError::conflict("There is no saved starter to replace"));
     }
     let starter = sqlx::query_as::<_, RegisteredStarter>(
-        r#"INSERT INTO "AdPatchStarters" (challenge_id,tree_id,archive,ssh_sources)
-           SELECT $1,$2,$3,$5::jsonb WHERE $5::jsonb='[]'::jsonb
-             OR EXISTS (SELECT 1 FROM "Games" WHERE id=$4 AND start_time_utc > clock_timestamp())
-           ON CONFLICT (challenge_id) DO UPDATE SET tree_id=EXCLUDED.tree_id, archive=EXCLUDED.archive, ssh_sources=EXCLUDED.ssh_sources
+        r#"INSERT INTO "AdPatchStarters" (challenge_id,tree_id,archive,ssh_sources,data_mount)
+           SELECT $1,$2,$3,$5::jsonb,$6::text WHERE (($5::jsonb='[]'::jsonb AND $6 IS NULL)
+             OR EXISTS (SELECT 1 FROM "Games" WHERE id=$4 AND start_time_utc > clock_timestamp()))
+           AND ($6 IS NULL OR EXISTS(SELECT 1 FROM "AdPatchStarters" WHERE challenge_id=$1 AND data_mount=$6)
+                OR NOT EXISTS(SELECT 1 FROM "AdTeamServices" WHERE challenge_id=$1))
+           ON CONFLICT (challenge_id) DO UPDATE SET tree_id=EXCLUDED.tree_id, archive=EXCLUDED.archive,
+               ssh_sources=EXCLUDED.ssh_sources, data_mount=EXCLUDED.data_mount
            WHERE EXISTS (SELECT 1 FROM "Games" WHERE id=$4 AND start_time_utc > clock_timestamp())
+             AND ("AdPatchStarters".data_mount IS NOT DISTINCT FROM EXCLUDED.data_mount
+                  OR (NOT "AdPatchStarters".data_mount_claimed AND NOT EXISTS(SELECT 1 FROM "AdTeamServices" WHERE challenge_id=$1)))
              AND NOT EXISTS (SELECT 1 FROM "AdTeamServices" s JOIN "AdPatchSourceUsage" u ON u.service_id=s.id
                              WHERE s.game_id=$4 AND s.challenge_id=$1)
-           RETURNING tree_id, archive_bytes, runtime_image_ref, awaiting_image_build, ssh_sources"#,
+           RETURNING tree_id, archive_bytes, runtime_image_ref, awaiting_image_build, ssh_sources, data_mount"#,
     )
     .bind(challenge_id)
     .bind(&registration.tree_id)
     .bind(archive)
     .bind(game_id)
     .bind(sqlx::types::Json(&registration.ssh_sources))
+    .bind(registration.data_mount.as_deref())
     .fetch_optional(&mut *tx)
     .await
     .map_err(db_error)?
-    .ok_or_else(|| AppError::conflict("The original starter is pinned after the game starts"))?;
+    .ok_or_else(|| AppError::conflict("The starter is pinned after kickoff or source use. A provisioned team's data directory is also pinned."))?;
     tx.commit().await.map_err(db_error)?;
     Ok(starter)
 }

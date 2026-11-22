@@ -231,6 +231,30 @@ impl ContainerManager for ProfileRouter {
         owner.has_ad_data_volumes(raw).await
     }
 
+    async fn prepare_team_claim(
+        &self,
+        profile: Option<&str>,
+        storage: &crate::services::container::TeamStorage,
+        mib: i32,
+    ) -> AppResult<String> {
+        self.selected(profile)?
+            .prepare_team_claim(None, storage, mib)
+            .await
+    }
+
+    async fn ad_donor_needs_transfer(
+        &self,
+        previous: &str,
+        next: &ContainerSpec,
+    ) -> AppResult<bool> {
+        let (owner, raw) = if next.team_storage.is_some() {
+            self.volume_owner(previous, next.runtime_profile.as_deref())?
+        } else {
+            self.route(previous)?
+        };
+        owner.ad_donor_needs_transfer(raw, next).await
+    }
+
     async fn repair_ad_volumes(
         &self,
         previous: &str,

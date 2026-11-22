@@ -218,8 +218,15 @@ mounts leave the reset pending or rejected with the team's data still attached.
 The replacement reads the current contents of those volumes, so both image
 versions must be able to read the team's stored data format.
 
+For hosted Kubernetes challenges, include a file named `.rsctf-data-dir` in the
+root of the organizer's starter ZIP before provisioning. Give it one line with
+the directory the service uses, such as `/data` or `/var/lib/rehearsal`.
+Each team starts with an empty claim at that directory. Have the service initialize
+its files on first use. Reset and automatic repair mount the same team's claim.
+The first deployment pins the mount path and the identity of the claim.
+
 On Kubernetes, reset and automatic repair inspect the existing Pod. If it
-has a persistent volume claim, an `emptyDir`, or another application volume,
+has an unregistered persistent volume claim, an `emptyDir`, or another application volume,
 RSCTF keeps the Pod so the organizer can recover the team's files. Projected
 configuration such as ConfigMaps and Secrets can be recreated.
 If retrying a launch finds a stopped Pod with application storage, the error

@@ -54,6 +54,9 @@ mod logging;
 mod naming;
 mod operation_lookup;
 mod policy;
+mod team_storage;
+pub(crate) use team_storage::application_data_path;
+pub use team_storage::TeamStorage;
 pub mod profiles;
 #[cfg(test)]
 mod real_docker_tests;
@@ -174,6 +177,8 @@ fn labels_match_scope(labels: Option<&HashMap<String, String>>, scope: &str) -> 
 pub struct ContainerSpec {
     /// Administrator-approved runtime profile; absent preserves deployment default.
     pub runtime_profile: Option<String>,
+    /// Organizer-declared storage for a hosted Kubernetes team service.
+    pub team_storage: Option<TeamStorage>,
     /// Competition semantics for routing. Network shape is not a safe proxy:
     /// admin tests and ended-game practice can omit the A&D services network.
     pub game_kind: GameKind,
@@ -253,6 +258,7 @@ impl ContainerSpec {
             flag: Some(flag),
             ad_network: Some(crate::services::ad_vpn::services_network()),
             allow_egress,
+            team_storage: None,
             control_plane_callback_ports: Vec::new(),
             network_mode: NetworkMode::Open,
             operation_id: None,

@@ -176,6 +176,7 @@ pub(super) fn fingerprint_spec() -> ContainerSpec {
         flag: Some("flag-secret".to_string()),
         ad_network: Some("rsctf-ad".to_string()),
         allow_egress: false,
+        team_storage: None,
         control_plane_callback_ports: Vec::new(),
         network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some("cycle:9".to_string()),

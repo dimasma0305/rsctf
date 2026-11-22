@@ -592,7 +592,36 @@ pub(crate) async fn ensure_ad_containers(
             let prepared_flag =
                 crate::services::ad_engine::ProvisionFlag::read(st.pg(), game.id, p.id, c.id)
                     .await?;
-            let seed = retired_backend.or(operation_id.as_deref());
+            let mut spec = ContainerSpec::ad_service(
+                image.clone(),
+                ContainerResourceLimits {
+                    memory_limit: c.memory_limit.unwrap_or(256),
+                    cpu_count: c.cpu_count.unwrap_or(1),
+                    storage_limit: crate::services::container::storage_limit_or_default(
+                        c.storage_limit,
+                    ),
+                },
+                c.expose_port.unwrap_or(80),
+                p.team_id,
+                c.ad_allow_egress,
+                String::new(),
+            );
+            spec.runtime_profile = c.runtime_profile.clone();
+            spec.operation_id = operation_id;
+            if let Err(error) = crate::services::container::TeamStorage::configure(
+                st, &mut spec, game.id, p.id, c.id,
+            )
+            .await
+            {
+                tracing::warn!(challenge = c.id, participation = p.id, %error, "could not prepare the team's registered storage");
+                failures += 1;
+                distributed.release().await?;
+                if is_manual_operation_conflict(&error, reconcile_operation_id) {
+                    return Err(error);
+                }
+                continue;
+            }
+            let seed = retired_backend.or(spec.operation_id.as_deref());
             let flag = match (&prepared_flag.official, seed) {
                 (Some(flag), _) => Ok(flag.clone()),
                 (None, Some(operation_id)) => {
@@ -612,22 +641,7 @@ pub(crate) async fn ensure_ad_containers(
                     continue;
                 }
             };
-            let mut spec = ContainerSpec::ad_service(
-                image.clone(),
-                ContainerResourceLimits {
-                    memory_limit: c.memory_limit.unwrap_or(256),
-                    cpu_count: c.cpu_count.unwrap_or(1),
-                    storage_limit: crate::services::container::storage_limit_or_default(
-                        c.storage_limit,
-                    ),
-                },
-                c.expose_port.unwrap_or(80),
-                p.team_id,
-                c.ad_allow_egress,
-                flag,
-            );
-            spec.runtime_profile = c.runtime_profile.clone();
-            spec.operation_id = operation_id;
+            spec.flag = Some(flag);
             if let Some((service, cid)) = existing.as_ref().zip(retired_backend) {
                 match prepared_flag
                     .repair_data_volumes(st, service, &spec, cid)

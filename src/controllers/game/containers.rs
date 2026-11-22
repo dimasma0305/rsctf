@@ -357,6 +357,7 @@ async fn perform_create_container(
                     ad_network: None,
                     allow_egress: challenge.network_mode.unwrap_or(NetworkMode::Open)
                         == NetworkMode::Open,
+                    team_storage: None,
                     control_plane_callback_ports: Vec::new(),
                     network_mode: challenge.network_mode.unwrap_or(NetworkMode::Open),
                     operation_id,

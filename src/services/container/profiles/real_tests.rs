@@ -25,6 +25,7 @@ fn request(image: &str, profile: &str, operation: &str) -> ContainerSpec {
         flag: Some("flag{profile-lifecycle-fixture}".into()),
         ad_network: None,
         allow_egress: true,
+        team_storage: None,
         control_plane_callback_ports: vec![],
         network_mode: NetworkMode::Open,
         operation_id: Some(operation.into()),

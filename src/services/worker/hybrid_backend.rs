@@ -94,6 +94,22 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.has_ad_data_volumes(id).await
     }
 
+    async fn prepare_team_claim(
+        &self,
+        profile: Option<&str>,
+        storage: &crate::services::container::TeamStorage,
+        mib: i32,
+    ) -> AppResult<String> {
+        self.local.prepare_team_claim(profile, storage, mib).await
+    }
+
+    async fn ad_donor_needs_transfer(&self, id: &str, next: &ContainerSpec) -> AppResult<bool> {
+        if Self::is_worker_id(id) {
+            return self.worker.ad_donor_needs_transfer(id, next).await;
+        }
+        self.local.ad_donor_needs_transfer(id, next).await
+    }
+
     async fn repair_ad_volumes(
         &self,
         previous: &str,
@@ -270,6 +286,7 @@ mod tests {
             flag: None,
             ad_network: None,
             allow_egress: false,
+            team_storage: None,
             control_plane_callback_ports: Vec::new(),
             network_mode: crate::utils::enums::NetworkMode::Open,
             operation_id: None,

@@ -6,16 +6,7 @@ use super::super::{AdVolumeChange, ContainerSpec, DockerContainerManager, TEAM_E
 use crate::services::docker_admission::docker_admission;
 use crate::utils::error::{AppError, AppResult};
 
-fn application_data(path: &str) -> bool {
-    path == "/data"
-        || path.strip_prefix("/var/lib/").is_some_and(|component| {
-            !component.is_empty()
-                && component.len() <= 128
-                && component
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
-        })
-}
+use super::super::application_data_path as application_data;
 
 // An unfamiliar mount still carries team data and must reach validation.
 fn has_persistent_mount(mounts: &[MountPoint]) -> bool {

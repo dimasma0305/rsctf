@@ -594,6 +594,7 @@ fn a_spec_reservation_uses_millicores_mebibytes_and_one_slot() {
         flag: None,
         ad_network: None,
         allow_egress: false,
+        team_storage: None,
         control_plane_callback_ports: Vec::new(),
         network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some("exercise-container:abc".into()),

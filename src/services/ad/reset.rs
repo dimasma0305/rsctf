@@ -291,6 +291,14 @@ pub async fn execute_job(
     );
     spec.runtime_profile = challenge.runtime_profile.clone();
     spec.operation_id = Some(format!("ad-reset:{}", job.operation_id));
+    crate::services::container::TeamStorage::configure(
+        st,
+        &mut spec,
+        job.game_id,
+        part.id,
+        challenge.id,
+    )
+    .await?;
     // Live challenge settings and deployment limits can change between launches.
     // Check the replacement while the team's existing endpoint still serves.
     crate::services::container::validate_container_spec(&spec)?;
@@ -310,7 +318,7 @@ pub async fn execute_job(
     let mut preserve_volumes = input.preserve_data_volumes;
     if !replacement_checkpointed {
         if let Some(id) = source {
-            preserve_volumes |= st.containers.has_ad_data_volumes(id).await?;
+            preserve_volumes |= st.containers.ad_donor_needs_transfer(id, &spec).await?;
             if preserve_volumes {
                 st.containers.check_ad_volume_reset(id, &spec).await?;
             } else if activation && !resuming {

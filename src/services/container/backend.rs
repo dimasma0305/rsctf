@@ -187,6 +187,23 @@ pub trait ContainerManager: Send + Sync {
         Ok(false)
     }
 
+    /// Resolve or allocate a team's claim before the first workload uses it.
+    async fn prepare_team_claim(
+        &self,
+        _profile: Option<&str>,
+        _storage: &super::TeamStorage,
+        _mib: i32,
+    ) -> AppResult<String> {
+        Err(AppError::bad_request(
+            "The selected runtime does not support team storage claims",
+        ))
+    }
+
+    /// Prove that the replacement can remount a separately owned claim before retiring its Pod.
+    async fn ad_donor_needs_transfer(&self, id: &str, _next: &ContainerSpec) -> AppResult<bool> {
+        self.has_ad_data_volumes(id).await
+    }
+
     /// A stateless team's previous image must remain a valid rollback target.
     async fn check_stateless_ad_patch(
         &self,

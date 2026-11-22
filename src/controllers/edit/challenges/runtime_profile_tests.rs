@@ -449,6 +449,7 @@ async fn profile_edits_preserve_instances_and_replacement_resumes_after_teardown
                 flag: None,
                 ad_network: None,
                 allow_egress: false,
+                team_storage: None,
                 control_plane_callback_ports: vec![],
                 network_mode: crate::utils::enums::NetworkMode::Isolated,
                 operation_id: Some(format!("maintenance-fixture:{}", Uuid::new_v4())),
