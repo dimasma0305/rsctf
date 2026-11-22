@@ -1,6 +1,7 @@
 //! Opt-in Docker smoke test. Set 'RSCTF_WORKER_TEST_IMAGE_ID' to a full
 //! 'sha256:...' image ID whose default command listens on TCP port 8080.
 //! The test requires an otherwise-unclaimed disposable Docker daemon.
+//! Set RSCTF_WORKER_TEST_FLAG_UID for a Linux shell fixture running as that UID.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -354,6 +355,24 @@ async fn exercise_lifecycle(
         timeout_ms: 10_000,
     };
     runtime.write_flag(flag.clone()).await?;
+    if let Ok(uid) = std::env::var("RSCTF_WORKER_TEST_FLAG_UID") {
+        use bollard::exec::{CreateExecOptions, StartExecResults};
+        use futures_util::TryStreamExt;
+        let exec = runtime.docker.create_exec(&challenge_replicas[0].1, CreateExecOptions {
+            attach_stdout: Some(true), attach_stderr: Some(true),
+            cmd: Some(vec!["sh", "-ec", r#"test "$(id -u)" = "$1" && test "$(stat -c %a /tmp/flag)" = 600 && test -r /tmp/flag"#, "sh", &uid]),
+            ..Default::default()
+        }).await?;
+        if let StartExecResults::Attached { mut output, .. } =
+            runtime.docker.start_exec(&exec.id, None).await?
+        {
+            while output.try_next().await?.is_some() {}
+        }
+        require(
+            runtime.docker.inspect_exec(&exec.id).await?.exit_code == Some(0),
+            "service user could not read its private flag file",
+        )?;
+    }
     for (_, id) in &challenge_replicas {
         require(
             !runtime

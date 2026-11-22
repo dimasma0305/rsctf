@@ -903,6 +903,8 @@ workload. For file deliveries it saves the latest sequence and a digest in its
 state directory. After a restart it can retry that sequence and verify the file
 on every replica. An existing workload first reconciled by an older agent needs
 one reconciliation on the upgraded agent before its first file delivery.
+On Linux the delivered file has mode `0600`. Set the image's Dockerfile
+`USER` to the account that reads it. Docker assigns the file to that user.
 
 Whenever RSCTF supplies a runtime flag, `flagTarget.service` is mandatory and
 must select exactly one service. V1 injects the value as `RSCTF_FLAG` only into

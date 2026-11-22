@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use bollard::container::{
     Config, CreateContainerOptions, DownloadFromContainerOptions, ListContainersOptions,
     NetworkingConfig, RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
-    UploadToContainerOptions,
 };
 use bollard::image::CreateImageOptions;
 use bollard::models::{EndpointSettings, HealthConfig};
@@ -27,6 +26,7 @@ use super::{RuntimeError, RuntimeOptions, WorkerRuntime};
 mod admission;
 mod endpoints;
 mod flag_delivery;
+mod flag_upload;
 mod health;
 mod inventory;
 mod networks;
@@ -63,6 +63,8 @@ const MAX_CONCURRENT_READINESS_PROBES: usize = 32;
 
 pub struct DockerRuntime {
     docker: Docker,
+    #[cfg(unix)]
+    flag_upload_client: reqwest::Client,
     /// Bounded admission and deadlines for every short-lived daemon call.
     admission: DockerAdmission,
     worker_id: Uuid,
@@ -88,6 +90,10 @@ impl DockerRuntime {
         options: RuntimeOptions,
     ) -> Result<Self, RuntimeError> {
         let endpoint = endpoint.unwrap_or("local");
+        #[cfg(unix)]
+        let socket = flag_upload::socket_path(endpoint);
+        #[cfg(unix)]
+        let endpoint = socket.as_str();
         let (docker, endpoint_kind) = connect_docker(endpoint)?;
         let docker = docker
             .negotiate_version()
@@ -136,6 +142,8 @@ impl DockerRuntime {
         };
         let runtime = Self {
             docker,
+            #[cfg(unix)]
+            flag_upload_client: flag_upload::local_client(endpoint)?,
             admission: DockerAdmission::new(options.docker_admission),
             worker_id,
             descriptor,
@@ -931,20 +939,9 @@ impl WorkerRuntime for DockerRuntime {
         let mut failed = Vec::new();
         for (replica, container_id) in &containers {
             let written = self
-                .admission
-                .lifecycle(
-                    "upload_to_container",
-                    self.docker.upload_to_container(
-                        container_id,
-                        Some(UploadToContainerOptions {
-                            path: parent.clone(),
-                            no_overwrite_dir_non_dir: String::new(),
-                        }),
-                        archive.clone(),
-                    ),
-                )
+                .upload_flag_archive(container_id, &parent, archive.clone())
                 .await
-                .is_ok_and(|uploaded| uploaded.is_ok());
+                .is_ok();
             let verified = if written {
                 self.verify_guest_file(container_id, &command.target.path, &expected)
                     .await

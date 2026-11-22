@@ -476,7 +476,7 @@ jobs:
           docker build --tag rsctf-worker-smoke:ci \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
           image_id="$(docker image inspect rsctf-worker-smoke:ci --format '{{.Id}}')"
-          RSCTF_WORKER_TEST_IMAGE_ID="$image_id" \
+          RSCTF_WORKER_TEST_IMAGE_ID="$image_id" RSCTF_WORKER_TEST_FLAG_UID=65534 \
             cargo test --manifest-path agents/worker-agent/Cargo.toml --locked \
             docker_workload_lifecycle_when_image_is_configured -- --nocapture
 
