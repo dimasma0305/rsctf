@@ -816,6 +816,7 @@ pub fn router() -> Router<SharedState> {
             post(reject_challenge),
         )
         .merge(ad::patch_starter::router())
+        .merge(ad::patch_activity::router())
         .route(
             "/api/edit/games/{id}/challenges/{cId}/attachment",
             post(update_attachment),

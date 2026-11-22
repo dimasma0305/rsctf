@@ -97,6 +97,8 @@ records the current and previous distinct image at endpoint publication. The
 [runtime regression](../../../../src/services/ad/reset_runtime_tests.rs) checks reconciliation
 across an interrupted reset and the [publication tests](../../../../src/services/ad/service_lifecycle_tests.rs)
 cover retention and older servers.
+The [organizer policy](../../../../src/controllers/edit/ad/patch_activity.rs) controls the [delayed deployment counts](../../../../src/controllers/game/ad/patch_preview/activity.rs). The [HTTP regression](../../../../src/controllers/game/ad/patch_preview/tests/activity.rs) checks round finalization and player visibility.
+
 The [private revision history](../../../../src/controllers/game/ad/patch_preview/revisions.rs)
 stores [content-addressed source](../../../../src/services/ad/patches/revisions.rs) for one hosted team service.
 The [revision download](../../../../src/controllers/game/ad/patch_preview/source.rs) checks team access

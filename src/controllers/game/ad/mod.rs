@@ -54,6 +54,10 @@ mod player_reset_tests;
 fn common_router() -> Router<SharedState> {
     Router::new()
         .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-activity",
+            limited(Policy::Query, get(patch_preview::activity::list)),
+        )
+        .route(
             "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions",
             limited(
                 Policy::Query,

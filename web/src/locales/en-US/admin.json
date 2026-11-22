@@ -1,4 +1,11 @@
 {
+  "ad": {
+    "patch_activity": {
+      "label": "Share patch activity",
+      "help": "Choose before the event. Players see the number of successful ZIP deployments per challenge after one additional round finishes.",
+      "retry": "Reload patch activity setting"
+    }
+  },
   "challenge_editor": {
     "provenance": "Advanced provenance options",
     "resources": "Network & resource limits",

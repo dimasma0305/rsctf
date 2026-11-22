@@ -8,6 +8,7 @@ import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
 import { showErrorMsg } from '@Utils/Shared'
 import { AdPatchHistory } from './AdPatchHistory'
+import { AdPatchActivity } from './AdPatchActivity'
 import { AdPatchChangeList } from './AdPatchChangeList'
 
 export function AdPatchPreviewPanel({ gameId, challengeId, serviceId }: { gameId: number; challengeId: number; serviceId: number }) {
@@ -88,6 +89,7 @@ export function AdPatchPreviewPanel({ gameId, challengeId, serviceId }: { gameId
       )}
       <AdPatchHistory gameId={gameId} challengeId={challengeId} serviceId={serviceId} file={file}
         report={report} saving={saving} setSaving={setSaving} />
+      <AdPatchActivity gameId={gameId} challengeId={challengeId} />
     </Stack>
   )
 }

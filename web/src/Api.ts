@@ -4587,6 +4587,12 @@ export interface AdPatchStarter {
   archiveBytes: number
 }
 
+export interface AdPatchActivityPolicy {
+  enabled: boolean;
+  revision: number;
+  editable: boolean;
+}
+
 export interface AdPatchPreview {
   starterTree: string
   candidateTree: string
@@ -9537,6 +9543,17 @@ export class Api<
         ...params,
       }),
 
+    getAdPatchActivityPolicy: (id: number, params: RequestParams = {}) =>
+      this.request<AdPatchActivityPolicy, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/patch-activity`, method: "GET", format: "json", ...params,
+      }),
+
+    setAdPatchActivityPolicy: (id: number, enabled: boolean, expectedRevision: number, params: RequestParams = {}) =>
+      this.request<AdPatchActivityPolicy, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/patch-activity`, method: "PUT", type: ContentType.Json,
+        body: { enabled, expectedRevision }, format: "json", ...params,
+      }),
+
     putAdPatchStarter: (id: number, challengeId: number, zip: File, expected: string | null, params: RequestParams = {}) =>
       this.request<RegisteredAdPatchStarter, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${challengeId}/patch-starter`,
@@ -11882,6 +11899,11 @@ export class Api<
     getAdPatchPreviewInfo: (id: number, challenge: number, params: RequestParams = {}) =>
       this.request<AdPatchStarter | null, RequestResponse>({
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-preview`, method: "GET", format: "json", ...params,
+      }),
+
+    getAdPatchActivity: (id: number, challenge: number, params: RequestParams = {}) =>
+      this.request<{ round: number; deployments: number }[] | null, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-activity`, method: "GET", format: "json", ...params,
       }),
 
     previewAdPatch: (id: number, challenge: number, zip: File, { base, ...params }: RequestParams & { base?: 'latest' | 'starter' } = {}) =>

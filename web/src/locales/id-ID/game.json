@@ -1,6 +1,12 @@
 {
   "ad": {
     "patch": {
+      "activity": "Aktivitas patch semua tim",
+      "activity_help": "Jumlah deployment ZIP yang berhasil muncul setelah satu ronde berikutnya selesai.",
+      "activity_round": "Ronde {{round}} · {{deployments}} deployment berhasil",
+      "activity_retry": "Muat ulang aktivitas patch",
+      "activity_refresh": "Perbarui aktivitas",
+      "activity_empty": "Belum ada ronde yang bisa ditampilkan.",
       "build_revision": "Build revisi {{number}}",
       "activate": "Jalankan revisi {{number}}",
       "active": "Layanan timmu sedang menjalankan image ini.",

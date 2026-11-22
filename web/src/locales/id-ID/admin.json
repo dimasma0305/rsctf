@@ -1,4 +1,11 @@
 {
+  "ad": {
+    "patch_activity": {
+      "label": "Bagikan aktivitas patch",
+      "help": "Atur sebelum acara dimulai. Pemain dapat melihat jumlah deployment ZIP yang berhasil per challenge setelah satu ronde berikutnya selesai.",
+      "retry": "Muat ulang pengaturan aktivitas patch"
+    }
+  },
   "runtime_profile": {
     "pending": "Pembaruan runtime terhenti dan perlu dilanjutkan. Pulihkan perubahan yang sama, lalu pilih Simpan dan ganti instance untuk mencoba kembali. Tantangan tetap nonaktif sampai pemulihan selesai.",
     "label": "Profil runtime",

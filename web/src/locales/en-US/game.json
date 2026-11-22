@@ -1,6 +1,12 @@
 {
   "ad": {
     "patch": {
+      "activity": "Patch activity across teams",
+      "activity_help": "Successful ZIP deployments appear after one additional round finishes.",
+      "activity_round": "Round {{round}} · {{deployments}} deployed",
+      "activity_retry": "Reload patch activity",
+      "activity_refresh": "Refresh activity",
+      "activity_empty": "No rounds are available yet.",
       "build_revision": "Build revision {{number}}",
       "activate": "Deploy revision {{number}}",
       "active": "Your service is running this image.",

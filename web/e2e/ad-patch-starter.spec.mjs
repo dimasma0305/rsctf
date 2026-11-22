@@ -126,6 +126,37 @@ test('admin opens the selected team’s BYOC reports from the operations table',
   expect(reads).toEqual(['/api/ad/admin/19/Services/11/ByocSource'])
 })
 
+test('organizer opts into delayed deployment counts before the game', async ({ page }) => {
+  let policy = { enabled: false, revision: 0, editable: true }
+  const writes = []
+  await page.route('**/*', async route => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.origin !== server.origin) return route.abort()
+    if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/hub')) return route.continue()
+    if (url.pathname.toLowerCase() === '/api/edit/games/19/ad/patch-activity') {
+      if (request.method() === 'PUT') {
+        writes.push(request.postDataJSON())
+        policy = { enabled: true, revision: 1, editable: true }
+      }
+      return route.fulfill({ json: policy })
+    }
+    const { body = null, status = 200 } = fixture(url.pathname, request.method()) ?? {}
+    return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+  })
+  await page.goto(server.origin + '/admin/games/19/info#section=ad')
+  const setting = page.getByRole('switch', { name: 'Share patch activity' })
+  await expect(setting).toBeEnabled()
+  await expect(setting).not.toBeChecked()
+  await setting.click()
+  await expect(setting).toBeChecked()
+  expect(writes).toEqual([{ enabled: true, expectedRevision: 0 }])
+  policy.editable = false
+  await page.reload()
+  await expect(setting).toBeChecked()
+  await expect(setting).toBeDisabled()
+})
+
 test('organizer registers a starter and sees the original after the event starts', async ({ page }) => {
   const challenge = '/api/edit/games/19/challenges/74'
   const zip = new JSZip()
@@ -211,6 +242,7 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
   const revisions = []
   let buildAttempt = null
   let builderReconnected = false
+  let publishedRounds = []
   let staged = false
   let deployed = false
   await page.route('**/*', async route => {
@@ -219,6 +251,7 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
     if (url.origin !== server.origin) return route.abort()
     const path = url.pathname.toLowerCase()
     if (!path.startsWith('/api/') && !path.startsWith('/hub')) return route.continue()
+    if (path === root + '/patch-activity') return route.fulfill({ json: publishedRounds })
     if (path === root + '/patch-starter') return route.fulfill({
       headers: { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="starter.zip"' },
       body: starter,
@@ -294,6 +327,13 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
   await expect(page).toHaveURL(/#9001-/)
   const panel = page.locator('[data-ad-patch-preview]')
   await expect(panel).toBeVisible()
+  const activity = panel.getByText('Patch activity across teams', { exact: true })
+  await activity.click()
+  await expect(panel.getByText('No rounds are available yet.')).toBeVisible()
+  publishedRounds = [{ round: 3, deployments: 2 }]
+  await panel.getByRole('button', { name: 'Refresh activity' }).click()
+  await expect(panel.getByText('Round 3 · 2 deployed')).toBeVisible()
+  await activity.click()
   const downloaded = page.waitForEvent('download')
   await panel.getByRole('button', { name: 'Download starter ZIP' }).click()
   expect((await downloaded).suggestedFilename()).toBe('starter.zip')

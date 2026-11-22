@@ -9,6 +9,7 @@ use std::io::{Cursor, Write};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+mod activity;
 mod byoc_history;
 mod history;
 
@@ -121,9 +122,11 @@ async fn player_download_preview_and_revocation_during_upload() {
         crate::services::token::TokenService::new("0123456789abcdef0123456789abcdef", 60),
         Arc::new(crate::services::container::NoopContainerManager),
     );
+    let editor = crate::controllers::edit::router().with_state(st.clone());
     let router = super::super::web_router()
         .merge(crate::controllers::admin::ad::router())
         .with_state(st);
+    activity::check(&db.pool, &router, &editor, &user).await;
     byoc_history::check(&db.pool, &router, &user).await;
     let get = |challenge, resource| {
         request(

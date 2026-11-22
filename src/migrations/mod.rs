@@ -231,6 +231,7 @@ pub(crate) mod m0373_ad_patch_candidate_image_digests;
 pub(crate) mod m0374_ad_previous_image_rollback;
 pub(crate) mod m0375_ad_patch_registry_receipt;
 pub(crate) mod m0376_ad_patch_activation;
+pub(crate) mod m0377_ad_patch_activity;
 
 #[cfg(test)]
 pub(crate) use m0261_control_plane_jobs::UP_SQL as CONTROL_JOBS_SQL;
@@ -493,6 +494,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0374_ad_previous_image_rollback::Migration),
             Box::new(m0375_ad_patch_registry_receipt::Migration),
             Box::new(m0376_ad_patch_activation::Migration),
+            Box::new(m0377_ad_patch_activity::Migration),
         ]
     }
 }
@@ -740,6 +742,7 @@ mod tests {
             "m0374_ad_previous_image_rollback",
             "m0375_ad_patch_registry_receipt",
             "m0376_ad_patch_activation",
+            "m0377_ad_patch_activity",
         ];
         assert_eq!(&names[names.len() - recent.len()..], recent);
     }
