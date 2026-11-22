@@ -83,6 +83,7 @@ pub(super) async fn check(pool: &PgPool, router: &Router, user: &CurrentUser) {
     let bytes = to_bytes(response.into_body(), 8192).await.unwrap();
     let text = std::str::from_utf8(&bytes).unwrap();
     assert!(text.contains("own.py") && !text.contains("peer.py"));
+    compare_saved_zip(pool, router, user).await;
     let peer = "/api/ad/admin/1/Services/25/SshSource";
     assert_eq!(
         get(router, peer, Some(user)).await.status(),
@@ -113,4 +114,72 @@ pub(super) async fn check(pool: &PgPool, router: &Router, user: &CurrentUser) {
         .status(),
         StatusCode::NOT_FOUND
     );
+}
+
+async fn compare_saved_zip(pool: &PgPool, router: &Router, user: &CurrentUser) {
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+    let oid = hex::encode(Sha256::digest(b"blob 4\0test"));
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("Dockerfile", options).unwrap();
+    zip.write_all(b"FROM scratch\n").unwrap();
+    for path in ["same", "mode", "modified", "in-zip", "unregistered"] {
+        zip.start_file(
+            path,
+            options.unix_permissions(if path == "mode" { 0o755 } else { 0o644 }),
+        )
+        .unwrap();
+        zip.write_all(b"test").unwrap();
+    }
+    let archive = zip.finish().unwrap().into_inner();
+    let saved = super::history::save(router, user, 0, &archive).await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    let result: serde_json::Value =
+        serde_json::from_slice(&to_bytes(saved.into_body(), 4096).await.unwrap()).unwrap();
+    let commit = result["commitId"].as_str().unwrap();
+    let regular = json!({"blob":oid,"executable":false});
+    let observed = json!({"same":regular,"mode":regular,"in-ssh":regular,"in-zip":null,
+        "modified":{"blob":"c".repeat(64),"executable":false},"absent":null});
+    sqlx::query(r#"INSERT INTO "AdHostedSshSourceHistory"(service_id,revision,state,files) VALUES(20,2,'observed',$1)"#)
+        .bind(observed.to_string()).execute(pool).await.unwrap();
+    let path = format!(
+        "/api/game/1/ad/challenges/10/patch-revisions/1/ssh-comparison?service=20&commit={commit}"
+    );
+    assert_eq!(
+        get(router, &path, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for wrong in [
+        path.replace("service=20", "service=25"),
+        path.replace(commit, &oid),
+        path.replace("challenges/10", "challenges/11"),
+    ] {
+        assert_eq!(
+            get(router, &wrong, Some(user)).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    let response = get(router, &path, Some(user)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(body["report"]["revision"], 2);
+    assert_eq!(body["report"]["trackedFiles"], 6);
+    assert_eq!(
+        body["report"]["changes"],
+        json!([{"path":"in-ssh","kind":"Deleted"},
+        {"path":"in-zip","kind":"Added"},{"path":"mode","kind":"Modified"},{"path":"modified","kind":"Modified"}])
+    );
+    sqlx::query(r#"INSERT INTO "AdHostedSshSourceHistory"(service_id,revision,state,files) VALUES(20,3,'unavailable','{}')"#)
+        .execute(pool).await.unwrap();
+    let response = get(router, &path, Some(user)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(body, json!({"report":null}));
 }

@@ -332,6 +332,12 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
     if (path === root + '/patch-revisions/1/changes') return route.fulfill({
       json: [{ path: 'src/version.txt', kind: 'Added' }],
     })
+    if (path === root + '/patch-revisions/1/ssh-comparison') {
+      expect(url.searchParams.get('service')).toBe('91')
+      expect(url.searchParams.get('commit')).toBe(revisions[0].commitId)
+      return route.fulfill({ json: { report: { revision: 8, lastSeen: 1700000000000, trackedFiles: 2,
+        changes: [{ path: 'src/ssh-only.py', kind: 'Deleted' }] } } })
+    }
     if (path === root + '/patch-revisions/1/build') {
       expect(url.searchParams.get('service')).toBe('91')
       expect(url.searchParams.get('commit')).toBe(revisions[0].commitId)
@@ -408,6 +414,9 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
   await panel.getByText('Team revision history').click()
   await expect(panel.getByText('111111111111')).toBeVisible()
   await panel.getByRole('button', { name: 'Changes in revision 1' }).click()
+  await panel.getByRole('button', { name: 'Compare ZIP with last SSH report' }).click()
+  await expect(panel.getByRole('status').filter({ hasText: 'SSH report 8' })).toContainText('Differences in this ZIP: 1')
+  await expect(panel.getByText('src/ssh-only.py')).toBeVisible()
   await panel.getByRole('button', { name: 'Build revision 1' }).click()
   await expect(panel.getByText('Build queued')).toBeVisible()
   await expect(panel.getByText('Waiting for the challenge builder to reconnect.')).toBeVisible({ timeout: 25000 })
@@ -418,7 +427,9 @@ test('player opens a hosted challenge from the Toolkit and compares a private pa
   await panel.getByRole('button', { name: 'Deploy revision 1' }).click()
   await expect(panel.getByText('Your service is running this image.')).toBeVisible()
   await expect(panel.getByRole('button', { name: 'Deploy revision 1' })).toHaveCount(0)
-  await expect(panel.locator('details').getByRole('listitem')).toHaveText('Added · src/version.txt')
+  await expect(panel.locator('details').getByRole('listitem')).toHaveText([
+    'Added · src/version.txt', 'Deleted · src/ssh-only.py',
+  ])
   const revisionDownload = page.waitForEvent('download')
   await panel.getByRole('button', { name: 'Download revision 1 ZIP' }).click()
   expect((await revisionDownload).suggestedFilename()).toBe('patch-revision-1.zip')

@@ -45,6 +45,11 @@ The private history retains 128 observations per team service. Unchanged files
 update the last-seen time. Each observation stores Git content hashes and
 executable bits. An unreadable or oversized file (over 240 KiB) marks the
 sample unavailable. Docker also reports files on a tmpfs mount as unavailable.
+In **Team revision history**, open a saved ZIP revision and choose **Compare ZIP
+with last SSH report**. The comparison checks file contents and executable bits
+for the registered paths. “Added” means the ZIP contains a file that was missing
+at the last sample. “Deleted” means the file was observed over SSH and is missing
+from the ZIP. The report time shows when RSCTF last sampled those files.
 Downloadable source revisions and image rollback use the
 separate ZIP workflow.
 

@@ -54,6 +54,8 @@ For a local A&D source ZIP comparison, [patch-preview](../../../../src/cli/patch
 uses the [patch manifest](../../../../src/services/ad/patches.rs) and the same validated
 archive reader as Docker builds. The [archive tests](../../../../src/services/challenge_builds/archive_tests.rs)
 cover Git tree compatibility, mode changes, and equivalent repackaging.
+The [private SSH comparison](../../../../src/controllers/game/ad/patch_preview/ssh_comparison.rs)
+compares one saved ZIP with the registered paths in the team's latest SSH observation.
 The same CLI module exports a saved tree through `patch-context`. Its
 [CLI regression](../../../../tests/rsctf_cli.rs) checks the generated tar and
 empty output for stale or damaged input.

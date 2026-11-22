@@ -3,7 +3,12 @@ use serde_json::Value;
 use std::io::Read;
 mod builds;
 
-async fn save(router: &Router, user: &CurrentUser, expected: i32, zip: &[u8]) -> Response {
+pub(super) async fn save(
+    router: &Router,
+    user: &CurrentUser,
+    expected: i32,
+    zip: &[u8],
+) -> Response {
     save_to(router, user, 20, expected, zip).await
 }
 

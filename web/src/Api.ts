@@ -4610,6 +4610,15 @@ export interface AdPatchRevision {
   createdAt: number
 }
 
+export interface AdSshComparison {
+  report: {
+    revision: number
+    lastSeen: number
+    trackedFiles: number
+    changes: AdPatchPreview['changes']
+  } | null
+}
+
 export interface AdPatchBuild {
   available: boolean
   staged?: boolean
@@ -11931,6 +11940,12 @@ export class Api<
     getAdPatchRevisionChanges: (id: number, challenge: number, revision: number, params: RequestParams = {}) =>
       this.request<AdPatchPreview['changes'], RequestResponse>({
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/changes`, method: "GET", format: "json", ...params,
+      }),
+
+    compareAdPatchWithSsh: (id: number, challenge: number, revision: number, service: number, commit: string, params: RequestParams = {}) =>
+      this.request<AdSshComparison, RequestResponse>({
+        path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/ssh-comparison`,
+        method: "GET", query: { service, commit }, format: "json", ...params,
       }),
 
     downloadAdPatchRevision: (id: number, challenge: number, revision: number, commit: string, params: RequestParams = {}) =>

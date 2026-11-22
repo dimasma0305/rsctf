@@ -33,9 +33,9 @@ async fn poll_reports<F: std::future::Future<Output = ()>>(
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct FileIdentity {
-    blob: String,
-    executable: bool,
+pub(crate) struct FileIdentity {
+    pub(crate) blob: String,
+    pub(crate) executable: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -52,7 +52,7 @@ impl HistoryTable {
         }
     }
 }
-type Files = BTreeMap<String, Option<FileIdentity>>;
+pub(crate) type Files = BTreeMap<String, Option<FileIdentity>>;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]

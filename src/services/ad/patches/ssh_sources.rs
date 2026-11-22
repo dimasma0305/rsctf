@@ -15,6 +15,34 @@ pub(crate) struct SshSource {
 }
 
 impl PatchManifest {
+    /// Compare the saved ZIP with exactly the paths sampled in the team's shell.
+    pub(crate) fn changes_since_ssh(
+        &self,
+        observed: &crate::services::byoc_tunnel::source::Files,
+    ) -> Vec<super::PatchChange> {
+        use super::{ChangeKind, PatchChange};
+        observed
+            .iter()
+            .filter_map(|(path, file)| {
+                let kind = match (file, self.0.get(path)) {
+                    (Some(before), Some(saved))
+                        if before.blob != hex::encode(saved.digest)
+                            || before.executable != (saved.mode == 0o755) =>
+                    {
+                        ChangeKind::Modified
+                    }
+                    (Some(_), None) => ChangeKind::Deleted,
+                    (None, Some(_)) => ChangeKind::Added,
+                    _ => return None,
+                };
+                Some(PatchChange {
+                    path: path.clone(),
+                    kind,
+                })
+            })
+            .collect()
+    }
+
     /// Read only the organizer's validated starter. A team's candidate ZIP
     /// never changes which running files the organizer has registered.
     pub(crate) fn ssh_sources(&self, starter: &[u8]) -> Result<Vec<SshSource>, String> {

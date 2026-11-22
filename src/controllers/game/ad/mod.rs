@@ -88,6 +88,10 @@ fn common_router() -> Router<SharedState> {
             limited(Policy::Query, get(patch_preview::revisions::changes)),
         )
         .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/patch-revisions/{revision}/ssh-comparison",
+            limited(Policy::Query, get(patch_preview::ssh_comparison::get)),
+        )
+        .route(
             "/api/game/{id}/ad/challenges/{challengeId}/patch-preview",
             get(patch_preview::info).merge(limited(
                 Policy::Query,

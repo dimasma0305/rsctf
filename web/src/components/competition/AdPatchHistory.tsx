@@ -8,6 +8,7 @@ import { showErrorMsg } from '@Utils/Shared'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { AdPatchChangeList } from './AdPatchChangeList'
 import { AdPatchBuildAction } from './AdPatchBuildAction'
+import { AdPatchSshComparison } from './AdPatchSshComparison'
 
 interface Props {
   gameId: number
@@ -100,6 +101,7 @@ function RevisionChanges({ gameId, challengeId, serviceId, revision, commitId }:
   if (!data) return <Text size="sm" role="status">{t('game.ad.patch.loading_changes', 'Loading file changes…')}</Text>
   return <>
     <AdPatchChangeList changes={data} />
+    <AdPatchSshComparison key={`${serviceId}:${commitId}`} {...{ gameId, challengeId, serviceId, revision, commitId }} />
     <AdPatchBuildAction key={commitId} {...{ gameId, challengeId, serviceId, revision, commitId }} />
     <Group><Button size="xs" variant="light" loading={downloading} onClick={() => void downloadBlob(
       `patch-revision:${serviceId}:${commitId}`, () => api.game.downloadAdPatchRevision(gameId, challengeId, revision, commitId),
