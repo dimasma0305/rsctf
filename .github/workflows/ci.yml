@@ -886,8 +886,9 @@ jobs:
           cargo audit --file agents/byoc-agent/Cargo.lock
           cargo audit --file agents/worker-agent/Cargo.lock
           cargo audit --file lib/worker-protocol/Cargo.lock
-          cargo audit --file tests/load/retention-audit/Cargo.lock
-          cargo audit --file tests/load/storage-audit/Cargo.lock
+          for lockfile in tests/load/*-audit/Cargo.lock; do
+            cargo audit --file "$lockfile"
+          done
 
   load-harness-contracts:
     name: Load harness contracts
