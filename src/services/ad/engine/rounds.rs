@@ -461,10 +461,10 @@ async fn prepare_round_transaction(
         ));
     }
 
-    let engine_challenges: Vec<(i32, i16, Option<String>, bool, bool)> = sqlx::query_as(
-        r#"SELECT challenge.id, challenge."Type", challenge.ad_checker_image,
-                  challenge.ad_self_hosted,
-                  EXISTS (
+    let engine_challenges: Vec<(i32, i16, Option<String>, bool, bool)> = sqlx::query_as(concat!(
+        r#"SELECT challenge.id, challenge."Type", challenge.ad_checker_image, "#,
+        include_str!("network_bound_challenge.sql"),
+        r#", EXISTS (
                     SELECT 1 FROM "KothApiObservers" observer
                      WHERE observer.game_id = challenge.game_id
                        AND observer.challenge_id = challenge.id
@@ -475,8 +475,8 @@ async fn prepare_round_transaction(
               AND challenge.review_status = $2
               AND challenge."Type" IN ($3, $4)
             ORDER BY challenge.id
-            FOR SHARE OF challenge"#,
-    )
+            FOR SHARE OF challenge"#
+    ))
     .bind(game_id)
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(ChallengeType::AttackDefense as i16)

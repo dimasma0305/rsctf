@@ -281,8 +281,22 @@ async fn deliver_round_flag(
     if let Some(outcome) = invalid_stored_flag_outcome(&planted, kind, container_id) {
         return outcome;
     }
-    let attempted = match (planted.managed, container_id) {
-        (true, Some(container_id)) => {
+    let worker_handle = container_id.and_then(crate::services::worker::parse_worker_handle);
+    let attempted = match (planted.managed, container_id, worker_handle) {
+        (true, _, Some(handle)) => {
+            run_delivery_attempts(policy, deadline, &concurrency, |_| {
+                worker_delivery::attempt(
+                    state,
+                    round_id,
+                    &planted,
+                    handle,
+                    policy.attempt_timeout(),
+                    &attempted_services,
+                )
+            })
+            .await
+        }
+        (true, Some(container_id), None) => {
             deliver_managed_flag(
                 state,
                 &planted,
@@ -294,7 +308,7 @@ async fn deliver_round_flag(
             )
             .await
         }
-        (true, None) => {
+        (true, None, None) => {
             return crate::services::ad_engine::FlagDeliveryOutcome::failed(
                 planted.team_service_id,
                 kind,
@@ -303,7 +317,7 @@ async fn deliver_round_flag(
                 "managed service has no active container identity",
             );
         }
-        (false, _) => {
+        (false, _, _) => {
             deliver_external_flag(
                 state,
                 round_id,
@@ -982,5 +996,5 @@ pub(super) async fn finish_prepared_round(
 }
 
 #[cfg(test)]
-#[path = "round_finish/tests.rs"]
 mod tests;
+mod worker_delivery;

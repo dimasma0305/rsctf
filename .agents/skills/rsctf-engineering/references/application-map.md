@@ -108,6 +108,10 @@ The [worker flag delivery receipt](../../../../src/services/worker/registry/flag
 binds file readback to the request and worker session. Its
 [regressions](../../../../src/services/worker/registry/flag_delivery/tests.rs)
 cover partial replica failure, accepted commands, timeouts, and reconnects.
+The [round publisher](../../../../src/services/cron/round_finish/worker_delivery.rs)
+checks the official value, team assignment and worker session before and after readback.
+Its [scoring regression](../../../../src/services/cron/round_finish/worker_delivery/tests.rs)
+publishes two team receipts in PostgreSQL and checks replay and stale assignments.
 
 The [private revision history](../../../../src/controllers/game/ad/patch_preview/revisions.rs)
 stores [content-addressed source](../../../../src/services/ad/patches/revisions.rs) for one hosted team service.

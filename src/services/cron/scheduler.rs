@@ -130,7 +130,7 @@ pub(super) async fn advance_ad_rounds(
     scope: RoundSchedulerScope,
 ) -> AppResult<u64> {
     let now = Utc::now();
-    let games = sqlx::query_as::<_, ActiveGame>(
+    let games = sqlx::query_as::<_, ActiveGame>(concat!(
         r#"SELECT game.id, game.start_time_utc, game.end_time_utc,
                   game.ad_warmup_seconds, game.ad_min_grace_period_seconds,
                   game.ad_scoring_paused,
@@ -141,11 +141,12 @@ pub(super) async fn advance_ad_rounds(
                        AND challenge.is_enabled = TRUE
                        AND challenge.review_status = $2
                        AND challenge."Type" = $3
-                       AND challenge.ad_self_hosted = TRUE
-                  ) AS network_bound
+                       AND "#,
+        include_str!("../ad/engine/network_bound_challenge.sql"),
+        r#") AS network_bound
              FROM "Games" game
-            WHERE game.start_time_utc <= $1 AND game.end_time_utc > $1"#,
-    )
+            WHERE game.start_time_utc <= $1 AND game.end_time_utc > $1"#
+    ))
     .bind(now)
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(ChallengeType::AttackDefense as i16)
@@ -186,7 +187,7 @@ async fn advance_game(
         return Ok(false);
     }
 
-    let (has_engine_challenge, network_bound): (bool, bool) = sqlx::query_as(
+    let (has_engine_challenge, network_bound): (bool, bool) = sqlx::query_as(concat!(
         r#"SELECT
              EXISTS(
                SELECT 1 FROM "GameChallenges"
@@ -194,12 +195,13 @@ async fn advance_game(
                   AND review_status = $2 AND "Type" IN ($3,$4)
              ),
              EXISTS(
-               SELECT 1 FROM "GameChallenges"
-                WHERE game_id = $1 AND is_enabled = TRUE
-                  AND review_status = $2 AND "Type" = $3
-                  AND ad_self_hosted = TRUE
-             )"#,
-    )
+               SELECT 1 FROM "GameChallenges" challenge
+                WHERE challenge.game_id = $1 AND challenge.is_enabled = TRUE
+                  AND challenge.review_status = $2 AND challenge."Type" = $3
+                  AND "#,
+        include_str!("../ad/engine/network_bound_challenge.sql"),
+        ")"
+    ))
     .bind(schedule.id)
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(ChallengeType::AttackDefense as i16)

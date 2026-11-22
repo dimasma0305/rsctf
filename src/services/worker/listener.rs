@@ -109,7 +109,44 @@ impl WorkerService {
     }
 
     pub async fn send(&self, worker_id: Uuid, message: ControlMessage) -> WorkerResult<Uuid> {
+        if let ControlMessage::WriteFlag(command) = message {
+            let session = self
+                .registry
+                .session_context(worker_id)
+                .await
+                .ok_or(WorkerError::Offline)?;
+            return self
+                .write_flag_confirmed(worker_id, &session.fence, command)
+                .await;
+        }
         self.registry.send(worker_id, message).await
+    }
+
+    pub(crate) async fn write_flag_confirmed(
+        &self,
+        worker_id: Uuid,
+        fence: &rsctf_worker_protocol::SessionFence,
+        command: rsctf_worker_protocol::WriteFlag,
+    ) -> WorkerResult<Uuid> {
+        let context = self
+            .registry
+            .session_context(worker_id)
+            .await
+            .ok_or(WorkerError::Offline)?;
+        if context.fence != *fence {
+            return Err(WorkerError::StaleSession);
+        }
+        let peer = AuthenticatedPeer {
+            worker_id,
+            fingerprint_sha256: context.certificate_fingerprint_sha256,
+        };
+        self.authority.validate_peer(&peer).await?;
+        let confirmed = self
+            .registry
+            .write_flag_confirmed(worker_id, fence, command)
+            .await?;
+        self.authority.validate_peer(&peer).await?;
+        Ok(confirmed)
     }
 
     pub async fn open_data_stream(
