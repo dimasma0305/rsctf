@@ -195,7 +195,7 @@ impl TeamClaim {
         ))?
     }
 
-    pub(super) fn mount(&self, pod: &mut Pod) {
+    pub(super) fn mount(&self, pod: &mut Pod, initialize_round_flag: bool) {
         pod.metadata
             .labels
             .get_or_insert_with(Default::default)
@@ -205,6 +205,26 @@ impl TeamClaim {
             );
         let spec = pod.spec.as_mut().expect("platform Pod spec");
         let container = &mut spec.containers[0];
+        if initialize_round_flag {
+            // A startup probe stops permanently after its first success. Later
+            // round rotations remain under the normal flag writer's control.
+            use k8s_openapi::api::core::v1::{ExecAction, Probe};
+            let install = r#"set -eu
+test -n "$RSCTF_FLAG"
+file=${RSCTF_FLAG_FILE:-/flag}
+umask 022
+printf '%s\n' "$RSCTF_FLAG" > "$file"
+IFS= read -r installed < "$file" && test "$installed" = "$RSCTF_FLAG""#;
+            container.startup_probe = Some(Probe {
+                exec: Some(ExecAction {
+                    command: Some(vec!["sh".into(), "-c".into(), install.into()]),
+                }),
+                period_seconds: Some(2),
+                timeout_seconds: Some(2),
+                failure_threshold: Some(30),
+                ..Default::default()
+            });
+        }
         spec.security_context = Some(PodSecurityContext {
             fs_group: container
                 .security_context

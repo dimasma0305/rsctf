@@ -324,9 +324,13 @@ pub async fn execute_job(
             preserve_volumes |= st.containers.ad_donor_needs_transfer(id, &spec).await?;
             if preserve_volumes {
                 st.containers.check_ad_volume_reset(id, &spec).await?;
-            } else if !resuming && (activation || spec.team_storage.is_some()) {
-                // After preparation, recovery may legitimately find the donor gone.
-                st.containers.check_ad_patch_image(id, &spec).await?;
+            } else if spec.team_storage.is_some() || (activation && !resuming) {
+                // Repeat the pull check if a prepared job still has a donor.
+                // A crash after deletion can leave just its durable backend ID.
+                match st.containers.check_ad_patch_image(id, &spec).await {
+                    Err(AppError::NotFound(_)) if resuming && spec.team_storage.is_some() => {}
+                    result => result?,
+                }
             }
         } else if preserve_volumes {
             return Err(AppError::conflict(
@@ -396,7 +400,7 @@ pub async fn execute_job(
         None if recovering_preparation => retained_backend,
         None => None,
     };
-    spec.flag = Some(flag.clone());
+    spec.set_ad_launch_flag(flag.clone(), prepared_round_id.is_some());
     let volume_donor = retired.filter(|_| preserve_volumes);
     let info = if let Some(id) = volume_donor {
         crate::services::traffic::fence_container_capture_stop(st, id).await?;

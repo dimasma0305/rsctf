@@ -275,8 +275,17 @@ impl ContainerManager for ProfileRouter {
     }
 
     async fn check_ad_patch_image(&self, donor: &str, spec: &ContainerSpec) -> AppResult<()> {
-        let (owner, raw) = self.volume_owner(donor, spec.runtime_profile.as_deref())?;
-        owner.check_ad_patch_image(raw, spec).await
+        let profile = spec.runtime_profile.as_deref();
+        if spec.team_storage.is_some() {
+            let (owner, raw) = self.volume_owner(donor, profile)?;
+            return owner.check_ad_patch_image(raw, spec).await;
+        }
+        // Once the donor has been checked for volumes, stateless Docker
+        // images only need to be validated on the selected destination.
+        let (_, raw) = self.route(donor)?;
+        self.selected(profile)?
+            .check_ad_patch_image(raw, spec)
+            .await
     }
 
     async fn check_ad_volume_reset(&self, previous: &str, spec: &ContainerSpec) -> AppResult<()> {

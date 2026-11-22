@@ -12,6 +12,9 @@ pub struct TeamStorage {
     pub claim_uid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint_uid: Option<String>,
+    /// A registered Service may route as soon as the kubelet marks its Pod ready.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub initialize_round_flag: bool,
 }
 
 pub(crate) fn application_data_path(path: &str) -> bool {
@@ -23,6 +26,15 @@ pub(crate) fn application_data_path(path: &str) -> bool {
                     .bytes()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
         })
+}
+
+impl super::ContainerSpec {
+    pub(crate) fn set_ad_launch_flag(&mut self, flag: String, official_round: bool) {
+        self.flag = Some(flag);
+        if let Some(storage) = &mut self.team_storage {
+            storage.initialize_round_flag = official_round;
+        }
+    }
 }
 
 impl TeamStorage {
@@ -108,6 +120,7 @@ impl TeamStorage {
             allocation_id,
             claim_uid,
             endpoint_uid,
+            initialize_round_flag: false,
         };
         let (uid, endpoint) = state
             .containers

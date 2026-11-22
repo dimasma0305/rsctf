@@ -46,6 +46,7 @@ async fn hosted_team_claim_is_isolated_reused_and_checked_before_donor_removal()
         allocation_id: uuid::Uuid::new_v4(),
         claim_uid: None,
         endpoint_uid: None,
+        initialize_round_flag: false,
     });
     let data = spec.team_storage.as_mut().unwrap();
     let (claim_uid, endpoint_uid) = manager
@@ -55,6 +56,11 @@ async fn hosted_team_claim_is_isolated_reused_and_checked_before_donor_removal()
     data.claim_uid = Some(claim_uid);
     data.endpoint_uid = Some(endpoint_uid);
     let first = manager.create(spec.clone()).await.unwrap();
+    let pod = |id: &str| format!("/api/v1/namespaces/rsctf-challenges/pods/{id}");
+    assert!(
+        resources.lock().unwrap()[&pod(&first.id)]["spec"]["containers"][0]["startupProbe"]
+            .is_null()
+    );
     let claim = spec
         .team_storage
         .as_ref()
@@ -103,8 +109,20 @@ async fn hosted_team_claim_is_isolated_reused_and_checked_before_donor_removal()
         .unwrap()
         .insert(svc.clone(), saved_service.clone());
     manager.destroy(&first.id).await.unwrap();
+    assert!(matches!(
+        manager.check_ad_patch_image(&first.id, &spec).await,
+        Err(AppError::NotFound(_))
+    ));
     spec.operation_id = Some("second-revision".into());
+    spec.set_ad_launch_flag("round-flag-fixture".into(), true);
     let next = manager.create(spec.clone()).await.unwrap();
+    let startup =
+        resources.lock().unwrap()[&pod(&next.id)]["spec"]["containers"][0]["startupProbe"].clone();
+    assert!(startup["exec"]["command"][2]
+        .as_str()
+        .unwrap()
+        .contains("RSCTF_FLAG_FILE"));
+    assert!(!startup.to_string().contains("round-flag-fixture"));
     assert_ne!(first.id, next.id);
     assert_eq!((&next.ip, next.port), (&first.ip, first.port));
     assert_eq!(resources.lock().unwrap()[&pvc], before);

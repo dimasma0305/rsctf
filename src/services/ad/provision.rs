@@ -641,7 +641,7 @@ pub(crate) async fn ensure_ad_containers(
                     continue;
                 }
             };
-            spec.flag = Some(flag);
+            spec.set_ad_launch_flag(flag, prepared_flag.official.is_some());
             if let Some((service, cid)) = existing.as_ref().zip(retired_backend) {
                 match prepared_flag
                     .repair_data_volumes(st, service, &spec, cid)

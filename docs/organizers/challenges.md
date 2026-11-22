@@ -227,8 +227,9 @@ The first deployment pins the mount path, the claim and a private Kubernetes
 Service. Deploying a ZIP or rolling back creates a new Pod behind that Service.
 The team keeps its original ClusterIP and port. Before taking the old service
 offline, RSCTF checks that the cluster can pull the selected image using the
-team Pod's credentials. The replacement receives the current round's flag
-before RSCTF publishes it to the event.
+team Pod's credentials. During a scored round, the replacement writes and
+reads back the current flag before Kubernetes routes traffic to it. The image
+must allow its service user to write `RSCTF_FLAG_FILE` (default `/flag`).
 
 On Kubernetes, reset and automatic repair inspect the existing Pod. If it
 has an unregistered persistent volume claim, an `emptyDir`, or another application volume,

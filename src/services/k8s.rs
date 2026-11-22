@@ -520,7 +520,7 @@ impl ContainerManager for KubernetesContainerManager {
                     ));
                 }
                 let claim = self.team_claim(data, None).await?;
-                claim.mount(&mut pod);
+                claim.mount(&mut pod, data.initialize_round_flag);
                 Some(claim)
             }
             None => None,

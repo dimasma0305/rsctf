@@ -6,6 +6,7 @@ run_rust_test() {
     # CI supplies only an artifact from this same workflow run and source SHA.
     # Locally, retain the bounded Cargo path when no artifact is supplied.
     test -x "$RSCTF_K8S_TEST_BINARY"
+    "$RSCTF_K8S_TEST_BINARY" "$1" --ignored --exact --list | grep -Fx "$1: test"
     "$RSCTF_K8S_TEST_BINARY" "$1" --ignored --exact
   else
     scripts/bounded-cargo.sh test --locked --lib "$1" -- --ignored --exact

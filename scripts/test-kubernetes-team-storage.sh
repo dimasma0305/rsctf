@@ -45,5 +45,69 @@ YAML
     RSCTF_K8S_READINESS_PROBE=true RSCTF_K8S_TEST_STARTER="$starter" RSCTF_K8S_TEST_REVISION_ONE="$revision_one" \
     RSCTF_K8S_TEST_REVISION_TWO="$revision_two" RSCTF_K8S_LIVE_STORAGE=1 \
     run_rust_test services::k8s::team_claim::tests::real_team_storage_survives_recreation
+  test_team_player_api
   kubectl delete storageclass rsctf-test-csi
+)
+
+# Uses only the disposable Kind network and containers created by this test.
+test_team_player_api() (
+  set -euo pipefail
+  node="$cluster_name-control-plane"
+  registry_id=''
+  postgres_id=''
+  source_id=''
+  tags=()
+  references=()
+  cleanup_team_api() {
+    for container in "$source_id" "$postgres_id" "$registry_id"; do
+      if [[ -n "$container" ]]; then docker rm -fv "$container" >/dev/null; fi
+    done
+    if (( ${#tags[@]} )); then docker image rm "${tags[@]}" >/dev/null; fi
+  }
+  trap cleanup_team_api EXIT
+  registry_id="$(docker run -d --network kind -p 127.0.0.1::5000 \
+    registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c)"
+  registry="$(docker port "$registry_id" 5000/tcp)"
+  curl --fail --silent --retry 10 --retry-connrefused --max-time 10 "http://$registry/v2/" >/dev/null
+  registry_ip="$(docker inspect -f '{{(index .NetworkSettings.Networks "kind").IPAddress}}' "$registry_id")"
+  # This localhost registry belongs to this runner. Point only the disposable
+  # node at its Docker-network address, leaving the host's containerd alone.
+  docker exec "$node" mkdir -p "/etc/containerd/certs.d/$registry"
+  docker exec -i "$node" tee "/etc/containerd/certs.d/$registry/hosts.toml" >/dev/null <<TOML
+[host."http://$registry_ip:5000"]
+  capabilities = ["pull", "resolve"]
+TOML
+  repo="$registry/rsctf/service-900041"
+  docker pull "$starter"
+  source_id="$(docker create "$starter")"
+  for revision in starter previous patched; do
+    tag="$repo:$revision"
+    docker commit --change 'ENV RSCTF_FLAG_FILE=/data/flag' \
+      --change "ENV RSCTF_TEST_REVISION=$revision" "$source_id" "$tag" >/dev/null
+    tags+=("$tag")
+    docker push "$tag"
+    # Docker's local repoDigests array can contain sibling tags' digests. Read
+    # the manifest currently published at this tag from the fixture registry.
+    digest="$(curl --fail --silent --head -H 'Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json' \
+      "http://$registry/v2/rsctf/service-900041/manifests/$revision" |
+      awk 'tolower($1)=="docker-content-digest:" {gsub(/\r/,"",$2);print $2}')"
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+    references+=("$repo@$digest")
+  done
+  config="$(docker image inspect --format '{{.Id}}' "$repo:patched")"
+  password="$(openssl rand -hex 24)"
+  postgres_id="$(docker run -d -p 127.0.0.1::5432 -e "POSTGRES_PASSWORD=$password" postgres:18-alpine)"
+  db_address="$(docker port "$postgres_id" 5432/tcp)"
+  for _ in {1..40}; do
+    if docker exec "$postgres_id" pg_isready -h 127.0.0.1 -U postgres >/dev/null; then break; fi
+    sleep 1
+  done
+  docker exec "$postgres_id" pg_isready -h 127.0.0.1 -U postgres
+  RSCTF_TEST_DATABASE_URL="postgresql://postgres:$password@$db_address/postgres" \
+    RSCTF_K8S_NAMESPACE=rsctf-retry RSCTF_K8S_NETWORK_POLICY_ENFORCED=true \
+    RSCTF_K8S_AD_SERVICE_CIDR=10.96.0.0/12 RSCTF_K8S_AD_INGRESS_CIDRS="$client_ip/32" \
+    RSCTF_K8S_TEST_STARTER="${references[0]}" RSCTF_K8S_TEST_REVISION_ONE="${references[1]}" \
+    RSCTF_K8S_TEST_REVISION_TWO="${references[2]}" RSCTF_K8S_TEST_CANDIDATE_CONFIG="$config" \
+    RSCTF_K8S_READINESS_PROBE=true RSCTF_K8S_LIVE_STORAGE=1 \
+    run_rust_test controllers::game::ad::player_reset_tests::kubernetes::player_kubernetes_patch_activation_and_rollbacks
 )

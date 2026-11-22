@@ -20,6 +20,38 @@ fn publish_test_image(tag: &str, repo: &str) -> (String, String) {
     (config, image)
 }
 
+pub(super) async fn ready_candidate(
+    pool: &sqlx::PgPool,
+    captain: Uuid,
+    config: &str,
+    image: &str,
+) -> Uuid {
+    let (_, manifest) = image.split_once('@').unwrap();
+    let attempt = Uuid::new_v4();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(r#"INSERT INTO "AdPatchSourceTrees" VALUES(900041,repeat('b',64),'{}')"#)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "AdPatchRevisions" VALUES(900041,1,repeat('b',64),repeat('a',64),repeat('c',64),$1,now())"#)
+        .bind(captain).execute(&mut *tx).await.unwrap();
+    sqlx::query(r#"INSERT INTO "AdSharedPatchChanges"(service_id,revision,changes) VALUES(900041,1,'[{"path":"app.py","kind":"Modified"}]')"#)
+        .execute(&mut *tx).await.unwrap();
+    sqlx::query(
+        r#"INSERT INTO "AdPatchBuilds"(service_id,revision,attempt,profile,status)
+        VALUES(900041,1,$1,repeat('a',64),'Ready')"#,
+    )
+    .bind(attempt)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO "AdPatchCandidates"(service_id,revision,digest,archive_bytes,config_digest,manifest_digest,registry_image_ref)
+        VALUES(900041,1,repeat('a',64),1,$1,$2,$3)"#)
+        .bind(config).bind(manifest).bind(image).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    attempt
+}
+
 pub(super) async fn check(
     app: &axum::Router,
     state: &SharedState,
@@ -49,9 +81,8 @@ pub(super) async fn check(
     }
     let (config, image) = publish_test_image(&tag.0, &repo);
     assert_ne!(config, original);
-    let (_, manifest) = image.split_once('@').unwrap();
     let pool = state.pg();
-    let attempt = Uuid::new_v4();
+    let attempt = ready_candidate(pool, captain, &config, &image).await;
     let activate = |service: i32, attempt: Uuid, operation: Uuid| {
         player_post(
             app,
@@ -61,27 +92,6 @@ pub(super) async fn check(
             Some(json!({"service":service,"attempt":attempt})),
         )
     };
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query(r#"INSERT INTO "AdPatchSourceTrees" VALUES(900041,repeat('b',64),'{}')"#)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query(r#"INSERT INTO "AdPatchRevisions" VALUES(900041,1,repeat('b',64),repeat('a',64),repeat('c',64),$1,now())"#)
-        .bind(captain).execute(&mut *tx).await.unwrap();
-    sqlx::query(r#"INSERT INTO "AdSharedPatchChanges"(service_id,revision,changes) VALUES(900041,1,'[{"path":"app.py","kind":"Modified"}]')"#)
-        .execute(&mut *tx).await.unwrap();
-    sqlx::query(
-        r#"INSERT INTO "AdPatchBuilds"(service_id,revision,attempt,profile,status)
-        VALUES(900041,1,$1,repeat('a',64),'Ready')"#,
-    )
-    .bind(attempt)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    sqlx::query(r#"INSERT INTO "AdPatchCandidates"(service_id,revision,digest,archive_bytes,config_digest,manifest_digest,registry_image_ref)
-        VALUES(900041,1,repeat('a',64),1,$1,$2,$3)"#)
-        .bind(&config).bind(manifest).bind(&image).execute(&mut *tx).await.unwrap();
-    tx.commit().await.unwrap();
     // The previous rollback's cooldown still applies to ZIP activation.
     assert_eq!(
         activate(900041, attempt, Uuid::new_v4())

@@ -1,7 +1,7 @@
 use crate::app_state::{AppState, SharedState};
 use crate::models::internal::configs::AppConfig;
 use crate::services::cache::InMemoryCache;
-use crate::services::container::{capacity, DockerContainerManager};
+use crate::services::container::{capacity, ContainerManager, DockerContainerManager};
 use crate::services::token::TokenService;
 use crate::storage::LocalBlobStorage;
 use sea_orm::SqlxPostgresConnector;
@@ -32,6 +32,13 @@ pub(crate) fn docker_state(pool: &sqlx::PgPool) -> SharedState {
         pool.clone(),
     )
     .unwrap();
+    runtime_state(pool, Arc::new(manager))
+}
+
+pub(crate) fn runtime_state(
+    pool: &sqlx::PgPool,
+    manager: Arc<dyn ContainerManager>,
+) -> SharedState {
     AppState::new(
         SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone()),
         Arc::new(AppConfig::default()),
@@ -39,8 +46,8 @@ pub(crate) fn docker_state(pool: &sqlx::PgPool) -> SharedState {
         Arc::new(LocalBlobStorage::new(
             std::env::temp_dir().join(format!("rsctf-reset-{}", Uuid::new_v4())),
         )),
-        // The real Docker flow spans several cooldowns and image replacements.
+        // The live flows span several image replacements.
         TokenService::new("0123456789abcdef0123456789abcdef", 15 * 60),
-        Arc::new(manager),
+        manager,
     )
 }

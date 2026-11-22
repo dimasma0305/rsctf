@@ -29,7 +29,11 @@ impl KubernetesContainerManager {
         })?;
         let claim = self.team_claim(data, None).await?;
         let pods = self.pods();
-        let pod = pods.get(donor).await.map_err(api_error)?;
+        let pod = pods
+            .get_opt(donor)
+            .await
+            .map_err(api_error)?
+            .ok_or_else(|| AppError::not_found("The previous team Pod no longer exists"))?;
         if !super::orphans::owned_identity(&pod.metadata, donor, &self.scope)
             || pod.metadata.deletion_timestamp.is_some()
         {

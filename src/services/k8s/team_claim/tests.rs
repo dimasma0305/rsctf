@@ -62,6 +62,7 @@ async fn real_team_storage_survives_recreation() {
         allocation_id: uuid::Uuid::new_v4(),
         claim_uid: None,
         endpoint_uid: None,
+        initialize_round_flag: false,
     });
     let data = spec.team_storage.as_mut().unwrap();
     let (claim_uid, endpoint_uid) = manager

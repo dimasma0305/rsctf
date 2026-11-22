@@ -16,6 +16,8 @@ struct TestImage(String);
 
 #[path = "player_activation_tests.rs"]
 mod activation;
+#[path = "player_kubernetes_tests.rs"]
+mod kubernetes;
 
 impl Drop for TestImage {
     fn drop(&mut self) {
