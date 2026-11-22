@@ -236,6 +236,7 @@ pub(crate) mod m0378_ad_ssh_sources;
 pub(crate) mod m0379_ad_ssh_recovery;
 pub(crate) mod m0380_ad_shared_patch_changes;
 pub(crate) mod m0381_ad_team_storage;
+pub(crate) mod m0382_ad_team_endpoints;
 
 #[cfg(test)]
 pub(crate) use m0261_control_plane_jobs::UP_SQL as CONTROL_JOBS_SQL;
@@ -503,6 +504,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0379_ad_ssh_recovery::Migration),
             Box::new(m0380_ad_shared_patch_changes::Migration),
             Box::new(m0381_ad_team_storage::Migration),
+            Box::new(m0382_ad_team_endpoints::Migration),
         ]
     }
 }
@@ -647,7 +649,7 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 212);
+        assert_eq!(names.len(), 213);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         let recent = [
             "m0108_koth_observer_rotation_operations",
@@ -755,6 +757,7 @@ mod tests {
             "m0379_ad_ssh_recovery",
             "m0380_ad_shared_patch_changes",
             "m0381_ad_team_storage",
+            "m0382_ad_team_endpoints",
         ];
         assert_eq!(&names[names.len() - recent.len()..], recent);
     }

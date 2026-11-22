@@ -94,10 +94,15 @@ pub async fn build(
         build.active = false;
     }
     roster.release().await?;
-    build.can_activate &= st.containers.supports_ad_patch_activation(
-        build.runtime_profile.as_deref(),
-        build.container_id.as_deref(),
-    );
+    if build.can_activate {
+        build.can_activate = crate::services::container::TeamStorage::supports_patch_activation(
+            &st,
+            service,
+            build.runtime_profile.as_deref(),
+            build.container_id.as_deref(),
+        )
+        .await?;
+    }
     Ok((
         [(header::CACHE_CONTROL, "private, no-store")],
         Json(BuildStatus {

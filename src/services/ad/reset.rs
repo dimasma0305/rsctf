@@ -181,10 +181,13 @@ pub async fn execute_job(
     }
     if activation
         && (input.candidate_runtime_profile != challenge.runtime_profile
-            || !st.containers.supports_ad_patch_activation(
+            || !crate::services::container::TeamStorage::supports_patch_activation(
+                st,
+                service.id,
                 challenge.runtime_profile.as_deref(),
                 input.expected_backend_id.as_deref(),
-            ))
+            )
+            .await?)
     {
         return Err(AppError::conflict(
             "This runtime cannot transfer a hosted service to a patch image",
@@ -321,11 +324,9 @@ pub async fn execute_job(
             preserve_volumes |= st.containers.ad_donor_needs_transfer(id, &spec).await?;
             if preserve_volumes {
                 st.containers.check_ad_volume_reset(id, &spec).await?;
-            } else if activation && !resuming {
+            } else if !resuming && (activation || spec.team_storage.is_some()) {
                 // After preparation, recovery may legitimately find the donor gone.
-                st.containers
-                    .check_stateless_ad_patch(spec.runtime_profile.as_deref(), &spec.image)
-                    .await?;
+                st.containers.check_ad_patch_image(id, &spec).await?;
             }
         } else if preserve_volumes {
             return Err(AppError::conflict(

@@ -111,7 +111,7 @@ pub trait ContainerManager: Send + Sync {
     }
 
     /// A profile edit can leave the current team service on its original backend.
-    /// Docker is currently the only runtime that transfers team data during ZIP deployment.
+    /// Docker can transfer data from the donor. Kubernetes capability also depends on the team's persisted claim and endpoint.
     fn supports_ad_patch_activation(&self, profile: Option<&str>, donor: Option<&str>) -> bool {
         matches!(
             self.profile_backend_kind(profile),
@@ -193,7 +193,8 @@ pub trait ContainerManager: Send + Sync {
         _profile: Option<&str>,
         _storage: &super::TeamStorage,
         _mib: i32,
-    ) -> AppResult<String> {
+        _port: i32,
+    ) -> AppResult<(String, String)> {
         Err(AppError::bad_request(
             "The selected runtime does not support team storage claims",
         ))
@@ -204,12 +205,8 @@ pub trait ContainerManager: Send + Sync {
         self.has_ad_data_volumes(id).await
     }
 
-    /// A stateless team's previous image must remain a valid rollback target.
-    async fn check_stateless_ad_patch(
-        &self,
-        _profile: Option<&str>,
-        _image: &str,
-    ) -> AppResult<()> {
+    /// Validate the replacement while the old endpoint can still serve the team.
+    async fn check_ad_patch_image(&self, _donor: &str, _spec: &ContainerSpec) -> AppResult<()> {
         Err(AppError::conflict(
             "This runtime cannot verify patch image volumes",
         ))

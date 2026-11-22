@@ -291,8 +291,10 @@ helm uninstall rsctf --namespace rsctf-system
 
 Hosted A&D starters that declare `.rsctf-data-dir` require a default CSI
 StorageClass supporting `ReadWriteOncePod` and writable group ownership.
-Each team gets one filesystem claim per opted-in challenge, sized using the
+Each team gets a private ClusterIP Service and one filesystem claim per opted-in challenge, sized using the
 challenge's storage setting. Claims survive Pod replacement and game removal.
+The Service belongs to the claim, so it retains its address through Pod
+replacement and is garbage collected when Kubernetes removes the claim.
 Operators can inventory retained claims with
 `kubectl -n rsctf-challenges get pvc -l 'app.kubernetes.io/managed-by=rsctf,rsctf.io/game'`.
 Include these volumes in event backup and storage-retention planning.

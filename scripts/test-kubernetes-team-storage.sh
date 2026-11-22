@@ -29,9 +29,21 @@ metadata:
 provisioner: hostpath.csi.k8s.io
 volumeBindingMode: Immediate
 YAML
-  docker exec "$cluster_name-control-plane" crictl pull docker.io/library/redis@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
+  starter=docker.io/library/redis@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
+  revision_one=docker.io/library/redis@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+  revision_two=docker.io/library/redis@sha256:da23c2478319ceb4903857d77a2fd7aa5137d9e9d4c8165dafbacedac6403e95
+  for image in "$starter" "$revision_one" "$revision_two"; do
+    docker exec "$cluster_name-control-plane" crictl pull "$image"
+  done
+  kubectl run team-route-client -n rsctf-retry --image="$starter" --restart=Never \
+    --overrides='{"spec":{"automountServiceAccountToken":false,"securityContext":{"runAsNonRoot":true,"runAsUser":10000}}}' \
+    --command -- sleep 1800
+  kubectl wait -n rsctf-retry --for=condition=Ready pod/team-route-client --timeout=120s
+  client_ip="$(kubectl get pod -n rsctf-retry team-route-client -o jsonpath='{.status.podIP}')"
   RSCTF_K8S_NAMESPACE=rsctf-retry RSCTF_K8S_NETWORK_POLICY_ENFORCED=true \
-    RSCTF_K8S_AD_SERVICE_CIDR=10.96.0.0/12 RSCTF_K8S_AD_INGRESS_CIDRS=192.0.2.0/24 \
-    RSCTF_K8S_LIVE_STORAGE=1 run_rust_test services::k8s::team_claim::tests::real_team_storage_survives_recreation
+    RSCTF_K8S_AD_SERVICE_CIDR=10.96.0.0/12 RSCTF_K8S_AD_INGRESS_CIDRS="$client_ip/32" \
+    RSCTF_K8S_READINESS_PROBE=true RSCTF_K8S_TEST_STARTER="$starter" RSCTF_K8S_TEST_REVISION_ONE="$revision_one" \
+    RSCTF_K8S_TEST_REVISION_TWO="$revision_two" RSCTF_K8S_LIVE_STORAGE=1 \
+    run_rust_test services::k8s::team_claim::tests::real_team_storage_survives_recreation
   kubectl delete storageclass rsctf-test-csi
 )

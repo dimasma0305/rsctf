@@ -120,7 +120,7 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
         CREATE TABLE "GameManagers" (id SERIAL PRIMARY KEY, game_id INTEGER, user_id UUID);
         CREATE TABLE "Games" (id INTEGER PRIMARY KEY, start_time_utc TIMESTAMPTZ, deletion_pending BOOLEAN);
         CREATE TABLE "GameChallenges" (id INTEGER PRIMARY KEY, game_id INTEGER, "Type" SMALLINT, ad_self_hosted BOOLEAN, deletion_pending BOOLEAN);
-        CREATE TABLE "AdTeamServices" (id INTEGER PRIMARY KEY, game_id INTEGER, challenge_id INTEGER);
+        CREATE TABLE "AdTeamServices" (id INTEGER PRIMARY KEY, game_id INTEGER, challenge_id INTEGER, participation_id INTEGER);
         CREATE TABLE "Participations" (id INTEGER PRIMARY KEY);
         INSERT INTO "Games" VALUES (1, now()+interval '1 day', false), (2, now()+interval '1 day', false);
         INSERT INTO "GameChallenges" VALUES (10,1,4,false,false),(11,1,4,true,false),(12,2,4,false,false),(13,1,0,false,false),(14,1,4,false,false);
@@ -156,6 +156,10 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
             .await
             .unwrap();
         sqlx::raw_sql(crate::migrations::m0381_ad_team_storage::UP_SQL)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(crate::migrations::m0382_ad_team_endpoints::UP_SQL)
             .execute(&db.pool)
             .await
             .unwrap();
@@ -235,6 +239,23 @@ async fn starter_http_scope_replay_and_concurrent_registration() {
     assert_eq!(first.claim_uid, retry.claim_uid);
     assert_ne!(first.allocation_id, other.allocation_id);
     assert_ne!(first.claim_uid, other.claim_uid);
+    assert!(first.endpoint_uid.is_some());
+    assert_eq!(first.endpoint_uid, retry.endpoint_uid);
+    assert_ne!(first.endpoint_uid, other.endpoint_uid);
+    sqlx::query(r#"INSERT INTO "AdTeamServices" VALUES (44,1,17,1)"#)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        TeamStorage::supports_patch_activation(&st, 44, None, Some("team-pod"))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !TeamStorage::supports_patch_activation(&st, 45, None, Some("team-pod"))
+            .await
+            .unwrap()
+    );
     assert_eq!(
         request(
             &router,

@@ -65,9 +65,13 @@ pub(crate) async fn activate(
             "This service cannot activate the selected build",
         ));
     };
-    if !st
-        .containers
-        .supports_ad_patch_activation(profile.as_deref(), Some(&backend))
+    if !crate::services::container::TeamStorage::supports_patch_activation(
+        &st,
+        service,
+        profile.as_deref(),
+        Some(&backend),
+    )
+    .await?
     {
         return Err(AppError::conflict(
             "This runtime cannot deploy hosted patch images",

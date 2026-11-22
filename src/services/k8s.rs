@@ -37,13 +37,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, Pod, PodSpec, ResourceRequirements, Service, ServicePort,
-    ServiceSpec,
+    Container, EnvVar, Pod, PodSpec, ResourceRequirements, Service, ServiceSpec,
 };
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
-use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, PostParams};
 use kube::core::ErrorResponse;
 use kube::{Client, Config};
@@ -66,13 +64,16 @@ mod readiness;
 mod retry_tests;
 #[cfg(test)]
 pub(crate) use retry_tests::mock_storage_manager;
+mod image_stage;
 mod storage;
 mod team_claim;
+mod team_endpoint;
 #[cfg(test)]
 use launch::sanitize_image;
 use launch::{
-    challenge_security_context, fingerprint_policy_labels, kubernetes_launch_fingerprint,
-    service_owner_matches_pod, service_type, stamp_policy_labels, workload_name_and_uid,
+    challenge_container_ports, challenge_security_context, challenge_service_ports,
+    fingerprint_policy_labels, kubernetes_launch_fingerprint, service_owner_matches_pod,
+    service_type, stamp_policy_labels, workload_name_and_uid,
 };
 use network::{
     ad_network_config, ad_network_policy, isolated_network_policy, isolated_proxy_network_policy,
@@ -91,55 +92,6 @@ const DEFAULT_NAMESPACE: &str = "rsctf-challenges";
 
 /// Env var overriding the target namespace.
 const NAMESPACE_ENV: &str = "RSCTF_K8S_NAMESPACE";
-
-fn challenge_container_ports(expose_port: i32, private_competitive: bool) -> Vec<ContainerPort> {
-    if private_competitive {
-        return vec![
-            ContainerPort {
-                name: Some("challenge-tcp".to_string()),
-                container_port: expose_port,
-                protocol: Some("TCP".to_string()),
-                ..Default::default()
-            },
-            ContainerPort {
-                name: Some("challenge-udp".to_string()),
-                container_port: expose_port,
-                protocol: Some("UDP".to_string()),
-                ..Default::default()
-            },
-        ];
-    }
-    vec![ContainerPort {
-        container_port: expose_port,
-        ..Default::default()
-    }]
-}
-
-fn challenge_service_ports(expose_port: i32, private_competitive: bool) -> Vec<ServicePort> {
-    if private_competitive {
-        return vec![
-            ServicePort {
-                name: Some("challenge-tcp".to_string()),
-                port: expose_port,
-                protocol: Some("TCP".to_string()),
-                target_port: Some(IntOrString::Int(expose_port)),
-                ..Default::default()
-            },
-            ServicePort {
-                name: Some("challenge-udp".to_string()),
-                port: expose_port,
-                protocol: Some("UDP".to_string()),
-                target_port: Some(IntOrString::Int(expose_port)),
-                ..Default::default()
-            },
-        ];
-    }
-    vec![ServicePort {
-        port: expose_port,
-        target_port: Some(IntOrString::Int(expose_port)),
-        ..Default::default()
-    }]
-}
 
 /// Env var advertising the routable node/host IP for NodePort services
 /// (RSCTF `PublicEntry`). When set, [`ContainerInfo::ip`] is this value.
@@ -320,16 +272,22 @@ impl ContainerManager for KubernetesContainerManager {
         Ok(false)
     }
 
+    async fn check_ad_patch_image(&self, donor: &str, spec: &ContainerSpec) -> AppResult<()> {
+        self.stage_team_image(donor, spec).await
+    }
+
     async fn prepare_team_claim(
         &self,
         _profile: Option<&str>,
         data: &crate::services::container::TeamStorage,
         mib: i32,
-    ) -> AppResult<String> {
+        port: i32,
+    ) -> AppResult<(String, String)> {
         let claim = self
             .team_claim(data, data.claim_uid.is_none().then_some(mib))
             .await?;
-        Ok(claim.uid)
+        let endpoint = self.team_endpoint(data, &claim, Some(port)).await?;
+        Ok((claim.uid, endpoint.uid))
     }
 
     async fn ad_donor_needs_transfer(&self, id: &str, next: &ContainerSpec) -> AppResult<bool> {
@@ -337,6 +295,15 @@ impl ContainerManager for KubernetesContainerManager {
             return self.has_ad_data_volumes(id).await;
         };
         let claim = self.team_claim(data, None).await?;
+        let endpoint = self.team_endpoint(data, &claim, None).await?;
+        if !service_ip_is_routed(
+            &endpoint.ip,
+            &ad_network_config(next.allow_egress)?.service_cidr,
+        ) {
+            return Err(AppError::conflict(
+                "The registered team endpoint is outside the routed Service CIDR",
+            ));
+        }
         if let Some(pod) = self
             .pods()
             .get_opt(id)
@@ -547,7 +514,7 @@ impl ContainerManager for KubernetesContainerManager {
                         "Team storage requires a hosted A&D service",
                     ));
                 }
-                if data.claim_uid.is_none() {
+                if data.claim_uid.is_none() || data.endpoint_uid.is_none() {
                     return Err(AppError::conflict(
                         "Missing registration for the team storage claim",
                     ));
@@ -691,6 +658,29 @@ impl ContainerManager for KubernetesContainerManager {
             ));
         }
 
+        if let (Some(claim), Some(data), Some(network)) =
+            (&team_claim, &spec.team_storage, &ad_config)
+        {
+            let endpoint = self.team_endpoint(data, claim, None).await?;
+            if !service_ip_is_routed(&endpoint.ip, &network.service_cidr) {
+                return Err(AppError::conflict(
+                    "The registered team endpoint is outside the routed Service CIDR",
+                ));
+            }
+            let status = claim
+                .wait_ready(&pods, &name, &pod_uid, &spec.image)
+                .await?;
+            endpoint
+                .wait_routed(self, &claim.name, &name, &pod_uid, spec.expose_port)
+                .await?;
+            return Ok(ContainerInfo {
+                id: name,
+                ip: endpoint.ip,
+                port: endpoint.port,
+                status: status.into(),
+            });
+        }
+
         // Service exposing the challenge port: A&D and PlatformProxy are not
         // node-published; direct challenges retain NodePort. The Service is
         // owned by the pod; private-policy cleanup applies to A&D and proxy-only
@@ -832,13 +822,7 @@ impl ContainerManager for KubernetesContainerManager {
             (node_ip, node_port)
         };
 
-        let status = if let Some(claim) = &team_claim {
-            claim
-                .wait_ready(&pods, &name, &pod_uid, &spec.image)
-                .await?
-        } else {
-            readiness::status(&created_pod)
-        };
+        let status = readiness::status(&created_pod);
         Ok(ContainerInfo {
             id: name,
             ip,

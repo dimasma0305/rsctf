@@ -223,7 +223,12 @@ root of the organizer's starter ZIP before provisioning. Give it one line with
 the directory the service uses, such as `/data` or `/var/lib/rehearsal`.
 Each team starts with an empty claim at that directory. Have the service initialize
 its files on first use. Reset and automatic repair mount the same team's claim.
-The first deployment pins the mount path and the identity of the claim.
+The first deployment pins the mount path, the claim and a private Kubernetes
+Service. Deploying a ZIP or rolling back creates a new Pod behind that Service.
+The team keeps its original ClusterIP and port. Before taking the old service
+offline, RSCTF checks that the cluster can pull the selected image using the
+team Pod's credentials. The replacement receives the current round's flag
+before RSCTF publishes it to the event.
 
 On Kubernetes, reset and automatic repair inspect the existing Pod. If it
 has an unregistered persistent volume claim, an `emptyDir`, or another application volume,
@@ -294,9 +299,10 @@ owning team can open **Team revision history**, select the build and choose
 **Deploy revision** after its cooldown. The service must already have a
 recorded running image and a registered starter image. Before replacing it,
 RSCTF rechecks the selected build attempt and its registry digest. If you
-change the runtime profile, a team can deploy a ZIP only when both its
-running service and the selected profile use Docker. Services still on
-Kubernetes keep serving while the organizer manages their migration.
+change the runtime profile, the current backend must still own the team's data.
+Local Docker supports ZIP deployment. Kubernetes supports it for starters
+provisioned with a registered data directory and private team Service. Give
+the challenge namespace pull access to the registry holding the staged image.
 
 #### Reclaim space in a dedicated patch registry
 

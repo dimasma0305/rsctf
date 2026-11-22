@@ -1,5 +1,6 @@
 use super::*;
 use ipnet::IpNet;
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
 fn reporter_selector() -> BTreeMap<String, String> {
     BTreeMap::from([

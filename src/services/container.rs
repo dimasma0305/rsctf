@@ -495,7 +495,8 @@ impl ContainerManager for DockerContainerManager {
         self.create_with_donor(repair, Some(&id)).await.map(Some)
     }
 
-    async fn check_stateless_ad_patch(&self, _profile: Option<&str>, image: &str) -> AppResult<()> {
+    async fn check_ad_patch_image(&self, _donor: &str, spec: &ContainerSpec) -> AppResult<()> {
+        let image = &spec.image;
         let config = self
             .inspect_image(image)
             .await?

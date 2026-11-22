@@ -99,8 +99,11 @@ impl ContainerManager for HybridWorkerContainerManager {
         profile: Option<&str>,
         storage: &crate::services::container::TeamStorage,
         mib: i32,
-    ) -> AppResult<String> {
-        self.local.prepare_team_claim(profile, storage, mib).await
+        port: i32,
+    ) -> AppResult<(String, String)> {
+        self.local
+            .prepare_team_claim(profile, storage, mib, port)
+            .await
     }
 
     async fn ad_donor_needs_transfer(&self, id: &str, next: &ContainerSpec) -> AppResult<bool> {
@@ -122,8 +125,8 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.repair_ad_volumes(previous, spec, change).await
     }
 
-    async fn check_stateless_ad_patch(&self, profile: Option<&str>, image: &str) -> AppResult<()> {
-        self.local.check_stateless_ad_patch(profile, image).await
+    async fn check_ad_patch_image(&self, donor: &str, spec: &ContainerSpec) -> AppResult<()> {
+        self.local.check_ad_patch_image(donor, spec).await
     }
 
     async fn check_ad_volume_reset(&self, id: &str, spec: &ContainerSpec) -> AppResult<()> {

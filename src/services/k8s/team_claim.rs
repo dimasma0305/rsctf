@@ -31,7 +31,7 @@ impl TeamStorage {
         )
     }
 
-    fn labels(&self, scope: &str) -> BTreeMap<String, String> {
+    pub(super) fn labels(&self, scope: &str) -> BTreeMap<String, String> {
         BTreeMap::from([
             ("app.kubernetes.io/managed-by".into(), "rsctf".into()),
             ("rsctf.scope".into(), scope.into()),
@@ -47,7 +47,7 @@ impl TeamStorage {
 }
 
 pub(super) struct TeamClaim {
-    name: String,
+    pub(super) name: String,
     pub(super) uid: String,
     path: String,
 }
@@ -196,6 +196,13 @@ impl TeamClaim {
     }
 
     pub(super) fn mount(&self, pod: &mut Pod) {
+        pod.metadata
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert(
+                super::team_endpoint::CLAIM_SELECTOR.into(),
+                self.uid.clone(),
+            );
         let spec = pod.spec.as_mut().expect("platform Pod spec");
         let container = &mut spec.containers[0];
         spec.security_context = Some(PodSecurityContext {
@@ -250,7 +257,13 @@ impl TeamClaim {
             .flatten()
             .find(|v| v.name == DATA)
             .and_then(|v| v.persistent_volume_claim.as_ref());
-        if !mounted
+        if pod
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|l| l.get(super::team_endpoint::CLAIM_SELECTOR))
+            != Some(&self.uid)
+            || !mounted
             || !volume.is_some_and(|v| v.claim_name == self.name && !v.read_only.unwrap_or(false))
             || pod
                 .metadata

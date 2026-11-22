@@ -301,8 +301,11 @@ impl ContainerManager for CapacityGatedDockerManager {
         profile: Option<&str>,
         storage: &crate::services::container::TeamStorage,
         mib: i32,
-    ) -> AppResult<String> {
-        self.inner.prepare_team_claim(profile, storage, mib).await
+        port: i32,
+    ) -> AppResult<(String, String)> {
+        self.inner
+            .prepare_team_claim(profile, storage, mib, port)
+            .await
     }
 
     async fn ad_donor_needs_transfer(&self, id: &str, next: &ContainerSpec) -> AppResult<bool> {
@@ -325,8 +328,8 @@ impl ContainerManager for CapacityGatedDockerManager {
         self.create_reserved(repair, Some(&id)).await.map(Some)
     }
 
-    async fn check_stateless_ad_patch(&self, profile: Option<&str>, image: &str) -> AppResult<()> {
-        self.inner.check_stateless_ad_patch(profile, image).await
+    async fn check_ad_patch_image(&self, donor: &str, spec: &ContainerSpec) -> AppResult<()> {
+        self.inner.check_ad_patch_image(donor, spec).await
     }
 
     async fn check_ad_volume_reset(&self, id: &str, spec: &ContainerSpec) -> AppResult<()> {

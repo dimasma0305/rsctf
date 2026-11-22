@@ -10,6 +10,8 @@ pub struct TeamStorage {
     pub mount_path: String,
     pub allocation_id: uuid::Uuid,
     pub claim_uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint_uid: Option<String>,
 }
 
 pub(crate) fn application_data_path(path: &str) -> bool {
@@ -24,6 +26,41 @@ pub(crate) fn application_data_path(path: &str) -> bool {
 }
 
 impl TeamStorage {
+    pub(crate) async fn supports_patch_activation(
+        state: &crate::app_state::SharedState,
+        service: i32,
+        profile: Option<&str>,
+        donor: Option<&str>,
+    ) -> AppResult<bool> {
+        if state
+            .containers
+            .supports_ad_patch_activation(profile, donor)
+        {
+            return Ok(true);
+        }
+        let Some(donor) = donor.filter(|id| !id.is_empty()) else {
+            return Ok(false);
+        };
+        if !matches!(
+            state.containers.profile_backend_kind(profile),
+            Ok(super::ContainerBackendKind::Kubernetes)
+        ) || !matches!(
+            state.containers.runtime_backend_kind(donor),
+            Ok(super::ContainerBackendKind::Kubernetes)
+        ) {
+            return Ok(false);
+        }
+        sqlx::query_scalar(
+            r#"SELECT EXISTS(SELECT 1 FROM "AdTeamServices" s
+               JOIN "AdTeamStorageClaims" c USING(participation_id,challenge_id)
+               WHERE s.id=$1 AND c.claim_uid IS NOT NULL AND c.endpoint_uid IS NOT NULL)"#,
+        )
+        .bind(service)
+        .fetch_one(state.pg())
+        .await
+        .map_err(database_error)
+    }
+
     pub(crate) async fn configure(
         state: &crate::app_state::SharedState,
         spec: &mut super::ContainerSpec,
@@ -51,10 +88,10 @@ impl TeamStorage {
         let Some(mount_path) = path else {
             return Ok(());
         };
-        let (allocation_id, claim_uid) = sqlx::query_as::<_, (uuid::Uuid, Option<String>)>(
+        let (allocation_id, claim_uid, endpoint_uid) = sqlx::query_as::<_, (uuid::Uuid, Option<String>, Option<String>)>(
             r#"INSERT INTO "AdTeamStorageClaims" (participation_id,challenge_id,allocation_id)
                VALUES ($1,$2,$3) ON CONFLICT (participation_id,challenge_id)
-               DO UPDATE SET participation_id=EXCLUDED.participation_id RETURNING allocation_id,claim_uid"#,
+               DO UPDATE SET participation_id=EXCLUDED.participation_id RETURNING allocation_id,claim_uid,endpoint_uid"#,
         )
         .bind(participation_id)
         .bind(challenge_id)
@@ -70,19 +107,26 @@ impl TeamStorage {
             mount_path,
             allocation_id,
             claim_uid,
+            endpoint_uid,
         };
-        let uid = state
+        let (uid, endpoint) = state
             .containers
-            .prepare_team_claim(spec.runtime_profile.as_deref(), &data, spec.storage_limit)
+            .prepare_team_claim(
+                spec.runtime_profile.as_deref(),
+                &data,
+                spec.storage_limit,
+                spec.expose_port,
+            )
             .await?;
-        if data.claim_uid.is_none() {
+        if data.claim_uid.is_none() || data.endpoint_uid.is_none() {
             // Concurrent launches must agree on the same API-server object.
             let pinned = sqlx::query(
-                r#"UPDATE "AdTeamStorageClaims" SET claim_uid=$2 WHERE allocation_id=$1
-                   AND (claim_uid IS NULL OR claim_uid=$2)"#,
+                r#"UPDATE "AdTeamStorageClaims" SET claim_uid=$2,endpoint_uid=$3 WHERE allocation_id=$1
+                   AND (claim_uid IS NULL OR claim_uid=$2) AND (endpoint_uid IS NULL OR endpoint_uid=$3)"#,
             )
             .bind(allocation_id)
             .bind(&uid)
+            .bind(&endpoint)
             .execute(state.pg())
             .await
             .map_err(database_error)?;
@@ -93,6 +137,7 @@ impl TeamStorage {
             }
         }
         data.claim_uid = Some(uid);
+        data.endpoint_uid = Some(endpoint);
         spec.team_storage = Some(data);
         if spec.operation_id.is_none() {
             spec.operation_id = Some(format!(

@@ -236,9 +236,10 @@ impl ContainerManager for ProfileRouter {
         profile: Option<&str>,
         storage: &crate::services::container::TeamStorage,
         mib: i32,
-    ) -> AppResult<String> {
+        port: i32,
+    ) -> AppResult<(String, String)> {
         self.selected(profile)?
-            .prepare_team_claim(None, storage, mib)
+            .prepare_team_claim(None, storage, mib, port)
             .await
     }
 
@@ -273,10 +274,9 @@ impl ContainerManager for ProfileRouter {
         Ok(Some(info))
     }
 
-    async fn check_stateless_ad_patch(&self, profile: Option<&str>, image: &str) -> AppResult<()> {
-        self.selected(profile)?
-            .check_stateless_ad_patch(None, image)
-            .await
+    async fn check_ad_patch_image(&self, donor: &str, spec: &ContainerSpec) -> AppResult<()> {
+        let (owner, raw) = self.volume_owner(donor, spec.runtime_profile.as_deref())?;
+        owner.check_ad_patch_image(raw, spec).await
     }
 
     async fn check_ad_volume_reset(&self, previous: &str, spec: &ContainerSpec) -> AppResult<()> {

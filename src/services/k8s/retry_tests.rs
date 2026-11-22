@@ -10,6 +10,7 @@ use tower::service_fn;
 use super::*;
 
 type ResourceStore = Arc<Mutex<HashMap<String, serde_json::Value>>>;
+mod team_storage;
 
 #[tokio::test]
 async fn ad_replacement_checks_actual_pod_storage_before_withdrawing_the_donor() {
@@ -195,6 +196,17 @@ fn mock_manager(failure: ServiceFailure) -> (KubernetesContainerManager, Resourc
             let body = request.into_body().collect_bytes().await.unwrap();
 
             if method == Method::GET {
+                if path.ends_with("/endpointslices") {
+                    let list =
+                        team_storage::endpoint_slices(&resources, selector.as_deref().unwrap());
+                    return Ok::<_, std::io::Error>(
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header(CONTENT_TYPE, "application/json")
+                            .body(Body::from(list.to_string().into_bytes()))
+                            .unwrap(),
+                    );
+                }
                 if let Some(value) = resources.lock().unwrap().get(&path).cloned() {
                     return Ok::<_, std::io::Error>(
                         Response::builder()
@@ -301,7 +313,9 @@ fn mock_manager(failure: ServiceFailure) -> (KubernetesContainerManager, Resourc
                 }
             } else if path.ends_with("/services") {
                 value["spec"]["clusterIP"] = serde_json::json!("10.96.12.34");
-                value["spec"]["ports"][0]["nodePort"] = serde_json::json!(30080);
+                if value["spec"]["type"] == "NodePort" {
+                    value["spec"]["ports"][0]["nodePort"] = serde_json::json!(30080);
+                }
             } else if !path.ends_with("/networkpolicies")
                 && !path.ends_with("/persistentvolumeclaims")
             {
@@ -583,97 +597,6 @@ async fn terminal_adopted_pod_is_removed_before_the_operation_key_rotates() {
         resources.lock().unwrap().is_empty(),
         "a terminal adopted Pod must not leave its Service or operation resources behind"
     );
-}
-
-#[tokio::test]
-async fn hosted_team_claim_is_isolated_reused_and_checked_before_donor_removal() {
-    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
-    let _environment = RestoreEnv::set(&[
-        ("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12"),
-        ("RSCTF_K8S_AD_INGRESS_CIDRS", "192.0.2.0/24"),
-    ]);
-    let (manager, resources) = mock_manager(ServiceFailure::None);
-    let mut spec = retry_spec(false);
-    spec.game_kind = rsctf_worker_protocol::GameKind::AttackDefense;
-    spec.ad_network = Some("rsctf-ad".into());
-    spec.team_storage = Some(crate::services::container::TeamStorage {
-        game_id: 1,
-        participation_id: 2,
-        challenge_id: 3,
-        mount_path: "/data".into(),
-        allocation_id: uuid::Uuid::new_v4(),
-        claim_uid: None,
-    });
-    let data = spec.team_storage.as_mut().unwrap();
-    data.claim_uid = Some(
-        manager
-            .prepare_team_claim(None, data, spec.storage_limit)
-            .await
-            .unwrap(),
-    );
-    let first = manager.create(spec.clone()).await.unwrap();
-    let claim = spec
-        .team_storage
-        .as_ref()
-        .unwrap()
-        .claim_name(&manager.scope);
-    let pvc = format!("/api/v1/namespaces/rsctf-challenges/persistentvolumeclaims/{claim}");
-    assert_eq!(
-        resources.lock().unwrap()[&pvc]["spec"]["accessModes"][0],
-        "ReadWriteOncePod"
-    );
-    assert_eq!(manager.create(spec.clone()).await.unwrap().id, first.id);
-    assert!(!manager
-        .ad_donor_needs_transfer(&first.id, &spec)
-        .await
-        .unwrap());
-    let mut peer = spec.clone();
-    peer.team_storage.as_mut().unwrap().participation_id = 4;
-    let data = peer.team_storage.as_mut().unwrap();
-    data.allocation_id = uuid::Uuid::new_v4();
-    data.claim_uid = None;
-    data.claim_uid = Some(
-        manager
-            .prepare_team_claim(None, data, peer.storage_limit)
-            .await
-            .unwrap(),
-    );
-    peer.operation_id = Some("second-team".into());
-    let other = manager.create(peer.clone()).await.unwrap();
-    assert_ne!(first.id, other.id);
-    assert!(matches!(
-        manager.ad_donor_needs_transfer(&first.id, &peer).await,
-        Err(AppError::Conflict(_))
-    ));
-    let before = resources.lock().unwrap()[&pvc].clone();
-    manager.destroy(&first.id).await.unwrap();
-    spec.operation_id = Some("second-revision".into());
-    let next = manager.create(spec.clone()).await.unwrap();
-    assert_ne!(first.id, next.id);
-    assert_eq!(resources.lock().unwrap()[&pvc], before);
-    resources.lock().unwrap().get_mut(&pvc).unwrap()["metadata"]["uid"] =
-        serde_json::json!("replaced");
-    assert!(matches!(
-        manager.ad_donor_needs_transfer(&next.id, &spec).await,
-        Err(AppError::Conflict(_))
-    ));
-    resources.lock().unwrap().get_mut(&pvc).unwrap()["metadata"]["labels"]
-        ["rsctf.io/participation"] = serde_json::json!("4");
-    assert!(matches!(
-        manager.create(spec.clone()).await,
-        Err(AppError::Conflict(_))
-    ));
-    manager.destroy(&next.id).await.unwrap();
-    resources.lock().unwrap().remove(&pvc);
-    let data = spec.team_storage.as_ref().unwrap();
-    assert!(matches!(
-        manager
-            .prepare_team_claim(None, data, spec.storage_limit)
-            .await,
-        Err(AppError::Conflict(_))
-    ));
-    assert!(manager.create(spec).await.is_err());
-    assert!(!resources.lock().unwrap().contains_key(&pvc));
 }
 
 #[tokio::test]
