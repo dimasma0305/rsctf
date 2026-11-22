@@ -224,11 +224,18 @@ fn require(condition: bool, message: impl Into<String>) -> TestResult {
 }
 
 async fn exercise_lifecycle(
-    runtime: &DockerRuntime,
+    state_dir: &std::path::Path,
     worker_id: Uuid,
     image_id: String,
     fence: WorkloadFence,
 ) -> TestResult {
+    let options = RuntimeOptions {
+        writable_layer_bytes: 512 * 1024 * 1024,
+        minimum_free_bytes: 1024 * 1024 * 1024,
+        allow_unbounded_storage: true,
+        docker_admission: crate::runtime::DockerAdmissionLimits::default(),
+    };
+    let runtime = DockerRuntime::connect(worker_id, None, state_dir, options).await?;
     runtime.probe().await?;
     let image = ImageIdentity::WorkerLocal {
         worker_id,
@@ -335,19 +342,18 @@ async fn exercise_lifecycle(
         format!("expected one Ready inventory item, got {inventory:?}"),
     )?;
 
-    runtime
-        .write_flag(WriteFlag {
-            command_id: Uuid::new_v4(),
-            fence,
-            flag_sequence: 1,
-            target: FlagTarget {
-                service: "challenge".to_string(),
-                path: "/tmp/flag".to_string(),
-            },
-            value: "RSCTF{worker_smoke}".to_string(),
-            timeout_ms: 10_000,
-        })
-        .await?;
+    let flag = WriteFlag {
+        command_id: Uuid::new_v4(),
+        fence,
+        flag_sequence: 2,
+        target: FlagTarget {
+            service: "challenge".to_string(),
+            path: "/tmp/flag".to_string(),
+        },
+        value: "RSCTF{worker_smoke}".to_string(),
+        timeout_ms: 10_000,
+    };
+    runtime.write_flag(flag.clone()).await?;
     for (_, id) in &challenge_replicas {
         require(
             !runtime
@@ -356,6 +362,71 @@ async fn exercise_lifecycle(
             "directory containing the flag was accepted as the flag file",
         )?;
     }
+    let first = &challenge_replicas[0].1;
+    let changed = super::make_single_file_archive("flag".into(), b"changed".to_vec()).await?;
+    runtime
+        .docker
+        .upload_to_container(
+            first,
+            Some(bollard::container::UploadToContainerOptions {
+                path: "/tmp",
+                no_overwrite_dir_non_dir: "",
+            }),
+            changed,
+        )
+        .await?;
+    require(
+        !runtime
+            .verify_guest_file(first, "/tmp/flag", flag.value.as_bytes())
+            .await?,
+        "test did not change the first replica",
+    )?;
+    drop(runtime);
+    let runtime = DockerRuntime::connect(worker_id, None, state_dir, options).await?;
+    let stale = runtime
+        .write_flag(WriteFlag {
+            flag_sequence: 1,
+            ..flag.clone()
+        })
+        .await
+        .unwrap_err();
+    require(
+        stale.code == rsctf_worker_protocol::CommandErrorCode::StaleFlagSequence,
+        "a restart accepted the previous round",
+    )?;
+    runtime
+        .ensure_workload(EnsureWorkload {
+            command_id: Uuid::new_v4(),
+            fence,
+            spec_hash: spec_hash.clone(),
+            timeout_ms: READY_TIMEOUT.as_millis() as u64,
+            spec,
+        })
+        .await?;
+    runtime
+        .write_flag(WriteFlag {
+            command_id: Uuid::new_v4(),
+            ..flag.clone()
+        })
+        .await?;
+    require(
+        runtime
+            .verify_guest_file(first, "/tmp/flag", flag.value.as_bytes())
+            .await?,
+        "retry did not restore the declared file",
+    )?;
+    runtime
+        .docker
+        .stop_container(
+            first,
+            Some(bollard::container::StopContainerOptions { t: 1 }),
+        )
+        .await?;
+    let partial = runtime.write_flag(flag).await.unwrap_err();
+    require(
+        partial.code == rsctf_worker_protocol::CommandErrorCode::PartialFailure,
+        "retry reported delivery with a missing replica",
+    )?;
 
     let absent = runtime
         .ensure_absent(EnsureAbsent {
@@ -386,24 +457,12 @@ async fn docker_workload_lifecycle_when_image_is_configured() {
         .await
         .unwrap_or_else(|error| panic!("prepare isolated Docker smoke test: {error}"));
     let result = async {
-        let runtime = DockerRuntime::connect(
-            worker_id,
-            None,
-            &state_dir,
-            RuntimeOptions {
-                writable_layer_bytes: 512 * 1024 * 1024,
-                minimum_free_bytes: 1024 * 1024 * 1024,
-                allow_unbounded_storage: true,
-                docker_admission: crate::runtime::DockerAdmissionLimits::default(),
-            },
-        )
-        .await?;
         let fence = WorkloadFence {
             workload_id: Uuid::new_v4(),
             assignment_id: Uuid::new_v4(),
             generation: 1,
         };
-        exercise_lifecycle(&runtime, worker_id, image_id, fence).await
+        exercise_lifecycle(&state_dir, worker_id, image_id, fence).await
     }
     .await;
     let cleanup = scope.cleanup().await;

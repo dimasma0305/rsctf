@@ -26,6 +26,7 @@ use super::{RuntimeError, RuntimeOptions, WorkerRuntime};
 
 mod admission;
 mod endpoints;
+mod flag_delivery;
 mod health;
 mod inventory;
 mod networks;
@@ -36,6 +37,7 @@ mod windows_acl;
 use admission::DockerAdmission;
 pub use admission::DockerAdmissionLimits;
 use endpoints::{EndpointCacheKey, EndpointTarget};
+use flag_delivery::FlagDeliveryStore;
 use health::{clamped_health_config, image_health_config};
 pub(super) use preflight::run as preflight;
 use support::*;
@@ -74,7 +76,7 @@ pub struct DockerRuntime {
     round_robin: DashMap<EndpointCacheKey, AtomicU64>,
     endpoint_cache: DashMap<EndpointCacheKey, Vec<EndpointTarget>>,
     ready_containers: DashSet<String>,
-    flag_sequences: DashMap<(Uuid, Uuid, u64, String), u64>,
+    flag_delivery: FlagDeliveryStore,
     tombstones: TombstoneStore,
 }
 
@@ -146,7 +148,7 @@ impl DockerRuntime {
             round_robin: DashMap::new(),
             endpoint_cache: DashMap::new(),
             ready_containers: DashSet::new(),
-            flag_sequences: DashMap::new(),
+            flag_delivery: FlagDeliveryStore::new(state_dir),
             tombstones: TombstoneStore::new(state_dir),
         };
         runtime.audit_windows_endpoints().await?;
@@ -772,6 +774,7 @@ impl WorkerRuntime for DockerRuntime {
             }
         }
 
+        self.flag_delivery.register(&command).await?;
         let replacing_generation = existing.iter().any(|container| {
             label(container.labels.as_ref(), LABEL_GENERATION)
                 .and_then(|value| value.parse::<u64>().ok())
@@ -889,8 +892,7 @@ impl WorkerRuntime for DockerRuntime {
         self.remove_assignment_networks(command.fence.assignment_id)
             .await?;
         self.invalidate_workload_endpoints(command.fence.workload_id);
-        self.flag_sequences
-            .retain(|(workload_id, _, _, _), _| *workload_id != command.fence.workload_id);
+        self.flag_delivery.forget(command.fence).await?;
         Ok(WorkloadStatus {
             fence: command.fence,
             spec_hash: command.spec_hash,
@@ -901,23 +903,10 @@ impl WorkerRuntime for DockerRuntime {
     }
 
     async fn write_flag(&self, command: WriteFlag) -> Result<WorkloadStatus, RuntimeError> {
-        let sequence_key = (
-            command.fence.workload_id,
-            command.fence.assignment_id,
-            command.fence.generation,
-            command.target.path.clone(),
-        );
-        if let Some(current) = self.flag_sequences.get(&sequence_key) {
-            if command.flag_sequence < *current {
-                return Err(RuntimeError::new(
-                    CommandErrorCode::StaleFlagSequence,
-                    "a newer flag sequence is already installed",
-                ));
-            }
-            if command.flag_sequence == *current {
-                return self.current_status(command.fence).await;
-            }
-        }
+        self.tombstones.reject_stale_present(command.fence).await?;
+        let (parent, filename) =
+            split_guest_path(&command.target.path, self.platform().operating_system)?;
+        let replicas = self.flag_delivery.begin(&command).await?;
         let containers = self
             .matching_container_ids(command.fence, &command.target.service)
             .await?;
@@ -927,8 +916,16 @@ impl WorkerRuntime for DockerRuntime {
                 "flag target has no ready replicas",
             ));
         }
-        let (parent, filename) =
-            split_guest_path(&command.target.path, self.platform().operating_system)?;
+        if !containers
+            .iter()
+            .map(|(replica, _)| *replica)
+            .eq(0..replicas)
+        {
+            return Err(RuntimeError::new(
+                CommandErrorCode::PartialFailure,
+                "not all registered flag replicas are ready",
+            ));
+        }
         let expected = command.value.into_bytes();
         let archive = make_single_file_archive(filename, expected.clone()).await?;
         let mut failed = Vec::new();
@@ -966,8 +963,6 @@ impl WorkerRuntime for DockerRuntime {
             )
             .with_failed_replicas(failed));
         }
-        self.flag_sequences
-            .insert(sequence_key, command.flag_sequence);
         self.current_status(command.fence).await
     }
 

@@ -898,6 +898,12 @@ stateful service, such as the Redis service in the example above, can still be
 saved for new launches but must be drained and recreated deliberately; RSCTF
 will not silently discard its local state during scale-up or scale-down.
 
+The worker registers the flag path and replica count when it reconciles a
+workload. For file deliveries it saves the latest sequence and a digest in its
+state directory. After a restart it can retry that sequence and verify the file
+on every replica. An existing workload first reconciled by an older agent needs
+one reconciliation on the upgraded agent before its first file delivery.
+
 Whenever RSCTF supplies a runtime flag, `flagTarget.service` is mandatory and
 must select exactly one service. V1 injects the value as `RSCTF_FLAG` only into
 that service. `flagTarget.path` is validated and reserved for future competitive
