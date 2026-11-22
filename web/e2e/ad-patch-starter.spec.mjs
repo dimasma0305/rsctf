@@ -37,6 +37,12 @@ test('closed hosted challenge shows paged file statuses on a narrow screen', asy
   await expect(page.getByRole('listitem').filter({ hasText: 'src/example.py · Deleted' })).toBeVisible()
   await dialog.getByRole('button', { name: 'First page' }).click()
   await expect(page.getByText('Owls · Revision 3')).toBeVisible()
+  const archive = dialog.getByRole('region', { name: 'Deployed patches' })
+  expect(await archive.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
+  await page.addScriptTag({ path: resolve(repositoryRoot, 'web/node_modules/axe-core/axe.min.js') })
+  expect(await archive.evaluate(async el => (await window.axe.run(el, {
+    runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] },
+  })).violations.map(issue => issue.id))).toEqual([])
 })
 
 test('team resets its hosted service and sees the completed result without crypto.randomUUID', async ({ page }) => {

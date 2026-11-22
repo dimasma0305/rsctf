@@ -1,16 +1,26 @@
 import { Button, Group, Stack, Text } from '@mantine/core'
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { SWRConfig } from 'swr'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
+import { useUser } from '@Hooks/useUser'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
 import api from '@Api'
 
 type Cursor = { afterTeam: number; afterRevision: number }
+type Props = { gameId: number; challengeId: number }
+const privateCache = { provider: () => new Map() }
 
-export function AdPatchArchive({ gameId, challengeId }: { gameId: number; challengeId: number }) {
-  const { t } = useTranslation()
+export function AdPatchArchive(props: Props) {
+  const { user } = useUser()
   const [cursor, setCursor] = useState<Cursor>()
+  const pageKey = `${user?.userId}:${cursor?.afterTeam ?? 0}:${cursor?.afterRevision ?? 0}`
+  return <SWRConfig key={pageKey} value={privateCache}><Page {...props} cursor={cursor} setCursor={setCursor} /></SWRConfig>
+}
+
+function Page({ gameId, challengeId, cursor, setCursor }: Props & { cursor?: Cursor; setCursor: (cursor?: Cursor) => void }) {
+  const { t } = useTranslation()
   const request = useCallback(
     async (signal: AbortSignal) =>
       assertJsonResponse(await api.game.getAdPatchArchive(gameId, challengeId, cursor ?? {}, { signal })),
@@ -28,8 +38,8 @@ export function AdPatchArchive({ gameId, challengeId }: { gameId: number; challe
   if (!data || (!data.revisions.length && !cursor)) return null
   const last = data.revisions.at(-1)
   return (
-    <section>
-      <Text fw={600}>{t('game.ad.patch.archive', 'Deployed patches')}</Text>
+    <section aria-label={t('game.ad.patch.archive', 'Deployed patches')}>
+      <Text component="h3" size="sm" fw={600}>{t('game.ad.patch.archive', 'Deployed patches')}</Text>
       <Stack gap="xs">
         <Text size="sm">{t('game.ad.patch.archive_help', 'Changes from the starter for files selected by the organizer.')}</Text>
         {data.revisions.map((row) => (
