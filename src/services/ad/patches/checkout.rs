@@ -17,6 +17,20 @@ pub(crate) struct Checkout {
 
 pub(crate) type BlobRow = (String, bool, i32, Vec<u8>);
 
+/// Unlink the export before writing private source. The last descriptor
+/// cleans up after cancellation, errors, and process termination.
+pub(crate) fn private_export_file() -> std::io::Result<File> {
+    let path = std::env::temp_dir().join(format!("rsctf-patch-{}", uuid::Uuid::new_v4()));
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    std::fs::remove_file(path)?;
+    Ok(file)
+}
+
 impl Checkout {
     pub fn start(
         target: PatchManifest,
@@ -48,18 +62,8 @@ impl Checkout {
                 .or_default()
                 .push((path, entry.mode));
         }
-        // Unlink before writing any source. Closing the last descriptor cleans
-        // up after errors, cancelled requests, and process termination.
-        let path = std::env::temp_dir().join(format!("rsctf-patch-{}", uuid::Uuid::new_v4()));
-        let file = File::options()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?;
-        std::fs::remove_file(path)?;
         let mut out = Self {
-            zip: ZipWriter::new(file),
+            zip: ZipWriter::new(private_export_file()?),
             remaining,
             expanded: 0,
         };

@@ -50,8 +50,16 @@ with last SSH report**. The comparison checks file contents and executable bits
 for the registered paths. “Added” means the ZIP contains a file that was missing
 at the last sample. “Deleted” means the file was observed over SSH and is missing
 from the ZIP. The report time shows when RSCTF last sampled those files.
-Downloadable source revisions and image rollback use the
-separate ZIP workflow.
+
+To let teams recover edits after a hosted Docker container is replaced, add
+`"retainContent": true` to each source entry whose contents the team may keep.
+With the default setting, the history records only hashes and file modes.
+The image's shell user must be able to read every selected file and run
+`head`, `timeout`, and `base64`. A missing file records a deletion.
+In **SSH edit history**, the team can download its eight most recent recoverable
+observations during the game. Each ZIP starts from the organizer's starter and
+applies the selected files and deletions. Other files come from the starter.
+Review the ZIP and submit it through the regular patch workflow to deploy it.
 
 When you save a starter before the game, the editor also records the challenge's
 successful build by its immutable image reference. If you upload the ZIP first,

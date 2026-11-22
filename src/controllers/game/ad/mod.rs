@@ -58,6 +58,10 @@ fn common_router() -> Router<SharedState> {
             limited(Policy::Query, get(patch_preview::ssh_history)),
         )
         .route(
+            "/api/game/{id}/ad/challenges/{challengeId}/ssh-source/{revision}/{capture}/starter.zip",
+            limited(Policy::Query, get(patch_preview::ssh_recovery::download)),
+        )
+        .route(
             "/api/game/{id}/ad/challenges/{challengeId}/patch-activity",
             limited(Policy::Query, get(patch_preview::activity::list)),
         )

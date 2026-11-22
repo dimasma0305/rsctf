@@ -134,8 +134,12 @@ test('team can see sampled SSH edits to the same registered file', async ({ page
       const at = Date.now() - 3600000
       return route.fulfill({ json: { before: null, events: [2, 1].map(revision => ({
         revision, firstSeen: at + revision, lastSeen: at + revision, status: 'observed',
+        recoveryId: revision === 2 ? '4e13e9c5-7825-485d-bc88-227666c89302' : undefined,
         changes: [{ path: 'exercise.py', kind: revision === 1 ? 'present' : 'modified' }],
       })) } })
+    }
+    if (path === '/api/game/901/ad/challenges/9001/ssh-source/2/4e13e9c5-7825-485d-bc88-227666c89302/starter.zip') {
+      return route.fulfill({ contentType: 'application/zip', body: 'private recovery fixture' })
     }
     const result = game.fixture(url.pathname + url.search, req.method())
     return route.fulfill({ status: result.status ?? 200, json: result.body ?? null })
@@ -147,6 +151,11 @@ test('team can see sampled SSH edits to the same registered file', async ({ page
   await open.click()
   const dialog = page.getByRole('dialog', { name: 'SSH edit history' })
   await expect(dialog.getByText('SSH source observed')).toHaveCount(2)
+  await expect(dialog.getByRole('button', { name: 'Download starter with SSH edits (revision 2)' })).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Download starter with SSH edits (revision 1)' })).toHaveCount(0)
+  const downloaded = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: 'Download starter with SSH edits (revision 2)' }).click()
+  expect((await downloaded).suggestedFilename()).toBe('ssh-revision-2.zip')
   await dialog.locator('summary').first().click()
   await expect(dialog.getByText('Modified', { exact: false }).first()).toBeVisible()
   await expect(dialog.getByText('Reports are out of date.', { exact: false })).toHaveCount(0)

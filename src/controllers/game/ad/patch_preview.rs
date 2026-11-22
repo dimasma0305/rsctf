@@ -25,6 +25,7 @@ pub(super) mod builds;
 pub(super) mod revisions;
 pub(super) mod source;
 pub(super) mod ssh_comparison;
+pub(super) mod ssh_recovery;
 pub(super) async fn ssh_history(
     State(st): State<SharedState>,
     user: CurrentUser,

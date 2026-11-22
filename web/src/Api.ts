@@ -4578,7 +4578,7 @@ export interface ChallengeAuditFile {
 
 /** Stored ZIP for the original source of a hosted A&D challenge. */
 export interface RegisteredAdPatchStarter extends AdPatchStarter {
-  sshSources?: { sourcePath: string; containerPath: string }[];
+  sshSources?: { sourcePath: string; containerPath: string; retainContent?: boolean }[];
   runtimeImageRef: string | null;
   awaitingImageBuild: boolean;
 }
@@ -4632,6 +4632,7 @@ export interface ByocSourceHistoryPage {
   before: number | null;
   events: {
     revision: number;
+    recoveryId?: string;
     status: "observed" | "notRegistered" | "unavailable" | "legacyAgent";
     trackedFiles?: number;
     firstSeen: number;
@@ -11952,6 +11953,12 @@ export class Api<
       this.request<Blob, RequestResponse>({
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-revisions/${revision}/source.zip`,
         method: "GET", query: { commit }, format: "blob", ...params,
+      }),
+
+    downloadAdSshRecovery: (game: number, challenge: number, revision: number, capture: string, params: RequestParams = {}) =>
+      this.request<Blob, RequestResponse>({
+        path: `/api/game/${game}/ad/challenges/${challenge}/ssh-source/${revision}/${encodeURIComponent(capture)}/starter.zip`,
+        method: "GET", format: "blob", ...params,
       }),
 
     adPatchBuild: (id: number, challenge: number, revision: number, service: number, commit: string,

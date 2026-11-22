@@ -61,6 +61,10 @@ pub(super) async fn check(pool: &PgPool, router: &Router, user: &CurrentUser) {
         .execute(pool)
         .await
         .unwrap();
+    sqlx::raw_sql(crate::migrations::m0379_ad_ssh_recovery::UP_SQL)
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::raw_sql(
         r#"INSERT INTO "AdTeamServices" VALUES (25,1,6,10);
       INSERT INTO "AdHostedSshSourceHistory"(service_id,revision,state,files) VALUES
@@ -84,6 +88,7 @@ pub(super) async fn check(pool: &PgPool, router: &Router, user: &CurrentUser) {
     let text = std::str::from_utf8(&bytes).unwrap();
     assert!(text.contains("own.py") && !text.contains("peer.py"));
     compare_saved_zip(pool, router, user).await;
+    recovery_zip(pool, router, user).await;
     let peer = "/api/ad/admin/1/Services/25/SshSource";
     assert_eq!(
         get(router, peer, Some(user)).await.status(),
@@ -114,6 +119,91 @@ pub(super) async fn check(pool: &PgPool, router: &Router, user: &CurrentUser) {
         .status(),
         StatusCode::NOT_FOUND
     );
+}
+
+async fn recovery_zip(pool: &PgPool, router: &Router, user: &CurrentUser) {
+    use std::io::Read;
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, bytes) in [
+        ("Dockerfile", "FROM scratch\n"),
+        ("own.py", "old"),
+        ("removed", "old"),
+        ("unchanged", "starter only"),
+        (
+            ".rsctf-ssh.json",
+            r#"[{"sourcePath":"own.py","containerPath":"/app/own","retainContent":true},{"sourcePath":"removed","containerPath":"/app/remove","retainContent":true}]"#,
+        ),
+    ] {
+        writer
+            .start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(bytes.as_bytes()).unwrap();
+    }
+    let archive = writer.finish().unwrap().into_inner();
+    let tree = PatchManifest::from_zip(&archive).unwrap().tree_id();
+    sqlx::query(r#"UPDATE "AdPatchStarters" SET archive=$1,tree_id=$2 WHERE challenge_id=10"#)
+        .bind(archive)
+        .bind(&tree)
+        .execute(pool)
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    for (service, data) in [(20, b"team one"), (25, b"team two")] {
+        let capture = Uuid::new_v4();
+        let oid = crate::services::ad::patches::ssh_sources::content_id(data);
+        sqlx::query(r#"INSERT INTO "AdSshRecovery" VALUES($1,1,$2,$3)"#)
+            .bind(service)
+            .bind(capture)
+            .bind(&tree)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "AdSshRecoveryBlobs" VALUES($1,$2,$3)"#)
+            .bind(service)
+            .bind(&oid)
+            .bind(data.as_slice())
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "AdSshRecoveryFiles" VALUES($1,1,'own.py',$2,true),($1,1,'removed',NULL,false)"#)
+            .bind(service).bind(oid).execute(pool).await.unwrap();
+        ids.push(capture);
+    }
+    let path = format!(
+        "/api/game/1/ad/challenges/10/ssh-source/1/{}/starter.zip",
+        ids[0]
+    );
+    assert_eq!(
+        get(router, &path, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for wrong in [
+        path.replace(&ids[0].to_string(), &ids[1].to_string()),
+        path.replace("source/1", "source/2"),
+        path.replace("challenges/10", "challenges/11"),
+    ] {
+        assert_eq!(
+            get(router, &wrong, Some(user)).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    let response = get(router, &path, Some(user)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    let mut zip = zip::ZipArchive::new(Cursor::new(
+        to_bytes(response.into_body(), 65536).await.unwrap(),
+    ))
+    .unwrap();
+    assert!(zip.by_name("removed").is_err());
+    assert!(zip.by_name("unchanged").is_ok());
+    let mut file = zip.by_name("own.py").unwrap();
+    assert_ne!(file.unix_mode().unwrap() & 0o111, 0);
+    let mut value = String::new();
+    file.read_to_string(&mut value).unwrap();
+    assert_eq!(value, "team one");
 }
 
 async fn compare_saved_zip(pool: &PgPool, router: &Router, user: &CurrentUser) {

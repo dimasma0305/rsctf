@@ -17,7 +17,11 @@ async fn registered_edits_keep_separate_private_histories_in_docker() {
         .execute(&db.pool)
         .await
         .unwrap();
-    sqlx::query(r#"INSERT INTO "AdPatchStarters" VALUES(3,repeat('a',64),'[{"sourcePath":"game.py","containerPath":"/tmp/game.py"}]')"#)
+    sqlx::raw_sql(crate::migrations::m0379_ad_ssh_recovery::UP_SQL)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "AdPatchStarters" VALUES(3,repeat('a',64),'[{"sourcePath":"game.py","containerPath":"/tmp/game.py","retainContent":true}]')"#)
         .execute(&db.pool).await.unwrap();
     let state = docker_state(&db.pool);
     let image = std::env::var("RSCTF_TEST_CONTAINER_IMAGE").unwrap();
@@ -105,6 +109,79 @@ async fn registered_edits_keep_separate_private_histories_in_docker() {
         .await
         .unwrap();
     assert!(!session.capture_current().await.unwrap());
+    drop(sessions.remove(0));
+    let recovered = sqlx::query_as::<_, (i32, i64, String, Option<Vec<u8>>)>(
+        r#"SELECT f.service_id,f.revision,f.path,b.payload
+        FROM "AdSshRecoveryFiles" f LEFT JOIN "AdSshRecoveryBlobs" b USING(service_id,oid)
+        ORDER BY f.service_id,f.revision"#,
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(recovered.len(), 5);
+    for ((service, _, path, value), (team, expected)) in recovered.iter().zip([
+        (41, Some("v1")),
+        (41, Some("v2")),
+        (41, Some("v3")),
+        (41, None),
+        (42, Some("v1")),
+    ]) {
+        assert_eq!(
+            (*service, path.as_str(), value.as_deref()),
+            (team, "game.py", expected.map(str::as_bytes))
+        );
+    }
+    let (peer, session) = &sessions[0];
+    docker(&[
+        "exec",
+        &peer.0,
+        "sh",
+        "-c",
+        "printf private-fixture >/tmp/game.py && chmod 000 /tmp/game.py",
+    ]);
+    assert!(session.capture_current().await.unwrap());
+    let protected = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(SELECT 1 FROM "AdSshRecoveryBlobs" WHERE service_id=42 AND payload=$1)"#,
+    )
+    .bind(b"private-fixture".as_slice())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(!protected);
+    docker(&["exec", &peer.0, "chmod", "644", "/tmp/game.py"]);
+    for number in 0..10 {
+        docker(&[
+            "exec",
+            &peer.0,
+            "sh",
+            "-c",
+            "printf '%s' \"$1\" >/tmp/game.py",
+            "fixture",
+            &number.to_string(),
+        ]);
+        assert!(session.capture_current().await.unwrap());
+    }
+    let remaining = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"SELECT
+       (SELECT count(*) FROM "AdSshRecovery" WHERE service_id=42),
+       (SELECT count(*) FROM "AdSshRecoveryBlobs" WHERE service_id=42),
+       (SELECT count(*) FROM "AdSshRecovery" WHERE service_id=41)"#,
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(remaining, (8, 8, 4));
+    sqlx::query(r#"DELETE FROM "AdHostedSshSourceHistory" WHERE service_id=42"#)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let orphans = sqlx::query_scalar::<_, i64>(
+        r#"SELECT count(*) FROM "AdSshRecoveryBlobs" WHERE service_id=42"#,
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(orphans, 0);
     drop(sessions);
     db.close().await;
 }

@@ -93,8 +93,10 @@ export function AdPatchStarterInput({ gameId, challengeId, started, disabled }: 
       )}
       {!!data?.sshSources?.length && <details>
         <summary>{t('admin.ad.patch_starter.ssh_sources', 'Registered SSH source files ({{count}})', { count: data.sshSources.length })}</summary>
-        <ul>{data.sshSources.map(({ sourcePath, containerPath }) => (
-          <li key={sourcePath} style={{ overflowWrap: 'anywhere' }}><code>{sourcePath}</code> → <code>{containerPath}</code></li>
+        <ul>{data.sshSources.map(({ sourcePath, containerPath, retainContent }) => (
+          <li key={sourcePath} style={{ overflowWrap: 'anywhere' }}><code>{sourcePath}</code> → <code>{containerPath}</code>
+            {retainContent && <> · {t('game.ad.patch.ssh_retained', 'Included in team recovery ZIPs')}</>}
+          </li>
         ))}</ul>
       </details>}
       {error ? (

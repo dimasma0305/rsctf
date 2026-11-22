@@ -15,6 +15,8 @@ pub(crate) struct Page {
 #[serde(rename_all = "camelCase")]
 struct Event {
     revision: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_id: Option<uuid::Uuid>,
     status: String,
     #[serde(with = "crate::utils::datetime::millis")]
     first_seen: DateTime<Utc>,
@@ -61,6 +63,7 @@ fn changes(previous: Option<&Files>, files: &Files) -> Vec<Change> {
 #[derive(sqlx::FromRow)]
 struct Row {
     revision: i64,
+    recovery_id: Option<uuid::Uuid>,
     state: String,
     files: String,
     first_seen: DateTime<Utc>,
@@ -90,7 +93,13 @@ async fn read(
     table: HistoryTable,
 ) -> AppResult<Response> {
     let _permit = crate::utils::upload::reserve_buffered(8 * 1024 * 1024)?;
-    let rows=sqlx::query_as::<_,Row>(&format!("SELECT revision,state,files,first_seen,last_seen FROM {} WHERE service_id=$1 AND revision<$2 ORDER BY revision DESC LIMIT 9",table.sql_name()))
+    let recovery = match table {
+        HistoryTable::Byoc => "NULL::uuid",
+        HistoryTable::HostedSsh => {
+            r#"(SELECT r.id FROM "AdSshRecovery" r WHERE r.service_id=h.service_id AND r.revision=h.revision)"#
+        }
+    };
+    let rows=sqlx::query_as::<_,Row>(&format!("SELECT revision,state,files,first_seen,last_seen,{recovery} AS recovery_id FROM {} h WHERE service_id=$1 AND revision<$2 ORDER BY revision DESC LIMIT 9",table.sql_name()))
         .bind(service).bind(page.before.unwrap_or(i64::MAX)).fetch_all(db).await.map_err(db_error)?;
     let more = rows.len() > 8;
     let mut previous = None;
@@ -107,6 +116,7 @@ async fn read(
             };
             events.push(Event {
                 revision: row.revision,
+                recovery_id: row.recovery_id,
                 status: row.state,
                 first_seen: row.first_seen,
                 last_seen: row.last_seen,

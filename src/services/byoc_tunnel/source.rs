@@ -218,26 +218,20 @@ fn db_error(e: sqlx::Error) -> AppError {
 
 // The caller holds the same per-service transaction lock as tunnel replacement.
 async fn store(db: &mut sqlx::PgConnection, service: i32, snapshot: &Snapshot) -> AppResult<()> {
-    store_in(db, service, snapshot, HistoryTable::Byoc).await
+    store_in(db, service, snapshot, HistoryTable::Byoc)
+        .await
+        .map(|_| ())
 }
 
 pub(crate) async fn store_ssh(
     db: &mut sqlx::PgConnection,
     service: i32,
-    observed: Option<BTreeMap<String, Option<(String, bool)>>>,
-) -> AppResult<()> {
+    observed: Option<Files>,
+) -> AppResult<i64> {
     let snapshot = match observed {
         Some(files) => Snapshot {
             state: "observed",
-            files: files
-                .into_iter()
-                .map(|(path, entry)| {
-                    (
-                        path,
-                        entry.map(|(blob, executable)| FileIdentity { blob, executable }),
-                    )
-                })
-                .collect(),
+            files,
         },
         None => Snapshot::empty("unavailable"),
     };
@@ -249,7 +243,7 @@ async fn store_in(
     service: i32,
     snapshot: &Snapshot,
     table: HistoryTable,
-) -> AppResult<()> {
+) -> AppResult<i64> {
     let table = table.sql_name();
     let files =
         serde_json::to_string(&snapshot.files).map_err(|e| AppError::internal(e.to_string()))?;
@@ -264,7 +258,7 @@ async fn store_in(
         .execute(db)
         .await
         .map_err(db_error)?;
-        return Ok(());
+        return Ok(revision);
     }
     let revision = previous.map_or(1, |(n, _)| n + 1);
     sqlx::query(&format!(
@@ -287,5 +281,5 @@ async fn store_in(
         .await
         .map_err(db_error)?;
     }
-    Ok(())
+    Ok(revision)
 }

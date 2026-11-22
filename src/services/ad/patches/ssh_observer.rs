@@ -1,13 +1,14 @@
-//! Sample organizer-registered files during a hosted team shell. No file
-//! contents or terminal traffic are written to the observation history.
+//! Sample organizer-registered files during a hosted team shell.
 use super::{git_object, ssh_sources::SshSource};
 use crate::app_state::SharedState;
 use crate::services::ad::forensics;
+use crate::services::byoc_tunnel::source::{FileIdentity, Files};
 use crate::services::container::ContainerLiveness;
 use crate::utils::error::{AppError, AppResult};
 use std::collections::BTreeMap;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+mod recovery;
 #[cfg(test)]
 mod tests;
 
@@ -73,17 +74,43 @@ impl Session {
             .await
             .ok()
             .and_then(Result::ok);
+        let recovery = match files.as_ref() {
+            Some(files)
+                if paths.iter().any(|source| source.retain_content)
+                    && !recovery::already_retained(
+                        &mut permit.transaction,
+                        self.service,
+                        &tree,
+                        files,
+                    )
+                    .await? =>
+            {
+                tokio::time::timeout(
+                    Duration::from_secs(3),
+                    recovery::collect(self, &paths, files),
+                )
+                .await
+                .ok()
+                .flatten()
+            }
+            _ => None,
+        };
         // Exclusively lock the team service before allocating a revision.
         let current = self.policy(&mut permit.transaction, true).await?;
         if !current.is_some_and(|(id, policy)| id == tree && policy.0 == paths.0) {
             return Ok(false);
         }
-        crate::services::byoc_tunnel::source::store_ssh(
+        let revision = crate::services::byoc_tunnel::source::store_ssh(
             &mut permit.transaction,
             self.service,
             files,
         )
         .await?;
+        if let Some(recovery) = recovery {
+            recovery
+                .save(&mut permit.transaction, self.service, revision, &tree)
+                .await?;
+        }
         permit.transaction.commit().await.map_err(db_error)?;
         Ok(true)
     }
@@ -109,10 +136,7 @@ impl Session {
             .map_err(db_error)
     }
 
-    async fn sample(
-        &self,
-        paths: &[SshSource],
-    ) -> AppResult<BTreeMap<String, Option<(String, bool)>>> {
+    async fn sample(&self, paths: &[SshSource]) -> AppResult<Files> {
         let mut files = BTreeMap::new();
         for source in paths {
             let file = match self
@@ -125,10 +149,10 @@ impl Session {
                 )
                 .await
             {
-                Ok(file) if !file.truncated => Some((
-                    hex::encode(git_object("blob", &file.bytes)),
-                    file.executable,
-                )),
+                Ok(file) if !file.truncated => Some(FileIdentity {
+                    blob: hex::encode(git_object("blob", &file.bytes)),
+                    executable: file.executable,
+                }),
                 Ok(_) => {
                     return Err(AppError::bad_request(
                         "Registered source exceeds the observation size limit",

@@ -1,6 +1,8 @@
 {
   "ad": {
     "patch": {
+      "ssh_recover": "Download starter with SSH edits (revision {{number}})",
+      "ssh_retained": "Included in team recovery ZIPs",
       "activity": "Patch activity across teams",
       "activity_help": "Successful ZIP deployments appear after one additional round finishes.",
       "activity_round": "Round {{round}} · {{deployments}} deployed",

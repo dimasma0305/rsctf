@@ -1,6 +1,8 @@
 {
   "ad": {
     "patch": {
+      "ssh_recover": "Unduh ZIP awal dengan editan SSH (revisi {{number}})",
+      "ssh_retained": "Disertakan dalam ZIP pemulihan tim",
       "activity": "Aktivitas patch semua tim",
       "activity_help": "Jumlah deployment ZIP yang berhasil muncul setelah satu ronde berikutnya selesai.",
       "activity_round": "Ronde {{round}} · {{deployments}} deployment berhasil",

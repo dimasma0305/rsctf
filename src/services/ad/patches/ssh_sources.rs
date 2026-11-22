@@ -7,11 +7,17 @@ const REGISTRATION: &str = ".rsctf-ssh.json";
 const MAX_BYTES: u64 = 16 * 1024;
 const MAX_FILES: usize = 32;
 
+pub(crate) fn content_id(bytes: &[u8]) -> String {
+    hex::encode(super::git_object("blob", bytes))
+}
+
 #[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SshSource {
     pub source_path: String,
     pub container_path: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retain_content: bool,
 }
 
 impl PatchManifest {
