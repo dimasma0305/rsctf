@@ -1140,6 +1140,7 @@ jobs:
             docker_bootstrap_reuses_pending_code_and_stops_after_registration
             simple_challenge_create_is_atomic_authorized_and_retryable
             starter_http_scope_replay_and_concurrent_registration
+            finalized_rounds_release_only_opted_in_challenge_counts
             player_download_preview_and_revocation_during_upload
             buildkit_accepts_checked_out_patch_revision
             buildkit_failed_patch_candidate_preserves_active_image_and_service

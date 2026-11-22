@@ -60,9 +60,14 @@ async fn request(
     router.clone().oneshot(req).await.unwrap()
 }
 
-#[tokio::test]
-#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn player_download_preview_and_revocation_during_upload() {
+struct Fixture {
+    db: crate::utils::test_database::TestDatabase,
+    state: SharedState,
+    user: CurrentUser,
+    source: Vec<u8>,
+}
+
+async fn fixture() -> Fixture {
     let db = crate::utils::test_database::TestDatabase::new("ad_patch_preview").await;
     sqlx::raw_sql(r#"
         CREATE TABLE "Games" (id INTEGER PRIMARY KEY, deletion_pending BOOLEAN, practice_mode BOOLEAN, start_time_utc TIMESTAMPTZ, end_time_utc TIMESTAMPTZ);
@@ -122,11 +127,39 @@ async fn player_download_preview_and_revocation_during_upload() {
         crate::services::token::TokenService::new("0123456789abcdef0123456789abcdef", 60),
         Arc::new(crate::services::container::NoopContainerManager),
     );
-    let editor = crate::controllers::edit::router().with_state(st.clone());
+    Fixture {
+        db,
+        state: st,
+        user,
+        source,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn finalized_rounds_release_only_opted_in_challenge_counts() {
+    let Fixture {
+        db, state, user, ..
+    } = fixture().await;
+    let editor = crate::controllers::edit::router().with_state(state.clone());
+    let player = super::super::web_router().with_state(state);
+    activity::check(&db.pool, &player, &editor, &user).await;
+    db.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn player_download_preview_and_revocation_during_upload() {
+    let Fixture {
+        db,
+        state,
+        user,
+        source,
+    } = fixture().await;
+    let original = PatchManifest::from_zip(&source).unwrap().tree_id();
     let router = super::super::web_router()
         .merge(crate::controllers::admin::ad::router())
-        .with_state(st);
-    activity::check(&db.pool, &router, &editor, &user).await;
+        .with_state(state);
     byoc_history::check(&db.pool, &router, &user).await;
     let get = |challenge, resource| {
         request(

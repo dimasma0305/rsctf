@@ -86,10 +86,4 @@ pub(super) async fn check(pool: &PgPool, player: &Router, editor: &Router, user:
         set(&admin, false, 1).await.unwrap().status(),
         StatusCode::CONFLICT
     );
-    sqlx::raw_sql(
-        r#"DROP TABLE "AdPatchActivityPolicies","ControlPlaneJobs","AdRounds","GameManagers";"#,
-    )
-    .execute(pool)
-    .await
-    .unwrap();
 }
