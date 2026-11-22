@@ -171,7 +171,8 @@ impl ContainerManager for ProfileRouter {
         Ok(self.selected(profile)?.backend_kind())
     }
     fn runtime_backend_kind(&self, id: &str) -> AppResult<ContainerBackendKind> {
-        Ok(self.route(id)?.0.backend_kind())
+        let (owner, raw) = self.route(id)?;
+        owner.runtime_backend_kind(raw)
     }
     fn profile_requires_proxy(&self, profile: Option<&str>) -> AppResult<bool> {
         Ok(self.selected(profile)?.requires_proxy())

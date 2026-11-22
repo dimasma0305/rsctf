@@ -60,6 +60,13 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.backend_kind()
     }
 
+    fn runtime_backend_kind(&self, id: &str) -> AppResult<ContainerBackendKind> {
+        if Self::is_worker_id(id) {
+            return self.worker.runtime_backend_kind(id);
+        }
+        self.local.runtime_backend_kind(id)
+    }
+
     async fn storage_quota_enforced(&self) -> Option<bool> {
         self.local.storage_quota_enforced().await
     }
@@ -126,6 +133,9 @@ impl ContainerManager for HybridWorkerContainerManager {
     }
 
     async fn check_ad_patch_image(&self, donor: &str, spec: &ContainerSpec) -> AppResult<()> {
+        if Self::is_worker_id(donor) {
+            return self.worker.check_ad_patch_image(donor, spec).await;
+        }
         self.local.check_ad_patch_image(donor, spec).await
     }
 

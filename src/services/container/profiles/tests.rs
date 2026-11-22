@@ -40,6 +40,31 @@ impl ContainerManager for Runtime {
 }
 
 #[tokio::test]
+async fn worker_handles_on_a_hybrid_keep_their_backend_identity_for_patching() {
+    use crate::services::worker::{
+        HybridWorkerContainerManager, WorkerContainerManager, WorkerHandle,
+    };
+    use crate::services::worker_store::WorkerStore;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+    let worker = WorkerContainerManager::new(WorkerStore::new(pool));
+    let hybrid = HybridWorkerContainerManager::new(Arc::new(Runtime::default()), worker).unwrap();
+    let router = ProfileRouter::new(Arc::new(hybrid), vec![]).unwrap();
+    let remote = WorkerHandle {
+        workload_id: uuid::Uuid::new_v4(),
+        assignment_id: uuid::Uuid::new_v4(),
+        generation: 1,
+    }
+    .encode();
+    assert_eq!(
+        router.runtime_backend_kind(&remote).unwrap(),
+        ContainerBackendKind::Worker
+    );
+    assert!(!router.supports_ad_patch_activation(None, Some(&remote)));
+    assert!(router.supports_ad_patch_activation(None, Some("local-container")));
+}
+
+#[tokio::test]
 async fn disabled_profiles_reject_new_launches_but_keep_cleanup_and_inventory_ownership() {
     let manager = Arc::new(Runtime::default());
     let mut profile =
