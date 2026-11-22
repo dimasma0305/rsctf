@@ -6,6 +6,25 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
 const LAUNCH_SPEC_LABEL: &str = "rsctf.launch-spec";
 
+/// Admission may rewrite the registry or inject sidecars. Only the named
+/// challenge container's manifest digest identifies the requested revision.
+pub(super) fn pod_image_matches(pod: &Pod, name: &str, expected: &str) -> bool {
+    let actual = pod
+        .spec
+        .as_ref()
+        .and_then(|spec| {
+            spec.containers
+                .iter()
+                .find(|container| container.name == name)
+        })
+        .and_then(|container| container.image.as_deref());
+    actual.is_some_and(|image| {
+        crate::services::challenge_images::is_repository_digest(image)
+            && image.rsplit_once('@').map(|(_, digest)| digest)
+                == expected.rsplit_once('@').map(|(_, digest)| digest)
+    })
+}
+
 fn without_launch_label(
     labels: Option<&BTreeMap<String, String>>,
 ) -> Option<BTreeMap<String, String>> {

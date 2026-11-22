@@ -652,6 +652,18 @@ impl ContainerManager for KubernetesContainerManager {
             }
             Ok::<(), AppError>(())
         };
+        // The launch labels survive an in-place image change. A stale
+        // operation must not publish or remove the team's newer revision.
+        if team_service && !compat::pod_image_matches(&created_pod, &name, &spec.image) {
+            if !adopted {
+                check_cleanup()?;
+                self.rollback_new_pod(&pods, &name, policy_created, false)
+                    .await;
+            }
+            return Err(AppError::conflict(
+                "The A&D Pod image differs from the requested revision",
+            ));
+        }
         let Some(pod_uid) = created_pod.metadata.uid.clone() else {
             check_cleanup()?;
             self.rollback_new_pod(&pods, &name, policy_created, adopted)

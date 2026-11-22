@@ -561,6 +561,46 @@ async fn terminal_adopted_pod_is_removed_before_the_operation_key_rotates() {
 }
 
 #[tokio::test]
+async fn ad_retry_verifies_the_named_containers_current_image_before_adoption() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+    let _environment = RestoreEnv::set(&[
+        ("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12"),
+        ("RSCTF_K8S_AD_INGRESS_CIDRS", "192.0.2.0/24"),
+    ]);
+    let mut spec = retry_spec(false);
+    spec.game_kind = rsctf_worker_protocol::GameKind::AttackDefense;
+    spec.ad_network = Some("rsctf-ad".into());
+    let (manager, resources) = mock_manager(ServiceFailure::None);
+    let id = manager.create(spec.clone()).await.unwrap().id;
+    let path = format!("/api/v1/namespaces/rsctf-challenges/pods/{id}");
+    let digest = spec.image.split_once('@').unwrap().1;
+    {
+        let mut store = resources.lock().unwrap();
+        let pod = store.get_mut(&path).unwrap();
+        pod["spec"]["volumes"] = serde_json::json!([{
+            "name":"data","persistentVolumeClaim":{"claimName":"team-records"}
+        }]);
+        let containers = pod["spec"]["containers"].as_array_mut().unwrap();
+        containers[0]["image"] = serde_json::json!(format!("mirror.example/service@{digest}"));
+        containers.insert(0, serde_json::json!({"name":"sidecar","image":spec.image}));
+    }
+    assert_eq!(manager.create(spec.clone()).await.unwrap().id, id);
+    for image in [
+        format!("registry.example/service@sha256:{}", "c".repeat(64)),
+        "service:latest".into(),
+    ] {
+        resources.lock().unwrap().get_mut(&path).unwrap()["spec"]["containers"][1]["image"] =
+            serde_json::json!(image);
+        let before = resources.lock().unwrap().clone();
+        assert!(matches!(
+            manager.create(spec.clone()).await,
+            Err(AppError::Conflict(_))
+        ));
+        assert_eq!(*resources.lock().unwrap(), before);
+    }
+}
+
+#[tokio::test]
 async fn ad_retry_retains_team_storage_on_terminal_pod_or_service_rejection() {
     let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let _environment = RestoreEnv::set(&[
@@ -717,14 +757,32 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         Err(AppError::Conflict(_))
     ));
     std::env::set_var("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12");
-    let labels = manager
+    // Patch only the Pod image, as an in-place rollout does. The UID, labels
+    // and Service still belong to the original operation.
+    let pod_before = manager.pods().get(&current.id).await.unwrap();
+    let service_before = manager.services().get(&current.id).await.unwrap();
+    let patch = kube::api::Patch::Strategic(serde_json::json!({"spec":{"containers":[{
+        "name": current.id, "image": IMAGE
+    }]}}));
+    manager
         .pods()
-        .get(&current.id)
+        .patch(&current.id, &kube::api::PatchParams::default(), &patch)
         .await
-        .unwrap()
-        .metadata
-        .labels
         .unwrap();
+    assert!(matches!(
+        manager.create(cidr_bound.clone()).await,
+        Err(AppError::Conflict(reason)) if reason.contains("requested revision")
+    ));
+    let after = manager.pods().get(&current.id).await.unwrap();
+    assert_eq!(after.metadata.uid, pod_before.metadata.uid);
+    assert!(compat::pod_image_matches(&after, &current.id, IMAGE));
+    let service_after = manager.services().get(&current.id).await.unwrap();
+    assert_eq!(service_after.metadata.uid, service_before.metadata.uid);
+    assert_eq!(
+        service_after.spec.unwrap().cluster_ip,
+        service_before.spec.unwrap().cluster_ip
+    );
+    let labels = after.metadata.labels.unwrap();
     manager
         .destroy(&current.id)
         .await
