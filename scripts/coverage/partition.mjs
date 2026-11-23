@@ -33,6 +33,7 @@ export const databaseExclusions = Object.freeze([
   'downloaded_byoc_bundle_observes_in_container_patches', // Runs with Docker Compose and the matching agent in Rust CI.
   'cold_docker_pull_uses_only_the_configured_registry_credential', // Runs against the authenticated TLS registry in Rust CI.
   'same_origin_ssh_kernel_regression', // Privileged network namespace gate runs in runtime CI.
+  'byoc_listener_recovers_after_services_route_appears', // Requires a fresh network namespace.
   's3_round_trip',
   'stale_conditional_delete_cannot_destroy_a_real_replacement_runtime',
   'real_docker_large_file_and_fifo_are_bounded_without_exec',

@@ -395,6 +395,44 @@ mod tests {
         endpoint.wait_closed().await;
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires a fresh Linux network namespace and iproute2"]
+    async fn byoc_listener_recovers_after_services_route_appears() {
+        assert_ne!(
+            std::fs::read_link("/proc/self/ns/net").unwrap(),
+            std::fs::read_link("/proc/1/ns/net").unwrap(),
+            "run this test under unshare --net"
+        );
+        assert_eq!(crate::services::ad_vpn::services_cidr(), "10.13.40.0/24");
+        let links = std::process::Command::new("ip")
+            .args(["-o", "link", "show"])
+            .output()
+            .unwrap();
+        assert!(links.status.success());
+        let links = String::from_utf8(links.stdout).unwrap();
+        assert_eq!(links.lines().count(), 1);
+        assert!(links.contains(": lo:"));
+        assert!(super::super::services_ip().is_err());
+        for args in [
+            &["link", "set", "lo", "up"][..],
+            &["address", "add", "10.13.40.2/24", "dev", "lo"],
+        ] {
+            assert!(std::process::Command::new("ip")
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let host = super::super::services_ip().unwrap();
+        assert_eq!(host, "10.13.40.2");
+        let endpoint = RelayEndpoint::bind(host).await.unwrap();
+        let address = (endpoint.host(), u16::try_from(endpoint.port()).unwrap());
+        assert!(tokio::net::TcpStream::connect(address).await.is_ok());
+        endpoint.stop_acceptor();
+        endpoint.wait_closed().await;
+    }
+
     #[tokio::test]
     async fn registry_reuses_a_reserved_listener_after_ordinary_loss() {
         let registry = Arc::new(super::super::Registry::new(

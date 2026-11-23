@@ -55,6 +55,10 @@ peer rejection. Run the library test as root with Linux NET_ADMIN/SYS_ADMIN,
 Python, iproute2, iptables and ipset; CI's runtime job runs it explicitly.
 It models decrypted traffic with a veth interface, not real WireGuard handshakes.
 
+The runtime job also runs [the BYOC listener regression](../../../../src/services/byoc_tunnel/endpoint.rs)
+in a fresh Linux network namespace. The first connection has no service route.
+After the interface gains its address, the same process binds a reachable private listener.
+
 Local Docker admission defaults and optional caps are covered by
 [capacity tests](../../../../src/services/container/capacity/tests.rs): run
 `test --lib services::container::capacity -- --include-ignored` against disposable
