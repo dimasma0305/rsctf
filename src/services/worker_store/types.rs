@@ -263,6 +263,21 @@ pub struct WorkloadDefinition {
 }
 
 impl WorkloadDefinition {
+    /// The worker cannot add, move, or drop a registered volume during replacement.
+    /// Check the locked definition before the server clears the serving generation.
+    pub(super) fn check_team_storage(&self, current: &Value) -> Result<(), WorkerStoreError> {
+        if current["gameKind"] == "attackDefense"
+            && (self.spec["gameKind"] != current["gameKind"]
+                || self.spec["teamDataMount"] != current["teamDataMount"])
+        {
+            return Err(WorkerStoreError::Conflict(
+                "A team service revision must preserve its game kind and registered data directory"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// The placement scan only uses these fields, including on lock retries.
     pub(super) fn patch_placement_fields(&self) -> Value {
         serde_json::json!({

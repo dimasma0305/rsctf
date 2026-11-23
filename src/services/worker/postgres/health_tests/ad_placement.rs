@@ -28,6 +28,10 @@ fn ad_request(worker: Uuid, mount: Option<&str>) -> PlaceWorkload {
 fn next_definition(request: &PlaceWorkload) -> WorkloadDefinition {
     let mut next = request.definition.clone();
     next.spec["services"][0]["environment"] = json!({"REVISION":"next"});
+    rehash(next)
+}
+
+fn rehash(mut next: WorkloadDefinition) -> WorkloadDefinition {
     let validated: ValidatedWorkloadSpec = serde_json::from_value(next.spec.clone()).unwrap();
     next.spec_hash_sha256 = hex::decode(validated.spec_hash().unwrap())
         .unwrap()
@@ -281,6 +285,39 @@ async fn ad_placement_routes_and_reconnect_preserve_stateful_assignment() {
                 DefinitionUpdateOutcome::WorkerNoLongerCompatible
             );
         }
+    }
+    // These definitions validate on their own, but the worker cannot change
+    // the volume registration of an existing assignment. Keep the route live.
+    let session = connect(&authority, &initial, true, true).await;
+    authority
+        .handle_inventory_snapshot(&session, Uuid::new_v4(), vec![item])
+        .await
+        .unwrap();
+    for (request, kind, path) in [
+        (&bare, "attackDefense", Some("/data")),
+        (&mounted, "attackDefense", None),
+        (&mounted, "attackDefense", Some("/var/lib/replacement")),
+        (&mounted, "jeopardy", None),
+    ] {
+        let mut definition = next_definition(request);
+        definition.spec["gameKind"] = json!(kind);
+        definition.spec["teamDataMount"] = json!(path);
+        let result = store
+            .update_workload_definition(&UpdateWorkload {
+                id: request.id,
+                assignment_id: request.assignment_id,
+                expected_generation: 1,
+                definition: rehash(definition),
+            })
+            .await;
+        assert!(matches!(result, Err(WorkerStoreError::Conflict(_))));
+        let unchanged = store.get_workload(request.id).await.unwrap().unwrap();
+        assert_eq!(unchanged.generation, 1);
+        assert_eq!(unchanged.definition.spec, request.definition.spec);
+        authority
+            .authorize_data_stream(&session, &stream)
+            .await
+            .unwrap();
     }
     for request in [&bare, &mounted] {
         store

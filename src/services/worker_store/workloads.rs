@@ -426,6 +426,7 @@ impl WorkerStore {
             transaction.commit().await.map_err(database_error)?;
             return Ok(DefinitionUpdateOutcome::Stale);
         }
+        request.definition.check_team_storage(&current_spec)?;
         let capacity = sqlx::query_as::<_, (bool, bool)>(concat!(
             r#"SELECT
                    node.platform_os = $3
