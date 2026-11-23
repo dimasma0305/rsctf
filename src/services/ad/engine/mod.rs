@@ -176,9 +176,7 @@ mod flag_delivery;
 pub(crate) mod koth_api;
 mod koth_auth;
 mod provision_flag;
-pub(crate) use provision_flag::{
-    initialize_official_flag_file, managed_flag_command, ProvisionFlag,
-};
+pub(crate) use provision_flag::{managed_flag_command, ProvisionFlag};
 pub(crate) mod koth_cycle;
 mod koth_marker;
 mod persistence;
@@ -187,6 +185,7 @@ mod round_completion;
 mod rounds;
 pub mod sandbox;
 mod service_reset;
+pub(crate) mod worker_flag;
 
 pub use checker::*;
 pub use flag_delivery::validate_flag_delivery_configuration;

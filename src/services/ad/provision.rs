@@ -767,12 +767,9 @@ pub(crate) async fn ensure_ad_containers(
                 backend_id: &backend_id,
                 image_ref: &image,
             };
-            if let Err(error) = crate::services::ad_engine::initialize_official_flag_file(
-                st,
-                &backend_id,
-                prepared_flag.official.as_deref(),
-            )
-            .await
+            if let Err(error) = prepared_flag
+                .initialize(st, p.id, c.id, &backend_id, Some(&backend_id))
+                .await
             {
                 tracing::warn!(challenge = c.id, participation = p.id, %error, "A&D service flag initialization failed");
                 crate::services::ad::service_lifecycle::rollback_created_backend(

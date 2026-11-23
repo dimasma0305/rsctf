@@ -109,8 +109,11 @@ The [worker flag delivery receipt](../../../../src/services/worker/registry/flag
 binds file readback to the request and worker session. Its
 [regressions](../../../../src/services/worker/registry/flag_delivery/tests.rs)
 cover partial replica failure, accepted commands, timeouts, and reconnects.
+The [A&D worker flag writer](../../../../src/services/ad/engine/worker_flag.rs)
+checks the official value, team assignment, generation and worker session before and after readback.
+Provisioning checks the withdrawn endpoint and its retained backend identity.
 The [round publisher](../../../../src/services/cron/round_finish/worker_delivery.rs)
-checks the official value, team assignment and worker session before and after readback.
+requires a published endpoint and an open round delivery window to credit a receipt.
 Its [scoring regression](../../../../src/services/cron/round_finish/worker_delivery/tests.rs)
 publishes two team receipts in PostgreSQL and checks replay and stale assignments.
 The [placement regression](../../../../src/services/worker/postgres/health_tests/ad_placement.rs)

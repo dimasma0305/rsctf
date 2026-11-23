@@ -15,38 +15,6 @@ pub(crate) fn managed_flag_command(flag: &str) -> Vec<String> {
     ]
 }
 
-/// A newly created workload receives a compatibility environment value. File-based
-/// services also need the current official flag before their endpoint goes live.
-/// This readback does not issue or amend a scored round receipt.
-pub(crate) async fn initialize_official_flag_file(
-    state: &crate::app_state::SharedState,
-    backend_id: &str,
-    flag: Option<&str>,
-) -> AppResult<()> {
-    let Some(flag) = flag else {
-        return Ok(());
-    };
-    let policy = super::FlagDeliveryPolicy::from_env().map_err(AppError::internal)?;
-    for attempt in 1..=policy.attempts() {
-        let write = state
-            .containers
-            .exec(backend_id, managed_flag_command(flag));
-        match tokio::time::timeout(policy.attempt_timeout(), write).await {
-            Ok(Ok(output)) if output.trim_end_matches(['\r', '\n']) == flag => return Ok(()),
-            // A timed-out exec may still write later. Discard this unpublished
-            // candidate before the next round can reuse its flag file.
-            Err(_) => break,
-            _ => {}
-        }
-        if attempt < policy.attempts() {
-            tokio::time::sleep(policy.retry_backoff(attempt)).await;
-        }
-    }
-    Err(AppError::unavailable(
-        "The replacement service did not confirm its current flag file",
-    ))
-}
-
 /// Warmup, a late arrival without a flag, and the official flag for a round
 /// are distinct states. Never publish a workload prepared for a stale state.
 #[derive(Default, PartialEq)]
@@ -56,12 +24,66 @@ pub(crate) struct ProvisionFlag {
 }
 
 impl ProvisionFlag {
+    /// Confirm the current official file before publishing the team's endpoint.
+    /// Initialization never issues a scored delivery receipt.
+    pub(crate) async fn initialize(
+        &self,
+        state: &crate::app_state::SharedState,
+        participation_id: i32,
+        challenge_id: i32,
+        backend_id: &str,
+        retained_backend: Option<&str>,
+    ) -> AppResult<()> {
+        let Some(value) = self.official.as_deref() else {
+            return Ok(());
+        };
+        let round_id = self
+            .round_id
+            .ok_or_else(|| AppError::conflict("Missing official flag round"))?;
+        let handle = crate::services::worker::WorkerHandle::from_backend_id(backend_id)?;
+        let policy = super::FlagDeliveryPolicy::from_env().map_err(AppError::internal)?;
+        for attempt in 1..=policy.attempts() {
+            let write = async {
+                if let Some(handle) = handle {
+                    return super::worker_flag::deliver(
+                        state,
+                        super::worker_flag::TeamFlag {
+                            round_id,
+                            participation_id,
+                            challenge_id,
+                            value,
+                        },
+                        super::worker_flag::DeliveryTarget::BeforePublication { retained_backend },
+                        handle,
+                        policy.attempt_timeout(),
+                    )
+                    .await;
+                }
+                state
+                    .containers
+                    .exec(backend_id, managed_flag_command(value))
+                    .await
+                    .is_ok_and(|output| output.trim_end_matches(['\r', '\n']) == value)
+            };
+            match tokio::time::timeout(policy.attempt_timeout(), write).await {
+                Ok(true) => return Ok(()),
+                // A timed-out write may still finish. The caller discards this
+                // unpublished candidate before a later round can reuse its file.
+                Err(_) => break,
+                Ok(false) => {}
+            }
+            if attempt < policy.attempts() {
+                tokio::time::sleep(policy.retry_backoff(attempt)).await;
+            }
+        }
+        Err(AppError::unavailable(
+            "The replacement service did not confirm its current flag file",
+        ))
+    }
+
     /// A reset is tied to the prepared round. Only a warmup reset can use a
     /// bootstrap flag; a service joining mid-round has a separate provision path.
-    pub(crate) fn into_reset_flag(
-        self,
-        prepared_round_id: Option<i32>,
-    ) -> AppResult<Option<String>> {
+    pub(crate) fn reset_flag(&self, prepared_round_id: Option<i32>) -> AppResult<Option<&str>> {
         if self.round_id != prepared_round_id {
             return Err(AppError::conflict(
                 "The A&D round changed after reset preparation",
@@ -72,7 +94,7 @@ impl ProvisionFlag {
                 "The prepared round flag is missing for this service",
             ));
         }
-        Ok(self.official)
+        Ok(self.official.as_deref())
     }
 
     pub(crate) async fn read<'e>(
@@ -166,8 +188,15 @@ impl ProvisionFlag {
             backend_id: &info.id,
             image_ref: &spec.image,
         };
-        if let Err(error) =
-            initialize_official_flag_file(state, &info.id, self.official.as_deref()).await
+        if let Err(error) = self
+            .initialize(
+                state,
+                service.participation_id,
+                service.challenge_id,
+                &info.id,
+                Some(donor),
+            )
+            .await
         {
             destroy_team_backend(
                 state,
@@ -290,16 +319,13 @@ mod tests {
 
     #[test]
     fn resetting_uses_a_bootstrap_flag_only_during_the_prepared_warmup() {
-        assert_eq!(
-            ProvisionFlag::default().into_reset_flag(None).unwrap(),
-            None
-        );
-        assert!(ProvisionFlag::default().into_reset_flag(Some(7)).is_err());
+        assert_eq!(ProvisionFlag::default().reset_flag(None).unwrap(), None);
+        assert!(ProvisionFlag::default().reset_flag(Some(7)).is_err());
         let late = ProvisionFlag {
             round_id: Some(7),
             official: None,
         };
-        assert!(late.into_reset_flag(Some(7)).is_err());
+        assert!(late.reset_flag(Some(7)).is_err());
     }
 
     #[tokio::test]
@@ -348,7 +374,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            missing.into_reset_flag(Some(900108)),
+            missing.reset_flag(Some(900108)),
             Err(AppError::Conflict(message)) if message.contains("flag is missing")
         ));
         let official = read().await.unwrap();

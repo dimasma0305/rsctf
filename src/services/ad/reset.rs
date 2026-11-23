@@ -367,24 +367,24 @@ pub async fn execute_job(
     let prepared_round_id = prepared
         .as_ref()
         .map_or(input.prepared_round_id, |p| p.prepared_round_id);
-    let current_flag = crate::services::ad_engine::ProvisionFlag::read(
+    let provision_flag = crate::services::ad_engine::ProvisionFlag::read(
         st.pg(),
         job.game_id,
         part.id,
         challenge.id,
     )
-    .await?
-    .into_reset_flag(prepared_round_id)?;
+    .await?;
+    let current_flag = provision_flag.reset_flag(prepared_round_id)?;
     if prepared
         .as_ref()
-        .is_some_and(|p| p.current_flag != current_flag)
+        .is_some_and(|p| p.current_flag.as_deref() != current_flag)
     {
         return Err(AppError::conflict(
             "The A&D flag changed after reset preparation",
         ));
     }
     let flag = match current_flag {
-        Some(flag) => flag,
+        Some(flag) => flag.to_owned(),
         None => {
             let salt = crate::utils::flag_generator::team_hash_salt(&game.private_key);
             let team_hash =
@@ -402,7 +402,7 @@ pub async fn execute_job(
     };
     spec.set_ad_launch_flag(flag.clone(), prepared_round_id.is_some());
     let volume_donor = retired.filter(|_| preserve_volumes);
-    let info = if let Some(id) = volume_donor {
+    let (info, retained_backend) = if let Some(id) = volume_donor {
         crate::services::traffic::fence_container_capture_stop(st, id).await?;
         let candidate = st
             .containers
@@ -424,9 +424,9 @@ pub async fn execute_job(
                 "The replacement service has no running endpoint",
             ));
         }
-        candidate
+        (candidate, Some(id))
     } else {
-        if let Some(id) = retired {
+        let retained_backend = if let Some(id) = retired {
             super::service_lifecycle::destroy_team_backend_after_capture(
                 st,
                 part.id,
@@ -434,16 +434,17 @@ pub async fn execute_job(
                 id,
             )
             .await?;
-        }
-        st.containers.create(spec).await?
+            // Successful teardown clears the service's inactive database pointer.
+            None
+        } else {
+            service.container_id.as_deref()
+        };
+        (st.containers.create(spec).await?, retained_backend)
     };
     let backend_id = info.id.clone();
-    if let Err(error) = crate::services::ad_engine::initialize_official_flag_file(
-        st,
-        &backend_id,
-        prepared_round_id.map(|_| flag.as_str()),
-    )
-    .await
+    if let Err(error) = provision_flag
+        .initialize(st, part.id, challenge.id, &backend_id, retained_backend)
+        .await
     {
         // The candidate has never been published. A volume donor still holds
         // the team's current files and must survive a failed acknowledgement.

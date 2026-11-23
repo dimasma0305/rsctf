@@ -443,11 +443,14 @@ async fn reset_running_service_to_starter(
         "-c",
         "echo stale >/flag && chmod 0444 /flag",
     ]);
-    assert!(
-        super::engine::initialize_official_flag_file(state, &running.0, Some(&flag))
-            .await
-            .is_err()
-    );
+    let official = super::engine::ProvisionFlag::read(pool, 900001, 900022, 900031)
+        .await
+        .unwrap();
+    assert!(official.official.as_deref() == Some(flag.as_str()));
+    assert!(official
+        .initialize(state, 900022, 900031, &running.0, Some(&running.0))
+        .await
+        .is_err());
     assert_eq!(docker(&["exec", &running.0, "cat", "/flag"]), "stale");
     state.containers.destroy(&running.0).await.unwrap();
     assert!(!Command::new("docker")

@@ -1,4 +1,5 @@
 use super::*;
+use crate::services::ad::service_lifecycle::service_lock_key;
 use crate::services::ad::service_lifecycle::{
     publish_managed_backend_if_eligible, retain_created_backend_identity, ManagedBackendPublication,
 };
@@ -9,8 +10,11 @@ use crate::services::{
     worker::{PostgresWorkerAuthority, SessionContext, WorkerServerConfig, WorkerService},
     worker_store::WorkerStore,
 };
+use rsctf_worker_protocol::SessionFence;
 use rsctf_worker_protocol::{CommandResult, ControlEnvelope, ControlMessage};
+use sqlx::PgPool;
 use std::{collections::HashSet, sync::Arc};
+use uuid::Uuid;
 
 #[cfg(target_os = "linux")]
 #[path = "tests/live_agent.rs"]
@@ -428,6 +432,67 @@ async fn remote_round_publication_binds_team_generation_round_and_readback() {
         )
         .await
     );
+    assert!(peer.outbound.try_recv().is_err());
+
+    let own = targets[0].encode();
+    let other = targets[1].encode();
+    crate::services::ad_vpn::stage_backend_endpoint_deactivation_retaining_identity(
+        &state.db, &own,
+    )
+    .await
+    .unwrap();
+    assert!(!deliver(&state, round.id, first, targets[0], timeout).await);
+    let flag = worker_flag::TeamFlag {
+        round_id: round.id,
+        participation_id: first.participation_id,
+        challenge_id: first.challenge_id,
+        value: &first.flag,
+    };
+    let prepare = |retained_backend, handle| {
+        worker_flag::deliver(
+            &state,
+            flag,
+            worker_flag::DeliveryTarget::BeforePublication { retained_backend },
+            handle,
+            timeout,
+        )
+    };
+    assert!(!prepare(Some(&other), targets[0]).await);
+    assert!(!prepare(None, targets[0]).await);
+    assert!(!prepare(Some(&own), targets[1]).await);
+    assert!(peer.outbound.try_recv().is_err());
+    // A successful stateless teardown clears the donor pointer. A stale job
+    // still expecting that donor must not write, and the blank pointer alone
+    // must never authorize a different team's assignment.
+    sqlx::query(r#"UPDATE "AdTeamServices" SET container_id=NULL WHERE id=$1"#)
+        .bind(first.team_service_id)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    assert!(!prepare(Some(&own), targets[0]).await);
+    assert!(!prepare(None, targets[1]).await);
+    assert!(peer.outbound.try_recv().is_err());
+    let replace = async {
+        let request = peer.outbound.recv().await.unwrap();
+        publish_fixture_endpoint(
+            &fixture.pool,
+            first.participation_id,
+            targets[0],
+            "fixture-image",
+        )
+        .await;
+        acknowledge(&workers, &context, &request).await;
+    };
+    let (confirmed, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(prepare(None, targets[0]), replace)
+    })
+    .await
+    .unwrap();
+    assert!(
+        !confirmed,
+        "a late response cannot initialize a published endpoint"
+    );
+    assert!(!prepare(Some(&own), targets[0]).await);
     assert!(peer.outbound.try_recv().is_err());
 
     // A successful terminal response from a generation that lost readiness

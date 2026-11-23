@@ -5,7 +5,7 @@ use crate::services::worker_store::{
     WorkloadObservedState,
 };
 use rcgen::{CertificateParams, KeyPair};
-use rsctf_worker_protocol::ValidatedWorkloadSpec;
+use rsctf_worker_protocol::{ValidatedWorkloadSpec, WorkloadFence};
 use serde_json::json;
 use std::{
     io::Write,
@@ -325,6 +325,43 @@ async fn scenario() {
     .unwrap();
     assert_eq!(round.flags.len(), 2);
     assert!(round.flags[0].flag != round.flags[1].flag);
+    let (service, handle) = targets[0];
+    let first = round
+        .flags
+        .iter()
+        .find(|flag| flag.team_service_id == service)
+        .unwrap();
+    let retained = handle.encode();
+    crate::services::ad_vpn::stage_backend_endpoint_deactivation_retaining_identity(
+        &state.db, &retained,
+    )
+    .await
+    .unwrap();
+    let flag = crate::services::ad_engine::ProvisionFlag::read(
+        &fixture.pool,
+        fixture.game_id,
+        first.participation_id,
+        first.challenge_id,
+    )
+    .await
+    .unwrap();
+    assert!(flag.official.as_deref() == Some(first.flag.as_str()));
+    flag.initialize(
+        &state,
+        first.participation_id,
+        first.challenge_id,
+        &retained,
+        Some(&retained),
+    )
+    .await
+    .unwrap();
+    verify_team_flag(worker, handle, &first.flag).await;
+    let unpublished: (String, i32, i64) = sqlx::query_as(
+        r#"SELECT host, port, (SELECT COUNT(*) FROM "AdFlagDeliveryResults" WHERE round_id=$2 AND delivered)
+           FROM "AdTeamServices" WHERE id=$1"#)
+        .bind(service).bind(round.id).fetch_one(&fixture.pool).await.unwrap();
+    assert_eq!(unpublished, (String::new(), 0, 0));
+    publish_fixture_endpoint(&fixture.pool, first.participation_id, handle, &image).await;
     for _ in 0..2 {
         let (sender, _receipts) = tokio::sync::mpsc::unbounded_channel();
         let publication = super::super::super::publish_round_flags(
@@ -354,28 +391,12 @@ async fn scenario() {
         .await
         .unwrap();
         assert_eq!(recorded, (handle.encode(), 1));
-        let ids = docker(&[
-            "ps",
-            "-q",
-            "--no-trunc",
-            "--filter",
-            &format!("label=io.rsctf.worker.id={worker}"),
-            "--filter",
-            &format!("label=io.rsctf.workload.id={}", handle.workload_id),
-        ])
-        .await;
-        let id = std::str::from_utf8(&ids).unwrap().trim();
-        assert!(id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()));
-        let read = docker(&["exec", id, "cat", "/data/round-flag"]).await;
-        assert!(
-            read == round
-                .flags
-                .iter()
-                .find(|flag| flag.team_service_id == service)
-                .unwrap()
-                .flag
-                .as_bytes()
-        );
+        let flag = round
+            .flags
+            .iter()
+            .find(|flag| flag.team_service_id == service)
+            .unwrap();
+        verify_team_flag(worker, handle, &flag.flag).await;
         verify_team_health_stream(
             state.workers.as_ref().unwrap(),
             worker,
@@ -404,4 +425,21 @@ async fn scenario() {
     live.listener.await.unwrap();
     live.reconciler.await.unwrap();
     fixture.cleanup().await;
+}
+
+async fn verify_team_flag(worker: Uuid, handle: WorkerHandle, value: &str) {
+    let ids = docker(&[
+        "ps",
+        "-q",
+        "--no-trunc",
+        "--filter",
+        &format!("label=io.rsctf.worker.id={worker}"),
+        "--filter",
+        &format!("label=io.rsctf.workload.id={}", handle.workload_id),
+    ])
+    .await;
+    let id = std::str::from_utf8(&ids).unwrap().trim();
+    assert!(id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()));
+    let read = docker(&["exec", id, "cat", "/data/round-flag"]).await;
+    assert!(read == value.as_bytes());
 }
