@@ -12,8 +12,9 @@ use crate::utils::enums::{
 use crate::utils::error::{AppError, AppResult};
 
 mod worker_owner;
+use worker_owner::lock_eligible_assignment;
 pub(crate) use worker_owner::{destroy_team_backend, destroy_team_backend_after_capture};
-use worker_owner::{lock_eligible_assignment, WriteIntent};
+pub(super) use worker_owner::{lock_reset_assignment, WriteIntent};
 
 #[derive(Clone, Copy)]
 pub(crate) struct ManagedBackendPublication<'a> {

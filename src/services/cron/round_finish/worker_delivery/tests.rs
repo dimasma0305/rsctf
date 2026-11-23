@@ -84,6 +84,118 @@ async fn publish_fixture_endpoint(
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn worker_reset_checks_the_owner_before_retirement_checkpoint_and_publication() {
+    use crate::services::ad_engine::{
+        checkpoint_reset_replacement, prepare_service_reset, publish_service_reset,
+    };
+    let fixture = ad_scoring_fixture().await;
+    let pool = &fixture.pool;
+    let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
+    let context = SessionContext {
+        worker_id: Uuid::new_v4(),
+        certificate_fingerprint_sha256: [3; 32],
+        fence: SessionFence {
+            session_id: Uuid::new_v4(),
+            session_epoch: 1,
+        },
+        boot_id: Uuid::new_v4(),
+    };
+    let handles = register_targets(pool, &context).await;
+    let own = handles[0].encode();
+    let peer = handles[1].encode();
+    let job = Uuid::new_v4();
+    let lease = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO "ControlPlaneJobs"
+        (id,kind,scope_key,game_id,operation_id,fingerprint,status,lease_token,lease_expires_at_utc)
+        VALUES ($1,'AdReset','reset-fixture',900001,$1,'fixture',1,$2,now()+interval '1 hour')"#,
+    )
+    .bind(job)
+    .bind(lease)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(r#"UPDATE "AdRounds" SET finalized=FALSE WHERE id=900108;
+        UPDATE "AdCheckResults" SET sla_credit=NULL WHERE round_id=900108 AND team_service_id=900041"#)
+        .execute(pool).await.unwrap();
+    let set_backend = async |id: Option<&str>| {
+        sqlx::query(r#"UPDATE "AdTeamServices" SET container_id=$1 WHERE id=900041"#)
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    };
+    let evidence = || {
+        sqlx::query_as::<_, (serde_json::Value, serde_json::Value, serde_json::Value)>(
+            r#"SELECT to_jsonb(s), to_jsonb(c), j.input FROM "AdTeamServices" s
+            JOIN "AdCheckResults" c ON c.team_service_id=s.id AND c.round_id=900108
+            CROSS JOIN "ControlPlaneJobs" j WHERE s.id=900041 AND j.id=$1"#,
+        )
+        .bind(job)
+        .fetch_one(pool)
+    };
+    let prepare = async |id: &str| {
+        prepare_service_reset(
+            &db,
+            fixture.game_id,
+            900041,
+            Some(id),
+            job,
+            lease,
+            "fixture-image",
+            false,
+            "fixture reset",
+        )
+        .await
+    };
+    set_backend(Some(&peer)).await;
+    let before = evidence().await.unwrap();
+    assert!(prepare(&peer).await.is_err());
+    assert_eq!(evidence().await.unwrap(), before);
+
+    set_backend(Some(&own)).await;
+    let prepared = prepare(&own).await.unwrap();
+    set_backend(None).await;
+    let checkpoint = async |id: &str| {
+        checkpoint_reset_replacement(pool, fixture.game_id, 900041, job, lease, None, id).await
+    };
+    let blank = evidence().await.unwrap();
+    assert!(checkpoint(&peer).await.is_err());
+    assert_eq!(evidence().await.unwrap(), blank);
+    checkpoint(&own).await.unwrap();
+
+    // A legacy receipt can already have a peer's backend. Even an exact
+    // match on that receipt must not publish the wrong worker.
+    let publish = async |id: &str| {
+        publish_service_reset(
+            &db,
+            fixture.game_id,
+            900041,
+            "192.0.2.1",
+            8080,
+            id,
+            prepared.prepared_round_id,
+            true,
+            Some("fixture-image"),
+            false,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    };
+    set_backend(Some(&peer)).await;
+    let retained = evidence().await.unwrap();
+    assert!(!publish(&peer).await);
+    assert_eq!(evidence().await.unwrap(), retained);
+    set_backend(Some(&own)).await;
+    assert!(publish(&own).await);
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn team_worker_endpoint_writes_and_cleanup_preserve_the_peer() {
     let fixture = ad_scoring_fixture().await;
     let pool = &fixture.pool;

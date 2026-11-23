@@ -6,9 +6,49 @@ use crate::services::worker_store::WorkerStore;
 use crate::utils::error::{AppError, AppResult};
 use sqlx::PgConnection;
 
-pub(super) enum WriteIntent {
+pub(in crate::services::ad) enum WriteIntent {
     Retain,
     Publish,
+}
+
+pub(in crate::services::ad) async fn lock_reset_assignment(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game: i32,
+    service: i32,
+    backend: &str,
+    intent: WriteIntent,
+) -> AppResult<bool> {
+    let Some(handle) = WorkerHandle::from_backend_id(backend)? else {
+        return Ok(true);
+    };
+    let owner = sqlx::query_as::<_, (i32, i32)>(
+        r#"SELECT participation_id,challenge_id FROM "AdTeamServices" WHERE id=$1 AND game_id=$2"#,
+    )
+    .bind(service)
+    .bind(game)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    let Some((participant, challenge)) = owner else {
+        return Ok(false);
+    };
+    // Provisioning locks the workload before updating the service. Take the
+    // same order here, and recheck the owner after acquiring the service lock.
+    if !lock_eligible_assignment(tx, participant, challenge, handle, intent).await? {
+        return Ok(false);
+    }
+    let locked = sqlx::query_scalar::<_, i32>(
+        r#"SELECT id FROM "AdTeamServices" WHERE id=$1 AND game_id=$2
+            AND participation_id=$3 AND challenge_id=$4 FOR NO KEY UPDATE"#,
+    )
+    .bind(service)
+    .bind(game)
+    .bind(participant)
+    .bind(challenge)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    Ok(locked.is_some())
 }
 
 /// The workload row is locked through the endpoint write. The network owner

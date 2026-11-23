@@ -1,6 +1,7 @@
 //! Identity fencing for platform-hosted A&D service replacement.
 
 use super::*;
+use crate::services::ad::service_lifecycle::{lock_reset_assignment, WriteIntent};
 
 const RETIRE_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices"
        SET host = '', port = 0, status = $3
@@ -86,6 +87,13 @@ pub(crate) async fn prepare_service_reset(
 ) -> AppResult<ServiceResetPreparation> {
     let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
     let tx = control.transaction_mut();
+    if let Some(backend) = expected_backend_id {
+        if !lock_reset_assignment(tx, game_id, service_id, backend, WriteIntent::Retain).await? {
+            return Err(AppError::conflict(
+                "The worker assignment changed before reset",
+            ));
+        }
+    }
     #[allow(clippy::type_complexity)]
     let current: Option<(Option<i32>, Option<String>, bool, Option<String>)> = sqlx::query_as(
         r#"SELECT round.id,
@@ -254,6 +262,19 @@ pub(crate) async fn checkpoint_reset_replacement(
 ) -> AppResult<()> {
     let db_error = |e: sqlx::Error| AppError::internal(e.to_string());
     let mut tx = pool.begin().await.map_err(db_error)?;
+    if !lock_reset_assignment(
+        &mut tx,
+        game_id,
+        service_id,
+        backend_id,
+        WriteIntent::Retain,
+    )
+    .await?
+    {
+        return Err(AppError::conflict(
+            "The replacement worker assignment changed",
+        ));
+    }
     let retained = sqlx::query(
         r#"UPDATE "AdTeamServices" SET container_id = $3
             WHERE id = $1 AND game_id = $2 AND host = '' AND port = 0
@@ -310,6 +331,17 @@ pub(crate) async fn publish_service_reset(
         ));
     }
     let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
+    if !lock_reset_assignment(
+        control.transaction_mut(),
+        game_id,
+        service_id,
+        container_id,
+        WriteIntent::Publish,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
     let published = sqlx::query(PUBLISH_SERVICE_ENDPOINT_SQL)
         .bind(service_id)
         .bind(game_id)
