@@ -21,6 +21,14 @@ fn absent(command: &EnsureWorkload) -> EnsureAbsent {
     }
 }
 
+fn new_assignment() -> WorkloadFence {
+    WorkloadFence {
+        workload_id: Uuid::new_v4(),
+        assignment_id: Uuid::new_v4(),
+        generation: 1,
+    }
+}
+
 async fn launch(runtime: &DockerRuntime, command: &EnsureWorkload) -> TestResult<String> {
     let status = runtime.ensure_workload(command.clone()).await?;
     let id = match status.replicas.as_slice() {
@@ -115,15 +123,13 @@ pub(super) async fn check(
     starter.services.truncate(1);
     starter.services[0].replicas = 1;
     starter.services[0].stateless = false;
+    if let Ok(image) = std::env::var("RSCTF_WORKER_TEST_ANONYMOUS_VOLUME_IMAGE_ID") {
+        unregistered_volumes(runtime, &starter, image).await?;
+    }
     starter.team_data_mount = Some("/data".into());
     let starter = ValidatedWorkloadSpec::try_from(starter)?;
-    let fence = || WorkloadFence {
-        workload_id: Uuid::new_v4(),
-        assignment_id: Uuid::new_v4(),
-        generation: 1,
-    };
-    let first = ensure(&starter, fence())?;
-    let peer = ensure(&starter, fence())?;
+    let first = ensure(&starter, new_assignment())?;
+    let peer = ensure(&starter, new_assignment())?;
     let donor = launch(runtime, &first).await?;
     let other = launch(runtime, &peer).await?;
     let volume = volume_name(runtime, &donor).await?;
@@ -302,5 +308,112 @@ pub(super) async fn check(
         "unexpected empty replacement volume",
     )?;
     restarted.ensure_absent(absent(&peer)).await?;
+    Ok(())
+}
+
+async fn unregistered_volumes(
+    runtime: &DockerRuntime,
+    starter: &WorkloadSpec,
+    volume_image: String,
+) -> TestResult {
+    let mut legacy_spec = starter.clone();
+    legacy_spec.services[0].image = ImageIdentity::WorkerLocal {
+        worker_id: runtime.worker_id,
+        image_id: volume_image,
+    };
+    let first = ensure(&legacy_spec.try_into()?, new_assignment())?;
+    // An older agent could start this exact image with an anonymous Docker
+    // volume. Seed that on-disk deployment before delivering its next revision.
+    let os = first.spec.platform.operating_system;
+    let network = runtime
+        .ensure_network(first.fence, &first.spec_hash, os, None)
+        .await?;
+    let donor = runtime
+        .create_container(
+            super::super::support::ContainerReplicaPlan {
+                fence: first.fence,
+                spec_hash: &first.spec_hash,
+                network: &network,
+                service: &first.spec.services[0],
+                expected_replicas: 1,
+                operating_system: os,
+                team_volume: None,
+            },
+            0,
+        )
+        .await?;
+    let volume = volume_name(runtime, &donor).await?;
+    marker(runtime, &donor, b"legacy").await?;
+    require(
+        launch(runtime, &first).await? == donor,
+        "reconnect replaced the legacy donor",
+    )?;
+    let clean = ensure(
+        &starter.clone().try_into()?,
+        WorkloadFence {
+            generation: 2,
+            ..first.fence
+        },
+    )?;
+    let result = runtime.ensure_workload(clean.clone()).await;
+    require(
+        runtime.docker.inspect_volume(&volume).await.is_ok(),
+        "revision deleted the legacy team's anonymous volume",
+    )?;
+    require(
+        result.is_err_and(|e| e.code == CommandErrorCode::SpecConflict),
+        "revision accepted an unregistered donor volume",
+    )?;
+    require(
+        runtime
+            .verify_guest_file(&donor, "/data/marker", b"legacy")
+            .await?,
+        "legacy donor lost team data",
+    )?;
+    marker(runtime, &donor, b"still-writable").await?;
+    runtime.ensure_absent(absent(&first)).await?;
+
+    let empty = ensure(&clean.spec, new_assignment())?;
+    let donor = launch(runtime, &empty).await?;
+    let bad = ensure(
+        &first.spec,
+        WorkloadFence {
+            generation: 2,
+            ..empty.fence
+        },
+    )?;
+    require(
+        runtime
+            .ensure_workload(bad)
+            .await
+            .is_err_and(|e| e.code == CommandErrorCode::SpecConflict),
+        "candidate created an unregistered volume",
+    )?;
+    require(
+        runtime
+            .docker
+            .inspect_container(&donor, None)
+            .await?
+            .state
+            .and_then(|s| s.running)
+            == Some(true),
+        "rejected candidate stopped the donor",
+    )?;
+    runtime.ensure_absent(absent(&empty)).await?;
+    let fresh = ensure(&first.spec, new_assignment())?;
+    require(
+        runtime
+            .ensure_workload(fresh.clone())
+            .await
+            .is_err_and(|e| e.code == CommandErrorCode::SpecConflict),
+        "fresh placement created an unregistered volume",
+    )?;
+    require(
+        runtime
+            .existing_containers(fresh.fence.workload_id)
+            .await?
+            .is_empty(),
+        "rejected fresh placement created a container",
+    )?;
     Ok(())
 }

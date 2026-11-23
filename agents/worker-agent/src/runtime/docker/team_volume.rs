@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use bollard::models::{Mount, MountTypeEnum, MountVolumeOptions};
+use bollard::models::{
+    ContainerSummary, ImageInspect, Mount, MountPointTypeEnum, MountTypeEnum, MountVolumeOptions,
+};
 use bollard::volume::{CreateVolumeOptions, RemoveVolumeOptions};
 use rsctf_worker_protocol::{CommandErrorCode, EnsureAbsent, EnsureWorkload, WorkloadFence};
 use serde::{Deserialize, Serialize};
@@ -30,6 +32,34 @@ pub(super) struct TeamVolume {
 
 fn conflict(message: &'static str) -> RuntimeError {
     RuntimeError::new(CommandErrorCode::SpecConflict, message)
+}
+
+pub(super) fn has_docker_volume(containers: &[ContainerSummary]) -> bool {
+    containers.iter().any(|container| {
+        container
+            .mounts
+            .iter()
+            .flatten()
+            .any(|mount| mount.typ == Some(MountPointTypeEnum::VOLUME))
+    })
+}
+
+pub(super) fn check_image_volumes(
+    image: &ImageInspect,
+    registered: Option<&str>,
+) -> Result<(), RuntimeError> {
+    let config = image
+        .config
+        .as_ref()
+        .ok_or_else(|| conflict("cannot verify the image's declared volumes"))?;
+    if config
+        .volumes
+        .as_ref()
+        .is_some_and(|volumes| volumes.keys().any(|path| Some(path.as_str()) != registered))
+    {
+        return Err(conflict("the image declares an unregistered data volume"));
+    }
+    Ok(())
 }
 
 impl TeamVolume {
@@ -166,17 +196,7 @@ impl DockerRuntime {
         }
         self.check_free_space().await?;
         let (_, image) = self.ensure_image(&command.spec.services[0].image).await?;
-        let config = image
-            .config
-            .ok_or_else(|| conflict("cannot verify the image's declared volumes"))?;
-        if config
-            .volumes
-            .is_some_and(|volumes| volumes.keys().any(|directory| directory != path))
-        {
-            return Err(conflict(
-                "the image declares a volume outside the registered team data directory",
-            ));
-        }
+        check_image_volumes(&image, Some(path))?;
         self.check_free_space().await?;
         let mut claim = match existing {
             Some(claim) => claim,

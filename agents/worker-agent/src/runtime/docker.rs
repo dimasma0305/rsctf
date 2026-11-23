@@ -746,12 +746,23 @@ impl WorkerRuntime for DockerRuntime {
                 .and_then(|value| value.parse::<u64>().ok())
                 != Some(command.fence.generation)
         });
-        if replacing_generation {
+        let unregistered = command.spec.game_kind == rsctf_worker_protocol::GameKind::AttackDefense
+            && command.spec.team_data_mount.is_none();
+        if replacing_generation && unregistered && team_volume::has_docker_volume(&existing) {
+            return Err(RuntimeError::new(
+                CommandErrorCode::SpecConflict,
+                "cannot replace a team service with an unregistered Docker volume",
+            ));
+        }
+        if replacing_generation || (unregistered && existing.is_empty()) {
             // Stage every image before changing the serving generation or its
             // flag receipt. A missing sidecar must leave the whole donor up.
             self.check_free_space().await?;
             for service in &command.spec.services {
-                self.ensure_image(&service.image).await?;
+                let (_, image) = self.ensure_image(&service.image).await?;
+                if unregistered {
+                    team_volume::check_image_volumes(&image, None)?;
+                }
             }
             self.check_free_space().await?;
         }

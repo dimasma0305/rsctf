@@ -493,9 +493,13 @@ jobs:
           image_id="$(docker image inspect rsctf-worker-smoke:starter --format '{{.Id}}')"
           patch_id="$(docker image inspect rsctf-worker-smoke:patch --format '{{.Id}}')"
           second_id="$(docker image inspect rsctf-worker-smoke:second --format '{{.Id}}')"
+          printf '%s\n' 'FROM rsctf-worker-smoke:starter' 'VOLUME ["/data"]' |
+            docker build --tag rsctf-worker-smoke:anonymous -
+          anonymous_id="$(docker image inspect rsctf-worker-smoke:anonymous --format '{{.Id}}')"
           test "$patch_id" != "$image_id"
           test "$second_id" != "$patch_id"
           RSCTF_WORKER_TEST_IMAGE_ID="$image_id" RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$patch_id" \
+            RSCTF_WORKER_TEST_ANONYMOUS_VOLUME_IMAGE_ID="$anonymous_id" \
             RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$second_id" RSCTF_WORKER_TEST_FLAG_UID=65534 \
             cargo test --manifest-path agents/worker-agent/Cargo.toml --locked \
             docker_workload_lifecycle_when_image_is_configured -- --nocapture
