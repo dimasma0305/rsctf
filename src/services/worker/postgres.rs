@@ -514,11 +514,10 @@ impl WorkerAuthority for PostgresWorkerAuthority {
         let generation = i64::try_from(fence.generation).map_err(|_| WorkerError::Authorization)?;
         let session_epoch =
             i64::try_from(session.fence.session_epoch).map_err(|_| WorkerError::StaleSession)?;
-        // One indexed query revalidates the live session, route publication,
-        // assignment and generation together. This is the user-facing stream
-        // open path, so do not repeat separate node/workload/ready round trips.
-        let spec = sqlx::query_scalar::<_, serde_json::Value>(concat!(
-            r#"SELECT workload.spec
+        // Check the live session, assignment and generation in one lookup.
+        // A&D also binds stream admission to the team's currently published service.
+        let (spec, owner_kind) = sqlx::query_as::<_, (serde_json::Value, String)>(concat!(
+            r#"SELECT workload.spec, workload.owner_kind
                  FROM "WorkerWorkloads" workload
                  JOIN "WorkerNodes" node ON node.id = workload.worker_id
                 WHERE workload.id = $1
@@ -573,6 +572,13 @@ impl WorkerAuthority for PostgresWorkerAuthority {
             WorkerError::Authority(format!("invalid stored workload spec: {error}"))
         })?;
         if !stream_exists(&spec, request) {
+            return Err(WorkerError::Authorization);
+        }
+        let team_workload = spec.game_kind == rsctf_worker_protocol::GameKind::AttackDefense;
+        if team_workload != (owner_kind == "ad-team-service") {
+            return Err(WorkerError::Authorization);
+        }
+        if team_workload && !published_team_endpoint(self.store.pool(), fence, generation).await? {
             return Err(WorkerError::Authorization);
         }
         Ok(())

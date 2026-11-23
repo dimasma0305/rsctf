@@ -812,6 +812,11 @@ async fn open_worker_stream(
     let worker_id = workload.worker_id;
     let spec: ValidatedWorkloadSpec = serde_json::from_value(workload.definition.spec)
         .map_err(WorkerProxyOpenError::InvalidSpec)?;
+    if workload.owner_kind == "ad-team-service"
+        || spec.game_kind == rsctf_worker_protocol::GameKind::AttackDefense
+    {
+        return Err(WorkerProxyOpenError::TeamEndpoint);
+    }
     let request = DataStreamRequest::TcpProxy(TcpProxyRequest {
         fence: WorkloadFence {
             workload_id: handle.workload_id,
@@ -830,6 +835,8 @@ async fn open_worker_stream(
 
 #[derive(Debug, thiserror::Error)]
 enum WorkerProxyOpenError {
+    #[error("a team service requires team-scoped routing")]
+    TeamEndpoint,
     #[error("trusted-worker plane is disabled")]
     PlaneDisabled,
     #[error("trusted-worker workload lookup failed: {0}")]

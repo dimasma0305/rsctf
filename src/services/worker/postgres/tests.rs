@@ -126,19 +126,23 @@ impl AuthorityFixture {
     }
 
     pub(crate) async fn insert_current_session(&self) -> SessionContext {
+        Self::insert_current_session_on(&self.pool).await
+    }
+
+    pub(crate) async fn insert_current_session_on(pool: &PgPool) -> SessionContext {
         let worker_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
         let boot_id = Uuid::new_v4();
         sqlx::query(
             r#"INSERT INTO "WorkerNodes" (
                    id, name, platform_os, platform_architecture, runtime_kind,
-                   capabilities, capacity_cpu_millis, capacity_memory_bytes,
+                   capabilities, capacity_cpu_millis, capacity_memory_bytes, certificate_serial,
                    capacity_slots, certificate_fingerprint_sha256,
                    certificate_expires_at, session_id,
                    session_epoch, boot_id, connected_at, heartbeat_at,
                    lease_expires_at
                ) VALUES (
-                   $1, $2, 'linux', 'amd64', 'docker', $3, 4000, 8388608,
+                   $1, $2, 'linux', 'amd64', 'docker', $3, 4000, 8388608, 'fixture',
                    8, $4, $5, $6, 1, $7, clock_timestamp(), clock_timestamp(), $8
                )"#,
         )
@@ -150,7 +154,7 @@ impl AuthorityFixture {
         .bind(session_id)
         .bind(boot_id)
         .bind(Utc::now() + ChronoDuration::minutes(5))
-        .execute(&self.pool)
+        .execute(pool)
         .await
         .expect("insert current worker session");
         SessionContext {

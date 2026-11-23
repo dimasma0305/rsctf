@@ -194,6 +194,58 @@ async fn docker(args: &[&str]) -> Vec<u8> {
     output.stdout
 }
 
+async fn verify_team_health_stream(
+    service: &WorkerService,
+    worker: Uuid,
+    handle: WorkerHandle,
+    pool: &PgPool,
+    team_service: i32,
+) {
+    use rsctf_worker_protocol::{DataStreamRequest, TcpProxyRequest};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let request = DataStreamRequest::TcpProxy(TcpProxyRequest {
+        fence: WorkloadFence {
+            workload_id: handle.workload_id,
+            assignment_id: handle.assignment_id,
+            generation: handle.generation.try_into().unwrap(),
+        },
+        service: "app".into(),
+        port: "service".into(),
+        replica: None,
+    });
+    let mut stream = service
+        .open_data_stream(worker, request.clone())
+        .await
+        .unwrap();
+    stream
+        .write_all(b"GET /health HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    stream.flush().await.unwrap();
+    let mut response = String::new();
+    stream
+        .take(4096)
+        .read_to_string(&mut response)
+        .await
+        .unwrap();
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .expect("HTTP health response");
+    assert!(headers.lines().next().unwrap().contains(" 200 "));
+    assert_eq!(body.trim(), "ok");
+
+    sqlx::query(r#"UPDATE "AdTeamServices" SET host='',port=0 WHERE id=$1 AND container_id=$2"#)
+        .bind(team_service)
+        .bind(handle.encode())
+        .execute(pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        service.open_data_stream(worker, request).await,
+        Err(crate::services::worker::WorkerError::Authorization)
+    ));
+}
+
 async fn scenario() {
     let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let image = std::env::var("RSCTF_WORKER_TEST_IMAGE_ID")
@@ -324,6 +376,14 @@ async fn scenario() {
                 .flag
                 .as_bytes()
         );
+        verify_team_health_stream(
+            state.workers.as_ref().unwrap(),
+            worker,
+            handle,
+            &fixture.pool,
+            service,
+        )
+        .await;
         store
             .mark_desired_absent(handle.workload_id, handle.assignment_id, handle.generation)
             .await

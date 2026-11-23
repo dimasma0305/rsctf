@@ -134,13 +134,14 @@ async fn connect(
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn ad_placement_routes_and_reconnect_preserve_stateful_assignment() {
-    let fixture = AuthorityFixture::create().await;
+    let fixture = crate::services::ad::scoring::test_fixture::ad_scoring_fixture().await;
     let store = WorkerStore::new(fixture.pool.clone());
     let authority = PostgresWorkerAuthority::new(store.clone(), Duration::from_secs(30));
-    let initial = fixture.insert_current_session().await;
+    let initial = AuthorityFixture::insert_current_session_on(&fixture.pool).await;
     let id = initial.worker_id;
     let bare = ad_request(id, None);
-    let mounted = ad_request(id, Some("/data"));
+    let mut mounted = ad_request(id, Some("/data"));
+    mounted.owner_key = crate::services::ad::service_lifecycle::service_lock_key(900021, 900031);
 
     connect(&authority, &initial, false, true).await;
     assert!(matches!(
@@ -191,9 +192,23 @@ async fn ad_placement_routes_and_reconnect_preserve_stateful_assignment() {
         port: "service".into(),
         replica: Some(0),
     });
+    sqlx::raw_sql(
+        r#"UPDATE "Games" SET end_time_utc=now()+interval '1 hour';
+        UPDATE "GameChallenges" SET ad_self_hosted=false WHERE id=900031"#,
+    )
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    let backend = WorkerHandle {
+        workload_id: mounted.id,
+        assignment_id: mounted.assignment_id,
+        generation: 1,
+    }
+    .encode();
     // An exact inventory remains owned during a downgrade. Its Ready report alone
     // must never publish a route or authorize a player/checker data stream.
-    for (readback, storage) in [(true, false), (false, true), (true, true)] {
+    let mut published = false;
+    for (readback, storage) in [(true, true), (true, false), (false, true), (true, true)] {
         let session = connect(&authority, &initial, readback, storage).await;
         let compatible = readback && storage;
         let due = store.list_due_workloads(Utc::now(), 100).await.unwrap();
@@ -211,6 +226,42 @@ async fn ad_placement_routes_and_reconnect_preserve_stateful_assignment() {
             route.map(|route| route.fence.session_id),
             compatible.then_some(session.fence.session_id)
         );
+        if !published && compatible {
+            // Swapping the handle into the other team's published service must not grant a route.
+            sqlx::query(
+                r#"UPDATE "AdTeamServices" SET container_id=$1,published_image_backend=$1,host='192.0.2.1',port=8080 WHERE id=900042"#,
+            )
+                .bind(&backend)
+                .execute(&fixture.pool)
+                .await
+                .unwrap();
+            assert!(matches!(
+                authority.authorize_data_stream(&session, &stream).await,
+                Err(WorkerError::Authorization)
+            ));
+            sqlx::query(r#"UPDATE "AdTeamServices" SET container_id=NULL,published_image_backend=NULL WHERE id=900042"#)
+                .execute(&fixture.pool)
+                .await
+                .unwrap();
+            use crate::services::ad::service_lifecycle::{
+                publish_managed_backend_if_eligible, ManagedBackendPublication,
+            };
+            assert!(publish_managed_backend_if_eligible(
+                &mut fixture.pool.acquire().await.unwrap(),
+                ManagedBackendPublication {
+                    game_id: fixture.game_id,
+                    participation_id: 900021,
+                    challenge_id: 900031,
+                    host: "192.0.2.1",
+                    port: 8080,
+                    backend_id: &backend,
+                    image_ref: "fixture-image"
+                }
+            )
+            .await
+            .unwrap());
+            published = true;
+        }
         match authority.authorize_data_stream(&session, &stream).await {
             Ok(()) => assert!(compatible),
             Err(WorkerError::Authorization) => assert!(!compatible),
@@ -248,5 +299,5 @@ async fn ad_placement_routes_and_reconnect_preserve_stateful_assignment() {
         .unwrap()
         .iter()
         .any(|due| due.workload.id == mounted.id));
-    fixture.destroy().await;
+    fixture.cleanup().await;
 }
