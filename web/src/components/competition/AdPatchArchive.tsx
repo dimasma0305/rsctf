@@ -6,11 +6,24 @@ import { useChallengePolling } from '@Hooks/useChallengePolling'
 import { useUser } from '@Hooks/useUser'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
-import api from '@Api'
+import api, { type AdPublishedPatchChange } from '@Api'
 
 type Cursor = { afterTeam: number; afterRevision: number }
 type Props = { gameId: number; challengeId: number }
 const privateCache = { provider: () => new Map() }
+
+function lineRange(start: number, count: number) {
+  return count === 1 ? String(start) : `${start}–${start + count - 1}`
+}
+
+function ChangedLines({ oldStart, oldCount, newStart, newCount }: NonNullable<AdPublishedPatchChange['hunks']>[number]) {
+  const { t } = useTranslation()
+  if (!oldCount) return t('game.ad.patch.archive_insert', 'Added in revision · {{lines}}', { lines: lineRange(newStart, newCount) })
+  if (!newCount) return t('game.ad.patch.archive_delete', 'Removed from starter · {{lines}}', { lines: lineRange(oldStart, oldCount) })
+  return t('game.ad.patch.archive_replace', 'Starter {{before}} → revision {{after}}', {
+    before: lineRange(oldStart, oldCount), after: lineRange(newStart, newCount),
+  })
+}
 
 export function AdPatchArchive(props: Props) {
   const { user } = useUser()
@@ -49,6 +62,12 @@ function Page({ gameId, challengeId, cursor, setCursor }: Props & { cursor?: Cur
               {row.changes.map((change) => (
                 <li key={change.path}><code style={{ overflowWrap: 'anywhere' }}>{change.path}</code>{' · '}
                   {change.kind === 'Deleted' ? t('game.ad.patch.archive_deleted', 'Deleted') : t('game.ad.patch.archive_modified', 'Modified')}
+                  {!!change.hunks?.length && <details>
+                    <summary>{t('game.ad.patch.archive_ranges', 'Changed lines')}</summary>
+                    <ul>{change.hunks.map((h) => <li key={`${h.oldStart}:${h.newStart}`}>
+                      <ChangedLines {...h} />
+                    </li>)}</ul>
+                  </details>}
                 </li>
               ))}
             </ul>

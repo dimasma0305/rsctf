@@ -2,7 +2,7 @@
   "ad": {
     "patch_activity": {
       "label": "Bagikan aktivitas patch",
-      "help": "Atur sebelum acara. Jumlah deployment muncul setelah satu ronde berikutnya selesai. Setelah acara dan mode latihan ditutup, tim sedivisi dapat melihat file starter bertanda shareAfterClose yang berubah pada revisi yang berhasil diterapkan.",
+      "help": "Atur sebelum acara. Jumlah deployment muncul setelah satu ronde berikutnya selesai. Setelah acara dan mode latihan ditutup, tim sedivisi dapat melihat perubahan pada file starter yang dipilih, termasuk rentang baris jika diaktifkan untuk file tersebut.",
       "retry": "Muat ulang pengaturan aktivitas patch"
     }
   },

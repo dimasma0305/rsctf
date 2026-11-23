@@ -2,7 +2,7 @@
   "ad": {
     "patch_activity": {
       "label": "Share patch activity",
-      "help": "Choose before the event. Deployment counts appear after one additional round finishes. After the event and practice close, teams in the same division can see which starter files marked shareAfterClose changed in deployed revisions.",
+      "help": "Choose before the event. Deployment counts appear after one additional round finishes. After the event and practice close, teams in the same division can see changes to selected starter files, including line ranges when enabled for a file.",
       "retry": "Reload patch activity setting"
     }
   },

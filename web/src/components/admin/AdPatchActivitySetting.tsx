@@ -48,7 +48,7 @@ export function AdPatchActivitySetting({ gameId, disabled }: { gameId: number; d
       label={t('admin.ad.patch_activity.label', 'Share patch activity')}
       description={t(
         'admin.ad.patch_activity.help',
-        'Choose before the event. Deployment counts appear after one additional round finishes. After the event and practice close, teams in the same division can see which starter files marked shareAfterClose changed in deployed revisions.'
+        'Choose before the event. Deployment counts appear after one additional round finishes. After the event and practice close, teams in the same division can see changes to selected starter files, including line ranges when enabled for a file.'
       )}
       onChange={(event) => void change(event.currentTarget.checked)}
     />

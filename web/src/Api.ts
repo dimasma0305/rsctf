@@ -4580,7 +4580,7 @@ export interface ChallengeAuditFile {
 /** Stored ZIP for the original source of a hosted A&D challenge. */
 export interface RegisteredAdPatchStarter extends AdPatchStarter {
   dataMount?: string | null;
-  sshSources?: { sourcePath: string; containerPath: string; retainContent?: boolean; shareAfterClose?: boolean }[];
+  sshSources?: { sourcePath: string; containerPath: string; retainContent?: boolean; shareAfterClose?: boolean; shareLineRangesAfterClose?: boolean }[];
   runtimeImageRef: string | null;
   awaitingImageBuild: boolean;
 }
@@ -4594,6 +4594,12 @@ export interface AdPatchActivityPolicy {
   enabled: boolean;
   revision: number;
   editable: boolean;
+}
+
+export interface AdPublishedPatchChange {
+  path: string
+  kind: 'Modified' | 'Deleted'
+  hunks?: { oldStart: number; oldCount: number; newStart: number; newCount: number }[]
 }
 
 export interface AdPatchPreview {
@@ -11924,7 +11930,7 @@ export class Api<
       }),
 
     getAdPatchArchive: (id: number, challenge: number, query: { afterTeam?: number; afterRevision?: number }, params: RequestParams = {}) =>
-      this.request<{ revisions: { teamId: number; teamName: string; revision: number; changes: AdPatchPreview['changes'] }[]; hasMore: boolean }, RequestResponse>({
+      this.request<{ revisions: { teamId: number; teamName: string; revision: number; changes: AdPublishedPatchChange[] }[]; hasMore: boolean }, RequestResponse>({
         path: `/api/game/${id}/ad/challenges/${challenge}/patch-archive`, method: "GET", query, format: "json", ...params,
       }),
 

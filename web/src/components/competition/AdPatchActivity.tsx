@@ -35,7 +35,7 @@ export function AdPatchActivity({ gameId, challengeId }: { gameId: number; chall
           {t('game.ad.patch.activity_help', 'Successful ZIP deployments appear after one additional round finishes.')}
         </Text>
         <Text size="sm">
-          {t('game.ad.patch.archive_notice', 'For deployed ZIPs, teams in your division can see the status of files marked shareAfterClose in the starter once the event and practice close.')}
+          {t('game.ad.patch.archive_notice', 'For deployed ZIPs, teams in your division can see changes to files selected by the organizer after the event and practice close. The starter can also mark files for sharing changed line ranges. File contents stay private.')}
         </Text>
         {data.length ? (
           <ul>

@@ -104,7 +104,7 @@ async fn check_archive(pool: &PgPool, player: &Router, user: &CurrentUser) {
         )
     };
     sqlx::raw_sql(r#"ALTER TABLE "Teams" ADD COLUMN name TEXT NOT NULL DEFAULT 'Owls';
-        UPDATE "AdPatchStarters" SET ssh_sources='[{"sourcePath":"Dockerfile","containerPath":"/app/Dockerfile","shareAfterClose":true}]' WHERE challenge_id=10"#)
+        UPDATE "AdPatchStarters" SET ssh_sources='[{"sourcePath":"Dockerfile","containerPath":"/app/Dockerfile","shareLineRangesAfterClose":true}]' WHERE challenge_id=10"#)
         .execute(pool).await.unwrap();
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for (path, content) in [
@@ -133,7 +133,9 @@ async fn check_archive(pool: &PgPool, player: &Router, user: &CurrentUser) {
         .unwrap()
         .status()
         .is_success());
-    let changes = serde_json::json!([{"path":"Dockerfile","kind":"Modified"}]);
+    let changes = serde_json::json!([{"path":"Dockerfile","kind":"Modified","hunks":[
+        {"oldStart":1,"oldCount":0,"newStart":2,"newCount":1}
+    ]}]);
     assert_eq!(sqlx::query_as::<_,(Value,bool)>(r#"SELECT changes,published FROM "AdSharedPatchChanges" WHERE service_id=20 AND revision=1"#)
         .fetch_one(pool).await.unwrap(), (changes.clone(),false));
     assert_eq!(

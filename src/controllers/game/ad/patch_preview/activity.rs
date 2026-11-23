@@ -14,7 +14,7 @@ struct PublishedRevision {
     team_name: String,
     revision: i32,
     #[sqlx(json)]
-    changes: Vec<PatchChange>,
+    changes: Vec<crate::services::ad::patches::public_diff::PublishedChange>,
 }
 
 pub(crate) async fn archive(

@@ -15,7 +15,7 @@ pub(crate) struct SourceBlob {
 
 pub(crate) struct SourceTree {
     pub oid: String,
-    pub shared_changes: Vec<super::PatchChange>,
+    pub shared_changes: Vec<super::public_diff::PublishedChange>,
     /// Sorted (path, Git blob ID, permissions) tuples. Directory trees are
     /// implicit, exactly as in PatchManifest::tree_id.
     pub manifest: String,
@@ -66,28 +66,15 @@ impl SourceTree {
         let manifest = PatchManifest::from_zip(&candidate).map_err(anyhow::Error::msg)?;
         // Only the trusted starter may select public paths. Team archives can
         // add arbitrary filenames and change their own registration file.
-        let shared_changes = sources
-            .iter()
-            .filter(|source| source.share_after_close)
-            .filter_map(|source| {
-                let original = starter.0.get(&source.source_path)?;
-                let kind = match manifest.0.get(&source.source_path) {
-                    Some(file) if file == original => return None,
-                    Some(_) => super::ChangeKind::Modified,
-                    None => super::ChangeKind::Deleted,
-                };
-                Some(super::PatchChange {
-                    path: source.source_path.clone(),
-                    kind,
-                })
-            })
-            .collect();
-        let sources = starter_sources(starter, &mut zip::ZipArchive::new(Cursor::new(original))?)?;
+        let mut original_zip = zip::ZipArchive::new(Cursor::new(original))?;
+        let mut zip = zip::ZipArchive::new(Cursor::new(&candidate[..]))?;
+        let shared_changes =
+            super::public_diff::changes(sources, &starter, &manifest, &mut original_zip, &mut zip)?;
+        let sources = starter_sources(starter, &mut original_zip)?;
         let mut entries = Vec::with_capacity(manifest.0.len());
         let mut blobs = BTreeMap::<String, SourceBlob>::new();
         let mut zip_header_bytes = 22; // EOCD, plus the local and central headers per file.
         let mut packed_bytes = 0usize;
-        let mut zip = zip::ZipArchive::new(Cursor::new(&candidate[..]))?;
         for (path, file) in &manifest.0 {
             let oid = hex::encode(file.digest);
             entries.push((path, oid.clone(), file.mode));

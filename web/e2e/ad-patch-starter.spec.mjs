@@ -23,7 +23,8 @@ test('closed hosted challenge shows paged file statuses on a narrow screen', asy
       const next = url.searchParams.get('afterTeam') === '2' && url.searchParams.get('afterRevision') === '3'
       return route.fulfill({ json: { hasMore: !next, revisions: [{
         teamId: next ? 7 : 2, teamName: next ? 'Finches' : 'Owls', revision: next ? 1 : 3,
-        changes: [{ path: 'src/example.py', kind: next ? 'Deleted' : 'Modified' }],
+        changes: [{ path: 'src/example.py', kind: next ? 'Deleted' : 'Modified',
+          ...(next ? {} : { hunks: [{ oldStart: 4, oldCount: 0, newStart: 5, newCount: 2 }] }) }],
       }] } })
     }
     const result = game.fixture(url.pathname + url.search, req.method())
@@ -32,8 +33,11 @@ test('closed hosted challenge shows paged file statuses on a narrow screen', asy
   await page.goto(server.origin + '/games/901/challenges#9001')
   await expect(page.getByText('Owls · Revision 3')).toBeVisible()
   const dialog = page.getByRole('dialog')
+  await dialog.getByText('Changed lines', { exact: true }).click()
+  await expect(dialog.getByText('Added in revision · 5–6', { exact: true })).toBeVisible()
   await dialog.getByRole('button', { name: 'Next page' }).click()
   await expect(page.getByText('Finches · Revision 1')).toBeVisible()
+  await expect(dialog.getByText('Changed lines', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('listitem').filter({ hasText: 'src/example.py · Deleted' })).toBeVisible()
   await dialog.getByRole('button', { name: 'First page' }).click()
   await expect(page.getByText('Owls · Revision 3')).toBeVisible()

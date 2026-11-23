@@ -20,6 +20,8 @@ pub(crate) struct SshSource {
     pub retain_content: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub share_after_close: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub share_line_ranges_after_close: bool,
 }
 
 impl PatchManifest {

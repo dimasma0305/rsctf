@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) mod checkout;
+pub(crate) mod public_diff;
 pub(crate) mod restore;
 pub(crate) mod revisions;
 pub(crate) mod ssh_observer;

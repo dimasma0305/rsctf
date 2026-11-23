@@ -103,6 +103,7 @@ records the current and previous distinct image at endpoint publication. The
 across an interrupted reset and the [publication tests](../../../../src/services/ad/service_lifecycle_tests.rs)
 cover retention and older servers.
 The [organizer policy](../../../../src/controllers/edit/ad/patch_activity.rs) controls the [delayed deployment counts and closed-game archive](../../../../src/controllers/game/ad/patch_preview/activity.rs). The [archive panel](../../../../web/src/components/competition/AdPatchArchive.tsx) displays marked starter paths for revisions that reached publication. The [HTTP regression](../../../../src/controllers/game/ad/patch_preview/tests/activity.rs) checks round finalization, practice mode, division visibility, and pagination.
+For files marked by the organizer, the [public diff](../../../../src/services/ad/patches/public_diff.rs) computes bounded line ranges when the team saves the ZIP. Source text stays in the team's private revision.
 
 The [worker flag delivery receipt](../../../../src/services/worker/registry/flag_delivery.rs)
 binds file readback to the request and worker session. Its
