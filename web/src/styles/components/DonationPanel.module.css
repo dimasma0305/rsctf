@@ -1,6 +1,7 @@
 .panel {
   min-width: 0;
   border-radius: var(--mantine-radius-lg);
+  color: var(--app-text-primary);
   background: color-mix(in srgb, var(--app-raised-surface) 94%, transparent);
 }
 
