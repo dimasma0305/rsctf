@@ -506,7 +506,7 @@ jobs:
           name: ci-server-${{ github.sha }}
           path: ci-artifacts
 
-      - name: Score a round through a real worker and two team containers
+      - name: Score two teams and exercise both worker rollback targets
         env:
           RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test
         run: |
@@ -514,6 +514,8 @@ jobs:
           chmod 0755 ci-artifacts/rsctf-tests
           export RSCTF_TEST_LIVE_AD_WORKER_BIN="$PWD/agents/worker-agent/target/x86_64-unknown-linux-musl/release/rsctf-worker-agent"
           export RSCTF_WORKER_TEST_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:starter --format '{{.Id}}')"
+          export RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:patch --format '{{.Id}}')"
+          export RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:second --format '{{.Id}}')"
           name=services::cron::round_finish::worker_delivery::tests::live_agent::live_remote_agent_publishes_two_team_round_receipts
           ./ci-artifacts/rsctf-tests --ignored --exact "$name" --list | grep -Fx "$name: test"
           ./ci-artifacts/rsctf-tests --ignored --exact "$name" --nocapture

@@ -14,6 +14,8 @@ use std::{
 };
 use tokio::{net::TcpListener, process::Command, sync::watch};
 use tokio_rustls::rustls::{pki_types::PrivatePkcs8KeyDer, RootCertStore};
+#[path = "live_agent/revisions.rs"]
+mod revisions;
 
 struct IdentityDir(PathBuf);
 impl Drop for IdentityDir {
@@ -183,7 +185,7 @@ async fn test_agent(
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL, a dedicated Docker daemon, fixture image and same-build Linux worker binary"]
 async fn live_remote_agent_publishes_two_team_round_receipts() {
-    tokio::time::timeout(Duration::from_secs(120), scenario())
+    tokio::time::timeout(Duration::from_secs(240), scenario())
         .await
         .expect("timed out waiting for worker or Docker");
 }
@@ -194,16 +196,9 @@ async fn docker(args: &[&str]) -> Vec<u8> {
     output.stdout
 }
 
-async fn verify_team_health_stream(
-    service: &WorkerService,
-    worker: Uuid,
-    handle: WorkerHandle,
-    pool: &PgPool,
-    team_service: i32,
-) {
+fn health_request(handle: WorkerHandle) -> rsctf_worker_protocol::DataStreamRequest {
     use rsctf_worker_protocol::{DataStreamRequest, TcpProxyRequest};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let request = DataStreamRequest::TcpProxy(TcpProxyRequest {
+    DataStreamRequest::TcpProxy(TcpProxyRequest {
         fence: WorkloadFence {
             workload_id: handle.workload_id,
             assignment_id: handle.assignment_id,
@@ -212,9 +207,13 @@ async fn verify_team_health_stream(
         service: "app".into(),
         port: "service".into(),
         replica: None,
-    });
+    })
+}
+
+async fn assert_health(service: &WorkerService, worker: Uuid, handle: WorkerHandle) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = service
-        .open_data_stream(worker, request.clone())
+        .open_data_stream(worker, health_request(handle))
         .await
         .unwrap();
     stream
@@ -233,7 +232,16 @@ async fn verify_team_health_stream(
         .expect("HTTP health response");
     assert!(headers.lines().next().unwrap().contains(" 200 "));
     assert_eq!(body.trim(), "ok");
+}
 
+async fn verify_team_health_stream(
+    service: &WorkerService,
+    worker: Uuid,
+    handle: WorkerHandle,
+    pool: &PgPool,
+    team_service: i32,
+) {
+    assert_health(service, worker, handle).await;
     sqlx::query(r#"UPDATE "AdTeamServices" SET host='',port=0 WHERE id=$1 AND container_id=$2"#)
         .bind(team_service)
         .bind(handle.encode())
@@ -241,7 +249,9 @@ async fn verify_team_health_stream(
         .await
         .unwrap();
     assert!(matches!(
-        service.open_data_stream(worker, request).await,
+        service
+            .open_data_stream(worker, health_request(handle))
+            .await,
         Err(crate::services::worker::WorkerError::Authorization)
     ));
 }
@@ -380,7 +390,14 @@ async fn scenario() {
         .unwrap();
         assert_eq!(publication.failure_count, 0);
     }
-    for (service, handle) in targets {
+    let updated =
+        revisions::exercise(&state, worker, [targets[0].1, targets[1].1], &round, &image).await;
+    for (service, original) in targets {
+        let handle = if service == first.team_service_id {
+            updated
+        } else {
+            original
+        };
         let recorded: (String, i16) = sqlx::query_as(
             r#"SELECT container_id,attempts FROM "AdFlagDeliveryResults"
                WHERE round_id=$1 AND team_service_id=$2 AND delivered AND delivery_kind='Managed'"#,
@@ -390,7 +407,7 @@ async fn scenario() {
         .fetch_one(&fixture.pool)
         .await
         .unwrap();
-        assert_eq!(recorded, (handle.encode(), 1));
+        assert_eq!(recorded, (original.encode(), 1));
         let flag = round
             .flags
             .iter()
@@ -428,6 +445,12 @@ async fn scenario() {
 }
 
 async fn verify_team_flag(worker: Uuid, handle: WorkerHandle, value: &str) {
+    let id = team_container(worker, handle).await;
+    let read = docker(&["exec", &id, "cat", "/data/round-flag"]).await;
+    assert!(read == value.as_bytes());
+}
+
+async fn team_container(worker: Uuid, handle: WorkerHandle) -> String {
     let ids = docker(&[
         "ps",
         "-q",
@@ -440,6 +463,5 @@ async fn verify_team_flag(worker: Uuid, handle: WorkerHandle, value: &str) {
     .await;
     let id = std::str::from_utf8(&ids).unwrap().trim();
     assert!(id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()));
-    let read = docker(&["exec", id, "cat", "/data/round-flag"]).await;
-    assert!(read == value.as_bytes());
+    id.to_owned()
 }

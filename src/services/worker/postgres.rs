@@ -14,7 +14,7 @@ use super::{
 };
 use crate::services::worker_store::{
     PlatformOs, ResourceReservation, SessionFence as StoreSessionFence, StatusUpdateOutcome,
-    WorkerInventory, WorkerStore, WorkerStoreError, WorkloadObservedState,
+    WorkerInventory, WorkerStore, WorkerStoreError, WorkloadDesiredState, WorkloadObservedState,
     WorkloadStatus as StoreWorkloadStatus,
 };
 
@@ -428,6 +428,15 @@ impl WorkerAuthority for PostgresWorkerAuthority {
                     && workload.definition.spec_hash_sha256 == spec_hash
             });
             if !exact {
+                // A revision transition reuses the assignment and its volume.
+                // The reconciler owns its replacement or final deletion. An
+                // inventory snapshot can race either command in both directions.
+                if current.is_some_and(|workload| {
+                    workload.owner_kind == "ad-team-service"
+                        && workload.assignment_id == item.fence.assignment_id
+                }) {
+                    continue;
+                }
                 tracing::warn!(worker_id = %session.worker_id, workload_id = %item.fence.workload_id, "worker reported an unassigned or stale workload");
                 cleanup.push(ControlMessage::EnsureAbsent(EnsureAbsent {
                     command_id: Uuid::new_v4(),
@@ -469,17 +478,24 @@ impl WorkerAuthority for PostgresWorkerAuthority {
             assigned.remove(&workload_id);
         }
 
-        // A completed inventory is an authoritative full snapshot, not just a
-        // list of things the worker happened to find. Mark each remaining
-        // assignment absent; the reconciler recreates desired-Present rows.
         for workload in assigned.into_values() {
+            // Container inventory cannot attest that a team volume was deleted.
+            // Keep deletion pending for the current EnsureAbsent acknowledgement.
+            let state = if workload.owner_kind == "ad-team-service" {
+                if workload.desired_state == WorkloadDesiredState::Absent {
+                    continue;
+                }
+                WorkloadObservedState::Unknown
+            } else {
+                WorkloadObservedState::Absent
+            };
             statuses.push(StoreWorkloadStatus {
                 session: store_session,
                 workload_id: workload.id,
                 assignment_id: workload.assignment_id,
                 generation: workload.generation,
                 spec_hash_sha256: workload.definition.spec_hash_sha256,
-                state: WorkloadObservedState::Absent,
+                state,
                 message: Some(format!("missing from inventory snapshot {snapshot_id}")),
             });
         }
@@ -493,8 +509,12 @@ impl WorkerAuthority for PostgresWorkerAuthority {
                 .map_err(store_error)?
                 .len();
         }
-        if applied != statuses.len() {
+        // A session can lose its lease and see no assignments while reading
+        // inventory. Verify its authority before dispatching orphan cleanup.
+        if applied != statuses.len() || !cleanup.is_empty() {
             self.session_is_current(session).await?;
+        }
+        if applied != statuses.len() {
             tracing::debug!(
                 worker_id = %session.worker_id,
                 expected = statuses.len(),

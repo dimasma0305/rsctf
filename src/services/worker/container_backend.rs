@@ -557,6 +557,14 @@ impl ContainerManager for WorkerContainerManager {
             return Err(AppError::not_found("worker workload was reassigned"));
         }
         let status = match workload.observed_state {
+            // Team service handles identify one revision. A later generation's
+            // Ready or Failed report cannot establish liveness for its donor.
+            _ if workload.owner_kind == "ad-team-service"
+                && workload.desired_state == WorkloadDesiredState::Present
+                && workload.generation != handle.generation =>
+            {
+                "unknown"
+            }
             WorkloadObservedState::Ready
                 if workload.desired_state == WorkloadDesiredState::Present =>
             {

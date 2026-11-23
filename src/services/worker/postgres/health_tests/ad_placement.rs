@@ -48,8 +48,8 @@ async fn stale_team_cleanup_preserves_the_next_revision_and_its_mount() {
     let backend = WorkerContainerManager::new(store.clone());
     let authority = PostgresWorkerAuthority::new(store.clone(), Duration::from_secs(30));
     let initial = fixture.insert_current_session().await;
-    connect(&authority, &initial, true, true).await;
     for mount in [None, Some("/data")] {
+        let session = connect(&authority, &initial, true, true).await;
         let request = ad_request(initial.worker_id, mount);
         assert!(matches!(
             store.place_workload(&request).await.unwrap(),
@@ -84,6 +84,56 @@ async fn stale_team_cleanup_preserves_the_next_revision_and_its_mount() {
             ..previous
         }
         .encode();
+        // A full inventory taken just before the revision switch arrives
+        // after the new generation commits but before EnsureWorkload runs.
+        let donor = InventoryItem {
+            fence: WorkloadFence {
+                workload_id: request.id,
+                assignment_id: request.assignment_id,
+                generation: 1,
+            },
+            spec_hash: hex::encode(request.definition.spec_hash_sha256),
+            state: ObservedWorkloadState::Ready,
+            replicas: vec![ReplicaStatus {
+                service: "challenge".into(),
+                replica: 0,
+                ready: true,
+                runtime_id: Some("previous".into()),
+                detail: None,
+            }],
+        };
+        let inventory =
+            |items| authority.handle_inventory_snapshot(&session, Uuid::new_v4(), items);
+        assert!(inventory(vec![donor.clone()]).await.unwrap().is_empty());
+        assert_eq!(
+            store
+                .get_workload(request.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .observed_state,
+            WorkloadObservedState::Unknown
+        );
+        // A different assignment is still an orphan, even if it reports the
+        // same workload UUID as the donor.
+        let mut orphan = donor.clone();
+        orphan.fence.assignment_id = Uuid::new_v4();
+        assert!(
+            matches!(inventory(vec![orphan.clone()]).await.unwrap().as_slice(),
+            [ControlMessage::EnsureAbsent(command)] if command.fence == orphan.fence)
+        );
+        sqlx::query(
+            r#"UPDATE "WorkerWorkloads" SET observed_state='Failed' WHERE id=$1 AND generation=2"#,
+        )
+        .bind(request.id)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+        assert_eq!(backend.query(&current).await.unwrap().status, "exited");
+        assert_eq!(
+            backend.query(&previous.encode()).await.unwrap().status,
+            "unknown"
+        );
         assert!(matches!(
             backend.destroy(&previous.encode()).await,
             Err(crate::utils::error::AppError::Conflict(_))
@@ -98,12 +148,32 @@ async fn stale_team_cleanup_preserves_the_next_revision_and_its_mount() {
         );
         backend.destroy(&current).await.unwrap();
         backend.destroy(&current).await.unwrap();
+        assert!(inventory(vec![donor.clone()]).await.unwrap().is_empty());
+        assert!(inventory(Vec::new()).await.unwrap().is_empty());
         let deleted = store.get_workload(request.id).await.unwrap().unwrap();
         assert_eq!(deleted.generation, 3);
         assert_eq!(
             deleted.desired_state,
             crate::services::worker_store::WorkloadDesiredState::Absent
         );
+        assert_ne!(deleted.observed_state, WorkloadObservedState::Absent);
+        assert!(store
+            .list_due_workloads(Utc::now(), 100)
+            .await
+            .unwrap()
+            .iter()
+            .any(|due| due.workload.id == request.id));
+        sqlx::query(
+            r#"UPDATE "WorkerNodes" SET lease_expires_at=now()-interval '1 second' WHERE id=$1"#,
+        )
+        .bind(initial.worker_id)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            inventory(vec![donor]).await,
+            Err(WorkerError::StaleSession)
+        ));
     }
     fixture.destroy().await;
 }
