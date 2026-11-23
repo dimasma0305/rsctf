@@ -161,6 +161,14 @@ impl WorkerStore {
         &self,
         workload_id: Uuid,
     ) -> Result<Option<WorkerSession>, WorkerStoreError> {
+        let mut conn = self.pool.acquire().await.map_err(database_error)?;
+        Self::ready_workload_session_on(&mut conn, workload_id).await
+    }
+
+    pub(crate) async fn ready_workload_session_on(
+        executor: &mut sqlx::PgConnection,
+        workload_id: Uuid,
+    ) -> Result<Option<WorkerSession>, WorkerStoreError> {
         let row = sqlx::query_as::<_, (Uuid, Uuid, i64, DateTime<Utc>)>(concat!(
             r#"SELECT node.id, node.session_id, node.session_epoch,
                       node.lease_expires_at
@@ -201,7 +209,7 @@ impl WorkerStore {
                   END"#
         ))
         .bind(workload_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await
         .map_err(database_error)?;
         Ok(row.map(

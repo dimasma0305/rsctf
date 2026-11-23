@@ -53,6 +53,16 @@ pub struct WorkerHandle {
 }
 
 impl WorkerHandle {
+    /// Other backends use opaque IDs. A malformed worker ID cannot be routed to them.
+    pub(crate) fn from_backend_id(id: &str) -> AppResult<Option<Self>> {
+        if id.split(':').next() != Some(HANDLE_PREFIX) {
+            return Ok(None);
+        }
+        parse_worker_handle(id)
+            .map(Some)
+            .ok_or_else(|| AppError::bad_request("invalid worker container identity"))
+    }
+
     pub fn encode(self) -> String {
         format!(
             "{HANDLE_PREFIX}:{}:{}:{}",

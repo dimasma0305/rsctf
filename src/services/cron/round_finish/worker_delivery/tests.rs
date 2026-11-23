@@ -1,4 +1,7 @@
 use super::*;
+use crate::services::ad::service_lifecycle::{
+    publish_managed_backend_if_eligible, retain_created_backend_identity, ManagedBackendPublication,
+};
 use crate::services::{
     ad::{reset_fixture::runtime_state, scoring::test_fixture::ad_scoring_fixture},
     ad_engine::{prepare_round, RoundCursor},
@@ -24,12 +27,12 @@ async fn register_targets(pool: &PgPool, context: &SessionContext) -> Vec<Worker
     sqlx::query(r#"INSERT INTO "WorkerNodes"
         (id,name,capabilities,certificate_fingerprint_sha256,certificate_serial,certificate_expires_at,
          session_id,session_epoch,boot_id,connected_at,heartbeat_at,lease_expires_at)
-        VALUES ($1,'scoring-fixture','{"writeFlag":true,"verifiedFlagDelivery":true}',
+        VALUES ($1,'scoring-fixture','{"writeFlag":true,"verifiedFlagDelivery":true,"ensureWorkload":true,"tcpProxy":true,"inventory":true,"maxDataLanes":1,"maxWorkloadReplicas":1}',
                 $2,'fixture',now()+interval '1 hour',$3,1,$4,now(),now(),now()+interval '1 hour')"#)
         .bind(context.worker_id).bind(context.certificate_fingerprint_sha256.as_slice())
         .bind(context.fence.session_id).bind(context.boot_id).execute(pool).await.unwrap();
     let mut targets = Vec::new();
-    for (service, team) in [(900041, 900021), (900042, 900022)] {
+    for team in [900021, 900022] {
         let handle = WorkerHandle {
             workload_id: Uuid::new_v4(),
             assignment_id: Uuid::new_v4(),
@@ -44,15 +47,183 @@ async fn register_targets(pool: &PgPool, context: &SessionContext) -> Vec<Worker
               "services":[{"name":"app","replicas":1}]}','linux','amd64','docker',0,0,1,1,1,'Ready')"#)
             .bind(handle.workload_id).bind(service_lock_key(team,900031)).bind(context.worker_id)
             .bind(handle.assignment_id).bind([1_u8;32].as_slice()).execute(pool).await.unwrap();
-        sqlx::query(r#"UPDATE "AdTeamServices" SET container_id=$1 WHERE id=$2"#)
-            .bind(handle.encode())
-            .bind(service)
-            .execute(pool)
-            .await
-            .unwrap();
+        publish_fixture_endpoint(pool, team, handle, "fixture-image").await;
         targets.push(handle);
     }
     targets
+}
+
+async fn publish_fixture_endpoint(
+    pool: &PgPool,
+    participant: i32,
+    handle: WorkerHandle,
+    image: &str,
+) {
+    let backend = handle.encode();
+    assert!(
+        retain_created_backend_identity(pool, 900001, participant, 900031, &backend)
+            .await
+            .unwrap()
+    );
+    // Exercise the server's two-step binding. The fixture does not own a VPN ingress.
+    let endpoint = ManagedBackendPublication {
+        game_id: 900001,
+        participation_id: participant,
+        challenge_id: 900031,
+        backend_id: &backend,
+        host: "192.0.2.1",
+        port: 8080,
+        image_ref: image,
+    };
+    assert!(
+        publish_managed_backend_if_eligible(&mut pool.acquire().await.unwrap(), endpoint)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn team_worker_endpoint_writes_and_cleanup_preserve_the_peer() {
+    let fixture = ad_scoring_fixture().await;
+    let pool = &fixture.pool;
+    let worker = Uuid::new_v4();
+    let context = SessionContext {
+        worker_id: worker,
+        certificate_fingerprint_sha256: [3; 32],
+        fence: SessionFence {
+            session_id: Uuid::new_v4(),
+            session_epoch: 1,
+        },
+        boot_id: Uuid::new_v4(),
+    };
+    let targets = register_targets(pool, &context).await;
+    let state = runtime_state(
+        pool,
+        Arc::new(crate::services::worker::WorkerContainerManager::new(
+            WorkerStore::new(pool.clone()),
+        )),
+    );
+    let image = "fixture-image";
+    let own = targets[0].encode();
+    let endpoint = ManagedBackendPublication {
+        game_id: 900001,
+        participation_id: 900021,
+        challenge_id: 900031,
+        backend_id: &own,
+        host: "192.0.2.99",
+        port: 8080,
+        image_ref: image,
+    };
+    for invalid in [
+        targets[1],
+        WorkerHandle {
+            generation: 2,
+            ..targets[0]
+        },
+        WorkerHandle {
+            assignment_id: Uuid::new_v4(),
+            ..targets[0]
+        },
+    ] {
+        let backend = invalid.encode();
+        assert!(
+            !retain_created_backend_identity(pool, 900001, 900021, 900031, &backend)
+                .await
+                .unwrap()
+        );
+        assert!(!publish_managed_backend_if_eligible(
+            &mut pool.acquire().await.unwrap(),
+            ManagedBackendPublication {
+                backend_id: &backend,
+                ..endpoint
+            }
+        )
+        .await
+        .unwrap());
+        assert!(matches!(
+            crate::services::ad::service_lifecycle::destroy_team_backend(
+                &state, 900021, 900031, &backend
+            )
+            .await,
+            Err(crate::utils::error::AppError::Conflict(_))
+        ));
+    }
+    assert!(
+        retain_created_backend_identity(pool, 900001, 900021, 900031, "rsctf-worker:broken")
+            .await
+            .is_err()
+    );
+    // The publication must protect its workload generation until the caller commits.
+    let mut publishing = pool.begin().await.unwrap();
+    assert!(publish_managed_backend_if_eligible(
+        &mut publishing,
+        ManagedBackendPublication {
+            host: "192.0.2.1",
+            ..endpoint
+        }
+    )
+    .await
+    .unwrap());
+    let competing = || {
+        sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT id FROM "WorkerWorkloads" WHERE id=$1 FOR UPDATE NOWAIT"#,
+        )
+        .bind(targets[0].workload_id)
+    };
+    let err = competing().fetch_one(pool).await.unwrap_err();
+    assert_eq!(
+        err.as_database_error().unwrap().code().as_deref(),
+        Some("55P03")
+    );
+    publishing.commit().await.unwrap();
+    assert_eq!(
+        competing().fetch_one(pool).await.unwrap(),
+        targets[0].workload_id
+    );
+    sqlx::query(
+        r#"UPDATE "WorkerNodes" SET lease_expires_at=now()-interval '1 second' WHERE id=$1"#,
+    )
+    .bind(worker)
+    .execute(pool)
+    .await
+    .unwrap();
+    assert!(
+        !publish_managed_backend_if_eligible(&mut pool.acquire().await.unwrap(), endpoint)
+            .await
+            .unwrap()
+    );
+    let hosts: Vec<(String, String)> = sqlx::query_as(
+        r#"SELECT container_id,host FROM "AdTeamServices" WHERE id IN(900041,900042) ORDER BY id"#,
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        hosts,
+        [
+            (own.clone(), "192.0.2.1".to_owned()),
+            (targets[1].encode(), "192.0.2.1".to_owned())
+        ]
+    );
+    // Offline assignments can still be retained for cleanup; deletion stays idempotent.
+    assert!(
+        retain_created_backend_identity(pool, 900001, 900021, 900031, &own)
+            .await
+            .unwrap()
+    );
+    for _ in 0..2 {
+        crate::services::ad::service_lifecycle::destroy_team_backend(&state, 900021, 900031, &own)
+            .await
+            .unwrap();
+    }
+    let desired:Vec<(String,i64)> = sqlx::query_as(r#"SELECT desired_state,generation FROM "WorkerWorkloads" WHERE worker_id=$1 ORDER BY owner_key"#)
+        .bind(worker).fetch_all(pool).await.unwrap();
+    assert_eq!(
+        desired,
+        [("Absent".to_owned(), 2), ("Present".to_owned(), 1)]
+    );
+    fixture.cleanup().await;
 }
 
 #[tokio::test]

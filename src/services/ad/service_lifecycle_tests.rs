@@ -65,7 +65,7 @@ async fn image_history_tracks_distinct_publications_and_protects_only_retained_i
         ("three", &c, Some(&b)),
     ] {
         assert!(publish_managed_backend_if_eligible(
-            pool,
+            &mut pool.acquire().await.unwrap(),
             ManagedBackendPublication {
                 backend_id,
                 image_ref,
@@ -90,7 +90,7 @@ async fn image_history_tracks_distinct_publications_and_protects_only_retained_i
     // A second team independently publishes the same image. Inventory returns one
     // challenge reference, and finishing a game releases both teams' protections.
     assert!(publish_managed_backend_if_eligible(
-        pool,
+        &mut pool.acquire().await.unwrap(),
         ManagedBackendPublication {
             participation_id: 900022,
             backend_id: "other-team",
@@ -311,9 +311,11 @@ async fn eligibility_cas_preserves_identity_and_cascaded_owner_still_destroys_lo
         backend_id: "runtime-a",
         image_ref: "fixture-image-a",
     };
-    assert!(publish_managed_backend_if_eligible(&harness.pool, first)
-        .await
-        .unwrap());
+    assert!(
+        publish_managed_backend_if_eligible(&mut harness.pool.acquire().await.unwrap(), first)
+            .await
+            .unwrap()
+    );
 
     sqlx::query(r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = 1"#)
         .execute(&harness.pool)
@@ -324,9 +326,12 @@ async fn eligibility_cas_preserves_identity_and_cascaded_owner_still_destroys_lo
         ..first
     };
     assert!(
-        !publish_managed_backend_if_eligible(&harness.pool, replacement)
-            .await
-            .unwrap(),
+        !publish_managed_backend_if_eligible(
+            &mut harness.pool.acquire().await.unwrap(),
+            replacement
+        )
+        .await
+        .unwrap(),
         "publication CAS ignored the durable game-deletion fence"
     );
     sqlx::query(r#"UPDATE "Games" SET deletion_pending = FALSE WHERE id = 1"#)
@@ -339,9 +344,12 @@ async fn eligibility_cas_preserves_identity_and_cascaded_owner_still_destroys_lo
         .await
         .unwrap();
     assert!(
-        !publish_managed_backend_if_eligible(&harness.pool, replacement)
-            .await
-            .unwrap(),
+        !publish_managed_backend_if_eligible(
+            &mut harness.pool.acquire().await.unwrap(),
+            replacement
+        )
+        .await
+        .unwrap(),
         "publication CAS ignored the durable challenge-deletion fence"
     );
     sqlx::query(r#"UPDATE "GameChallenges" SET deletion_pending = FALSE WHERE id = 4"#)
@@ -354,9 +362,12 @@ async fn eligibility_cas_preserves_identity_and_cascaded_owner_still_destroys_lo
         .await
         .unwrap();
     assert!(
-        !publish_managed_backend_if_eligible(&harness.pool, replacement)
-            .await
-            .unwrap(),
+        !publish_managed_backend_if_eligible(
+            &mut harness.pool.acquire().await.unwrap(),
+            replacement
+        )
+        .await
+        .unwrap(),
         "publication CAS ignored the durable team-deletion fence"
     );
     let retained: Option<String> = sqlx::query_scalar(

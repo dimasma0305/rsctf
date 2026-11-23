@@ -1,12 +1,19 @@
 //! Publication and teardown fencing for per-team A&D service endpoints.
 
+use sqlx::Connection;
 use std::future::Future;
 
 use crate::app_state::SharedState;
+use crate::services::ad::maintenance::database_error;
+use crate::services::worker::WorkerHandle;
 use crate::utils::enums::{
     AdCheckStatus, ChallengeReviewStatus, ChallengeType, ParticipationStatus,
 };
 use crate::utils::error::{AppError, AppResult};
+
+mod worker_owner;
+pub(crate) use worker_owner::{destroy_team_backend, destroy_team_backend_after_capture};
+use worker_owner::{lock_eligible_assignment, WriteIntent};
 
 #[derive(Clone, Copy)]
 pub(crate) struct ManagedBackendPublication<'a> {
@@ -131,8 +138,32 @@ pub(crate) async fn drain_publications(
 /// Publish only while all durable owners remain eligible. This single SQL
 /// statement closes the last check-to-insert window and preserves
 /// `last_reset_at` when it fills an existing offline placeholder.
-pub(crate) async fn publish_managed_backend_if_eligible<'e>(
-    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+pub(crate) async fn publish_managed_backend_if_eligible(
+    conn: &mut sqlx::PgConnection,
+    publication: ManagedBackendPublication<'_>,
+) -> AppResult<bool> {
+    let Some(handle) = WorkerHandle::from_backend_id(publication.backend_id)? else {
+        return publish(conn, publication).await;
+    };
+    let mut tx = conn.begin().await.map_err(database_error)?;
+    if !lock_eligible_assignment(
+        &mut tx,
+        publication.participation_id,
+        publication.challenge_id,
+        handle,
+        WriteIntent::Publish,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
+    let published = publish(&mut tx, publication).await?;
+    tx.commit().await.map_err(database_error)?;
+    Ok(published)
+}
+
+async fn publish(
+    executor: &mut sqlx::PgConnection,
     publication: ManagedBackendPublication<'_>,
 ) -> AppResult<bool> {
     let published = sqlx::query_scalar::<_, i32>(
@@ -197,6 +228,42 @@ pub(crate) async fn retain_created_backend_identity(
     challenge_id: i32,
     backend_id: &str,
 ) -> AppResult<bool> {
+    let handle = WorkerHandle::from_backend_id(backend_id)?;
+    let mut conn = pool.acquire().await.map_err(database_error)?;
+    let Some(handle) = handle else {
+        return retain(
+            &mut conn,
+            game_id,
+            participation_id,
+            challenge_id,
+            backend_id,
+        )
+        .await;
+    };
+    let mut tx = conn.begin().await.map_err(database_error)?;
+    if !lock_eligible_assignment(
+        &mut tx,
+        participation_id,
+        challenge_id,
+        handle,
+        WriteIntent::Retain,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
+    let retained = retain(&mut tx, game_id, participation_id, challenge_id, backend_id).await?;
+    tx.commit().await.map_err(database_error)?;
+    Ok(retained)
+}
+
+async fn retain(
+    db: &mut sqlx::PgConnection,
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+    backend_id: &str,
+) -> AppResult<bool> {
     let retained = sqlx::query_scalar::<_, i32>(
         r#"INSERT INTO "AdTeamServices"
              (game_id, participation_id, challenge_id, host, port, status,
@@ -224,7 +291,7 @@ pub(crate) async fn retain_created_backend_identity(
     .bind(challenge_id)
     .bind(backend_id)
     .bind(AdCheckStatus::Offline as i16)
-    .fetch_optional(pool)
+    .fetch_optional(db)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(retained.is_some())
@@ -280,7 +347,7 @@ pub(crate) async fn rollback_created_backend(
         challenge_id,
         backend_id,
         crate::services::ad_vpn::ensure_hub_and_sync(&state.db),
-        crate::services::traffic::destroy_container_after_capture_fence(state, backend_id),
+        destroy_team_backend_after_capture(state, participation_id, challenge_id, backend_id),
     )
     .await
 }
@@ -300,14 +367,14 @@ pub(crate) async fn destroy_persisted_service_with_vpn(
     service_id: i32,
     reconcile_vpn: bool,
 ) -> AppResult<()> {
-    let backend_id = sqlx::query_scalar::<_, Option<String>>(
-        r#"SELECT container_id FROM "AdTeamServices" WHERE id = $1"#,
+    let service = sqlx::query_as::<_, (i32, i32, Option<String>)>(
+        r#"SELECT participation_id, challenge_id, container_id FROM "AdTeamServices" WHERE id = $1"#,
     )
     .bind(service_id)
     .fetch_optional(state.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some(backend_id) = backend_id else {
+    let Some((participant, challenge, backend_id)) = service else {
         return Ok(());
     };
     if reconcile_vpn {
@@ -316,7 +383,7 @@ pub(crate) async fn destroy_persisted_service_with_vpn(
         crate::services::ad_vpn::deactivate_team_service_deferred(&state.db, service_id).await?;
     }
     if let Some(backend_id) = backend_id {
-        crate::services::traffic::destroy_container_after_capture_fence(state, &backend_id).await?;
+        destroy_team_backend_after_capture(state, participant, challenge, &backend_id).await?;
     }
     Ok(())
 }

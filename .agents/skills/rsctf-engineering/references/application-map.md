@@ -116,6 +116,7 @@ publishes two team receipts in PostgreSQL and checks replay and stale assignment
 The [placement regression](../../../../src/services/worker/postgres/health_tests/ad_placement.rs)
 reconnects a worker with and without verified flag delivery and team storage, then checks assignment retention, routing, and cleanup.
 The [Linux worker round test](../../../../src/services/cron/round_finish/worker_delivery/tests/live_agent.rs) uses the same-build agent, PostgreSQL and two Docker workloads. It reads each team's delivered file and replays the round.
+The [team worker ownership check](../../../../src/services/ad/service_lifecycle/worker_owner.rs) locks the assignment while its service records an inactive backend or publishes an endpoint. It also checks the owner before reset or teardown can destroy a worker workload.
 
 The [private revision history](../../../../src/controllers/game/ad/patch_preview/revisions.rs)
 stores [content-addressed source](../../../../src/services/ad/patches/revisions.rs) for one hosted team service.

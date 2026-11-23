@@ -254,12 +254,7 @@ async fn scenario() {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        sqlx::query(r#"UPDATE "AdTeamServices" SET container_id=$1 WHERE id=$2"#)
-            .bind(handle.encode())
-            .bind(service)
-            .execute(&fixture.pool)
-            .await
-            .unwrap();
+        publish_fixture_endpoint(&fixture.pool, participant, handle, &image).await;
         targets.push((service, handle));
     }
     let mut state = runtime_state(&fixture.pool, Arc::new(NoopContainerManager));

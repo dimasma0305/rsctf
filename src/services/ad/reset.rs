@@ -413,7 +413,13 @@ pub async fn execute_job(
             || candidate.ip.trim().is_empty()
             || !(1..=65535).contains(&candidate.port)
         {
-            st.containers.destroy(&candidate.id).await?;
+            super::service_lifecycle::destroy_team_backend(
+                st,
+                part.id,
+                challenge.id,
+                &candidate.id,
+            )
+            .await?;
             return Err(AppError::unavailable(
                 "The replacement service has no running endpoint",
             ));
@@ -421,7 +427,13 @@ pub async fn execute_job(
         candidate
     } else {
         if let Some(id) = retired {
-            crate::services::traffic::destroy_container_after_capture_fence(st, id).await?;
+            super::service_lifecycle::destroy_team_backend_after_capture(
+                st,
+                part.id,
+                challenge.id,
+                id,
+            )
+            .await?;
         }
         st.containers.create(spec).await?
     };
@@ -435,7 +447,8 @@ pub async fn execute_job(
     {
         // The candidate has never been published. A volume donor still holds
         // the team's current files and must survive a failed acknowledgement.
-        st.containers.destroy(&backend_id).await?;
+        super::service_lifecycle::destroy_team_backend(st, part.id, challenge.id, &backend_id)
+            .await?;
         return Err(error);
     }
     if volume_donor.is_none() {
@@ -501,7 +514,8 @@ pub async fn execute_job(
     };
     if !published {
         if volume_donor.is_some() {
-            st.containers.destroy(&backend_id).await?;
+            super::service_lifecycle::destroy_team_backend(st, part.id, challenge.id, &backend_id)
+                .await?;
             return Err(AppError::conflict(
                 "The service changed before its volume transfer could be published",
             ));
@@ -518,7 +532,9 @@ pub async fn execute_job(
         ));
     }
     if let Some(id) = volume_donor {
-        if let Err(error) = st.containers.destroy(id).await {
+        if let Err(error) =
+            super::service_lifecycle::destroy_team_backend(st, part.id, challenge.id, id).await
+        {
             tracing::warn!(backend_id=id,%error,"published reset; stopped donor awaits cleanup");
         }
     }

@@ -1,4 +1,7 @@
 //! A&D provisioning and durable reconcile application operations.
+use super::service_lifecycle::{
+    destroy_team_backend, destroy_team_backend_after_capture, retain_created_backend_identity,
+};
 use crate::app_state::SharedState;
 use crate::models::data::{ad_team_service, game, game_challenge, participation};
 use crate::services::container::{ContainerLiveness, ContainerResourceLimits, ContainerSpec};
@@ -156,7 +159,7 @@ async fn deactivate_stale_pair(
     let backend_id = service.container_id.clone();
     crate::services::ad_vpn::deactivate_team_service(&st.db, service.id).await?;
     if let Some(backend_id) = backend_id {
-        crate::services::traffic::destroy_container_after_capture_fence(st, &backend_id).await?;
+        destroy_team_backend_after_capture(st, participation_id, challenge_id, &backend_id).await?;
     }
     Ok(())
 }
@@ -667,7 +670,7 @@ pub(crate) async fn ensure_ad_containers(
                     }
                     Ok(None) => {}
                 }
-                crate::services::traffic::destroy_container_after_capture_fence(st, cid).await?;
+                destroy_team_backend_after_capture(st, p.id, c.id, cid).await?;
             }
             let info = match st.containers.create(spec).await {
                 Ok(i) => i,
@@ -709,23 +712,19 @@ pub(crate) async fn ensure_ad_containers(
                 }
             };
             let backend_id = info.id.clone();
-            let retained = crate::services::ad::service_lifecycle::retain_created_backend_identity(
-                st.pg(),
-                game.id,
-                p.id,
-                c.id,
-                &backend_id,
-            )
-            .await;
+            let retained =
+                retain_created_backend_identity(st.pg(), game.id, p.id, c.id, &backend_id).await;
             match retained {
                 Ok(true) => {}
                 Ok(false) => {
-                    st.containers.destroy(&backend_id).await?;
+                    destroy_team_backend(st, p.id, c.id, &backend_id).await?;
                     distributed.release().await?;
                     continue;
                 }
                 Err(error) => {
-                    if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+                    if let Err(destroy_error) =
+                        destroy_team_backend(st, p.id, c.id, &backend_id).await
+                    {
                         tracing::error!(
                             backend_id = %backend_id,
                             %destroy_error,

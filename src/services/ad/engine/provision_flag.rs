@@ -1,5 +1,5 @@
 use crate::services::ad::service_lifecycle::{
-    publish_managed_backend_if_eligible, ManagedBackendPublication,
+    destroy_team_backend, publish_managed_backend_if_eligible, ManagedBackendPublication,
 };
 use crate::utils::error::{AppError, AppResult};
 
@@ -146,7 +146,13 @@ impl ProvisionFlag {
                 AppError::conflict("The service's data volumes changed before repair")
             })?;
         if info.ip.is_empty() || info.status != "running" {
-            state.containers.destroy(&info.id).await?;
+            destroy_team_backend(
+                state,
+                service.participation_id,
+                service.challenge_id,
+                &info.id,
+            )
+            .await?;
             return Err(AppError::unavailable(
                 "The replacement service has no running endpoint",
             ));
@@ -163,7 +169,13 @@ impl ProvisionFlag {
         if let Err(error) =
             initialize_official_flag_file(state, &info.id, self.official.as_deref()).await
         {
-            state.containers.destroy(&info.id).await?;
+            destroy_team_backend(
+                state,
+                service.participation_id,
+                service.challenge_id,
+                &info.id,
+            )
+            .await?;
             return Err(error);
         }
         self.publish_volume_repair(state, endpoint, donor).await?;
@@ -176,10 +188,13 @@ impl ProvisionFlag {
         endpoint: ManagedBackendPublication<'_>,
         donor: &str,
     ) -> AppResult<()> {
+        let destroy = async |id: &str| {
+            destroy_team_backend(state, endpoint.participation_id, endpoint.challenge_id, id).await
+        };
         match self.publish_over(state.pg(), endpoint, Some(donor)).await {
             Ok(true) => {}
             Ok(false) => {
-                state.containers.destroy(endpoint.backend_id).await?;
+                destroy(endpoint.backend_id).await?;
                 return Err(AppError::conflict(
                     "The service changed during volume recovery",
                 ));
@@ -202,13 +217,13 @@ impl ProvisionFlag {
                 .await
                 .map_err(|e| AppError::internal(e.to_string()))?;
                 if !committed {
-                    state.containers.destroy(endpoint.backend_id).await?;
+                    destroy(endpoint.backend_id).await?;
                     return Err(error);
                 }
             }
         }
         // Generic orphan cleanup also removes the stopped donor after a crash.
-        if let Err(error) = state.containers.destroy(donor).await {
+        if let Err(error) = destroy(donor).await {
             tracing::warn!(backend_id=donor,%error,"published volume repair; old container awaits cleanup");
         }
         Ok(())
