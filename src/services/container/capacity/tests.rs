@@ -346,20 +346,25 @@ async fn uncapped_replicas_preserve_memory_admission_under_fixed_rate_arrivals()
         arrivals.tick().await;
         let pool = replicas[index % 2].clone();
         tasks.spawn(async move {
-            store::reserve(
-                &pool,
-                "arrival-host",
-                &capacity,
-                &reservation(&format!("arrival-{index}"), 2_000, 64 * 1024 * 1024),
-            )
-            .await
+            let request = reservation(&format!("arrival-{index}"), 2_000, 64 * 1024 * 1024);
+            let result = store::reserve(&pool, "arrival-host", &capacity, &request).await;
+            (pool, request, result)
         });
     }
     let mut admitted = 0;
     let mut memory_rejected = 0;
+    let mut busy = Vec::new();
+    const BUSY_RETRY_SECONDS: u64 = 1;
     while let Some(result) = tasks.join_next().await {
-        match result.unwrap() {
+        let (pool, request, result) = result.unwrap();
+        match result {
             Ok(()) => admitted += 1,
+            Err(AppError::RetryableUnavailable { title, retry_after })
+                if title == "Container capacity admission is busy" =>
+            {
+                assert_eq!(retry_after, BUSY_RETRY_SECONDS);
+                busy.push((pool, request));
+            }
             Err(error) => {
                 assert!(is_retryable(&error), "{error:?}");
                 assert!(
@@ -370,7 +375,22 @@ async fn uncapped_replicas_preserve_memory_admission_under_fixed_rate_arrivals()
             }
         }
     }
-    assert_eq!((admitted, memory_rejected), (192, 58));
+    // The original fixed-rate arrivals must fill the budget on their own.
+    // Pool contention has a separate Retry-After contract. Replay only those
+    // exact requests once, after the burst, and require a memory rejection.
+    assert_eq!((admitted, memory_rejected + busy.len()), (192, 58));
+    if !busy.is_empty() {
+        tokio::time::sleep(std::time::Duration::from_secs(BUSY_RETRY_SECONDS)).await;
+        for (pool, request) in busy {
+            let error = store::reserve(&pool, "arrival-host", &capacity, &request)
+                .await
+                .unwrap_err();
+            assert!(
+                is_retryable(&error) && error.to_string().contains("memory allocation budget"),
+                "{error:?}"
+            );
+        }
+    }
     assert_eq!(
         store::usage(&replicas[0], "arrival-host").await.unwrap(),
         (384_000, 12 * GIB, 192)
