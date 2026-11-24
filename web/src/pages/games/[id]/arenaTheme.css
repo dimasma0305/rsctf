@@ -1041,7 +1041,8 @@ a:hover {
   color: var(--text);
 }
 .pod .pn {
-  color: #f1f5f9;
+  color: var(--text);
+  font-size: clamp(12px, 1.1vw, 16px);
 }
 #ranklist {
   flex: 1;

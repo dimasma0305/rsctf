@@ -325,6 +325,7 @@ try {
   unavailable = true
   await cdp.send('Page.navigate', {url:`${target}/games/901/attack`})
   await waitFor(`${q('#connectionStatus')}?.textContent === 'Waiting for data'`)
+  await waitFor(`document.querySelector('[data-event-workspace-header]')?.getAttribute('aria-busy') === 'false'`)
   await inspect('waiting-for-data')
   unavailable = false; data = createArenaFixture()
   await waitFor(`${q('#connectionStatus')}.textContent === 'Connected'`)
