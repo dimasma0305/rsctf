@@ -221,6 +221,10 @@ async fn verify_team_health_stream(
 }
 
 async fn scenario() {
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_max_level(tracing::Level::WARN)
+        .try_init();
     let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let image = std::env::var("RSCTF_WORKER_TEST_IMAGE_ID")
         .expect("set a local disposable fixture image ID");
@@ -284,17 +288,11 @@ async fn scenario() {
     );
     let original_id = std::env::var("RSCTF_WORKER_TEST_PATCH_IMAGE_ID").unwrap();
     let starter = format!("worker://{worker}/{original_id}");
-    let captain = cycle::register_service(&fixture.pool, &starter, 8080).await;
+    let previous = format!("worker://{worker}/{image}");
+    let captain = cycle::register_service(&fixture.pool, &starter, &previous, 8080).await;
     // The registration setup opens round eight for reset-only tests. This
     // scenario advances the round using the normal scheduler below.
     sqlx::query(r#"UPDATE "AdRounds" SET finalized=TRUE WHERE id=900108"#)
-        .execute(&fixture.pool)
-        .await
-        .unwrap();
-    let previous = format!("worker://{worker}/{image}");
-    // The organizer rebuilt the starter after registering the original ZIP.
-    sqlx::query(r#"UPDATE "GameChallenges" SET build_image_digest=$1 WHERE id=900031"#)
-        .bind(&previous)
         .execute(&fixture.pool)
         .await
         .unwrap();

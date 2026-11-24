@@ -24,7 +24,7 @@ async fn player_kubernetes_patch_activation_and_rollbacks() {
         &runtime_pool,
         Arc::new(KubernetesContainerManager::connect().await.unwrap()),
     );
-    let captain = super::cycle::register_service(pool, &starter, 6379).await;
+    let captain = super::cycle::register_service(pool, &starter, &previous, 6379).await;
     let flag: String = sqlx::query_scalar(
         r#"SELECT flag FROM "AdFlags" WHERE round_id=900108 AND team_service_id=900041"#,
     )

@@ -19,7 +19,12 @@ fn source_zip(revision: &[u8]) -> Vec<u8> {
     zip.finish().unwrap().into_inner()
 }
 
-pub(crate) async fn register_service(pool: &sqlx::PgPool, starter: &str, port: i32) -> Uuid {
+pub(crate) async fn register_service(
+    pool: &sqlx::PgPool,
+    starter: &str,
+    rebuilt: &str,
+    port: i32,
+) -> Uuid {
     let mut tx = pool.begin().await.unwrap();
     sqlx::raw_sql(r#"SET LOCAL rsctf.maintenance_writer='on';
         UPDATE "Games" SET start_time_utc=now()+interval '5 minutes',end_time_utc=now()+interval '2 hours' WHERE id=900001;
@@ -47,6 +52,12 @@ pub(crate) async fn register_service(pool: &sqlx::PgPool, starter: &str, port: i
     .execute(&mut *tx)
     .await
     .unwrap();
+    // Register the starter and record the organizer's rebuild before opening play.
+    sqlx::query(r#"UPDATE "GameChallenges" SET build_image_digest=$1 WHERE id=900031"#)
+        .bind(rebuilt)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     sqlx::query(r#"UPDATE "Games" SET start_time_utc=now()-interval '2 hours' WHERE id=900001"#)
         .execute(&mut *tx)
         .await
