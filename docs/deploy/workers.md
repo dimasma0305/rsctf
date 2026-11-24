@@ -973,8 +973,10 @@ sessions and delayed commands cannot publish a route or delete a replacement.
   application-level health monitoring.
 - The A&D bastion opens an interactive shell on the team's published Linux
   assignment using the container image's configured user. Updated agents
-  advertise this as `interactiveExec`. Certificate renewal is negotiated
-  automatically. Key replacement uses deliberate enrollment.
+  advertise this as `interactiveExec`. Use ZIP revisions for a recorded source
+  diff on remote workers. The hosted SSH file observer runs on local backends.
+  Updated agents renew certificates automatically. Key replacement uses
+  deliberate enrollment.
 - Every workload receives a dedicated Docker network. Linux marks it
   `internal`; Windows combines a private NAT network with a verified HCN
   deny-egress ACL and a resolver without external DNS forwarding. The agent
