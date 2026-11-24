@@ -192,6 +192,7 @@ try {
   assert.equal(await evaluate(`getComputedStyle(${q('.fracture-glass')}).display`), 'block', 'a live first blood draws the pane with motion off')
   assert.equal(await evaluate(`getComputedStyle(${q('.fracture-rays path')}).animationName`), 'none')
   assert.equal(await evaluate(`getComputedStyle(${q('.glass-shard')}).animationName`), 'none')
+  assert.equal(await evaluate(`getComputedStyle(${q('.glass-face')}).animationName`), 'none')
   await waitFor(`${q('#selectionScore')}.textContent.includes('8500')`)
   assert.equal(await evaluate(`${root}.activeElement?.classList.contains('rk')`), true, 'score changes preserve focused ranking control')
   await evaluate(`${q('#arena-tab-islands')}.click(); ${q('#jeop [data-challenge-id="1000"]')}.focus()`); await press('Enter', 13)
@@ -368,6 +369,12 @@ try {
   const dropDistance = `new DOMMatrix(getComputedStyle(${shard}).transform.replace('none', '') || undefined).m42`
   assert.equal(await evaluate(dropDistance), 0, 'the cracked pane holds before the first piece falls')
   await waitFor(`${dropDistance} > 40`)
+  const face = q('.glass-face')
+  await waitFor(`(() => {
+    const style = getComputedStyle(${face})
+    const m = new DOMMatrix(style.transform)
+    return Math.abs(m.a * m.d - m.b * m.c) < 0.65 && Number(style.fillOpacity) > 0.18
+  })()`) // A turning piece narrows in projection and catches light before it leaves the viewport.
   await waitFor(`[...${root}.querySelectorAll('.glass-shard')].every(piece => getComputedStyle(piece).opacity === '0')`)
   assert.equal(await evaluate(`${q('#fbOverlay')}.matches(':popover-open')`), true, 'the team announcement outlasts the falling glass')
   await cdp.send('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]})

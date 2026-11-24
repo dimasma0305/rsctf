@@ -35,7 +35,7 @@ import type { AdScoreboardModel, DetailedGameInfoModel } from '@Api'
 import workspace from '@Styles/GameWorkspace.module.css'
 import { buildArenaCountries, CATEGORY_COLOR, isJeopardyCountry } from './arenaCountries'
 import arenaEffects from './arenaEffects.css?inline'
-import { fractureGlass } from './arenaFracture'
+import { fractureGlass, fractureMotionCss } from './arenaFracture'
 import { createArenaGlobe } from './arenaGlobe'
 import { createArenaInspector } from './arenaInspector'
 import type { JeopCategory } from './arenaJeopardy'
@@ -53,7 +53,7 @@ import { createWinRenderer } from './winRenderer'
 /* -------------------------------------------------------------------------- */
 /* Inherited workspace theme and isolated legacy celebration effects.         */
 /* -------------------------------------------------------------------------- */
-const ARENA_CSS = arenaEffects + arenaTheme
+const ARENA_CSS = arenaEffects + arenaTheme + fractureMotionCss
 
 /* -------------------------------------------------------------------------- */
 /* Scene markup. Dynamic regions (#svg / #log / #ranklist / #stats / FB       */

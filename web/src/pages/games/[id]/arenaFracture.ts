@@ -2,16 +2,16 @@ type Point = readonly [number, number]
 
 // Each spoke runs from the impact site to an edge of the virtual pane.
 const spokes: Point[][] = [
-  [[566, 264], [548, 248], [526, 219], [503, 204], [452, 144], [408, 124], [347, 50], [262, -12]],
+  [[566, 264], [550, 247], [526, 219], [502, 197], [451, 146], [416, 119], [340, 54], [262, -12]],
   [[568, 260], [561, 233], [565, 217], [550, 163], [553, 127], [529, 72], [542, -15]],
-  [[573, 262], [582, 240], [583, 219], [604, 193], [612, 158], [641, 107], [646, 74], [697, -12]],
+  [[573, 262], [579, 241], [585, 219], [596, 192], [612, 155], [636, 104], [652, 76], [697, -12]],
   [[577, 265], [604, 249], [621, 235], [647, 230], [689, 193], [722, 187], [782, 145], [836, 136], [937, 59], [1020, 38]],
-  [[578, 268], [605, 266], [632, 272], [657, 265], [708, 273], [753, 261], [805, 267], [877, 249], [932, 257], [1010, 237]],
+  [[578, 268], [605, 266], [630, 263], [655, 264], [708, 260], [752, 253], [805, 250], [877, 241], [932, 241], [1010, 237]],
   [[577, 272], [603, 285], [621, 286], [647, 310], [686, 324], [732, 361], [776, 369], [853, 425], [901, 435], [1015, 527]],
   [[574, 275], [582, 301], [599, 324], [602, 352], [633, 402], [631, 433], [651, 468], [661, 529], [706, 612], [709, 667]],
   [[570, 276], [562, 306], [544, 324], [538, 355], [509, 391], [491, 451], [448, 494], [412, 587], [357, 663]],
   [[565, 273], [538, 290], [519, 292], [484, 317], [445, 323], [396, 354], [354, 358], [286, 395], [245, 397], [134, 452], [-12, 495]],
-  [[563, 268], [532, 267], [512, 256], [481, 259], [438, 243], [396, 247], [342, 228], [279, 231], [208, 212], [123, 212], [-10, 180]],
+  [[563, 268], [532, 267], [512, 262], [481, 258], [438, 247], [396, 242], [342, 231], [279, 224], [208, 210], [123, 202], [-10, 180]],
 ]
 const impact: Point = [570, 268]
 const cornerAfter: Partial<Record<number, Point>> = {
@@ -19,54 +19,92 @@ const cornerAfter: Partial<Record<number, Point>> = {
 }
 const outline = (points: Point[]) => 'M' + points.map(([x, y]) => `${x} ${y}`).join(' ')
 
-// Neighbouring sectors share spoke edges. Their three rings tile the pane, so
-// every falling piece begins in the same place where its crack appeared.
-const shards = spokes.flatMap((left, sector) => {
-  const right = spokes[(sector + 1) % spokes.length]
-  const corner = cornerAfter[sector]
-  const shapes = [
-    [impact, ...left.slice(0, 3), ...right.slice(0, 3).reverse()],
-    [...left.slice(2, 5), ...right.slice(2, 5).reverse()],
-    [...left.slice(4), ...(corner ? [corner] : []), ...right.slice(4).reverse()],
-  ]
-  return shapes.map((points, ring) => {
-    const index = sector * 3 + ring
-    const delay = 850 + ring * 185 + (sector * 71) % 230
-    const direction = (left[4][0] - impact[0]) / 3
-    const spin = (index * 31) % 116 - 58
-    const style = `--release:${delay}ms;--drift:${direction}px;--spin:${spin}deg;--tilt:${.36 + (index % 6) * .11}`
-    return `<path class="glass-shard" style="${style}" d="${outline(points)}Z"/>`
+// Each cross crack stops at the adjacent radial fracture. Different cut points
+// on the other side of a spoke produce T junctions and long asymmetric slivers.
+const crossCuts: Point[][] = [
+  [[1, 2], [4, 3]], [[2, 1], [3, 3], [5, 4]], [[1, 2], [3, 5]],
+  [[2, 1], [4, 3], [7, 5]], [[1, 2], [3, 4]], [[2, 1], [5, 3], [7, 6]],
+  [[1, 2], [3, 4]], [[2, 1], [4, 3], [6, 7]], [[1, 2], [3, 5]], [[2, 1], [5, 4]],
+]
+
+// Orthographic projection of a thin rotating sheet. Its face reflects more
+// light at grazing angles and briefly narrows to a bright edge as it turns.
+// Sample a few reusable orientations once; CSS plays them without a frame loop.
+const rotations = [
+  [1, .42, .22, 215], [-.55, 1, .12, 155], [.22, 1, -.31, -193],
+  [1, -.7, .35, -128], [-.8, .34, .18, 274], [.4, .72, -.54, 112],
+]
+const round = (value: number) => Number(value.toFixed(3))
+export const fractureMotionCss = rotations.map(([x, y, z, degrees], index) => {
+  const length = Math.hypot(x, y, z)
+  const [a, b, c] = [x / length, y / length, z / length]
+  const frames = Array.from({ length: 17 }, (_, step) => {
+    const t = step / 16
+    const angle = degrees * t * Math.PI / 180
+    const cos = Math.cos(angle), sin = Math.sin(angle), k = 1 - cos
+    const matrix = [cos + a*a*k, a*b*k + c*sin, a*b*k - c*sin, cos + b*b*k].map(round)
+    const grazing = 1 - Math.abs(cos + c*c*k)
+    const reflection = .09 + .86 * grazing ** 2
+    return `${t * 100}%{transform:matrix(${matrix.join(',')},0,0);fill-opacity:${round(reflection)}}`
   })
+  return `@keyframes glass-turn-${index}{${frames.join('')}}`
 }).join('')
 
-const branches = 'M526 219 521 239 512 256 519 274 519 292 M550 163 530 185 503 204 M565 217 583 219 M604 193 621 205 621 235 632 249 632 272 621 286 616 307 599 324 569 317 544 324 532 308 519 292 M647 230 663 249 657 265 M708 273 699 295 686 324 M633 402 592 387 538 355 513 346 484 317 M445 323 451 298 438 243 M396 247 375 213 339 196 M452 144 453 107 439 84 M641 107 674 94 698 57 M782 145 790 116 818 86 M877 249 920 217 955 211 M776 369 794 405 848 453 M631 433 600 468 585 508 M396 354 385 380 359 404'
+const seams: string[] = []
+const forkedSectors = new Set([0, 3, 5, 8])
+
+function shard(points: Point[], edge: Point[], index: number, release: number) {
+  const centerX = points.reduce((sum, [x]) => sum + x, 0) / points.length
+  const drift = (centerX - impact[0]) * .31 + (index * 17 % 43) - 21
+  const style = `--release:${release}ms;--drift:${round(drift)}px;--kick:${-70 - index * 11 % 100}px;--turn:glass-turn-${index % rotations.length}`
+  return `<g class="glass-shard" style="${style}"><g class="glass-face">
+    <path class="glass-body" d="${outline(points)}Z"/><path class="glass-bevel" d="${outline(edge)}"/>
+  </g></g>`
+}
+
+const shards = spokes.map((left, sector) => {
+  const right = spokes[(sector + 1) % spokes.length]
+  const corner = cornerAfter[sector]
+  const cuts: Point[] = [[0, 0], ...crossCuts[sector]]
+  let startLeft = 0, startRight = 0
+  return [...cuts, [left.length - 1, right.length - 1]].map(([endLeft, endRight], ring) => {
+    const outside = ring === cuts.length
+    const edge = left.slice(startLeft, endLeft + 1)
+    const opposite = right.slice(startRight, endRight + 1).reverse()
+    if (!outside) seams.push(outline([left[endLeft], right[endRight]]))
+    startLeft = endLeft
+    startRight = endRight
+    const index = sector * 5 + ring
+    const release = 590 + ring * 94 + (sector * 67 % 235)
+    if (outside && corner) opposite.unshift(corner)
+    if (outside && forkedSectors.has(sector)) {
+      // A secondary radial crack forks towards the frame. Its two pieces
+      // share the exact same broken edge when they peel apart.
+      const split = Math.floor((edge.length - 1) / 2)
+      const pivot = edge[split]
+      const tip = edge[edge.length - 1]
+      const end: Point = [tip[0] * .6 + opposite[0][0] * .4, tip[1] * .6 + opposite[0][1] * .4]
+      const bend: Point = [(pivot[0] + end[0]) / 2 + 4, (pivot[1] + end[1]) / 2 - 3]
+      seams.push(outline([pivot, bend, end]))
+      return shard([...edge.slice(0, split + 1), bend, end, ...opposite], [pivot, bend, end], index, release)
+        + shard([...edge.slice(split), end, bend], edge.slice(split), index + 11, release + 73)
+    }
+    return shard([...(ring ? [] : [impact]), ...edge, ...opposite], edge, index, release)
+  }).join('')
+}).join('')
 
 export const fractureGlass = `<svg class="fracture-glass" viewBox="0 0 1000 650" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
   <defs>
-    <linearGradient id="pane-glint" x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox">
-      <stop stop-color="#b7f4ff" stop-opacity="0"/><stop offset=".74" stop-color="#b7f4ff" stop-opacity=".08"/><stop offset="1" stop-color="#fff" stop-opacity=".33"/>
+    <linearGradient id="shard-face" x1="0" y1=".9" x2=".6" y2="0">
+      <stop stop-color="#1c3039"/><stop offset=".48" stop-color="#88a5ac"/>
+      <stop offset=".77" stop-color="#f3f8f5"/><stop offset="1" stop-color="#c0d9d8"/>
     </linearGradient>
-    <linearGradient id="shard-face" x1="0" y1="1" x2=".7" y2="0">
-      <stop stop-color="#172d47" stop-opacity=".74"/><stop offset=".45" stop-color="#98d6e5" stop-opacity=".21"/>
-      <stop offset=".51" stop-color="#ecffff" stop-opacity=".62"/><stop offset=".53" stop-color="#a4d5ed" stop-opacity=".31"/>
-      <stop offset="1" stop-color="#7698b6" stop-opacity=".48"/>
-    </linearGradient>
-    <linearGradient id="shard-reverse" href="#shard-face" x1=".9" y1="0" x2="0" y2=".8"/>
   </defs>
-  <g class="glass-pieces" fill="url(#shard-face)">${shards}</g>
+  <g class="glass-pieces">${shards}</g>
   <g class="intact-cracks">
-  <g fill="url(#pane-glint)">
-    <path d="M568 260 561 233 565 217 583 219 582 240Z M577 265 604 249 621 235 632 249 632 272 605 266Z M577 272 603 285 621 286 616 307 599 324 582 301Z"/>
-    <path d="M445 323 451 298 438 243 481 259 512 256 519 274 519 292 484 317Z M538 355 544 324 569 317 599 324 602 352 633 402 592 387Z"/>
-    <path d="M647 230 689 193 722 187 782 145 753 261 708 273 657 265 663 249Z"/>
-  </g>
-  <g class="fracture-rays" fill="none">${spokes.map(points => `<path pathLength="1" d="${outline(points)}"/>`).join('')}</g>
-  <path class="fracture-branches" fill="none" d="${branches}"/>
-  <path class="fracture-branches" fill="#152331" fill-opacity=".38" d="m554 251 9 1 7 -7 9 3 2 7 11 3 -1 10 6 6 -8 8 -9 2 -8 8 -7 -6 -11 1 -2 -9 -9 -4 3 -8 -2 -6z"/>
-  <path fill="#e1f9ff" fill-opacity=".8" d="m564 262 7 -6 -2 8 7 -3 -3 7 8 -1 -8 4 -3 8 -1 -8 -8 3 5 -6 -8 -2z"/>
-  <g class="fracture-splinters">
-    <path d="m569 253 -8 -18 12 11z M590 257l16 -10 -11 13z M586 281l12 19 -16 -14z M556 287l-12 8 8 -14z M547 265l-14 -7 17 2z"/>
-    <path d="m555 243 -10 -25 13 19z M609 278l17 3 -12 2z M574 303l2 17 -6 -12z M538 279l-20 4 15 -7z"/>
-  </g>
+    <g class="fracture-rays" fill="none">${spokes.map(points => `<path pathLength="1" d="${outline(points)}"/>`).join('')}</g>
+    <path class="fracture-branches" fill="none" d="${seams.join(' ')}"/>
+    <path class="fracture-spall" fill="none" d="m550 247 3 9 6 2 4 9 m-29 8 14 -4 7 2 12 -3 m-22 20 11 -9 5 -10 m-1 29 6 -17 5 -10 m2 8 6 9 1 11 m-3 -28 13 9 13 1 m-26 -15 14 -5 9 1 14 -6 m-42 5 7 -10 4 -17 m-19 24 -6 -9 -3 -12"/>
+    <path class="spall-glint" d="m562 264 3 -5 -1 4z m5 -1 4 -6 -2 5z m7 3 6 -2 -3 2z m-1 6 -4 5 2 -5z m-7 -3 -7 3 4 -3z"/>
   </g>
 </svg>`

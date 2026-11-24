@@ -316,22 +316,23 @@ a:hover {
   z-index: -1;
 }
 .fracture-rays {
-  stroke: #eefaff;
-  stroke-width: 1.45;
+  stroke: #e1ecec;
+  stroke-width: 1.05;
   stroke-linejoin: bevel;
-  filter: drop-shadow(1px 1.4px .6px #07152c);
+  filter: drop-shadow(.75px .85px 0 #182b31);
 }
-.fracture-branches { stroke: #dfedfa; stroke-width: .85; opacity: .68; }
-.fracture-splinters { fill: #effaff; transform-box: fill-box; transform-origin: center; }
-.glass-shard {
+.fracture-rays path:nth-child(3n) { stroke-width: .62; opacity: .8; }
+.fracture-branches { stroke: #d2e8e5; stroke-width: .67; opacity: .62; }
+.fracture-spall { stroke: #e5f1ec; stroke-width: .65; opacity: .74; }
+.spall-glint { fill: #f1f6f1; opacity: .84; }
+.glass-face {
   transform-box: fill-box;
   transform-origin: center;
-  stroke: #c9edff;
-  stroke-width: 1.15;
-  stroke-opacity: .30;
-  fill-opacity: .24;
+  fill: url(#shard-face);
+  fill-opacity: .09;
 }
-.glass-shard:nth-child(even) { fill: url(#shard-reverse); }
+.glass-body { stroke: #b8d3cf; stroke-opacity: .46; stroke-width: .85; }
+.glass-bevel { fill: none; stroke: #dbf4ea; stroke-opacity: .72; stroke-width: 1.35; transform: translate(.6px,.85px); }
 .first-blood .milestone-copy {
   max-width: min(100%, 55rem);
   padding-inline-start: clamp(12px, 1.6vw, 26px);
@@ -369,34 +370,25 @@ a:hover {
   :host([data-motion='on']) .first-blood { animation: impact-dismiss 320ms 4.66s forwards; }
   :host([data-motion='on']) .first-blood .fracture-rays path {
     stroke-dasharray: 1;
-    animation: crack-spread 320ms cubic-bezier(.07,.75,.18,1) both;
+    animation: crack-spread 175ms cubic-bezier(.07,.75,.18,1) both;
   }
   :host([data-motion='on']) .first-blood .fracture-branches { animation: crack-branches 220ms 90ms backwards; }
-  :host([data-motion='on']) .first-blood .fracture-splinters { animation: glass-scatter 620ms cubic-bezier(.16,.85,.25,1) both; }
   :host([data-motion='on']) .first-blood .glass-pieces { animation: crack-branches 220ms 100ms backwards; }
-  :host([data-motion='on']) .first-blood .intact-cracks { animation: impact-dismiss 180ms 850ms forwards; }
-  :host([data-motion='on']) .first-blood .glass-shard { animation: shard-fall 1.15s var(--release) both; }
+  :host([data-motion='on']) .first-blood .intact-cracks { animation: impact-dismiss 120ms 590ms forwards; }
+  :host([data-motion='on']) .first-blood .glass-shard { animation: shard-fall 1.05s var(--release) linear both; }
+  :host([data-motion='on']) .first-blood .glass-face { animation: var(--turn) 1.05s var(--release) linear both; }
   :host([data-motion='on']) .first-blood .milestone-copy { animation: impact-title 330ms 65ms cubic-bezier(.18,.85,.25,1) backwards; }
 }
 @keyframes crack-spread { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 @keyframes crack-branches { from { opacity: 0; } }
-@keyframes glass-scatter { from { transform: scale(.25); } to { transform: scale(1.75); opacity: .77; } }
+/* Sample a ballistic arc: lateral speed is constant and vertical distance grows with t². */
 @keyframes shard-fall {
-  0% { transform: none; animation-timing-function: ease-out; }
-  13% {
-    transform: translate(calc(var(--drift) * .12), -5px) rotate(calc(var(--spin) * .12));
-    fill-opacity: 1;
-    stroke-opacity: .9;
-    opacity: 1;
-    animation-timing-function: cubic-bezier(.5,.03,.85,.65);
-  }
-  72% { opacity: .95; }
-  100% {
-    transform: translate(var(--drift), 1050px) rotate(var(--spin)) scaleX(var(--tilt));
-    fill-opacity: 1;
-    stroke-opacity: .8;
-    opacity: 0;
-  }
+  0% { transform: translate(0,0); }
+  12.5% { transform: translate(calc(var(--drift) * .125), calc(17px + var(--kick) * .125)); }
+  25% { transform: translate(calc(var(--drift) * .25), calc(69px + var(--kick) * .25)); }
+  50% { transform: translate(calc(var(--drift) * .5), calc(275px + var(--kick) * .5)); }
+  75% { transform: translate(calc(var(--drift) * .75), calc(619px + var(--kick) * .75)); opacity: 1; }
+  100% { transform: translate(var(--drift), calc(1100px + var(--kick))); opacity: 0; }
 }
 @keyframes impact-title { from { opacity: 0; transform: translateX(-20px) skewX(-6deg); } }
 @keyframes impact-dismiss { to { opacity: 0; } }
