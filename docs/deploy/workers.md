@@ -37,21 +37,20 @@ or OpenRC when available; it also supports immediate startup through compatible
 SysV `service` and runit managers. It waits up to 30 seconds for `docker info`
 to succeed before downloading or enrolling the worker.
 
-A Jeopardy worker workload can contain multiple services. Multiple replicas are
-allowed only for explicitly stateless Jeopardy services. The protocol already
-constrains any future Attack/Defense or King-of-the-Hill integration to exactly
-one service and one replica, and it does not version or otherwise change their
-scoring. The current server adapter supports Jeopardy workloads only; see the
-limitations below.
+A Jeopardy workload can contain multiple services. Explicitly stateless Jeopardy
+services can have multiple replicas. Hosted Attack/Defense (A&D) runs one
+service and one replica per team on a trusted Linux worker. Players reach their
+service through the event VPN and use the Toolkit to patch it. See the
+[worker requirements](#current-limitations) before selecting a worker.
 
-An all-in-one server can nevertheless run a deliberate hybrid: keep
-`RSCTF_CONTAINER_BACKEND=worker` for Jeopardy and set
-`RSCTF_WORKER_LOCAL_BACKEND=docker` or `kubernetes` for the existing local
-A&D/KotH data plane. `none` is the default and mounts no local runtime. This
-does not send A&D/KotH to agents; it only selects where those existing local
-containers run. Split worker roles must remain pure remote for now because
-web-facing lifecycle requests are not yet delegated to the singleton local
-runtime owner.
+For an all-in-one installation, `RSCTF_CONTAINER_BACKEND=worker` with
+`RSCTF_WORKER_LOCAL_BACKEND=docker` or `kubernetes` keeps a local runtime for
+A&D and KoTH. In a Docker hybrid, the organizer can place an individual hosted
+A&D challenge on a worker by selecting its worker-scoped starter image. The
+default `RSCTF_WORKER_LOCAL_BACKEND=none` selects pure remote mode. Helm
+requires an all-in-one hybrid for its VPN configuration. Split worker roles
+require pure remote operation. The Linux worker integration test exercises
+private player routing with a single network owner.
 
 Remote workloads always use RSCTF's authenticated proxy. Worker addresses and
 Docker host ports are never returned to players. A repository digest is
