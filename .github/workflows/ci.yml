@@ -522,8 +522,12 @@ jobs:
         run: |
           test "$(cat ci-artifacts/source-sha)" = "$GITHUB_SHA"
           chmod 0755 ci-artifacts/rsctf-tests
-          docker network create --internal --subnet "$RSCTF_AD_VPN_SERVICES_CIDR" rsctf-worker-ci-private
-          trap 'docker network rm rsctf-worker-ci-private >/dev/null' EXIT
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ipset wireguard-tools
+          sudo ip link add rsctf-ci-svc type dummy
+          trap 'sudo ip netns del rsctf-ci-player 2>/dev/null || true; sudo ip link del rsctf-ci-player 2>/dev/null || true; sudo ip link del wg0 2>/dev/null || true; sudo ip link del rsctf-ci-svc' EXIT
+          sudo ip addr add 10.214.103.253/24 dev rsctf-ci-svc
+          sudo ip link set rsctf-ci-svc up
           export RSCTF_TEST_LIVE_AD_WORKER_BIN="$PWD/agents/worker-agent/target/x86_64-unknown-linux-musl/release/rsctf-worker-agent"
           export RSCTF_WORKER_TEST_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:starter --format '{{.Id}}')"
           export RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:patch --format '{{.Id}}')"
@@ -537,7 +541,14 @@ jobs:
           export RSCTF_WORKER_TEST_CANDIDATE="$repo@$digest"
           name=controllers::game::ad::player_reset_tests::worker::live_remote_agent_publishes_two_team_round_receipts
           ./ci-artifacts/rsctf-tests --ignored --exact "$name" --list | grep -Fx "$name: test"
-          ./ci-artifacts/rsctf-tests --ignored --exact "$name" --nocapture
+          sudo env RSCTF_AD_VPN_ENABLED=true RSCTF_AD_VPN_SERVICES_CIDR="$RSCTF_AD_VPN_SERVICES_CIDR" \
+            RSCTF_AD_VPN_CLIENT_CIDR=10.213.103.0/24 RSCTF_EVENT_VPN_HUB_ADDRESS=10.213.103.1 \
+            RSCTF_AD_VPN_SERVER_ENDPOINT=127.0.0.1:51822 RSCTF_AD_VPN_LISTEN_PORT=51822 \
+            RSCTF_EVENT_VPN_CREDENTIAL_KEY="$(openssl rand -hex 32)" \
+            RSCTF_TEST_DATABASE_URL="$RSCTF_TEST_DATABASE_URL" RSCTF_TEST_LIVE_AD_WORKER_BIN="$RSCTF_TEST_LIVE_AD_WORKER_BIN" \
+            RSCTF_WORKER_TEST_IMAGE_ID="$RSCTF_WORKER_TEST_IMAGE_ID" RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$RSCTF_WORKER_TEST_PATCH_IMAGE_ID" \
+            RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID" RSCTF_WORKER_TEST_CANDIDATE="$RSCTF_WORKER_TEST_CANDIDATE" \
+            ./ci-artifacts/rsctf-tests --ignored --exact "$name" --nocapture
 
   worker-plane-windows:
     name: Worker compatibility (Windows)

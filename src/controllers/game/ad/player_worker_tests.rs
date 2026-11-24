@@ -30,6 +30,8 @@ use tokio::{net::TcpListener, process::Command, sync::watch};
 use tokio_rustls::rustls::{pki_types::PrivatePkcs8KeyDer, RootCertStore};
 #[path = "player_worker_tests/revisions.rs"]
 mod revisions;
+#[path = "player_worker_tests/vpn.rs"]
+mod vpn;
 
 struct IdentityDir(PathBuf);
 impl Drop for IdentityDir {
@@ -54,32 +56,6 @@ fn private_file(dir: &Path, name: &str, contents: &[u8]) {
         .unwrap()
         .write_all(contents)
         .unwrap();
-}
-
-async fn place_team(
-    store: &WorkerStore,
-    worker: Uuid,
-    image: &str,
-    participant: i32,
-) -> WorkerHandle {
-    use crate::services::container::{ContainerResourceLimits, ContainerSpec};
-    let spec = ContainerSpec::ad_service(
-        format!("worker://{worker}/{image}"),
-        ContainerResourceLimits {
-            cpu_count: 1,
-            memory_limit: 64,
-            storage_limit: 128,
-        },
-        8080,
-        participant,
-        false,
-        String::new(),
-    );
-    let placed = crate::services::worker::WorkerContainerManager::new(store.clone())
-        .place_team_service(&spec, participant, 900031)
-        .await
-        .unwrap();
-    crate::services::worker::parse_worker_handle(&placed.id).unwrap()
 }
 
 async fn test_agent(
@@ -315,35 +291,42 @@ async fn scenario() {
         .execute(&fixture.pool)
         .await
         .unwrap();
+    let previous = format!("worker://{worker}/{image}");
+    // The organizer rebuilt the starter after registering the original ZIP.
+    sqlx::query(r#"UPDATE "GameChallenges" SET build_image_digest=$1 WHERE id=900031"#)
+        .bind(&previous)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    crate::services::ad_vpn::initialize_backend(
+        crate::services::container::ContainerBackendKind::Worker,
+    )
+    .unwrap();
+    let game = crate::services::game_config::load_game(&state, fixture.game_id)
+        .await
+        .unwrap();
+    let ensure = || {
+        crate::services::ad::provision::ensure_ad_containers(
+            &state, &game, None, false, false, false, None,
+        )
+    };
+    assert_eq!(ensure().await.unwrap(), (2, 0));
+    assert_eq!(ensure().await.unwrap(), (0, 0));
     let mut targets = Vec::new();
-    for (service, participant) in [(900041, 900021), (900042, 900022)] {
-        let handle = place_team(&store, worker, &image, participant).await;
-        while store
-            .ready_workload_session(handle.workload_id)
-            .await
-            .unwrap()
-            .is_none()
-        {
-            let workload = store
-                .get_workload(handle.workload_id)
-                .await
-                .unwrap()
-                .unwrap();
-            assert_ne!(
-                workload.observed_state,
-                WorkloadObservedState::Failed,
-                "worker could not start the team fixture: {}",
-                workload.observed_message.as_deref().unwrap_or("no detail")
-            );
-            assert!(
-                live.agent.try_wait().unwrap().is_none(),
-                "worker exited before Docker became ready"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        publish_fixture_endpoint(&fixture.pool, participant, handle, &image).await;
+    for service in [900041, 900042] {
+        let backend: String = sqlx::query_scalar(
+            r#"SELECT container_id FROM "AdTeamServices"
+            WHERE id=$1 AND published_image_backend=container_id AND host<>'' AND port>0"#,
+        )
+        .bind(service)
+        .fetch_one(&fixture.pool)
+        .await
+        .unwrap();
+        let handle = crate::services::worker::parse_worker_handle(&backend).unwrap();
         targets.push((service, handle));
     }
+    let vpn = vpn::PlayerVpn::download(&state, captain, &dir.0).await;
+    vpn.check_health(&fixture.pool).await;
     let round = prepare_round(
         &state.db,
         fixture.game_id,
@@ -437,7 +420,6 @@ async fn scenario() {
         revisions::exercise(&state, worker, [targets[0].1, targets[1].1], &round, &image).await;
     let candidate = std::env::var("RSCTF_WORKER_TEST_CANDIDATE").unwrap();
     let config = std::env::var("RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID").unwrap();
-    let previous = format!("worker://{worker}/{image}");
     let receipts = revisions::scored_receipts(state.pg(), round.id).await;
     let final_id = cycle::exercise(
         &state,
@@ -470,6 +452,7 @@ async fn scenario() {
                 receipts
             );
             assert_health(&live.service, worker, handle).await;
+            vpn.check_health(&fixture.pool).await;
         },
     )
     .await;

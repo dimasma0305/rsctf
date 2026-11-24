@@ -135,6 +135,8 @@ impl WorkerContainerManager {
             team_data_mount: mount,
         })
         .map_err(|e| AppError::bad_request(e.to_string()))?;
+        let workload =
+            crate::services::challenge_workloads::with_flag(workload, spec.flag.clone())?;
         let handle = self
             .place_owned(
                 &workload,

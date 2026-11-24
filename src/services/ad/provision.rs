@@ -634,15 +634,22 @@ pub(crate) async fn ensure_ad_containers(
                 continue;
             }
             let seed = retired_backend.or(spec.operation_id.as_deref());
-            let flag = match (&prepared_flag.official, seed) {
-                (Some(flag), _) => Ok(flag.clone()),
-                (None, Some(operation_id)) => {
+            let flag = match (remote, &prepared_flag.official, seed) {
+                // The worker definition persists across scoring rounds. Only
+                // its warmup seed belongs in the environment; official flags
+                // are written and confirmed separately before publication.
+                (true, _, _) => crate::utils::flag_generator::generate_retryable_ad_flag(
+                    &team_hash,
+                    &super::service_lifecycle::service_lock_key(p.id, c.id),
+                ),
+                (_, Some(flag), _) => Ok(flag.clone()),
+                (_, None, Some(operation_id)) => {
                     crate::utils::flag_generator::generate_retryable_ad_flag(
                         &team_hash,
                         operation_id,
                     )
                 }
-                (None, None) => crate::utils::flag_generator::generate_ad_flag(),
+                (_, None, None) => crate::utils::flag_generator::generate_ad_flag(),
             };
             let flag = match flag {
                 Ok(flag) => flag,
