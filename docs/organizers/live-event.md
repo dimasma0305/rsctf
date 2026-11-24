@@ -85,9 +85,9 @@ In the game's **Live arena**, select **Open preview**. Choose **First blood** un
 
 Open **Simulation settings** to change the team or challenge counts. Use **Freeze standings** and **Resume preview** to rehearse a freeze, or **End preview match** to see the podium. Select **Return to live arena** when you finish.
 
-First blood cracks the spectator screen for five seconds. With motion off the cracks appear as a still image.
+On First Blood, cracks spread from the point of impact. The glass holds for a beat, then falls away in pieces while the team and challenge stay on screen. With motion off, the arena shows a still image of the cracked glass.
 
-![A glass fracture spreads across the arena above the First Blood announcement](/screenshots/arena-first-blood.png)
+![Glass shards falling across the arena while the First Blood announcement remains visible](/screenshots/arena-first-blood.png)
 
 [Watch a First Blood replay](/screenshots/arena-first-blood.webp)
 

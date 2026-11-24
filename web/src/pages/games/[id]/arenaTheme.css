@@ -323,6 +323,15 @@ a:hover {
 }
 .fracture-branches { stroke: #dfedfa; stroke-width: .85; opacity: .68; }
 .fracture-splinters { fill: #effaff; transform-box: fill-box; transform-origin: center; }
+.glass-shard {
+  transform-box: fill-box;
+  transform-origin: center;
+  stroke: #c9edff;
+  stroke-width: 1.15;
+  stroke-opacity: .30;
+  fill-opacity: .24;
+}
+.glass-shard:nth-child(even) { fill: url(#shard-reverse); }
 .first-blood .milestone-copy {
   max-width: min(100%, 55rem);
   padding-inline-start: clamp(12px, 1.6vw, 26px);
@@ -364,11 +373,31 @@ a:hover {
   }
   :host([data-motion='on']) .first-blood .fracture-branches { animation: crack-branches 220ms 90ms backwards; }
   :host([data-motion='on']) .first-blood .fracture-splinters { animation: glass-scatter 620ms cubic-bezier(.16,.85,.25,1) both; }
+  :host([data-motion='on']) .first-blood .glass-pieces { animation: crack-branches 220ms 100ms backwards; }
+  :host([data-motion='on']) .first-blood .intact-cracks { animation: impact-dismiss 180ms 850ms forwards; }
+  :host([data-motion='on']) .first-blood .glass-shard { animation: shard-fall 1.15s var(--release) both; }
   :host([data-motion='on']) .first-blood .milestone-copy { animation: impact-title 330ms 65ms cubic-bezier(.18,.85,.25,1) backwards; }
 }
 @keyframes crack-spread { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 @keyframes crack-branches { from { opacity: 0; } }
 @keyframes glass-scatter { from { transform: scale(.25); } to { transform: scale(1.75); opacity: .77; } }
+@keyframes shard-fall {
+  0% { transform: none; animation-timing-function: ease-out; }
+  13% {
+    transform: translate(calc(var(--drift) * .12), -5px) rotate(calc(var(--spin) * .12));
+    fill-opacity: 1;
+    stroke-opacity: .9;
+    opacity: 1;
+    animation-timing-function: cubic-bezier(.5,.03,.85,.65);
+  }
+  72% { opacity: .95; }
+  100% {
+    transform: translate(var(--drift), 1050px) rotate(var(--spin)) scaleX(var(--tilt));
+    fill-opacity: 1;
+    stroke-opacity: .8;
+    opacity: 0;
+  }
+}
 @keyframes impact-title { from { opacity: 0; transform: translateX(-20px) skewX(-6deg); } }
 @keyframes impact-dismiss { to { opacity: 0; } }
 .cfg {
