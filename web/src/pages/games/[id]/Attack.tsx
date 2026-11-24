@@ -35,6 +35,7 @@ import type { AdScoreboardModel, DetailedGameInfoModel } from '@Api'
 import workspace from '@Styles/GameWorkspace.module.css'
 import { buildArenaCountries, CATEGORY_COLOR, isJeopardyCountry } from './arenaCountries'
 import arenaEffects from './arenaEffects.css?inline'
+import { fractureGlass } from './arenaFracture'
 import { createArenaGlobe } from './arenaGlobe'
 import { createArenaInspector } from './arenaInspector'
 import type { JeopCategory } from './arenaJeopardy'
@@ -174,8 +175,10 @@ const ARENA_BODY = `
   </div>
 
   <div id="fbOverlay" class="milestone" popover="manual" hidden role="status" aria-atomic="true">
+    ${fractureGlass}
     <span class="event-icon" id="fbIcon" aria-hidden="true"></span>
-    <div><div class="milestone-mode" id="fbMode"></div><h2 id="fbTitle"></h2>
+    <div class="milestone-copy"><div class="milestone-mode" id="fbMode"></div>
+      <div class="milestone-heading"><h2 id="fbTitle"></h2><span class="fractured-title" aria-hidden="true">${milestoneKinds.ad.title}</span></div>
       <p id="fbResult"></p><strong class="milestone-challenge" id="fbChal"></strong></div>
   </div>
   <!-- ===== SCOREBOARD FREEZE CINEMATIC ===== -->
@@ -1109,6 +1112,7 @@ function runArena(
     const event = milestoneKinds[kind]
     const card: HTMLElement = $('fbOverlay')
     card.style.setProperty('--event-color', event.accent)
+    card.classList.toggle('first-blood', kind !== 'koth')
     $('fbMode').textContent = event.mode
     $('fbTitle').textContent = event.title
     $('fbIcon').innerHTML = milestoneIcon(kind)
@@ -1117,6 +1121,9 @@ function runArena(
     cinema = true
     card.hidden = false
     card.showPopover?.()
+    if (kind !== 'koth' && motionEnabled) {
+      for (const animation of card.getAnimations({ subtree: true })) animation.currentTime = 0
+    }
     updatePreviewControls()
     onImpact()
     if (motionEnabled && target) spawnBeam(team, target, team.color, true)

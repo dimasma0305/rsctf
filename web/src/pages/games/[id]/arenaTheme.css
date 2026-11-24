@@ -286,6 +286,91 @@ a:hover {
 .milestone-challenge { display: block; font-family: var(--mantine-font-family-monospace); font-size: 12px; margin-top: 8px; }
 .milestone:popover-open { animation: milestone-in 180ms ease-out; }
 @keyframes milestone-in { from { opacity: 0; transform: translateY(6px); } }
+.fracture-glass, .fractured-title { display: none; }
+.milestone.first-blood {
+  --impact-ink: #ffb2a2;
+  inset: 0;
+  width: 100vw;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  isolation: isolate;
+  align-items: flex-end;
+  padding: max(20px, env(safe-area-inset-top)) clamp(18px, 6vw, 96px) max(clamp(26px, 8vh, 90px), env(safe-area-inset-bottom));
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  color: #fff;
+  background: linear-gradient(0deg, rgb(7 11 20 / 93%), rgb(7 11 20 / 73%) 20%, transparent 64%),
+    radial-gradient(ellipse at 57% 41%, transparent 12%, rgb(12 20 35 / 24%) 63%, rgb(8 12 22 / 56%));
+  animation: none;
+}
+.first-blood .event-icon { display: none; }
+.first-blood .fracture-glass {
+  display: block;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+}
+.fracture-rays {
+  stroke: #eefaff;
+  stroke-width: 1.45;
+  stroke-linejoin: bevel;
+  filter: drop-shadow(1px 1.4px .6px #07152c);
+}
+.fracture-branches { stroke: #dfedfa; stroke-width: .85; opacity: .68; }
+.fracture-splinters { fill: #effaff; transform-box: fill-box; transform-origin: center; }
+.first-blood .milestone-copy {
+  max-width: min(100%, 55rem);
+  padding-inline-start: clamp(12px, 1.6vw, 26px);
+  border-inline-start: 4px solid var(--impact-ink);
+  text-shadow: 0 2px 9px #0a0e17;
+}
+.first-blood .milestone-mode {
+  color: var(--impact-ink);
+  text-transform: uppercase;
+  letter-spacing: .16em;
+  font: 700 clamp(12px, 1.1vw, 16px)/1.4 var(--mantine-font-family-monospace);
+}
+.first-blood .milestone-heading { position: relative; margin-block: .18em .32em; }
+.first-blood h2, .first-blood .fractured-title {
+  font: italic 950 clamp(35px, min(9.3vw, 14vh), 148px)/.98 var(--mantine-font-family, system-ui);
+  letter-spacing: -.055em;
+  text-transform: uppercase;
+  margin: 0;
+}
+.first-blood h2 { clip-path: polygon(-5% -10%, 110% -10%, 110% 38%, 61% 53%, 56% 47%, 0 67%, -5% 67%); }
+.first-blood .fractured-title {
+  display: block;
+  position: absolute;
+  inset: 0;
+  clip-path: polygon(-5% 69%, 0 69%, 56% 49%, 61% 55%, 110% 40%, 110% 115%, -5% 115%);
+  transform: translateX(-.032em);
+}
+.first-blood p {
+  font-size: clamp(15px, 2vw, 27px);
+  font-weight: 600;
+  color: #fff;
+}
+.first-blood .milestone-challenge { font-size: clamp(12px, 1.25vw, 18px); color: #e3eaf1; }
+@media (prefers-reduced-motion: no-preference) {
+  :host([data-motion='on']) .first-blood { animation: impact-dismiss 320ms 4.66s forwards; }
+  :host([data-motion='on']) .first-blood .fracture-rays path {
+    stroke-dasharray: 1;
+    animation: crack-spread 320ms cubic-bezier(.07,.75,.18,1) both;
+  }
+  :host([data-motion='on']) .first-blood .fracture-branches { animation: crack-branches 220ms 90ms backwards; }
+  :host([data-motion='on']) .first-blood .fracture-splinters { animation: glass-scatter 620ms cubic-bezier(.16,.85,.25,1) both; }
+  :host([data-motion='on']) .first-blood .milestone-copy { animation: impact-title 330ms 65ms cubic-bezier(.18,.85,.25,1) backwards; }
+}
+@keyframes crack-spread { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes crack-branches { from { opacity: 0; } }
+@keyframes glass-scatter { from { transform: scale(.25); } to { transform: scale(1.75); opacity: .77; } }
+@keyframes impact-title { from { opacity: 0; transform: translateX(-20px) skewX(-6deg); } }
+@keyframes impact-dismiss { to { opacity: 0; } }
 .cfg {
   display: inline-flex;
   align-items: center;
