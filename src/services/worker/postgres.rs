@@ -552,6 +552,8 @@ impl WorkerAuthority for PostgresWorkerAuthority {
                   AND workload.observed_session_epoch = node.session_epoch
                   AND node.session_id = $5
                   AND node.session_epoch = $6
+                  AND (NOT $7 OR (workload.owner_kind='ad-team-service'
+                      AND node.capabilities @> '{"interactiveExec":true}'::jsonb))
                   AND node.lease_expires_at > clock_timestamp()
                   AND node.certificate_expires_at > clock_timestamp()
                   AND node.administrative_state <> 'Disabled'
@@ -584,6 +586,7 @@ impl WorkerAuthority for PostgresWorkerAuthority {
         .bind(generation)
         .bind(session.fence.session_id)
         .bind(session_epoch)
+        .bind(matches!(request, DataStreamRequest::InteractiveExec(_)))
         .fetch_optional(self.store.pool())
         .await
         .map_err(|error| WorkerError::Authority(error.to_string()))?

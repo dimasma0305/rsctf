@@ -6,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use futures::TryStreamExt;
 use rsctf_worker_protocol::{DataStreamRequest, EndpointRef, TcpProxyRequest, WorkloadFence};
 use sqlx::{types::Json, PgPool};
 use tokio::{
@@ -126,7 +125,7 @@ async fn forward(
         loop {
             tokio::time::sleep(REFRESH).await;
             if !ad_vpn::owns_instance_lease()
-                || !matches!(route(&pool,id,addr).await, Ok(Some((_, next))) if next.fence==fence)
+                || !matches!(tokio::time::timeout(REFRESH,route(&pool,id,addr)).await, Ok(Ok(Some((_, next)))) if next.fence==fence)
             {
                 break;
             }
@@ -172,7 +171,11 @@ async fn refresh(
     listeners: &mut HashMap<Uuid, ListenerTask>,
 ) -> AppResult<()> {
     let mut wanted = HashSet::new();
-    let mut rows=sqlx::query_as::<_,(Uuid,Option<String>,Option<i32>)>(r#"
+    let mut after = Uuid::nil();
+    loop {
+        // Release the read connection before reserving sockets. The lease
+        // monitor and workload reconciliation also use this pool.
+        let rows=sqlx::query_as::<_,(Uuid,Option<String>,Option<i32>)>(r#"
         SELECT e.workload_id,e.host,e.port FROM "AdWorkerRelays" e
         JOIN "WorkerWorkloads" w ON w.id=e.workload_id AND w.desired_state='Present'
         JOIN "Participations" p ON p.id=e.participation_id AND p.status=1
@@ -180,54 +183,64 @@ async fn refresh(
         JOIN "Games" g ON g.id=p.game_id AND NOT g.deletion_pending AND g.end_time_utc>clock_timestamp()
         JOIN "GameChallenges" c ON c.id=e.challenge_id AND c.game_id=g.id AND c.is_enabled
             AND c.review_status=0 AND c."Type"=4 AND NOT c.ad_self_hosted AND NOT c.deletion_pending
-        WHERE w.owner_kind='ad-team-service' AND w.owner_key=concat('ad-service:',p.id,':',c.id)"#).fetch(state.pg());
-    while let Some((id, old_host, old_port)) = rows.try_next().await.map_err(database_error)? {
-        wanted.insert(id);
-        if listeners.get(&id).is_some_and(|task| !task.0.is_finished()) {
-            continue;
-        }
-        let host = crate::services::byoc_tunnel::services_ip().map_err(AppError::unavailable)?;
-        if old_host.as_ref().is_some_and(|old| old != &host) {
-            continue;
-        }
-        let port = u16::try_from(old_port.unwrap_or(0))
-            .map_err(|_| AppError::internal("Invalid relay port"))?;
-        let Ok(listener) = TcpListener::bind((host.as_str(), port)).await else {
-            continue;
-        };
-        let addr = listener
-            .local_addr()
-            .map_err(|e| AppError::internal(e.to_string()))?;
-        let updated = sqlx::query(
-            r#"UPDATE "AdWorkerRelays" SET host=$2,port=$3
+        WHERE w.owner_kind='ad-team-service' AND w.owner_key=concat('ad-service:',p.id,':',c.id)
+        AND e.workload_id>$1 ORDER BY e.workload_id LIMIT 128"#)
+            .bind(after).fetch_all(state.pg()).await.map_err(database_error)?;
+        let Some(last) = rows.last() else { break };
+        after = last.0;
+        let full_page = rows.len() == 128;
+        for (id, old_host, old_port) in rows {
+            wanted.insert(id);
+            if listeners.get(&id).is_some_and(|task| !task.0.is_finished()) {
+                continue;
+            }
+            let host =
+                crate::services::byoc_tunnel::services_ip().map_err(AppError::unavailable)?;
+            if old_host.as_ref().is_some_and(|old| old != &host) {
+                continue;
+            }
+            let port = u16::try_from(old_port.unwrap_or(0))
+                .map_err(|_| AppError::internal("Invalid relay port"))?;
+            let Ok(listener) = TcpListener::bind((host.as_str(), port)).await else {
+                continue;
+            };
+            let addr = listener
+                .local_addr()
+                .map_err(|e| AppError::internal(e.to_string()))?;
+            let updated = sqlx::query(
+                r#"UPDATE "AdWorkerRelays" SET host=$2,port=$3
             WHERE workload_id=$1 AND (host IS NULL OR (host=$2 AND port=$3))"#,
-        )
-        .bind(id)
-        .bind(&host)
-        .bind(i32::from(addr.port()))
-        .execute(state.pg())
-        .await;
-        match updated {
-            Ok(r) if r.rows_affected() == 1 => {}
-            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => continue,
-            Err(e) => return Err(database_error(e)),
-            _ => continue,
-        }
-        listeners.insert(
-            id,
-            ListenerTask(tokio::spawn(listen(
-                listener,
-                state.pg().clone(),
-                workers.clone(),
+            )
+            .bind(id)
+            .bind(&host)
+            .bind(i32::from(addr.port()))
+            .execute(state.pg())
+            .await;
+            match updated {
+                Ok(r) if r.rows_affected() == 1 => {}
+                Err(sqlx::Error::Database(e)) if e.is_unique_violation() => continue,
+                Err(e) => return Err(database_error(e)),
+                _ => continue,
+            }
+            listeners.insert(
                 id,
-                addr,
-            ))),
-        );
+                ListenerTask(tokio::spawn(listen(
+                    listener,
+                    state.pg().clone(),
+                    workers.clone(),
+                    id,
+                    addr,
+                ))),
+            );
+        }
+        if !full_page {
+            break;
+        }
     }
     listeners.retain(|id, task| wanted.contains(id) && !task.0.is_finished());
     if !listeners.is_empty() {
         let ids: Vec<_> = listeners.keys().copied().collect();
-        sqlx::query(r#"UPDATE "AdWorkerRelays" SET ready_until=clock_timestamp()+interval '10 seconds' WHERE workload_id=ANY($1)"#)
+        sqlx::query(r#"UPDATE "AdWorkerRelays" SET ready_until=clock_timestamp()+interval '10 seconds' WHERE workload_id=ANY($1) AND (ready_until IS NULL OR ready_until < clock_timestamp()+interval '6 seconds')"#)
             .bind(ids).execute(state.pg()).await.map_err(database_error)?;
     }
     Ok(())

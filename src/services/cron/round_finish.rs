@@ -505,7 +505,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn publish_round_flags(
+pub(crate) async fn publish_round_flags(
     state: &SharedState,
     game_id: i32,
     round_id: i32,

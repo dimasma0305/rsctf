@@ -33,7 +33,10 @@ pub trait WorkerRuntime: Send + Sync {
     async fn ensure_absent(&self, command: EnsureAbsent) -> Result<WorkloadStatus, RuntimeError>;
     async fn write_flag(&self, command: WriteFlag) -> Result<WorkloadStatus, RuntimeError>;
     async fn open_tcp(&self, request: &TcpProxyRequest) -> Result<TcpStream, RuntimeError>;
-    async fn open_exec(&self, _request: &InteractiveExecRequest) -> Result<(), RuntimeError> {
+    async fn open_exec(
+        &self,
+        _request: &InteractiveExecRequest,
+    ) -> Result<tokio::io::DuplexStream, RuntimeError> {
         Err(RuntimeError::unsupported(
             "interactive container exec is not implemented by this runtime",
         ))

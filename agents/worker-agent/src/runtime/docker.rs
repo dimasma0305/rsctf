@@ -32,6 +32,7 @@ mod networks;
 mod preflight;
 mod state_file;
 mod support;
+mod team_terminal;
 mod team_volume;
 mod tombstones;
 mod windows_acl;
@@ -582,7 +583,7 @@ impl WorkerRuntime for DockerRuntime {
             write_flag: true,
             verified_flag_delivery: true,
             tcp_proxy: true,
-            interactive_exec: false,
+            interactive_exec: self.platform.operating_system == OperatingSystem::Linux,
             inventory: true,
             local_image_build: false,
             max_data_lanes: 4,
@@ -945,6 +946,13 @@ impl WorkerRuntime for DockerRuntime {
             .with_failed_replicas(failed));
         }
         self.current_status(command.fence).await
+    }
+
+    async fn open_exec(
+        &self,
+        request: &rsctf_worker_protocol::InteractiveExecRequest,
+    ) -> Result<tokio::io::DuplexStream, RuntimeError> {
+        self.team_terminal(request).await
     }
 
     async fn open_tcp(&self, request: &TcpProxyRequest) -> Result<TcpStream, RuntimeError> {

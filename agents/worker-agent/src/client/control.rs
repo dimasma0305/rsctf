@@ -628,9 +628,9 @@ fn unix_millis() -> i64 {
 mod tests {
     use async_trait::async_trait;
     use rsctf_worker_protocol::{
-        CommandErrorCode, EnsureAbsent, EnsureWorkload, InteractiveExecRequest, InventoryItem,
-        ObservedWorkloadState, Platform, ReplicaStatus, ResourceUsage, RuntimeDescriptor,
-        TcpProxyRequest, WorkerCapabilities, WorkerCapacity, WorkloadFence, WriteFlag,
+        CommandErrorCode, EnsureAbsent, EnsureWorkload, InventoryItem, ObservedWorkloadState,
+        Platform, ReplicaStatus, ResourceUsage, RuntimeDescriptor, TcpProxyRequest,
+        WorkerCapabilities, WorkerCapacity, WorkloadFence, WriteFlag,
     };
     use tokio::sync::oneshot;
 
@@ -705,10 +705,6 @@ mod tests {
             &self,
             _request: &TcpProxyRequest,
         ) -> Result<tokio::net::TcpStream, RuntimeError> {
-            unreachable!()
-        }
-
-        async fn open_exec(&self, _request: &InteractiveExecRequest) -> Result<(), RuntimeError> {
             unreachable!()
         }
     }

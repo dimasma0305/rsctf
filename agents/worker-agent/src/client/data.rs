@@ -111,13 +111,12 @@ async fn handle_stream(stream: Stream, runtime: SharedRuntime) -> Result<(), Cli
             }
         },
         DataStreamRequest::InteractiveExec(request) => match runtime.open_exec(&request).await {
-            Ok(()) => {
-                // Runtime implementations must take ownership of streaming before they
-                // advertise this capability. The Docker v1 runtime returns unsupported.
-                DataStatus::Internal
+            Ok(mut terminal) => {
+                DataStatus::Ready
                     .write(&mut stream)
                     .await
                     .map_err(|error| ClientError::Transport(error.to_string()))?;
+                let _ = tokio::io::copy_bidirectional(&mut stream, &mut terminal).await;
             }
             Err(error) => write_error_status(&mut stream, &error).await?,
         },

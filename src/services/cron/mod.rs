@@ -41,6 +41,8 @@ mod delivery_health;
 mod image_cleanup;
 mod maintenance;
 mod round_finish;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use round_finish::publish_round_flags;
 mod scheduler;
 
 /// Cache key for cross-replica maintenance ownership.

@@ -148,10 +148,13 @@ pub(super) fn stream_exists(spec: &ValidatedWorkloadSpec, request: &DataStreamRe
                     .is_none_or(|replica| replica < service.replicas)
                 && service.ports.iter().any(|port| port.name == request.port)
         }),
-        DataStreamRequest::InteractiveExec(request) => spec
-            .services
-            .iter()
-            .any(|service| service.name == request.service && request.replica < service.replicas),
+        DataStreamRequest::InteractiveExec(request) => {
+            spec.game_kind == rsctf_worker_protocol::GameKind::AttackDefense
+                && request.replica == 0
+                && spec.services.len() == 1
+                && spec.services[0].replicas == 1
+                && spec.primary_endpoint.service == request.service
+        }
     }
 }
 

@@ -23,6 +23,8 @@ struct Registration {
     spec_hash: String,
     target: FlagTarget,
     replicas: u16,
+    #[serde(default)]
+    team_terminal: bool,
     sequence: Option<Sequence>,
 }
 
@@ -47,8 +49,12 @@ impl FlagDeliveryStore {
     pub async fn register(&self, command: &EnsureWorkload) -> Result<(), RuntimeError> {
         let fence = command.fence;
         let path = self.path(fence.workload_id);
-        let existing = load::<Registration>(&path).await?;
-        if let Some(old) = &existing {
+        let mut existing = load::<Registration>(&path).await?;
+        let team_terminal = command.spec.game_kind
+            == rsctf_worker_protocol::GameKind::AttackDefense
+            && command.spec.services.len() == 1
+            && command.spec.services[0].replicas == 1;
+        if let Some(old) = &mut existing {
             if old.fence.assignment_id == fence.assignment_id
                 && old.fence.generation > fence.generation
             {
@@ -61,6 +67,10 @@ impl FlagDeliveryStore {
                 if old.spec_hash == command.spec_hash
                     && Some(&old.target) == command.spec.flag_target.as_ref()
                 {
+                    if old.team_terminal != team_terminal {
+                        old.team_terminal = team_terminal;
+                        save(&path, old).await?;
+                    }
                     return Ok(());
                 }
                 return Err(RuntimeError::new(
@@ -96,10 +106,34 @@ impl FlagDeliveryStore {
                 spec_hash: command.spec_hash.clone(),
                 target: target.clone(),
                 replicas: service.replicas,
+                team_terminal,
                 sequence: None,
             },
         )
         .await
+    }
+
+    /// The local agent state is outside the guest filesystem. Only the
+    /// current, single service belonging to a team can accept a terminal.
+    pub async fn check_team_terminal(
+        &self,
+        request: &rsctf_worker_protocol::InteractiveExecRequest,
+    ) -> Result<(), RuntimeError> {
+        let record = load::<Registration>(&self.path(request.fence.workload_id)).await?;
+        if record.is_some_and(|r| {
+            r.team_terminal
+                && r.fence == request.fence
+                && r.target.service == request.service
+                && r.replicas == 1
+                && request.replica == 0
+        }) {
+            Ok(())
+        } else {
+            Err(RuntimeError::new(
+                CommandErrorCode::InvalidSpec,
+                "no matching team service terminal",
+            ))
+        }
     }
 
     /// Persist the new sequence before the first replica is touched. A retry
@@ -198,6 +232,7 @@ mod tests {
                 fence,
                 target: target.clone(),
                 replicas: 2,
+                team_terminal: false,
                 spec_hash: "a".repeat(64),
                 sequence: None,
             },

@@ -422,6 +422,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
+      patchregistry:
+        image: registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - "127.0.0.1::5000"
       postgres:
         image: postgres:18-alpine
         env:
@@ -512,6 +516,7 @@ jobs:
 
       - name: Score two teams and exercise both worker rollback targets
         env:
+          PATCH_REGISTRY: 127.0.0.1:${{ job.services.patchregistry.ports[5000] }}
           RSCTF_AD_VPN_SERVICES_CIDR: 10.214.103.0/24
           RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test
         run: |
@@ -523,7 +528,14 @@ jobs:
           export RSCTF_WORKER_TEST_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:starter --format '{{.Id}}')"
           export RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:patch --format '{{.Id}}')"
           export RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:second --format '{{.Id}}')"
-          name=services::cron::round_finish::worker_delivery::tests::live_agent::live_remote_agent_publishes_two_team_round_receipts
+          repo="$PATCH_REGISTRY/test-worker/service-900041"
+          docker tag "$RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID" "$repo:reviewed"
+          docker push "$repo:reviewed"
+          digest="$(curl -fsSI -H 'Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json' \
+            "http://$PATCH_REGISTRY/v2/test-worker/service-900041/manifests/reviewed" | awk 'tolower($1)=="docker-content-digest:" {gsub(/\r/,"",$2);print $2}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          export RSCTF_WORKER_TEST_CANDIDATE="$repo@$digest"
+          name=controllers::game::ad::player_reset_tests::worker::live_remote_agent_publishes_two_team_round_receipts
           ./ci-artifacts/rsctf-tests --ignored --exact "$name" --list | grep -Fx "$name: test"
           ./ci-artifacts/rsctf-tests --ignored --exact "$name" --nocapture
 

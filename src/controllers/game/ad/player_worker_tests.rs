@@ -1,4 +1,21 @@
-use super::*;
+use crate::services::{
+    ad::{
+        reset_fixture::runtime_state,
+        scoring::test_fixture::ad_scoring_fixture,
+        service_lifecycle::{
+            publish_managed_backend_if_eligible, retain_created_backend_identity,
+            ManagedBackendPublication,
+        },
+    },
+    ad_engine::{prepare_round, RoundCursor},
+    worker::{PostgresWorkerAuthority, WorkerHandle, WorkerServerConfig, WorkerService},
+    worker_store::WorkerStore,
+};
+use sqlx::PgPool;
+use std::{sync::Arc, time::Duration};
+use uuid::Uuid;
+
+use super::cycle;
 use crate::services::worker::{build_mtls_server_config, start_reconciler};
 use crate::services::worker_store::WorkloadObservedState;
 use rcgen::{CertificateParams, KeyPair};
@@ -11,7 +28,7 @@ use std::{
 };
 use tokio::{net::TcpListener, process::Command, sync::watch};
 use tokio_rustls::rustls::{pki_types::PrivatePkcs8KeyDer, RootCertStore};
-#[path = "live_agent/revisions.rs"]
+#[path = "player_worker_tests/revisions.rs"]
 mod revisions;
 
 struct IdentityDir(PathBuf);
@@ -156,7 +173,7 @@ async fn test_agent(
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL, a dedicated Docker daemon, fixture image and same-build Linux worker binary"]
 async fn live_remote_agent_publishes_two_team_round_receipts() {
-    tokio::time::timeout(Duration::from_secs(240), scenario())
+    tokio::time::timeout(Duration::from_secs(360), scenario())
         .await
         .expect("timed out waiting for worker or Docker");
 }
@@ -258,7 +275,12 @@ async fn scenario() {
         .create(&path)
         .unwrap();
     let dir = IdentityDir(path);
-    let store = WorkerStore::new(fixture.pool.clone());
+    let runtime_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(12)
+        .connect_with((*fixture.pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let store = WorkerStore::new(runtime_pool.clone());
     let (stop, shutdown) = watch::channel(false);
     let mut live = test_agent(
         &fixture.pool,
@@ -269,7 +291,7 @@ async fn scenario() {
     )
     .await;
     let mut state = runtime_state(
-        &fixture.pool,
+        &runtime_pool,
         Arc::new(crate::services::worker::WorkerContainerManager::new(
             store.clone(),
         )),
@@ -284,13 +306,15 @@ async fn scenario() {
         live.service.as_ref().clone(),
         shutdown,
     );
-    sqlx::query(
-        r#"INSERT INTO "AdPatchStarters"(challenge_id,tree_id,archive,data_mount)
-        VALUES(900031,repeat('a',64),'fixture'::bytea,'/data')"#,
-    )
-    .execute(&fixture.pool)
-    .await
-    .unwrap();
+    let original_id = std::env::var("RSCTF_WORKER_TEST_PATCH_IMAGE_ID").unwrap();
+    let starter = format!("worker://{worker}/{original_id}");
+    let captain = cycle::register_service(&fixture.pool, &starter, 8080).await;
+    // The registration setup opens round eight for reset-only tests. This
+    // scenario advances the round using the normal scheduler below.
+    sqlx::query(r#"UPDATE "AdRounds" SET finalized=TRUE WHERE id=900108"#)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
     let mut targets = Vec::new();
     for (service, participant) in [(900041, 900021), (900042, 900022)] {
         let handle = place_team(&store, worker, &image, participant).await;
@@ -333,6 +357,26 @@ async fn scenario() {
     .await
     .unwrap();
     assert_eq!(round.flags.len(), 2);
+    use crate::services::ad_ssh::source_session_tests::{enroll, LocalBastion};
+    let bastion = LocalBastion::new(&state, &dir.0).await;
+    for (participant, marker) in [(900021, "first"), (900022, "second")] {
+        let key = dir.0.join(format!("team-{participant}"));
+        enroll(&fixture.pool, participant, &key).await;
+        bastion
+            .session(
+                &state,
+                &key,
+                &format!("printf {marker} > /data/ssh-proof\nexit\n"),
+            )
+            .await;
+    }
+    for ((_, handle), marker) in targets.iter().zip(["first", "second"]) {
+        let id = team_container(worker, *handle).await;
+        assert_eq!(
+            docker(&["exec", &id, "cat", "/data/ssh-proof"]).await,
+            marker.as_bytes()
+        );
+    }
     assert!(round.flags[0].flag != round.flags[1].flag);
     let (service, handle) = targets[0];
     let first = round
@@ -373,7 +417,7 @@ async fn scenario() {
     publish_fixture_endpoint(&fixture.pool, first.participation_id, handle, &image).await;
     for _ in 0..2 {
         let (sender, _receipts) = tokio::sync::mpsc::unbounded_channel();
-        let publication = super::super::super::publish_round_flags(
+        let publication = crate::services::cron::publish_round_flags(
             &state,
             fixture.game_id,
             round.id,
@@ -389,8 +433,47 @@ async fn scenario() {
         .unwrap();
         assert_eq!(publication.failure_count, 0);
     }
-    let updated =
+    let before_toolkit =
         revisions::exercise(&state, worker, [targets[0].1, targets[1].1], &round, &image).await;
+    let candidate = std::env::var("RSCTF_WORKER_TEST_CANDIDATE").unwrap();
+    let config = std::env::var("RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID").unwrap();
+    let previous = format!("worker://{worker}/{image}");
+    let receipts = revisions::scored_receipts(state.pg(), round.id).await;
+    let final_id = cycle::exercise(
+        &state,
+        captain,
+        [&starter, &previous, &candidate],
+        &config,
+        async |id, label| {
+            let handle = crate::services::worker::parse_worker_handle(id).unwrap();
+            assert_eq!(handle.assignment_id, before_toolkit.assignment_id);
+            let container = team_container(worker, handle).await;
+            let expected = match label {
+                "patched" => &config,
+                "previous" => &image,
+                "starter" => &original_id,
+                _ => unreachable!(),
+            };
+            let actual = docker(&["inspect", "--format", "{{.Image}}", &container]).await;
+            assert_eq!(std::str::from_utf8(&actual).unwrap().trim(), expected);
+            assert_eq!(
+                docker(&["exec", &container, "cat", "/data/team-marker"]).await,
+                b"starter"
+            );
+            verify_team_flag(worker, handle, &first.flag).await;
+            assert_eq!(
+                docker(&["exec", &container, "cat", "/data/ssh-proof"]).await,
+                b"first"
+            );
+            assert_eq!(
+                revisions::scored_receipts(state.pg(), round.id).await,
+                receipts
+            );
+            assert_health(&live.service, worker, handle).await;
+        },
+    )
+    .await;
+    let updated = crate::services::worker::parse_worker_handle(&final_id).unwrap();
     for (service, original) in targets {
         let handle = if service == first.team_service_id {
             updated
@@ -445,6 +528,7 @@ async fn scenario() {
         .await
         .unwrap();
     lease.await.unwrap();
+    runtime_pool.close().await;
     fixture.cleanup().await;
 }
 
@@ -468,4 +552,54 @@ async fn team_container(worker: Uuid, handle: WorkerHandle) -> String {
     let id = std::str::from_utf8(&ids).unwrap().trim();
     assert!(id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()));
     id.to_owned()
+}
+
+async fn publish_fixture_endpoint(
+    pool: &PgPool,
+    participant: i32,
+    handle: WorkerHandle,
+    image: &str,
+) {
+    let backend = handle.encode();
+    assert!(
+        retain_created_backend_identity(pool, 900001, participant, 900031, &backend)
+            .await
+            .unwrap()
+    );
+    let (host,port): (String,i32) = sqlx::query_as(r#"SELECT host,port FROM "AdWorkerRelays" WHERE workload_id=$1 AND ready_until>clock_timestamp()"#)
+        .bind(handle.workload_id).fetch_one(pool).await.unwrap();
+    let endpoint = ManagedBackendPublication {
+        game_id: 900001,
+        participation_id: participant,
+        challenge_id: 900031,
+        backend_id: &backend,
+        host: &host,
+        port,
+        image_ref: image,
+    };
+    assert!(
+        publish_managed_backend_if_eligible(&mut pool.acquire().await.unwrap(), endpoint)
+            .await
+            .unwrap()
+    );
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut socket =
+            tokio::net::TcpStream::connect((host.as_str(), u16::try_from(port).unwrap()))
+                .await
+                .unwrap();
+        socket
+            .write_all(b"GET /health HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut reply = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            socket.take(4096).read_to_string(&mut reply),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(reply.split_once("\r\n\r\n").unwrap().1.trim(), "ok");
+    }
 }

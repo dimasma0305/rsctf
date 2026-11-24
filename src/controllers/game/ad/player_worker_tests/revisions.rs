@@ -1,3 +1,4 @@
+//! Managed worker image transitions and durable team data.
 use super::*;
 use crate::app_state::SharedState;
 use crate::services::ad_engine::{AdvancedRound, ProvisionFlag};
@@ -44,7 +45,7 @@ async fn replace_image(
     )
 }
 
-async fn scored_receipts(pool: &PgPool, round: i32) -> serde_json::Value {
+pub(super) async fn scored_receipts(pool: &PgPool, round: i32) -> serde_json::Value {
     sqlx::query_scalar(
         r#"SELECT jsonb_agg(to_jsonb(r) ORDER BY team_service_id)
         FROM "AdFlagDeliveryResults" r WHERE round_id=$1"#,
@@ -156,7 +157,8 @@ pub(super) async fn exercise(
             .await
             .unwrap();
         verify_team_flag(worker, next, &flag.flag).await;
-        publish_fixture_endpoint(state.pg(), flag.participation_id, next, image).await;
+        let reference = format!("worker://{worker}/{image}");
+        publish_fixture_endpoint(state.pg(), flag.participation_id, next, &reference).await;
         assert_health(plane, worker, next).await;
         let id = team_container(worker, next).await;
         let actual = docker(&["inspect", "--format", "{{.Image}}", &id]).await;

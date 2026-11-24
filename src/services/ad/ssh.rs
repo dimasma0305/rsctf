@@ -5,12 +5,7 @@
 //!   2. `docker exec`s an interactive shell straight into THAT team's container
 //!      for the challenge in the username.
 //!
-//! No sshd is needed inside the challenge image; it reuses the Docker socket.
-//! A deliberate divergence from RSCTF's external-bastion + relay model
-//! (see the ad-vpn-in-process-decision memory).
-//!
-//! Best-effort: any bind/keygen failure just logs and disables the bastion —
-//! it never blocks startup.
+//! The bastion selects the team's local, worker, or BYOC terminal.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -32,6 +27,7 @@ use tokio::task::JoinHandle;
 use crate::app_state::SharedState;
 use crate::models::data::{ad_ssh_key, ad_team_service, config};
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus, Role};
+mod worker;
 
 /// Per-team SSH shell throttle. An interactive bastion isn't throughput-bound; the
 /// real risk is one team exhausting resources by opening thousands of shells (each a
@@ -568,6 +564,19 @@ impl BastionHandler {
             .container_id
             .filter(|c| !c.is_empty())
             .ok_or("your container isn't running yet — ask the operator to Ensure containers")?;
+        if let Some(target) = crate::services::worker::WorkerHandle::from_backend_id(&backend)
+            .map_err(|_| "invalid team worker assignment")?
+        {
+            let identity = SshLeaseKey {
+                key_id,
+                participation_id: pid,
+                challenge_id: cid,
+                fingerprint,
+            };
+            return self
+                .open_worker_shell(identity, target, channel, handle)
+                .await;
+        }
         let container = self
             .st
             .containers
@@ -703,17 +712,27 @@ impl BastionHandler {
         .ok_or("your BYOC agent isn't connected — run the setup.sh bundle and retry")?;
         self.byoc_exec = Some(guard);
 
-        // Split the tunnel stream: the write half receives SSH input (via `data`), the
-        // read half is pumped to the SSH channel. yamux is futures-IO, so compat it to
-        // tokio-IO to match `exec_input`'s box.
-        use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
-        let (rd, wr) = futures::AsyncReadExt::split(stream);
-        self.exec_input = Some(Box::pin(wr.compat_write()));
-        let mut rd = rd.compat();
-        let st = self.st.clone();
+        use tokio_util::compat::FuturesAsyncReadCompatExt;
+        self.attach_remote_shell(
+            stream.compat(),
+            channel,
+            handle,
+            wait_for_ssh_revocation(self.st.clone(), key_id, pid, cid, fingerprint),
+        );
+        Ok(())
+    }
+
+    fn attach_remote_shell(
+        &mut self,
+        stream: impl tokio::io::AsyncRead + AsyncWrite + Send + 'static,
+        channel: ChannelId,
+        handle: russh::server::Handle,
+        revoked: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let (mut rd, wr) = tokio::io::split(stream);
+        self.exec_input = Some(Box::pin(wr));
         tokio::spawn(async move {
             let mut buf = [0u8; 8192];
-            let revoked = wait_for_ssh_revocation(st, key_id, pid, cid, fingerprint);
             tokio::pin!(revoked);
             let lifetime = tokio::time::sleep(SSH_SESSION_TIMEOUT);
             tokio::pin!(lifetime);
@@ -752,7 +771,6 @@ impl BastionHandler {
             let _ = handle.eof(channel).await;
             let _ = handle.close(channel).await;
         });
-        Ok(())
     }
 }
 
@@ -913,7 +931,7 @@ impl Handler for BastionHandler {
 }
 
 #[cfg(test)]
-mod source_session_tests;
+pub(crate) mod source_session_tests;
 
 #[cfg(test)]
 mod tests {
@@ -942,7 +960,8 @@ mod tests {
         assert_eq!(MAX_CONNECTIONS_PER_SOURCE, 32);
         let source = include_str!("ssh.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
-        assert_eq!(production.matches("wait_for_ssh_revocation(st").count(), 2);
+        assert_eq!(production.matches("wait_for_ssh_revocation(").count(), 3);
+        assert!(include_str!("ssh/worker.rs").contains("wait_for_ssh_revocation("));
         assert!(production.contains("try_acquire_ssh_distributed"));
         assert!(!production.contains("tokio::time::interval(Duration::from_secs(15))"));
         let accepted = production.find("listener.accept()").unwrap();

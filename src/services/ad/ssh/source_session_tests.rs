@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::Stdio;
 
-async fn enroll(db: &sqlx::PgPool, participant: i32, key: &Path) {
+pub(crate) async fn enroll(db: &sqlx::PgPool, participant: i32, key: &Path) {
     let output = std::process::Command::new("ssh-keygen")
         .args(["-q", "-t", "ed25519", "-N", "", "-f"])
         .arg(key)
@@ -18,6 +18,96 @@ async fn enroll(db: &sqlx::PgPool, participant: i32, key: &Path) {
     sqlx::query(r#"INSERT INTO "AdSshKeys"(participation_id,algorithm,public_key,fingerprint,platform_generated,created_at_utc)
         VALUES($1,'ssh-ed25519',$2,$3,false,now())"#).bind(participant).bind(public.trim())
         .bind(parsed.fingerprint(HashAlg::Sha256).to_string()).execute(db).await.unwrap();
+}
+
+pub(crate) struct LocalBastion {
+    listener: TcpListener,
+    config: Arc<russh::server::Config>,
+    known_hosts: std::path::PathBuf,
+}
+impl LocalBastion {
+    pub(crate) async fn new(st: &SharedState, dir: &Path) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let host_key = load_host_key(st).await;
+        let known_hosts = dir.join("known_hosts");
+        std::fs::write(
+            &known_hosts,
+            format!(
+                "[127.0.0.1]:{port} {}\n",
+                host_key.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        let config = Arc::new(russh::server::Config {
+            keys: vec![host_key],
+            ..Default::default()
+        });
+
+        Self {
+            listener,
+            config,
+            known_hosts,
+        }
+    }
+    pub(crate) async fn session(
+        &self,
+        st: &SharedState,
+        key: &Path,
+        script: &str,
+    ) -> std::process::Output {
+        let (_shutdown, stop) = watch::channel(false);
+        let listener = &self.listener;
+        let port = listener.local_addr().unwrap().port();
+        let config = &self.config;
+        let known_hosts = &self.known_hosts;
+        let mut client = tokio::process::Command::new("ssh");
+        client
+            .args([
+                "-F",
+                "/dev/null",
+                "-tt",
+                "-oBatchMode=yes",
+                "-oIdentitiesOnly=yes",
+                "-oStrictHostKeyChecking=yes",
+                "-oConnectTimeout=5",
+                "-oGlobalKnownHostsFile=/dev/null",
+            ])
+            .arg(format!("-oUserKnownHostsFile={}", known_hosts.display()))
+            .arg("-p")
+            .arg(port.to_string())
+            .arg("-i")
+            .arg(key)
+            .arg("900031@127.0.0.1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut client = client.spawn().unwrap();
+        let (socket, peer) = tokio::time::timeout(Duration::from_secs(8), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let handler = new_bastion_handler(
+            st.clone(),
+            peer.ip(),
+            acquire_connection_slot(peer.ip()).unwrap(),
+        );
+        let session = tokio::spawn(serve_connection(config.clone(), socket, handler, stop));
+        let mut input = client.stdin.take().unwrap();
+        input.write_all(script.as_bytes()).await.unwrap();
+        // Keep the stream open until the remote shell exits.
+        let output = tokio::time::timeout(Duration::from_secs(15), client.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(input);
+        tokio::time::timeout(Duration::from_secs(12), session)
+            .await
+            .unwrap()
+            .unwrap();
+        output
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -76,81 +166,16 @@ async fn hosted_team_ssh_disconnect_records_only_its_registered_source() {
             .unwrap();
         services.push((service, key, container));
     }
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let host_key = load_host_key(&st).await;
-    let known_hosts = tmp.0.join("known_hosts");
-    std::fs::write(
-        &known_hosts,
-        format!(
-            "[127.0.0.1]:{port} {}\n",
-            host_key.public_key().to_openssh().unwrap()
-        ),
-    )
-    .unwrap();
-    let config = Arc::new(russh::server::Config {
-        keys: vec![host_key],
-        ..Default::default()
-    });
-    let (_shutdown, stop) = watch::channel(false);
+    let bastion = LocalBastion::new(&st, &tmp.0).await;
     for (team, value) in [(0, "first"), (1, "peer"), (0, "second")] {
         let (service, key, _) = &services[team];
-        let mut client = tokio::process::Command::new("ssh");
-        client
-            .args([
-                "-F",
-                "/dev/null",
-                "-tt",
-                "-oBatchMode=yes",
-                "-oIdentitiesOnly=yes",
-                "-oStrictHostKeyChecking=yes",
-                "-oConnectTimeout=5",
-                "-oGlobalKnownHostsFile=/dev/null",
-            ])
-            .arg(format!("-oUserKnownHostsFile={}", known_hosts.display()))
-            .arg("-p")
-            .arg(port.to_string())
-            .arg("-i")
-            .arg(key)
-            .arg("900031@127.0.0.1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut client = client.spawn().unwrap();
-        let (socket, peer) = tokio::time::timeout(Duration::from_secs(8), listener.accept())
-            .await
-            .unwrap()
-            .unwrap();
-        let handler = new_bastion_handler(
-            st.clone(),
-            peer.ip(),
-            acquire_connection_slot(peer.ip()).unwrap(),
-        );
-        let session = tokio::spawn(serve_connection(
-            config.clone(),
-            socket,
-            handler,
-            stop.clone(),
-        ));
-        let mut input = client.stdin.take().unwrap();
-        input
-            .write_all(
-                format!("printf {value} > /tmp/game.py\nprintf skip > /tmp/unregistered\nexit\n")
-                    .as_bytes(),
+        let output = bastion
+            .session(
+                &st,
+                key,
+                &format!("printf {value} > /tmp/game.py\nprintf skip > /tmp/unregistered\nexit\n"),
             )
-            .await
-            .unwrap();
-        // Keep the stream open until the remote shell exits.
-        let output = tokio::time::timeout(Duration::from_secs(15), client.wait_with_output())
-            .await
-            .unwrap()
-            .unwrap();
-        drop(input);
-        tokio::time::timeout(Duration::from_secs(12), session)
-            .await
-            .unwrap()
-            .unwrap();
+            .await;
         let oid = hex::encode(Sha256::digest(format!("blob {}\0{value}", value.len())));
         tokio::time::timeout(Duration::from_secs(12),async {
             loop {
