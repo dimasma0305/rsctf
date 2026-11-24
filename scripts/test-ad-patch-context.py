@@ -136,7 +136,7 @@ def check_interrupted_vm(command, directory):
                     process = pathlib.Path("/proc") / child
                     try:
                         arguments = (process / "cmdline").read_bytes().split(b"\0")
-                    except FileNotFoundError:
+                    except (FileNotFoundError, ProcessLookupError):
                         continue
                     if b"-nodefaults" in arguments:
                         emulator = process
@@ -150,7 +150,7 @@ def check_interrupted_vm(command, directory):
     while time.monotonic() < deadline:
         try:
             state = (emulator / "stat").read_text().rsplit(")", 1)[1].split()[0]
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             break
         if state == "Z":
             break
