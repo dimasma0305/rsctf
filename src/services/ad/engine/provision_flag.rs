@@ -148,6 +148,36 @@ impl ProvisionFlag {
         // Returning None lets the caller remove a stateless donor. Its
         // writable layer still belongs to the team if the next launch is invalid.
         crate::services::container::validate_container_spec(spec)?;
+        if let Some(handle) = crate::services::worker::WorkerHandle::from_backend_id(donor)? {
+            let p = service.participation_id;
+            let c = service.challenge_id;
+            let info =
+                crate::services::worker::WorkerContainerManager::new(state.worker_store.clone())
+                    .revise_team_service(handle, p, c, &spec.image, &format!("repair:{donor}"))
+                    .await?;
+            self.initialize(state, p, c, &info.id, Some(donor)).await?;
+            let published = self
+                .publish_over(
+                    state.pg(),
+                    ManagedBackendPublication {
+                        game_id: service.game_id,
+                        participation_id: p,
+                        challenge_id: c,
+                        host: &info.ip,
+                        port: info.port,
+                        backend_id: &info.id,
+                        image_ref: &spec.image,
+                    },
+                    Some(donor),
+                )
+                .await?;
+            if !published {
+                return Err(AppError::conflict(
+                    "The team service changed during worker recovery",
+                ));
+            }
+            return Ok(Some(info.id));
+        }
         if !state
             .containers
             .ad_donor_needs_transfer(donor, spec)

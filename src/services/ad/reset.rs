@@ -294,21 +294,31 @@ pub async fn execute_job(
     );
     spec.runtime_profile = challenge.runtime_profile.clone();
     spec.operation_id = Some(format!("ad-reset:{}", job.operation_id));
-    crate::services::container::TeamStorage::configure(
-        st,
-        &mut spec,
-        job.game_id,
-        part.id,
-        challenge.id,
-    )
-    .await?;
+    let worker_donor = input
+        .expected_backend_id
+        .as_deref()
+        .map(crate::services::worker::WorkerHandle::from_backend_id)
+        .transpose()?
+        .flatten();
+    if worker_donor.is_none() {
+        crate::services::container::TeamStorage::configure(
+            st,
+            &mut spec,
+            job.game_id,
+            part.id,
+            challenge.id,
+        )
+        .await?;
+    }
     // Live challenge settings and deployment limits can change between launches.
     // Check the replacement while the team's existing endpoint still serves.
     crate::services::container::validate_container_spec(&spec)?;
     // A durable preparation records which image to use. A reclaimed job may
     // run after that image disappeared, while the retired container still
     // holds the team's files. Stage the image again before removing it.
-    if !resuming || (recovering_preparation && retained_backend.is_some()) {
+    if worker_donor.is_none()
+        && (!resuming || (recovering_preparation && retained_backend.is_some()))
+    {
         st.containers
             .profile_pull_image(challenge.runtime_profile.as_deref(), &image)
             .await?;
@@ -321,8 +331,12 @@ pub async fn execute_job(
     let mut preserve_volumes = input.preserve_data_volumes;
     if !replacement_checkpointed {
         if let Some(id) = source {
-            preserve_volumes |= st.containers.ad_donor_needs_transfer(id, &spec).await?;
-            if preserve_volumes {
+            if worker_donor.is_some() {
+                // The worker keeps the same workload and data even for a
+                // service without a separate mount. Leave its donor attached.
+                preserve_volumes = true;
+            } else if st.containers.ad_donor_needs_transfer(id, &spec).await? || preserve_volumes {
+                preserve_volumes = true;
                 st.containers.check_ad_volume_reset(id, &spec).await?;
             } else if spec.team_storage.is_some() || (activation && !resuming) {
                 // Repeat the pull check if a prepared job still has a donor.
@@ -404,11 +418,24 @@ pub async fn execute_job(
     let volume_donor = retired.filter(|_| preserve_volumes);
     let (info, retained_backend) = if let Some(id) = volume_donor {
         crate::services::traffic::fence_container_capture_stop(st, id).await?;
-        let candidate = st
-            .containers
-            .repair_ad_volumes(id, &spec, crate::services::container::AdVolumeChange::Reset)
-            .await?
-            .ok_or_else(|| AppError::conflict("The team's data volume disappeared during reset"))?;
+        let candidate = if let Some(handle) = worker_donor {
+            crate::services::worker::WorkerContainerManager::new(st.worker_store.clone())
+                .revise_team_service(
+                    handle,
+                    part.id,
+                    challenge.id,
+                    &image,
+                    &job.operation_id.to_string(),
+                )
+                .await?
+        } else {
+            st.containers
+                .repair_ad_volumes(id, &spec, crate::services::container::AdVolumeChange::Reset)
+                .await?
+                .ok_or_else(|| {
+                    AppError::conflict("The team's data volume disappeared during reset")
+                })?
+        };
         if candidate.status != "running"
             || candidate.ip.trim().is_empty()
             || !(1..=65535).contains(&candidate.port)
@@ -448,8 +475,10 @@ pub async fn execute_job(
     {
         // The candidate has never been published. A volume donor still holds
         // the team's current files and must survive a failed acknowledgement.
-        super::service_lifecycle::destroy_team_backend(st, part.id, challenge.id, &backend_id)
-            .await?;
+        if worker_donor.is_none() {
+            super::service_lifecycle::destroy_team_backend(st, part.id, challenge.id, &backend_id)
+                .await?;
+        }
         return Err(error);
     }
     if volume_donor.is_none() {
@@ -515,8 +544,15 @@ pub async fn execute_job(
     };
     if !published {
         if volume_donor.is_some() {
-            super::service_lifecycle::destroy_team_backend(st, part.id, challenge.id, &backend_id)
+            if worker_donor.is_none() {
+                super::service_lifecycle::destroy_team_backend(
+                    st,
+                    part.id,
+                    challenge.id,
+                    &backend_id,
+                )
                 .await?;
+            }
             return Err(AppError::conflict(
                 "The service changed before its volume transfer could be published",
             ));
@@ -532,7 +568,7 @@ pub async fn execute_job(
             "Service eligibility changed while the replacement was launching",
         ));
     }
-    if let Some(id) = volume_donor {
+    if let Some(id) = volume_donor.filter(|_| worker_donor.is_none()) {
         if let Err(error) =
             super::service_lifecycle::destroy_team_backend(st, part.id, challenge.id, id).await
         {

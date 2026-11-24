@@ -65,8 +65,9 @@ pub fn validate_json_for_challenge(
 /// their local backend, so topology-wide worker support is not sufficient to
 /// decide image portability for those challenge kinds.
 pub(crate) fn uses_worker_runtime(st: &SharedState, challenge: &game_challenge::Model) -> bool {
-    challenge.runtime_profile.is_none()
-        && uses_worker_runtime_for_type(st, challenge.challenge_type)
+    crate::services::challenge_images::remote_team_challenge(st, challenge)
+        || (challenge.runtime_profile.is_none()
+            && uses_worker_runtime_for_type(st, challenge.challenge_type))
 }
 
 pub(crate) fn uses_worker_runtime_for_type(

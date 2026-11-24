@@ -16,6 +16,8 @@ mod listener;
 mod postgres;
 mod reconciler;
 mod registry;
+mod team_relay;
+pub use team_relay::start as start_team_relays;
 
 pub use authority::{AuthenticatedPeer, PeerCertificates, WorkerAuthority};
 pub use config::{bind_from_env, BoundWorkerPlane};

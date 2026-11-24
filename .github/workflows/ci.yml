@@ -512,10 +512,13 @@ jobs:
 
       - name: Score two teams and exercise both worker rollback targets
         env:
+          RSCTF_AD_VPN_SERVICES_CIDR: 10.214.103.0/24
           RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test
         run: |
           test "$(cat ci-artifacts/source-sha)" = "$GITHUB_SHA"
           chmod 0755 ci-artifacts/rsctf-tests
+          docker network create --internal --subnet "$RSCTF_AD_VPN_SERVICES_CIDR" rsctf-worker-ci-private
+          trap 'docker network rm rsctf-worker-ci-private >/dev/null' EXIT
           export RSCTF_TEST_LIVE_AD_WORKER_BIN="$PWD/agents/worker-agent/target/x86_64-unknown-linux-musl/release/rsctf-worker-agent"
           export RSCTF_WORKER_TEST_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:starter --format '{{.Id}}')"
           export RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:patch --format '{{.Id}}')"

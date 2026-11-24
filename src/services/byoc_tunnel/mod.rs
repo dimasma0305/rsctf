@@ -547,7 +547,7 @@ async fn wait_for_endpoint_shutdown(endpoints: &[Arc<RelayEndpoint>]) {
 /// Probe the A&D services interface on each agent connection. A team may start
 /// its agent before the bridge is ready. Connecting this UDP socket only asks
 /// the kernel to select a source address and sends no packets.
-fn services_ip() -> Result<String, String> {
+pub(crate) fn services_ip() -> Result<String, String> {
     let cidr = crate::services::ad_vpn::services_cidr();
     let network: Ipv4Net = cidr
         .parse()

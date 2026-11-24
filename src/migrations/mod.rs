@@ -238,6 +238,7 @@ pub(crate) mod m0380_ad_shared_patch_changes;
 pub(crate) mod m0381_ad_team_storage;
 pub(crate) mod m0382_ad_team_endpoints;
 mod m0383_ad_worker_round_scope;
+mod m0384_ad_worker_relays;
 
 #[cfg(test)]
 pub(crate) use m0261_control_plane_jobs::UP_SQL as CONTROL_JOBS_SQL;
@@ -507,6 +508,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0381_ad_team_storage::Migration),
             Box::new(m0382_ad_team_endpoints::Migration),
             Box::new(m0383_ad_worker_round_scope::Migration),
+            Box::new(m0384_ad_worker_relays::Migration),
         ]
     }
 }
@@ -761,6 +763,7 @@ mod tests {
             "m0381_ad_team_storage",
             "m0382_ad_team_endpoints",
             "m0383_ad_worker_round_scope",
+            "m0384_ad_worker_relays",
         ];
         assert_eq!(&names[names.len() - recent.len()..], recent);
     }

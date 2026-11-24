@@ -119,25 +119,26 @@ fn truthy_env(name: &str) -> bool {
 
 fn backend_config_for(kind: ContainerBackendKind) -> Result<VpnBackendConfig, String> {
     let service_cidrs = match kind {
-        ContainerBackendKind::Docker => vec![services_cidr()],
+        ContainerBackendKind::Docker | ContainerBackendKind::Worker => vec![services_cidr()],
         ContainerBackendKind::Kubernetes => kubernetes_services_cidr().into_iter().collect(),
-        ContainerBackendKind::None | ContainerBackendKind::Worker => Vec::new(),
+        ContainerBackendKind::None => Vec::new(),
     };
     let same_origin_ingress = same_origin_ingress_from_env(&service_cidrs)?;
     let config = VpnBackendConfig {
         kind,
         service_cidrs,
-        guard_service_interfaces: kind == ContainerBackendKind::Docker,
+        guard_service_interfaces: matches!(
+            kind,
+            ContainerBackendKind::Docker | ContainerBackendKind::Worker
+        ),
         same_origin_ingress,
     };
     validate_kubernetes_service_routes(&config)?;
 
     if enabled() {
         match kind {
-            ContainerBackendKind::None | ContainerBackendKind::Worker => {
-                return Err(
-                    "the A&D VPN requires a local Docker or Kubernetes backend; remote-worker A&D routing is not enabled yet".to_string(),
-                );
+            ContainerBackendKind::None => {
+                return Err("the A&D VPN requires a configured runtime backend".to_string());
             }
             ContainerBackendKind::Kubernetes => {
                 if truthy_env("RSCTF_K8S_HOST_NETWORK")
@@ -149,7 +150,7 @@ fn backend_config_for(kind: ContainerBackendKind) -> Result<VpnBackendConfig, St
                     );
                 }
             }
-            ContainerBackendKind::Docker => {}
+            ContainerBackendKind::Docker | ContainerBackendKind::Worker => {}
         }
     }
 

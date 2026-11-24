@@ -69,14 +69,18 @@ async fn publish_fixture_endpoint(
             .await
             .unwrap()
     );
-    // Exercise the server's two-step binding. The fixture does not own a VPN ingress.
+    // Synthetic authority-only fixtures use a documentation address. The
+    // Docker test has the real listener reserved by remote placement.
+    let relay:Option<(String,i32)>=sqlx::query_as(r#"SELECT host,port FROM "AdWorkerRelays" WHERE workload_id=$1 AND ready_until>clock_timestamp()"#)
+        .bind(handle.workload_id).fetch_optional(pool).await.unwrap();
+    let (host, port) = relay.clone().unwrap_or_else(|| ("192.0.2.1".into(), 8080));
     let endpoint = ManagedBackendPublication {
         game_id: 900001,
         participation_id: participant,
         challenge_id: 900031,
         backend_id: &backend,
-        host: "192.0.2.1",
-        port: 8080,
+        host: &host,
+        port,
         image_ref: image,
     };
     assert!(
@@ -84,6 +88,26 @@ async fn publish_fixture_endpoint(
             .await
             .unwrap()
     );
+    if relay.is_some() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut socket =
+            tokio::net::TcpStream::connect((host.as_str(), u16::try_from(port).unwrap()))
+                .await
+                .unwrap();
+        socket
+            .write_all(b"GET /health HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut reply = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            socket.take(4096).read_to_string(&mut reply),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(reply.split_once("\r\n\r\n").unwrap().1.trim(), "ok");
+    }
 }
 
 #[tokio::test]

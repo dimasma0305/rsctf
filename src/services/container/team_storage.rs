@@ -39,6 +39,27 @@ impl TeamStorage {
         {
             return Ok(true);
         }
+        if let Some(handle) = donor.and_then(crate::services::worker::parse_worker_handle) {
+            if profile.is_some() {
+                return Ok(false);
+            }
+            // A legacy manually assigned worker may have no private listener.
+            // Keep activation unavailable until its exact endpoint can be recovered.
+            return sqlx::query_scalar(
+                r#"SELECT EXISTS(SELECT 1 FROM "AdWorkerRelays" e
+                JOIN "WorkerWorkloads" w ON w.id=e.workload_id AND w.assignment_id=$3
+                JOIN "AdTeamServices" s USING(participation_id,challenge_id)
+                WHERE s.id=$1 AND e.workload_id=$2 AND w.owner_kind='ad-team-service'
+                AND w.owner_key=concat('ad-service:',e.participation_id,':',e.challenge_id)
+                AND e.ready_until>clock_timestamp())"#,
+            )
+            .bind(service)
+            .bind(handle.workload_id)
+            .bind(handle.assignment_id)
+            .fetch_one(state.pg())
+            .await
+            .map_err(database_error);
+        }
         let Some(donor) = donor.filter(|id| !id.is_empty()) else {
             return Ok(false);
         };

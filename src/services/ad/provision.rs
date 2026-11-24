@@ -577,11 +577,15 @@ pub(crate) async fn ensure_ad_containers(
                 .await?;
                 // The withdrawn address may already have been recycled. Keep
                 // the backend ID and writable layer until the image is ready.
-                if let Err(error) = st
-                    .containers
-                    .profile_pull_image(c.runtime_profile.as_deref(), &image)
-                    .await
-                {
+                let stage =
+                    if crate::services::worker::WorkerHandle::from_backend_id(cid)?.is_some() {
+                        Ok(())
+                    } else {
+                        st.containers
+                            .profile_pull_image(c.runtime_profile.as_deref(), &image)
+                            .await
+                    };
+                if let Err(error) = stage {
                     tracing::warn!(challenge = c.id, participation = p.id, backend_id = %cid,
                         %error, "could not stage A&D repair image; retaining old workload");
                     failures += 1;
@@ -611,11 +615,16 @@ pub(crate) async fn ensure_ad_containers(
             );
             spec.runtime_profile = c.runtime_profile.clone();
             spec.operation_id = operation_id;
-            if let Err(error) = crate::services::container::TeamStorage::configure(
-                st, &mut spec, game.id, p.id, c.id,
-            )
-            .await
-            {
+            let remote = crate::services::challenge_images::remote_team_challenge(st, &c);
+            let storage = if remote {
+                Ok(())
+            } else {
+                crate::services::container::TeamStorage::configure(
+                    st, &mut spec, game.id, p.id, c.id,
+                )
+                .await
+            };
+            if let Err(error) = storage {
                 tracing::warn!(challenge = c.id, participation = p.id, %error, "could not prepare the team's registered storage");
                 failures += 1;
                 distributed.release().await?;
@@ -672,7 +681,18 @@ pub(crate) async fn ensure_ad_containers(
                 }
                 destroy_team_backend_after_capture(st, p.id, c.id, cid).await?;
             }
-            let info = match st.containers.create(spec).await {
+            let created = if remote {
+                if c.enable_traffic_capture || !crate::services::ad_vpn::enabled() {
+                    Err(AppError::bad_request("Remote A&D requires the private VPN and a challenge without host packet capture"))
+                } else {
+                    crate::services::worker::WorkerContainerManager::new(st.worker_store.clone())
+                        .place_team_service(&spec, p.id, c.id)
+                        .await
+                }
+            } else {
+                st.containers.create(spec).await
+            };
+            let info = match created {
                 Ok(i) => i,
                 Err(error) => {
                     let operation_conflict =
@@ -867,59 +887,7 @@ pub(crate) async fn ensure_ad_containers(
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
-mod tests {
-    use uuid::Uuid;
-
-    use super::{
-        is_manual_operation_conflict, should_ensure_network, should_provision_vpn,
-        should_reconcile_vpn,
-    };
-
-    #[test]
-    fn only_a_definitive_manual_workload_conflict_rotates_the_operation() {
-        let operation_id = Some(Uuid::new_v4());
-        assert!(is_manual_operation_conflict(
-            &crate::utils::error::AppError::conflict("changed launch specification"),
-            operation_id
-        ));
-        assert!(!is_manual_operation_conflict(
-            &crate::utils::error::AppError::unavailable("runtime unavailable"),
-            operation_id
-        ));
-        assert!(!is_manual_operation_conflict(
-            &crate::utils::error::AppError::conflict("automatic repair"),
-            None
-        ));
-    }
-
-    #[test]
-    fn round_repair_skips_byoc_vpn_reprovisioning() {
-        let need_vpn = should_provision_vpn(true, true, true, false);
-        assert!(!need_vpn);
-        assert!(!should_reconcile_vpn(need_vpn, false));
-    }
-
-    #[test]
-    fn explicit_vpn_provisioning_still_configures_byoc() {
-        let need_vpn = should_provision_vpn(true, true, true, true);
-        assert!(need_vpn);
-        assert!(should_reconcile_vpn(need_vpn, false));
-    }
-
-    #[test]
-    fn managed_service_repairs_still_reconcile_the_network() {
-        let need_vpn = should_provision_vpn(true, true, true, false);
-        assert!(!need_vpn);
-        assert!(should_reconcile_vpn(need_vpn, true));
-    }
-
-    #[test]
-    fn paged_reconcile_has_one_network_topology_owner() {
-        assert!(should_ensure_network(true, true));
-        assert!(!should_ensure_network(true, false));
-        assert!(!should_ensure_network(false, true));
-    }
-}
+mod tests;
 
 /// Port of RSCTF `ParticipationRepository.EnsureInstances`
 /// (`ParticipationRepository.cs:14`): insert a `GameInstance` row for every

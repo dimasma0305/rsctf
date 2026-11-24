@@ -1,11 +1,8 @@
 use super::*;
 use crate::services::worker::{build_mtls_server_config, start_reconciler};
-use crate::services::worker_store::{
-    PlaceWorkload, PlacementOutcome, PlatformOs, ResourceReservation, WorkloadDefinition,
-    WorkloadObservedState,
-};
+use crate::services::worker_store::WorkloadObservedState;
 use rcgen::{CertificateParams, KeyPair};
-use rsctf_worker_protocol::{ValidatedWorkloadSpec, WorkloadFence};
+use rsctf_worker_protocol::WorkloadFence;
 use serde_json::json;
 use std::{
     io::Write,
@@ -48,50 +45,24 @@ async fn place_team(
     image: &str,
     participant: i32,
 ) -> WorkerHandle {
-    let spec: ValidatedWorkloadSpec = serde_json::from_value(json!({
-        "gameKind":"attackDefense","platform":{"operatingSystem":"linux","architecture":"amd64"},
-        "services":[{"name":"app","replicas":1,"stateless":false,"environment":{},
-            "image":{"type":"workerLocal","workerId":worker,"imageId":image},
-            "resources":{"cpuMillis":100,"memoryBytes":67108864},
-            "ports":[{"name":"service","containerPort":8080,"protocol":"tcp"}]}],
-        "primaryEndpoint":{"service":"app","port":"service"},
-        "flagTarget":{"service":"app","path":"/data/round-flag"}, "teamDataMount":"/data"
-    }))
-    .unwrap();
-    let placed = store
-        .place_workload(&PlaceWorkload {
-            id: Uuid::new_v4(),
-            owner_kind: "ad-team-service".into(),
-            owner_key: service_lock_key(participant, 900031),
-            assignment_id: Uuid::new_v4(),
-            exact_worker_id: Some(worker),
-            required_labels: json!({}),
-            definition: WorkloadDefinition {
-                spec_hash_sha256: hex::decode(spec.spec_hash().unwrap())
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-                spec: serde_json::to_value(spec).unwrap(),
-                required_os: PlatformOs::Linux,
-                required_architecture: "amd64".into(),
-                required_runtime: "docker".into(),
-                reservation: ResourceReservation {
-                    cpu_millis: 100,
-                    memory_bytes: 67108864,
-                    slots: 1,
-                },
-            },
-        })
+    use crate::services::container::{ContainerResourceLimits, ContainerSpec};
+    let spec = ContainerSpec::ad_service(
+        format!("worker://{worker}/{image}"),
+        ContainerResourceLimits {
+            cpu_count: 1,
+            memory_limit: 64,
+            storage_limit: 128,
+        },
+        8080,
+        participant,
+        false,
+        String::new(),
+    );
+    let placed = crate::services::worker::WorkerContainerManager::new(store.clone())
+        .place_team_service(&spec, participant, 900031)
         .await
         .unwrap();
-    let PlacementOutcome::Placed(placed) = placed else {
-        panic!("team workload was not placed")
-    };
-    WorkerHandle {
-        workload_id: placed.workload.id,
-        assignment_id: placed.workload.assignment_id,
-        generation: placed.workload.generation,
-    }
+    crate::services::worker::parse_worker_handle(&placed.id).unwrap()
 }
 
 async fn test_agent(
@@ -150,7 +121,7 @@ async fn test_agent(
     private_file(dir, "worker.key", key.serialize_pem().as_bytes());
     let config = json!({"workerId":worker,"controlAddress":addr,"dataAddress":addr,"serverName":"localhost",
         "certificatePath":"worker.pem","privateKeyPath":"worker.key","caPath":"server.pem",
-        "capacity":{"cpuMillis":500,"memoryBytes":536870912,"slots":2}});
+        "capacity":{"cpuMillis":2000,"memoryBytes":536870912,"slots":2}});
     private_file(dir, "worker.json", &serde_json::to_vec(&config).unwrap());
     let binary = std::env::var_os("RSCTF_TEST_LIVE_AD_WORKER_BIN")
         .expect("set the same-build trusted worker binary");
@@ -204,7 +175,7 @@ fn health_request(handle: WorkerHandle) -> rsctf_worker_protocol::DataStreamRequ
             assignment_id: handle.assignment_id,
             generation: handle.generation.try_into().unwrap(),
         },
-        service: "app".into(),
+        service: "challenge".into(),
         port: "service".into(),
         replica: None,
     })
@@ -289,7 +260,37 @@ async fn scenario() {
     let dir = IdentityDir(path);
     let store = WorkerStore::new(fixture.pool.clone());
     let (stop, shutdown) = watch::channel(false);
-    let mut live = test_agent(&fixture.pool, worker, &dir.0, store.clone(), shutdown).await;
+    let mut live = test_agent(
+        &fixture.pool,
+        worker,
+        &dir.0,
+        store.clone(),
+        shutdown.clone(),
+    )
+    .await;
+    let mut state = runtime_state(
+        &fixture.pool,
+        Arc::new(crate::services::worker::WorkerContainerManager::new(
+            store.clone(),
+        )),
+    );
+    Arc::get_mut(&mut state).unwrap().workers = Some(live.service.clone());
+    crate::services::ad_vpn::acquire_instance_lease(&state.db)
+        .await
+        .unwrap();
+    let lease = crate::services::ad_vpn::start_instance_lease_monitor();
+    let relays = crate::services::worker::start_team_relays(
+        state.clone(),
+        live.service.as_ref().clone(),
+        shutdown,
+    );
+    sqlx::query(
+        r#"INSERT INTO "AdPatchStarters"(challenge_id,tree_id,archive,data_mount)
+        VALUES(900031,repeat('a',64),'fixture'::bytea,'/data')"#,
+    )
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
     let mut targets = Vec::new();
     for (service, participant) in [(900041, 900021), (900042, 900022)] {
         let handle = place_team(&store, worker, &image, participant).await;
@@ -319,8 +320,6 @@ async fn scenario() {
         publish_fixture_endpoint(&fixture.pool, participant, handle, &image).await;
         targets.push((service, handle));
     }
-    let mut state = runtime_state(&fixture.pool, Arc::new(NoopContainerManager));
-    Arc::get_mut(&mut state).unwrap().workers = Some(live.service);
     let round = prepare_round(
         &state.db,
         fixture.game_id,
@@ -441,12 +440,17 @@ async fn scenario() {
     live.agent.kill().await.unwrap();
     live.listener.await.unwrap();
     live.reconciler.await.unwrap();
+    relays.await.unwrap();
+    crate::services::ad_vpn::release_instance_lease()
+        .await
+        .unwrap();
+    lease.await.unwrap();
     fixture.cleanup().await;
 }
 
 async fn verify_team_flag(worker: Uuid, handle: WorkerHandle, value: &str) {
     let id = team_container(worker, handle).await;
-    let read = docker(&["exec", &id, "cat", "/data/round-flag"]).await;
+    let read = docker(&["exec", &id, "cat", "/flag"]).await;
     assert!(read == value.as_bytes());
 }
 

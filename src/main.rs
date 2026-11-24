@@ -687,6 +687,16 @@ fn start_background_services(
     }
     if let Some(worker_plane) = worker_plane {
         let service = worker_plane.service.clone();
+        if rsctf::services::ad_vpn::enabled() {
+            required.push(RequiredTask::Unit(
+                "private team worker endpoints",
+                rsctf::services::worker::start_team_relays(
+                    state.clone(),
+                    service.as_ref().clone(),
+                    shutdown.clone(),
+                ),
+            ));
+        }
         required.push(RequiredTask::Fallible(
             "trusted worker listener",
             worker_plane.start(shutdown.clone()),

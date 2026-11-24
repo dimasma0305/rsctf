@@ -8,63 +8,39 @@ use crate::services::worker_store::{DefinitionUpdateOutcome, UpdateWorkload};
 async fn replace_image(
     store: &WorkerStore,
     current: WorkerHandle,
+    worker: Uuid,
+    participant: i32,
+    challenge: i32,
     image: &str,
 ) -> (WorkerHandle, UpdateWorkload) {
-    let workload = store
-        .get_workload(current.workload_id)
+    let manager = WorkerContainerManager::new(store.clone());
+    let reference = format!("worker://{worker}/{image}");
+    let operation = Uuid::new_v4().to_string();
+    let next = manager
+        .revise_team_service(current, participant, challenge, &reference, &operation)
+        .await
+        .unwrap();
+    let retry = manager
+        .revise_team_service(current, participant, challenge, &reference, &operation)
+        .await
+        .unwrap();
+    assert_eq!(next.id, retry.id);
+    let handle = crate::services::worker::parse_worker_handle(&next.id).unwrap();
+    assert_eq!(handle.generation, current.generation + 1);
+    let definition = store
+        .get_workload(handle.workload_id)
         .await
         .unwrap()
-        .unwrap();
-    assert_eq!(workload.assignment_id, current.assignment_id);
-    assert_eq!(workload.generation, current.generation);
-    let mut definition = workload.definition;
-    definition.spec["services"][0]["image"]["imageId"] = json!(image);
-    let spec: ValidatedWorkloadSpec = serde_json::from_value(definition.spec.clone()).unwrap();
-    definition.spec_hash_sha256 = hex::decode(spec.spec_hash().unwrap())
         .unwrap()
-        .try_into()
-        .unwrap();
-    let request = UpdateWorkload {
-        id: current.workload_id,
-        assignment_id: current.assignment_id,
-        expected_generation: current.generation,
-        definition,
-    };
-    let generation = current.generation + 1;
-    assert_eq!(
-        store.update_workload_definition(&request).await.unwrap(),
-        DefinitionUpdateOutcome::Updated { generation }
-    );
-    assert_eq!(
-        store.update_workload_definition(&request).await.unwrap(),
-        DefinitionUpdateOutcome::AlreadyCurrent { generation }
-    );
-    while store
-        .ready_workload_session(current.workload_id)
-        .await
-        .unwrap()
-        .is_none()
-    {
-        let workload = store
-            .get_workload(current.workload_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(workload.generation, generation);
-        assert_ne!(
-            workload.observed_state,
-            WorkloadObservedState::Failed,
-            "{:?}",
-            workload.observed_message
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+        .definition;
     (
-        WorkerHandle {
-            generation,
-            ..current
+        handle,
+        UpdateWorkload {
+            id: handle.workload_id,
+            assignment_id: handle.assignment_id,
+            expected_generation: current.generation,
+            definition,
         },
-        request,
     )
 }
 
@@ -129,20 +105,28 @@ pub(super) async fn exercise(
         )
         .await
         .unwrap();
-        let (next, request) = replace_image(&state.worker_store, current, image).await;
-        if first_patch.is_none() {
-            first_patch = Some(request);
-        } else if image == patch {
+        let (next, request) = replace_image(
+            &state.worker_store,
+            current,
+            worker,
+            flag.participation_id,
+            flag.challenge_id,
+            image,
+        )
+        .await;
+        if let (Some(first), "previous") = (&first_patch, marker) {
             // Both requests name the same immutable image, but the earlier
             // activation cannot claim the receipt of this later rollback.
             assert_eq!(
                 state
                     .worker_store
-                    .update_workload_definition(first_patch.as_ref().unwrap())
+                    .update_workload_definition(first)
                     .await
                     .unwrap(),
                 DefinitionUpdateOutcome::Stale
             );
+        } else if marker == "first" {
+            first_patch = Some(request);
         }
         assert_eq!(
             backend.inspect_liveness(&current.encode()).await.unwrap(),
