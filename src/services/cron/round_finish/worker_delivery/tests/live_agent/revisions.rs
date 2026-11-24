@@ -5,7 +5,11 @@ use crate::services::container::{ContainerLiveness, ContainerManager};
 use crate::services::worker::WorkerContainerManager;
 use crate::services::worker_store::{DefinitionUpdateOutcome, UpdateWorkload};
 
-async fn replace_image(store: &WorkerStore, current: WorkerHandle, image: &str) -> WorkerHandle {
+async fn replace_image(
+    store: &WorkerStore,
+    current: WorkerHandle,
+    image: &str,
+) -> (WorkerHandle, UpdateWorkload) {
     let workload = store
         .get_workload(current.workload_id)
         .await
@@ -55,10 +59,13 @@ async fn replace_image(store: &WorkerStore, current: WorkerHandle, image: &str) 
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    WorkerHandle {
-        generation,
-        ..current
-    }
+    (
+        WorkerHandle {
+            generation,
+            ..current
+        },
+        request,
+    )
 }
 
 async fn scored_receipts(pool: &PgPool, round: i32) -> serde_json::Value {
@@ -109,6 +116,7 @@ pub(super) async fn exercise(
     docker(&["exec", &id, "sh", "-ec", save, "sh", "initial"]).await;
     docker(&["exec", &peer_id, "sh", "-ec", save, "sh", "peer"]).await;
     let mut previous_marker = "initial";
+    let mut first_patch = None;
     for (image, marker) in [
         (patch.as_str(), "first"),
         (second.as_str(), "second"),
@@ -121,7 +129,21 @@ pub(super) async fn exercise(
         )
         .await
         .unwrap();
-        let next = replace_image(&state.worker_store, current, image).await;
+        let (next, request) = replace_image(&state.worker_store, current, image).await;
+        if first_patch.is_none() {
+            first_patch = Some(request);
+        } else if image == patch {
+            // Both requests name the same immutable image, but the earlier
+            // activation cannot claim the receipt of this later rollback.
+            assert_eq!(
+                state
+                    .worker_store
+                    .update_workload_definition(first_patch.as_ref().unwrap())
+                    .await
+                    .unwrap(),
+                DefinitionUpdateOutcome::Stale
+            );
+        }
         assert_eq!(
             backend.inspect_liveness(&current.encode()).await.unwrap(),
             ContainerLiveness::Unknown
