@@ -83,6 +83,7 @@ const Tab: FC<TabButtonProps> = ({
 const NavigationTab: FC<TabButtonProps> = ({ to, color, label, active, icon, disabled, onClick }) => (
   <Link
     to={to ?? '#'}
+    aria-label={typeof label === 'string' ? label : undefined}
     aria-current={active ? 'page' : undefined}
     aria-disabled={disabled || undefined}
     tabIndex={disabled ? -1 : undefined}

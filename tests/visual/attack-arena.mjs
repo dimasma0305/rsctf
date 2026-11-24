@@ -58,8 +58,10 @@ try {
   assert.equal(await evaluate(`${q('[data-rm="jeopardy"]')}.getAttribute('aria-pressed')`), 'true')
   assert.ok(await evaluate(`${q('#globeSurface')}.width >= 400 && ${q('#globeSurface')}.width <= 1200`))
   assert.equal(await evaluate(`${q('#soundBtn')}.getAttribute('aria-pressed')`), 'false')
-  assert.equal(await evaluate(`${q('#serviceCount')}.closest('.metric').hidden`), true)
-  assert.equal(await evaluate(`${q('#hillCount')}.closest('.metric').hidden`), true)
+  for (const id of ['serviceCount', 'hillCount']) {
+    assert.equal(await evaluate(`${q('#'+id)}.closest('.metric').hidden`), false)
+    assert.equal(await evaluate(`${q('#'+id)}.textContent`), '0')
+  }
   assert.equal(await evaluate(`${q('#roundPill')}.hidden && ${q('#countPill')}.hidden`), true, 'Jeopardy has no misleading tick clock')
   assert.equal(await evaluate('arenaSockets.filter(s => s.readyState === 1).length'), 1)
   await inspect('desktop-49-teams')
@@ -183,6 +185,8 @@ try {
   await evaluate(`${q('#arena-tab-teams')}.click(); ${q('#ranklist .rk')}.focus()`)
   await evaluate(`arenaSockets.find(s=>s.readyState===1).frame({kind:'attack',teamName:${JSON.stringify(data.names[0])},challengeTitle:'Web challenge 1',type:'FirstBlood',teamScore:8500})`)
   await waitFor(`${q('#log')}.textContent.includes('FIRST BLOOD')`)
+  assert.equal(await evaluate(`${q('#fbOverlay')}.matches(':popover-open')`), true, 'live first blood remains visible with motion off')
+  assert.equal(await evaluate(`${q('#fbChal')}.textContent`), 'Web challenge 1')
   await waitFor(`${q('#selectionScore')}.textContent.includes('8500')`)
   assert.equal(await evaluate(`${root}.activeElement?.classList.contains('rk')`), true, 'score changes preserve focused ranking control')
   await evaluate(`${q('#arena-tab-islands')}.click(); ${q('#jeop [data-challenge-id="1000"]')}.focus()`); await press('Enter', 13)
@@ -309,6 +313,11 @@ try {
   data.koth.hills = []; data.koth.teams = []
   await navigate()
   assert.equal(await evaluate(`${root}.querySelectorAll('.country').length`),1,'A&D-only board supplies its own land without a general catalog')
+  data.ad.isFrozenView = true
+  await navigate()
+  await waitFor(`${q('#fzOverlay')}.classList.contains('show')`)
+  await evaluate(`arenaSockets.find(s => s.readyState === 1).frame({kind:'attack',type:'FirstBlood',teamName:${JSON.stringify(data.names[0])},victimTeamName:${JSON.stringify(data.names[1])},challengeTitle:'Relay'})`)
+  assert.equal(await evaluate(`${q('#fbOverlay')}.hidden`), true, 'a late event cannot reveal first blood over frozen standings')
   data = createArenaFixture('jeopardy', 0)
   await cdp.send('Page.navigate', {url:`${target}/games/901/attack`})
   await waitFor(`${q('#connectionStatus')}?.textContent === 'Waiting for teams'`)
@@ -321,16 +330,36 @@ try {
   await waitFor(`${q('#connectionStatus')}.textContent === 'Connected'`)
   await waitFor(`${root}.querySelectorAll('#ranklist .rk').length === 49`)
   await inspect('recovered-without-reload')
-  await cdp.send('Page.navigate', {url:`${target}/games/901/attack?preview`})
+  await evaluate(`${q('#arena-tab-teams')}.click(); ${q('#arenaModeLink')}.click()`)
   await waitFor(`${q('#connectionStatus')}?.textContent === 'Preview'`)
   await waitFor(`${root}.querySelectorAll('#ranklist .rk').length === 8`)
+  assert.equal(await evaluate('location.hash'), '#arena=teams')
+  assert.equal(await evaluate('arenaSockets.length'), 0)
+  await inspect('preview-controls-mobile')
+  for (const [button, title, result] of [
+    ['fbAdBtn', 'First blood', /captured a flag from/],
+    ['fbJeoBtn', 'First blood', /solved the challenge first/],
+    ['fbKothBtn', 'First crown', /took the hill first/],
+  ]) {
+    await evaluate(`${q('#'+button)}.focus()`); await press('Enter', 13)
+    assert.equal(await evaluate(`${q('#fbOverlay')}.matches(':popover-open')`), true)
+    assert.equal(await evaluate(`${q('#fbTitle')}.textContent`), title)
+    assert.match(await evaluate(`${q('#fbResult')}.textContent`), result)
+    assert.ok(await evaluate(`${q('#fbChal')}.textContent.length > 0`))
+  }
+  await evaluate(`${q('.preview-setup summary')}.click(); const services = ${q('#cfgAd')}; services.value = '0'; services.dispatchEvent(new Event('change'))`)
+  assert.equal(await evaluate(`${q('#fbAdBtn')}.disabled && ${q('#patchBtn')}.disabled && !${q('#fbKothBtn')}.disabled`), true)
   await evaluate(`${q('#freezeBtn')}.click()`)
   await waitFor(`${q('#fzOverlay')}.classList.contains('show')`)
   await inspect('preview-frozen')
-  await evaluate(`${q('#freezeBtn')}.click(); ${q('#endBtn')}.click()`)
+  await evaluate(`${q('#resumePreview')}.click(); ${q('#endBtn')}.click()`)
   await waitFor(`${q('#winOverlay')}.classList.contains('show')`)
   await waitFor(`getComputedStyle(${q('.pod.p1')}).opacity === '1'`)
   await inspect('preview-ended')
+  await evaluate(`${q('#rematchBtn')}.click(); ${q('#arenaModeLink')}.click()`)
+  await waitFor(`${q('#connectionStatus')}?.textContent === 'Connected'`)
+  assert.equal(await evaluate('new URLSearchParams(location.search).has("preview")'), false)
+  assert.equal(await evaluate(`${q('#previewPanel')}.hidden`), true)
   data = createArenaFixture()
   data.scoreboard.challenges = { Web: [data.scoreboard.challenges.Web[0]] }
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1100, deviceScaleFactor: 1, mobile: false })

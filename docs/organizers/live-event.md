@@ -77,6 +77,16 @@ During and after the event:
 - Record manual score or participation decisions with an organizer and timestamp.
 - Keep the frozen board policy consistent for every team.
 
+## Rehearse spectator alerts
+
+In the game's **Live arena**, select **Open preview**. Choose **First blood** under Attack & Defense or Jeopardy, or **First crown** under King of the Hill. The preview uses simulated teams and scores. You can replay each alert immediately.
+
+![Arena preview controls for the three event types](/screenshots/arena-alert-preview.png)
+
+Open **Simulation settings** to change the team or challenge counts. Use **Freeze standings** and **Resume preview** to rehearse a freeze, or **End preview match** to see the podium. Select **Return to live arena** when you finish.
+
+![First blood shown alongside the globe and team rankings](/screenshots/arena-first-blood.png)
+
 ## Closing the event
 
 1. Confirm the configured end time has passed.
