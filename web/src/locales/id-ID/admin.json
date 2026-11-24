@@ -1,5 +1,17 @@
 {
   "ad": {
+    "team_patching": {
+      "choose_zip": "Pilih berkas ZIP…",
+      "title": "Patch tim",
+      "hosted": "Dihosting RSCTF",
+      "koth": "Semua tim bermain di satu hill bersama. Untuk patch SSH dan ZIP per tim, buat tantangan Attack & Defense yang dihosting RSCTF.",
+      "zip": "Patch ZIP",
+      "ssh": "Akses SSH",
+      "byoc_zip": "Tim memasang patch di host mereka sendiri. Unggah ZIP starter tersedia untuk tantangan A&D yang dihosting RSCTF.",
+      "save_hosting": "Simpan perubahan hosting untuk mengunggah ZIP starter.",
+      "byoc_ssh": "Tim mengelola akses shell di host mereka sendiri. SSH melalui Toolkit memerlukan shell BYOC opsional.",
+      "hosted_ssh": "Pemain mendaftarkan kunci SSH di A&D Toolkit untuk mengedit layanan tim yang sedang berjalan."
+    },
     "patch_activity": {
       "label": "Bagikan aktivitas patch",
       "help": "Atur sebelum acara. Jumlah deployment muncul setelah satu ronde berikutnya selesai. Setelah acara dan mode latihan ditutup, tim sedivisi dapat melihat perubahan pada file starter yang dipilih, termasuk rentang baris jika diaktifkan untuk file tersebut.",

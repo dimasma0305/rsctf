@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Anchor,
   Card,
   Checkbox,
   Group,
@@ -286,6 +287,12 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
               /{challenge.originalScore}pts
             </Text>
           </Text>
+          {challenge.type === 'AttackDefense' && (
+            <Anchor component={Link} size="sm" w="fit-content"
+              to={`/admin/games/${id}/challenges/${challenge.id}#team-patching`}>
+              {t('admin.ad.team_patching.title', 'Team patching')}
+            </Anchor>
+          )}
         </Stack>
 
         <Group gap={4} wrap="nowrap" ml="auto">

@@ -16,6 +16,8 @@ It consumes the administrator-owned catalog returned with challenge details;
 ordinary saves preserve running instances, while replacement has a destructive
 confirmation. [runtime-profiles.mjs](../../../../tests/visual/runtime-profiles.mjs)
 checks the real editor payload/locks and the event landing badge's icon spacing.
+The A&D challenge list links to [AdminTeamPatching.tsx](../../../../web/src/components/admin/AdminTeamPatching.tsx),
+which owns the hosting and SSH controls and selects the hosted starter ZIP or BYOC guidance.
 The challenge editor also groups details, runtime resources and checker controls
 with keyboard-accessible section links. The same browser journey checks live
 operational locks, the unsaved-change save bar, and the save-before-apply guard in
