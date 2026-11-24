@@ -1,10 +1,6 @@
 /**
- * Procedural Web Audio engine for the battle arena — extracted from Attack.tsx.
- *
- * Fully self-contained: it owns its own AudioContext / master gain / reverb and an
- * enabled flag, has ZERO DOM/canvas/game-state dependencies, and exposes only the
- * sfx surface + lifecycle (unlock / resume / setEnabled / close). Every sound is
- * synthesised on the fly, so the arena does not ship third-party audio samples.
+ * The arena mixes its synthesized cues and the First Blood glass sample through
+ * one user-activated Web Audio context, so mute and teardown cover both.
  */
 
 export interface SoundEngine {
@@ -28,15 +24,17 @@ export interface SoundEngine {
   sfxSolve(): void
   sfxIncoming(durationSeconds?: number): () => void
   sfxFirstBlood(): () => void
+  sfxFirstCrown(): () => void
   /** Quiet looping bed for theater mode; starts once the context is running. */
   startAmbient(): void
   stopAmbient(): void
 }
 
-export function createSoundEngine(): SoundEngine {
+export function createSoundEngine(glassUrl: string): SoundEngine {
   const MASTER_LEVEL = 1.6
   let AC: any = null, masterGain: any = null, reverb: any = null, enabled = true, unlocked = false
   const activeStops = new Set<() => void>()
+  let glassBuffer: Promise<AudioBuffer | null> | undefined
   const rng = (a: number, b: number) => a + Math.random() * (b - a)
 
   function ensureAudio(): any {
@@ -57,8 +55,20 @@ export function createSoundEngine(): SoundEngine {
     return ac && ac.state === 'running' ? ac : null
   }
   function markRunning(ac: any) {
-    if (ac === AC && ac.state === 'running') unlocked = true
+    if (!ac || ac !== AC || ac.state !== 'running') return
+    unlocked = true
+    if (enabled) void loadGlass(ac)
     if (unlocked && ambientWanted) beginAmbient()
+  }
+  function loadGlass(ac: AudioContext) {
+    glassBuffer ??= window.fetch(glassUrl).then(async response => {
+      if (!response.ok) throw new Error('Glass audio unavailable')
+      return ac.decodeAudioData(await response.arrayBuffer())
+    }).catch(() => {
+      if (ac === AC) glassBuffer = undefined
+      return null
+    })
+    return glassBuffer
   }
   let ambientWanted = false, ambientStop: (() => void) | null = null
   // Brown-noise wind under a slow lowpass sweep plus a sub drone. Both fade in over a few
@@ -174,6 +184,7 @@ export function createSoundEngine(): SoundEngine {
     stopAmbient() { ambientWanted = false; ambientStop?.() },
     close() {
       stopActive()
+      glassBuffer = undefined
       try { if (AC) AC.close() } catch {}
       AC = null; masterGain = null; reverb = null; unlocked = false
     },
@@ -296,6 +307,35 @@ export function createSoundEngine(): SoundEngine {
       })
     },
     sfxFirstBlood() {
+      const ac: AudioContext | null = runningAudio()
+      if (!ac) return () => {}
+      const impactTime = ac.currentTime
+      let source: AudioBufferSourceNode | undefined
+      const stop = trackStop(() => {
+        if (source) {
+          source.onended = null
+          source.stop()
+          source.disconnect()
+        }
+      })
+      void loadGlass(ac).then(buffer => {
+        if (!activeStops.has(stop)) return
+        // A cold download may finish after impact. Keep falling shards in sync.
+        const offset = ac.currentTime - impactTime
+        if (!buffer || ac !== runningAudio() || offset >= buffer.duration) return stop()
+        source = ac.createBufferSource()
+        source.buffer = buffer
+        source.connect(masterGain)
+        source.onended = () => {
+          activeStops.delete(stop)
+          source?.disconnect()
+          source = undefined
+        }
+        source.start(0, offset)
+      })
+      return stop
+    },
+    sfxFirstCrown() {
       const ac = on()
       if (!ac) return () => {}
       const bus = ac.createGain()

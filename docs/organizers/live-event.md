@@ -91,6 +91,8 @@ On First Blood, cracks spread from the point of impact and fork into uneven shar
 
 [Watch a First Blood replay](/screenshots/arena-first-blood.webp)
 
+Turn on **Sound** in the arena to hear the glass crack on impact and the loose shards land.
+
 ## Closing the event
 
 1. Confirm the configured end time has passed.

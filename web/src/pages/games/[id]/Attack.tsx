@@ -44,6 +44,7 @@ import { createArenaSpace } from './arenaSpace'
 import { createArenaTheater } from './arenaTheater'
 import arenaTheme from './arenaTheme.css?inline'
 import { createSoundEngine } from './audio'
+import glassSoundUrl from '../../../lib/audio/first-blood-glass.mp3?url'
 import { milestoneIcon, milestoneKinds, previewPanel, type MilestoneKind } from './arenaPreview'
 import { createFxRenderer } from './fxRenderer'
 import { createFzRenderer } from './fzRenderer'
@@ -334,10 +335,10 @@ function runArena(
     cfgKoth = 3,
     cfgJeop = 24
   let arenaRect: any = null // cached arena.getBoundingClientRect(); refreshed in sizeCanvas
-  const snd = createSoundEngine() // procedural Web Audio engine (see audio.ts)
+  const snd = createSoundEngine(glassSoundUrl)
   snd.setEnabled(false) // Sound is opt-in, not unlocked by unrelated navigation.
   let stopIncomingSound: (() => void) | null = null
-  let stopFirstBloodSound: (() => void) | null = null
+  let stopMilestoneSound: (() => void) | null = null
   let rankDirty = false,
     logDirty = false // per-frame DOM-flush flags
 
@@ -1101,8 +1102,8 @@ function runArena(
     card.hidePopover?.()
     card.hidden = true
     stopIncomingSound?.()
-    stopFirstBloodSound?.()
-    stopIncomingSound = stopFirstBloodSound = null
+    stopMilestoneSound?.()
+    stopIncomingSound = stopMilestoneSound = null
     updatePreviewControls()
   }
 
@@ -1127,12 +1128,14 @@ function runArena(
     updatePreviewControls()
     onImpact()
     if (motionEnabled && target) spawnBeam(team, target, team.color, true)
-    if (snd.isEnabled()) {
+    if (kind !== 'koth') {
+      stopMilestoneSound = snd.sfxFirstBlood()
+    } else if (snd.isEnabled()) {
       stopIncomingSound = snd.sfxIncoming(0.8)
       ownedTimeout(() => {
         if (generation !== alertGeneration || !snd.isEnabled()) return
         stopIncomingSound?.()
-        stopFirstBloodSound = snd.sfxFirstBlood()
+        stopMilestoneSound = snd.sfxFirstCrown()
       }, 800)
     }
     ownedTimeout(() => { if (generation === alertGeneration) clearMilestone() }, 5000)
@@ -2544,8 +2547,8 @@ function runArena(
       } else {
         stopIncomingSound?.()
         stopIncomingSound = null
-        stopFirstBloodSound?.()
-        stopFirstBloodSound = null
+        stopMilestoneSound?.()
+        stopMilestoneSound = null
         if ('speechSynthesis' in window) {
           try {
             speechSynthesis.cancel()
@@ -2710,8 +2713,8 @@ function runArena(
     }
     stopIncomingSound?.()
     stopIncomingSound = null
-    stopFirstBloodSound?.()
-    stopFirstBloodSound = null
+    stopMilestoneSound?.()
+    stopMilestoneSound = null
     snd.close()
     theater.destroy()
     schemeObserver.disconnect()
