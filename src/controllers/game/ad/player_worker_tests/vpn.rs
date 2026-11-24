@@ -6,7 +6,7 @@ use axum::{
 };
 use tower::ServiceExt;
 
-const PEER: &str = "rsctf-ci-player";
+const PEER: &str = "rscpeer0";
 pub(super) struct PlayerVpn;
 
 async fn ip(args: &[&str]) -> Vec<u8> {
@@ -48,26 +48,33 @@ impl PlayerVpn {
         };
         let address = field("Address = ");
         let routes = field("AllowedIPs = ");
-        let raw = config
-            .lines()
-            .filter(|line| !line.starts_with("Address = ") && !line.starts_with("DNS = "))
-            .collect::<Vec<_>>()
-            .join("\n");
-        private_file(dir, "player.conf", raw.as_bytes());
-        ip(&["netns", "add", PEER]).await;
-        let peer = Self;
-        ip(&["link", "add", PEER, "type", "wireguard"]).await;
-        let status = Command::new("wg")
-            .args(["setconf", PEER])
+        private_file(dir, "player.conf", &bytes);
+        let stripped = Command::new("wg-quick")
+            .arg("strip")
             .arg(dir.join("player.conf"))
             .output()
             .await
-            .unwrap()
-            .status;
+            .unwrap();
         assert!(
-            status.success(),
-            "WireGuard rejected the downloaded configuration"
+            stripped.status.success(),
+            "wg-quick could not read the player profile"
         );
+        private_file(dir, "tunnel.conf", &stripped.stdout);
+        ip(&["netns", "add", PEER]).await;
+        let peer = Self;
+        ip(&["link", "add", PEER, "type", "wireguard"]).await;
+        let configured = Command::new("wg")
+            .args(["setconf", PEER])
+            .arg(dir.join("tunnel.conf"))
+            .output()
+            .await
+            .unwrap();
+        if !configured.status.success() {
+            let message = String::from_utf8_lossy(&configured.stderr)
+                .replace(field("PrivateKey = "), "[redacted]")
+                .replace(field("PublicKey = "), "[redacted]");
+            panic!("wg setconf failed ({}): {message}", configured.status);
+        }
         ip(&["link", "set", PEER, "netns", PEER]).await;
         ip(&["-n", PEER, "addr", "add", address, "dev", PEER]).await;
         ip(&["-n", PEER, "link", "set", "lo", "up"]).await;

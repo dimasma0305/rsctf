@@ -525,7 +525,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ipset wireguard-tools
           sudo ip link add rsctf-ci-svc type dummy
-          trap 'sudo ip netns del rsctf-ci-player 2>/dev/null || true; sudo ip link del rsctf-ci-player 2>/dev/null || true; sudo ip link del wg0 2>/dev/null || true; sudo ip link del rsctf-ci-svc' EXIT
+          trap 'sudo ip netns del rscpeer0 2>/dev/null || true; sudo ip link del rscpeer0 2>/dev/null || true; sudo ip link del wg0 2>/dev/null || true; sudo ip link del rsctf-ci-svc' EXIT
           sudo ip addr add 10.214.103.253/24 dev rsctf-ci-svc
           sudo ip link set rsctf-ci-svc up
           export RSCTF_TEST_LIVE_AD_WORKER_BIN="$PWD/agents/worker-agent/target/x86_64-unknown-linux-musl/release/rsctf-worker-agent"
