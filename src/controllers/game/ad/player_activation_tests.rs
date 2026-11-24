@@ -26,8 +26,6 @@ pub(super) async fn ready_candidate(
     config: &str,
     image: &str,
 ) -> Uuid {
-    let (_, manifest) = image.split_once('@').unwrap();
-    let attempt = Uuid::new_v4();
     let mut tx = pool.begin().await.unwrap();
     sqlx::query(r#"INSERT INTO "AdPatchSourceTrees" VALUES(900041,repeat('b',64),'{}')"#)
         .execute(&mut *tx)
@@ -37,6 +35,14 @@ pub(super) async fn ready_candidate(
         .bind(captain).execute(&mut *tx).await.unwrap();
     sqlx::query(r#"INSERT INTO "AdSharedPatchChanges"(service_id,revision,changes) VALUES(900041,1,'[{"path":"app.py","kind":"Modified"}]')"#)
         .execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    staged_image(pool, config, image).await
+}
+
+pub(super) async fn staged_image(pool: &sqlx::PgPool, config: &str, image: &str) -> Uuid {
+    let (_, manifest) = image.split_once('@').unwrap();
+    let attempt = Uuid::new_v4();
+    let mut tx = pool.begin().await.unwrap();
     sqlx::query(
         r#"INSERT INTO "AdPatchBuilds"(service_id,revision,attempt,profile,status)
         VALUES(900041,1,$1,repeat('a',64),'Ready')"#,

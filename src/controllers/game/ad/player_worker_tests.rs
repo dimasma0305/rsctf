@@ -419,7 +419,7 @@ async fn scenario() {
     let before_toolkit =
         revisions::exercise(&state, worker, [targets[0].1, targets[1].1], &round, &image).await;
     let candidate = std::env::var("RSCTF_WORKER_TEST_CANDIDATE").unwrap();
-    let config = std::env::var("RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID").unwrap();
+    let config = std::env::var("RSCTF_WORKER_TEST_CANDIDATE_CONFIG").unwrap();
     let receipts = revisions::scored_receipts(state.pg(), round.id).await;
     let final_id = cycle::exercise(
         &state,

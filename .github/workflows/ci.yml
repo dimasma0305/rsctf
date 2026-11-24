@@ -533,7 +533,8 @@ jobs:
           export RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:patch --format '{{.Id}}')"
           export RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:second --format '{{.Id}}')"
           repo="$PATCH_REGISTRY/test-worker/service-900041"
-          docker tag "$RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID" "$repo:reviewed"
+          docker build --tag "$repo:reviewed" tests/fixtures/worker-patch
+          candidate_config="$(docker image inspect "$repo:reviewed" --format '{{.Id}}')"
           docker push "$repo:reviewed"
           digest="$(curl -fsSI -H 'Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json' \
             "http://$PATCH_REGISTRY/v2/test-worker/service-900041/manifests/reviewed" | awk 'tolower($1)=="docker-content-digest:" {gsub(/\r/,"",$2);print $2}')"
@@ -547,7 +548,8 @@ jobs:
             RSCTF_EVENT_VPN_CREDENTIAL_KEY="$(openssl rand -hex 32)" \
             RSCTF_TEST_DATABASE_URL="$RSCTF_TEST_DATABASE_URL" RSCTF_TEST_LIVE_AD_WORKER_BIN="$RSCTF_TEST_LIVE_AD_WORKER_BIN" \
             RSCTF_WORKER_TEST_IMAGE_ID="$RSCTF_WORKER_TEST_IMAGE_ID" RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$RSCTF_WORKER_TEST_PATCH_IMAGE_ID" \
-            RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID" RSCTF_WORKER_TEST_CANDIDATE="$RSCTF_WORKER_TEST_CANDIDATE" \
+            RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID" RSCTF_WORKER_TEST_CANDIDATE_CONFIG="$candidate_config" \
+            RSCTF_WORKER_TEST_CANDIDATE="$RSCTF_WORKER_TEST_CANDIDATE" \
             ./ci-artifacts/rsctf-tests --ignored --exact "$name" --nocapture
 
   worker-plane-windows:

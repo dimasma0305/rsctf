@@ -951,14 +951,15 @@ sessions and delayed commands cannot publish a route or delete a replacement.
 - Windows workers are AMD64-only and require native Windows-container mode,
   `windowsfilter`, Hyper-V isolation, and HCN v2 endpoint ACL support. The
   runtime fails closed when it cannot apply and read back its deny-egress ACL.
-- The existing one-container compatibility path launches Jeopardy workloads.
-  Remote-worker A&D/KotH networking is not enabled; configure
-  `workerBackend.localBackend`/`RSCTF_WORKER_LOCAL_BACKEND` as Docker or
-  Kubernetes on an all-in-one server to keep those modes local. Split hybrid
-  mode is rejected until lifecycle requests can be delegated safely. With
-  `none`, A&D/KotH containers are unavailable. The shared protocol already
-  rejects replicas or multiple services for those game modes, so this does not
-  alter constant scoring.
+- Hosted A&D supports one service and one replica on a trusted Linux worker.
+  Enable the A&D VPN on its network owner and give that owner a usable address
+  in the services subnet. Keep challenge egress and host packet capture off.
+  In hybrid mode, select the worker using the organizer's
+  `worker://<worker-id>/sha256:<image-id>` starter and the default runtime
+  profile. A player can then use the Toolkit's SSH key or activate a staged
+  ZIP revision. Both rollback choices keep the same assignment and registered
+  data directory. The worker must be able to pull the staged image by digest.
+  KoTH continues to use the local backend in all-in-one hybrid deployments.
 - Registry authentication and image builds are not implemented in the agent.
   Use a registry it can pull without credentials or preload an immutable image
   and use a worker-local reference. Server-side archive builds remain usable
@@ -971,9 +972,10 @@ sessions and delayed commands cannot publish a route or delete a replacement.
   result so the next inventory pass probes it again. This is bounded TCP
   reachability for startup and recovery, not continuous or configurable
   application-level health monitoring.
-- Interactive container exec is not implemented. Certificate renewal is
-  negotiated automatically by updated agents and servers as described above;
-  key replacement still uses deliberate enrollment.
+- The A&D bastion opens an interactive shell on the team's published Linux
+  assignment using the container image's configured user. Updated agents
+  advertise this as `interactiveExec`. Certificate renewal is negotiated
+  automatically. Key replacement uses deliberate enrollment.
 - Every workload receives a dedicated Docker network. Linux marks it
   `internal`; Windows combines a private NAT network with a verified HCN
   deny-egress ACL and a resolver without external DNS forwarding. The agent

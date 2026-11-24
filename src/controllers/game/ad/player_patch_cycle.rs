@@ -1,6 +1,23 @@
 use super::*;
 use crate::app_state::SharedState;
 use serde_json::json;
+use std::io::{Cursor, Write};
+
+fn source_zip(revision: &[u8]) -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (path, bytes) in [
+        (
+            "Dockerfile",
+            include_bytes!("../../../../tests/fixtures/worker-patch/Dockerfile").as_slice(),
+        ),
+        ("src/revision", revision),
+    ] {
+        zip.start_file(path, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
 
 pub(crate) async fn register_service(pool: &sqlx::PgPool, starter: &str, port: i32) -> Uuid {
     let mut tx = pool.begin().await.unwrap();
@@ -17,14 +34,23 @@ pub(crate) async fn register_service(pool: &sqlx::PgPool, starter: &str, port: i
     .execute(&mut *tx)
     .await
     .unwrap();
-    sqlx::raw_sql(
+    let archive = source_zip(b"original\n");
+    let tree = crate::services::ad::patches::PatchManifest::from_zip(&archive)
+        .unwrap()
+        .tree_id();
+    sqlx::query(
         r#"INSERT INTO "AdPatchStarters"(challenge_id,tree_id,archive,data_mount)
-        VALUES(900031,repeat('a',64),'fixture','/data');
-        UPDATE "Games" SET start_time_utc=now()-interval '2 hours' WHERE id=900001"#,
+        VALUES(900031,$1,$2,'/data')"#,
     )
+    .bind(tree)
+    .bind(archive)
     .execute(&mut *tx)
     .await
     .unwrap();
+    sqlx::query(r#"UPDATE "Games" SET start_time_utc=now()-interval '2 hours' WHERE id=900001"#)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     let captain = sqlx::query_scalar::<_, Uuid>(
         r#"UPDATE "AspNetUsers" SET role=$1,security_stamp='kind-test'
         WHERE id=(SELECT captain_id FROM "Teams" WHERE id=900011) RETURNING id"#,
@@ -58,20 +84,36 @@ pub(crate) async fn exercise(
 ) -> String {
     let [starter, previous, candidate] = images;
     let pool = state.pg();
-    let attempt = super::activation::ready_candidate(pool, captain, config, candidate).await;
     let token = state
         .token
         .issue(captain, Role::User, "fixture-one", "kind-test")
         .unwrap();
     let app = super::super::router().with_state(state.clone());
-    let base = "/api/game/900001/ad/challenges/900031/patch-revisions/1";
-    let get = Request::get(format!(
-        "{base}/build?service=900041&commit={}",
-        "c".repeat(64)
-    ))
-    .header("authorization", format!("Bearer {token}"))
-    .body(Body::empty())
+    let zip = source_zip(include_bytes!(
+        "../../../../tests/fixtures/worker-patch/src/revision"
+    ));
+    let upload = Request::post("/api/game/900001/ad/challenges/900031/patch-revisions")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/zip")
+        .header("x-rsctf-expected-revision", "0")
+        .header("x-rsctf-expected-service", "900041")
+        .body(Body::from(zip))
+        .unwrap();
+    let response = app.clone().oneshot(upload).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let revision: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
     .unwrap();
+    let commit = revision["commitId"].as_str().unwrap();
+    let attempt = super::activation::staged_image(pool, config, candidate).await;
+    let base = "/api/game/900001/ad/challenges/900031/patch-revisions/1";
+    let get = Request::get(format!("{base}/build?service=900041&commit={commit}"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
     let status = app.clone().oneshot(get).await.unwrap();
     assert_eq!(status.status(), StatusCode::OK);
     let view: Value = serde_json::from_slice(
