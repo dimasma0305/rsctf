@@ -348,6 +348,21 @@ pub struct UpdateWorkload {
     pub definition: WorkloadDefinition,
 }
 
+impl UpdateWorkload {
+    pub(super) fn matching_definition_outcome(&self, generation: i64) -> DefinitionUpdateOutcome {
+        // A rollback can make an old image current again. A team patch can
+        // acknowledge only its starting generation or the one it produced.
+        if self.definition.spec["gameKind"] == "attackDefense"
+            && generation != self.expected_generation
+            && self.expected_generation.checked_add(1) != Some(generation)
+        {
+            DefinitionUpdateOutcome::Stale
+        } else {
+            DefinitionUpdateOutcome::AlreadyCurrent { generation }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct WorkerWorkload {
     pub id: Uuid,

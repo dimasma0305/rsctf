@@ -418,17 +418,7 @@ impl WorkerStore {
             && current_replicas == required_replicas;
         if definition_is_current {
             transaction.commit().await.map_err(database_error)?;
-            // Rolling back can make an old image current again. Only the
-            // requested revision and its immediate retry own this receipt.
-            if current_spec["gameKind"] == "attackDefense"
-                && current_generation != request.expected_generation
-                && request.expected_generation.checked_add(1) != Some(current_generation)
-            {
-                return Ok(DefinitionUpdateOutcome::Stale);
-            }
-            return Ok(DefinitionUpdateOutcome::AlreadyCurrent {
-                generation: current_generation,
-            });
+            return Ok(request.matching_definition_outcome(current_generation));
         }
         if current_generation != request.expected_generation {
             transaction.commit().await.map_err(database_error)?;
