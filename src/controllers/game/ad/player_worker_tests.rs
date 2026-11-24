@@ -290,6 +290,13 @@ async fn scenario() {
     let starter = format!("worker://{worker}/{original_id}");
     let previous = format!("worker://{worker}/{image}");
     let captain = cycle::register_service(&fixture.pool, &starter, &previous, 8080).await;
+    // The scoring-only seed uses banned accounts. The second team also signs
+    // into the bastion with its own key in this player-facing scenario.
+    sqlx::query(r#"UPDATE "AspNetUsers" SET role=$1 WHERE id=(SELECT captain_id FROM "Teams" WHERE id=900012)"#)
+        .bind(crate::utils::enums::Role::User as i16)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
     // The registration setup opens round eight for reset-only tests. This
     // scenario advances the round using the normal scheduler below.
     sqlx::query(r#"UPDATE "AdRounds" SET finalized=TRUE WHERE id=900108"#)
