@@ -43,7 +43,7 @@ import { createArenaSpace } from './arenaSpace'
 import { createArenaTheater } from './arenaTheater'
 import arenaTheme from './arenaTheme.css?inline'
 import { createSoundEngine } from './audio'
-import { createFbRenderer } from './fbRenderer'
+import { milestoneIcon, milestoneKinds, previewPanel, type MilestoneKind } from './arenaPreview'
 import { createFxRenderer } from './fxRenderer'
 import { createFzRenderer } from './fzRenderer'
 import { KothDirector, statusFromCheck, type CaptureResult } from './kothCapture'
@@ -79,23 +79,11 @@ const ARENA_BODY = `
       <button class="btn ghost" id="speedBtn" aria-pressed="false">Speed 1×</button>
       <button class="btn ghost" id="soundBtn" aria-pressed="false">Sound off</button>
       <button class="btn ghost on" id="motionBtn" aria-pressed="true">Motion on</button>
-      <span id="cfgBtns" style="display:none">
-        <label class="cfg">Teams<input id="cfgTeams" type="number" min="2" max="20" value="8"></label>
-        <label class="cfg">A&amp;D<input id="cfgAd" type="number" min="0" max="10" value="4"></label>
-        <label class="cfg">KotH<input id="cfgKoth" type="number" min="0" max="12" value="3"></label>
-        <label class="cfg">Jeopardy<input id="cfgJeop" type="number" min="0" max="40" value="24"></label>
-      </span>
-      <span id="fbBtns" style="display:none">
-        <button class="btn fb-ad" id="fbAdBtn">First blood · A&amp;D</button>
-        <button class="btn fb-jeo" id="fbJeoBtn">First blood · Jeopardy</button>
-        <button class="btn fb-koth" id="fbKothBtn">First crown · KotH</button>
-        <button class="btn patch" id="patchBtn">Patch</button>
-        <button class="btn frz" id="freezeBtn">Freeze</button>
-        <button class="btn end" id="endBtn">End</button>
-      </span>
+      <a class="btn" id="arenaModeLink"></a>
     </div>
     </div>
     </div>
+    ${previewPanel}
     <div class="midrow">
       <section class="panel arena-wrap" aria-labelledby="globeTitle">
         <div class="map-heading">
@@ -185,24 +173,10 @@ const ARENA_BODY = `
     </div>
   </div>
 
-  <div class="fb-overlay" id="fbOverlay">
-    <div class="fb-tele">
-      <div class="fb-tele-vig"></div>
-      <div class="fb-tele-ban"><b class="fb-tele-txt">INCOMING STRIKE</b></div>
-    </div>
-    <div class="fb-rays"></div>
-    <div class="fb-bar t"></div>
-    <div class="fb-bar b"></div>
-    <div class="fb-core">
-      <div class="fb-vs" id="fbVs">
-        <div class="fb-fighter atk"><div class="por" id="fbAtkPor"></div><div class="nm" id="fbAtkNm"></div><span class="fb-rtag" id="fbAtkTag"></span></div>
-        <div class="fb-vs-x" id="fbVsx">VS</div>
-        <div class="fb-fighter vic"><div class="por" id="fbVicPor"></div><div class="nm" id="fbVicNm"></div><span class="fb-rtag" id="fbVicTag"></span></div>
-      </div>
-      <div class="fb-title">FIRST BLOOD</div>
-      <div class="fb-sub" id="fbSub"></div>
-      <div class="fb-chal" id="fbChal"></div>
-    </div>
+  <div id="fbOverlay" class="milestone" popover="manual" hidden role="status" aria-atomic="true">
+    <span class="event-icon" id="fbIcon" aria-hidden="true"></span>
+    <div><div class="milestone-mode" id="fbMode"></div><h2 id="fbTitle"></h2>
+      <p id="fbResult"></p><strong class="milestone-challenge" id="fbChal"></strong></div>
   </div>
   <!-- ===== SCOREBOARD FREEZE CINEMATIC ===== -->
   <div class="fz-overlay" id="fzOverlay">
@@ -213,10 +187,11 @@ const ARENA_BODY = `
       <div class="fz-panel">
         <span class="fz-brk tl"></span><span class="fz-brk tr"></span><span class="fz-brk bl"></span><span class="fz-brk br"></span>
         <div class="fz-badge"><svg viewBox="0 0 100 100" fill="none" stroke="currentColor"><polygon points="50,4 93.8,35.8 77,87.2 23,87.2 6.2,35.8" stroke-width="3" fill="currentColor" fill-opacity=".09"/><path d="M40 47 V41 a10 10 0 0 1 20 0 V47" stroke-width="4" stroke-linecap="round"/><rect x="33" y="47" width="34" height="23" rx="4" fill="currentColor" fill-opacity=".2" stroke-width="3"/><circle cx="50" cy="56.5" r="3.6" fill="currentColor"/><rect x="48.4" y="58.6" width="3.2" height="9" rx="1.6" fill="currentColor"/></svg></div>
-        <div class="fz-title">BOARD LOCKED</div>
+        <div class="fz-title">Standings frozen</div>
         <div class="fz-bar"><span class="fz-fill"></span></div>
         <div class="fz-secured">&#10003; SECURED &middot; RESULTS AT MATCH END</div>
         <div class="fz-count" id="fzCount"></div>
+        <button type="button" class="btn preview-resume" id="resumePreview" hidden>Resume preview</button>
       </div>
     </div>
   </div>
@@ -228,7 +203,7 @@ const ARENA_BODY = `
       <div class="win-eyebrow">MATCH COMPLETE &middot; FINAL STANDINGS</div>
       <div class="win-title" id="winTitle">CHAMPIONS</div>
       <div class="podium big" id="podium"></div>
-      <button class="btn rematch" id="rematchBtn" style="display:none">&#8635; REMATCH</button>
+      <button class="btn rematch" id="rematchBtn" style="display:none">Restart preview</button>
     </div>
   </div>
 
@@ -336,8 +311,8 @@ function runArena(
     HILLS: any[] = []
   let round = 0,
     totalFlags = 0,
-    cinema = false,
-    slamCovering = false
+    cinema = false
+  let alertGeneration = 0
   // hill ownership + FIRST CROWN latch/deferral live in this pure model (see kothCapture.ts)
   const kothDir = new KothDirector()
   let tNow = Date.now(),
@@ -362,11 +337,6 @@ function runArena(
   let stopFirstBloodSound: (() => void) | null = null
   let rankDirty = false,
     logDirty = false // per-frame DOM-flush flags
-  // preroll = the attention-seeking telegraph (board stays visible, warning builds)
-  // that plays BEFORE the slam cinematic; soundDelay/slam/total are relative to the slam.
-  // 5s telegraph + 5s slam = ~10s total. The slam length tracks the CSS anim duration
-  // (5s); the FIRST BLOOD title lands at ~15% (=750ms), so onImpact/shake fire at slam=750.
-  const FB = { total: 5000, slam: 750, soundDelay: 0, preroll: 5000 }
 
   // match clock + scoreboard freeze + winner.
   // live: gameEndMs = real EndTimeUtc; freeze driven by the board's isFrozenView.
@@ -449,10 +419,6 @@ function runArena(
   // Pixi v8 WebGL FX renderer (its own overlay canvas); the 2D #fx is the fallback
   // used until fxRenderer.ready, or if WebGL init fails. See fxRenderer.ts.
   const fxRenderer = createFxRenderer(fx)
-  // Pixi v8 first-blood slam graphics (dark + radial splash + flash) on a full-viewport
-  // GPU canvas (z-94, under the DOM FB text z-95) — replaces the screen-sized DOM splash
-  // layers that caused the first-blood lag. See fbRenderer.ts.
-  const fbRenderer = createFbRenderer(root)
   // 2D-canvas WINDOW FROST for the scoreboard-freeze cinematic (corner frost ferns, baked).
   const fzRenderer = createFzRenderer($('fzCanvas') as HTMLCanvasElement)
   // 2D-canvas VICTORY effects (god-rays + confetti + sparkles) for MATCH COMPLETE / podium.
@@ -694,7 +660,6 @@ function runArena(
     ctx.setTransform(SC, 0, 0, SC, 0, 0)
     ctxbg.setTransform(SC, 0, 0, SC, 0, 0)
     fxRenderer.resize(r.width, r.height) // keep the WebGL FX layer aligned to the arena
-    fbRenderer.resize() // first-blood layer is viewport-sized; tracks the window
     fzRenderer.resize() // freeze frost is viewport-sized too
     winRenderer.resize() // victory confetti/rays viewport-sized too
     jeop.layout()
@@ -1126,230 +1091,57 @@ function runArena(
   // Jewel-band crown (fill=currentColor; tight viewBox so it fills its box). Used as the KotH
   // VS separator (purple) and the throne portrait (dark on a purple disc).
   const JEWEL_CROWN = `<svg viewBox="10 29 80 59" fill="currentColor"><path d="M10 70 L14 36 L30 50 L50 30 L70 50 L86 36 L90 70 Z"/><rect x="10" y="66" width="80" height="16" rx="3"/><circle cx="50" cy="73" r="4" fill="#fff" opacity=".55"/><circle cx="28" cy="73" r="3.2" fill="#fff" opacity=".45"/><circle cx="72" cy="73" r="3.2" fill="#fff" opacity=".45"/></svg>`
-  // Per-kind first-blood theming. A&D = blood clash (attacker vs defender + challenge reticle),
-  // Jeopardy = solo capture (attacker + big challenge reticle, no victim), KotH = coronation
-  // ("FIRST CROWN", purple nova, crown separator + throne). retAccent/retGlow colour the reticle.
-  const FB_THEME: any = {
-    ad: {
-      title: 'FIRST BLOOD',
-      accent: '#ff3b5b',
-      accent2: '#ff2350',
-      sep: 'VS',
-      tele: 'INCOMING STRIKE',
-      palette: 'blood',
-      atkTag: 'ATTACKER',
-      oppTag: 'DEFENDER',
-      retAccent: '#ffc637',
-      retGlow: 'rgba(255,198,55,.6)',
-      retLabel: '&#9635;',
-    },
-    jeopardy: {
-      title: 'FIRST BLOOD',
-      accent: '#ffc637',
-      accent2: '#ff9a1f',
-      sep: '',
-      tele: 'INCOMING BREACH',
-      palette: 'blood',
-      atkTag: 'ATTACKER',
-      oppTag: '',
-      retAccent: '#ffc637',
-      retGlow: 'rgba(255,198,55,.6)',
-      retLabel: '&#9635; CHALLENGE',
-    },
-    koth: {
-      title: 'FIRST CROWN',
-      accent: '#9d6bff',
-      accent2: '#b98bff',
-      sep: 'CROWN',
-      tele: 'INCOMING SIEGE',
-      palette: 'crown',
-      atkTag: 'CHALLENGER',
-      oppTag: 'THE THRONE',
-      retAccent: '#9d6bff',
-      retGlow: 'rgba(157,107,255,.6)',
-      retLabel: '',
-    },
-  }
-
-  // opt: { kind, oppName, oppColor, oppPortrait(html), beamTo, onImpact }
-  function fbCinematic(atkr: any, opt: any) {
-    if (!motionEnabled) {
-      opt.onImpact?.()
-      return
-    }
-    cinema = true
-    const th = FB_THEME[opt.kind] || FB_THEME.ad
-    const oppName = opt.oppName || 'THE FIELD'
-    const oppColor = opt.oppColor || th.accent
-    const ov: any = $('fbOverlay')
-    const ttl: any = root.querySelector('.fb-title')
-    const tShadowW = th.palette === 'crown' ? 3 : 4
-    if (ttl) {
-      ttl.textContent = th.title
-      ttl.style.textShadow = `${tShadowW}px 0 ${th.accent2}, -${tShadowW}px 0 #27e3ff, 0 0 26px ${th.accent}, 0 0 60px ${th.accent}`
-    }
-    // separator: "VS"/flag text, a crown SVG (KotH), or collapsed (jeopardy = solo attacker)
-    const vsEl: any = $('fbVs')
-    if (vsEl) vsEl.classList.toggle('solo', !!opt.solo)
-    const vsx: any = $('fbVsx')
-    if (vsx) {
-      if (th.sep === 'CROWN') {
-        vsx.innerHTML = JEWEL_CROWN
-        vsx.style.color = th.accent
-        vsx.style.textShadow = 'none'
-      } else {
-        vsx.innerHTML = ''
-        vsx.textContent = th.sep
-        vsx.style.color = '#fff'
-        vsx.style.textShadow = `0 0 14px ${th.accent},2px 0 ${th.accent2},-2px 0 #27e3ff`
-      }
-    }
-    root.querySelectorAll('.fb-fighter .por').forEach((p: any) => {
-      p.style.boxShadow = `0 0 26px ${th.accent}`
-    })
-    $('fbSub').innerHTML = opt.sub || ''
-    $('fbAtkPor').innerHTML = avatar(atkr.look, atkr.color)
-    const vicPor: any = $('fbVicPor')
-    if (vicPor) {
-      vicPor.innerHTML = opt.oppPortrait || ''
-      vicPor.classList.toggle('fb-throne', opt.oppPorClass === 'fb-throne')
-    }
-    const an: any = $('fbAtkNm')
-    an.textContent = atkr.name
-    an.style.color = atkr.color
-    const vn: any = $('fbVicNm')
-    vn.textContent = oppName
-    vn.style.color = oppColor
-    // role tags (team-coloured): who attacked / who defended / who holds the throne
-    const setTag = (el: any, label: string, col: string) => {
-      if (!el) return
-      if (!label) {
-        el.style.display = 'none'
-        return
-      }
-      el.style.display = ''
-      el.textContent = label
-      el.style.color = col
-      el.style.background = `${col}1f`
-      el.style.border = `1px solid ${col}80`
-    }
-    setTag($('fbAtkTag'), th.atkTag, atkr.color)
-    setTag($('fbVicTag'), th.oppTag, oppColor)
-    // challenge reticle (A&D + Jeopardy show the challenge; KotH's "challenge" IS the throne)
-    const chalEl: any = $('fbChal')
-    if (chalEl) {
-      if (opt.chal) {
-        chalEl.innerHTML = `<div class="fb-brk${opt.chalBig ? ' big' : ''}" style="--rc:${th.retAccent};--rcg:${th.retGlow}"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i><span class="lbl">${th.retLabel}</span> ${esc(opt.chal)}</div>`
-        chalEl.style.display = ''
-      } else {
-        chalEl.innerHTML = ''
-        chalEl.style.display = 'none'
-      }
-    }
-    // ---- PHASE 1: telegraph (attention-seeking pre-roll) ----
-    // The board stays FULLY VISIBLE while a warning builds (transparent edge
-    // vignette + a pulsing "INCOMING …" banner), so the room
-    // can read the scoreboard before the slam reveals FIRST BLOOD. The older
-    // arena did this with an "INCOMING STRIKE" banner; this restores that beat.
-    const teleTxt: any = root.querySelector('.fb-tele-txt')
-    if (teleTxt) {
-      teleTxt.textContent = th.tele
-      teleTxt.style.textShadow = `0 0 16px ${th.accent}`
-    }
-    const teleVig: any = root.querySelector('.fb-tele-vig')
-    if (teleVig) teleVig.style.background = `radial-gradient(circle at 50% 50%,transparent 40%,${th.accent}3a 100%)`
-    ov.style.setProperty('--fbPre', FB.preroll + 'ms')
-    ov.classList.remove('play', 'tele')
-    void ov.offsetWidth
-    ov.classList.add('tele')
-    // A procedural alarm crescendos through the telegraph, then yields to the
-    // reveal stinger. Keeping this in Web Audio avoids loading licensed samples.
+  function clearMilestone() {
+    ++alertGeneration
+    cinema = false
+    const card: HTMLElement = $('fbOverlay')
+    card.hidePopover?.()
+    card.hidden = true
     stopIncomingSound?.()
     stopFirstBloodSound?.()
-    stopFirstBloodSound = null
-    stopIncomingSound = snd.sfxIncoming(FB.preroll / 1000)
-    // ---- PHASE 2: the slam cinematic, after the build-up ----
-    ownedTimeout(() => {
-      if (killed) return
-      stopIncomingSound?.()
-      stopIncomingSound = null
-      ov.classList.remove('tele')
-      void ov.offsetWidth
-      ov.classList.add('play')
-      // GPU slam graphics (dark+splash+flash), synced with the DOM text/bars. Burst behind the
-      // hero title (its layout centre is stable under the scale animation), tinted per mode.
-      const tr: any = ttl ? ttl.getBoundingClientRect() : null
-      if (motionEnabled)
-        fbRenderer.play(
-          FB.total,
-          tr ? { cx: tr.left + tr.width / 2, cy: tr.top + tr.height / 2, palette: th.palette } : { palette: th.palette }
-        )
-      slamCovering = true // the dark slam overlay covers the board — pause the arena draw underneath
-      // The procedural first-blood stinger fires with the reveal so it
-      // punctuates the slam rather than the build-up.
+    stopIncomingSound = stopFirstBloodSound = null
+    updatePreviewControls()
+  }
+
+  function showMilestone(kind: MilestoneKind, team: any, result: string, challenge: string, target: any, onImpact: () => void) {
+    clearMilestone()
+    const generation = alertGeneration
+    const event = milestoneKinds[kind]
+    const card: HTMLElement = $('fbOverlay')
+    card.style.setProperty('--event-color', event.accent)
+    $('fbMode').textContent = event.mode
+    $('fbTitle').textContent = event.title
+    $('fbIcon').innerHTML = milestoneIcon(kind)
+    $('fbResult').textContent = result
+    $('fbChal').textContent = challenge
+    cinema = true
+    card.hidden = false
+    card.showPopover?.()
+    updatePreviewControls()
+    onImpact()
+    if (motionEnabled && target) spawnBeam(team, target, team.color, true)
+    if (snd.isEnabled()) {
+      stopIncomingSound = snd.sfxIncoming(0.8)
       ownedTimeout(() => {
-        if (killed || !snd.isEnabled()) return
+        if (generation !== alertGeneration || !snd.isEnabled()) return
+        stopIncomingSound?.()
         stopFirstBloodSound = snd.sfxFirstBlood()
-      }, FB.soundDelay)
-      ownedTimeout(() => {
-        if (killed) return
-        const sh: any = root.querySelector('.shell')
-        if (sh) {
-          sh.classList.add('shake')
-          ownedTimeout(() => sh.classList.remove('shake'), 520)
-        }
-        if (opt.onImpact) opt.onImpact()
-      }, FB.slam)
-      ownedTimeout(() => {
-        if (opt.beamTo) {
-          spawnBeam(atkr, opt.beamTo, th.accent, true)
-          if (opt.beamTo.id && opt.beamTo.color) pulseBase(opt.beamTo, opt.beamTo.color)
-        }
-      }, FB.total - 680)
-      ownedTimeout(() => {
-        ov.classList.remove('play')
-        cinema = false
-        slamCovering = false
-      }, FB.total)
-    }, FB.preroll)
+      }, 800)
+    }
+    ownedTimeout(() => { if (generation === alertGeneration) clearMilestone() }, 5000)
   }
-  function fbAd(atkr: any, vic: any, chalName: string, onImpact: () => void) {
-    const oppN = vic ? vic.name : 'THE FIELD',
-      oppC = vic ? vic.color : '#ff3b5b'
-    fbCinematic(atkr, {
-      kind: 'ad',
-      oppName: oppN,
-      oppColor: oppC,
-      oppPortrait: vic ? avatar(vic.look, vic.color) : '',
-      sub: `<span style="color:${atkr.color}">${esc(atkr.name)}</span> &nbsp;&#9656;&nbsp; <span style="color:${oppC}">${esc(oppN)}</span>`,
-      chal: chalName,
-      beamTo: vic || { x: CX, y: CY },
-      onImpact,
-    })
+
+  function fbAd(team: any, defender: any, challenge: string, onImpact: () => void) {
+    const result = defender ? `${team.name} captured a flag from ${defender.name}.` : `${team.name} captured the first flag.`
+    showMilestone('ad', team, result, challenge, defender, onImpact)
   }
-  function fbJeopardy(atkr: any, chalName: string, onImpact: () => void) {
-    fbCinematic(atkr, {
-      kind: 'jeopardy',
-      solo: true,
-      chal: chalName,
-      chalBig: true,
-      sub: `<span style="color:${atkr.color}">${esc(atkr.name)}</span> drew first blood`,
-      beamTo: { x: CX, y: CY },
-      onImpact,
-    })
+
+  function fbJeopardy(team: any, challenge: string, onImpact: () => void) {
+    showMilestone('jeopardy', team, `${team.name} solved the challenge first.`, challenge, { x: CX, y: CY }, onImpact)
   }
-  function fbKoth(atkr: any, hill: any, onImpact: () => void) {
-    const hillN = hill ? hill.name : 'THE HILL'
-    fbCinematic(atkr, {
-      kind: 'koth',
-      oppName: hillN,
-      oppColor: '#9d6bff',
-      oppPortrait: JEWEL_CROWN,
-      oppPorClass: 'fb-throne',
-      sub: `<span style="color:${atkr.color}">${esc(atkr.name)}</span> seized <span style="color:#9d6bff">${esc(hillN)}</span>`,
-      beamTo: hill || { x: CX, y: CY },
-      onImpact,
-    })
+
+  function fbKoth(team: any, hill: any, onImpact: () => void) {
+    showMilestone('koth', team, `${team.name} took the hill first.`, hill?.name ?? '', hill, onImpact)
   }
 
   /* -------- rank + stats -------- */
@@ -1460,6 +1252,7 @@ function runArena(
   function enterFreeze() {
     if (frozen) return
     frozen = true
+    clearMilestone()
     TEAMS.forEach((t) => {
       t.shown = t.score
       t.shownProjected = t.projectedScore
@@ -1494,6 +1287,7 @@ function runArena(
   function unfreeze() {
     if (!frozen) return
     frozen = false
+    updatePreviewControls()
     snd.sfxUnfreeze()
     const tag = $('freezeTag')
     if (tag) tag.classList.remove('show')
@@ -1570,12 +1364,13 @@ function runArena(
     }
     endingMatch = false
     matchOver = true
+    clearMilestone()
     unfreeze()
     // PODIUM SPOTLIGHT: top 3 on tiered pedestals (1st centre/crowned/gold, 2nd left, 3rd right).
     // DOM order is 1·2·3; CSS `order` lays them out as 2·1·3 with the gold step tallest.
     const podium = $('podium')
     const title = $('winTitle')
-    if (title) title.textContent = 'CHAMPIONS'
+    if (title) title.textContent = 'Champions'
     const top = [sorted[0], sorted[1], sorted[2]],
       cls = ['p1', 'p2', 'p3'],
       lbl = ['01', '02', '03']
@@ -1616,41 +1411,6 @@ function runArena(
     winRenderer.stop()
     addLog('MATCH', 'sys', `<span class="em">MATCH RESUMED</span> :: end time extended`)
   }
-  function resetMatch() {
-    matchOver = false
-    endingMatch = false
-    nextEndCheckMs = 0
-    round = 1
-    tickLeft = 30
-    kothDir.reset()
-    gameEndMs = Date.now() + MATCH_SECONDS * 1000
-    TEAMS.forEach((t) => {
-      t.score = 0
-      t.projectedScore = 0
-      t.officialRank = t.idx + 1
-      t.offenseRate = 0
-      t.defenseRate = rng(0.2, 0.95)
-      t.slaRate = rng(0.88, 1)
-      t.shown = t.shownProjected = t.shownRank = t.shownSla = t.shownOffense = t.shownDefense = t.shownCaptures = null
-      t.captureEvidence = 0
-      t.svc.forEach((s: any) => {
-        s.status = Math.random() < 0.85 ? 'def' : 'vuln'
-      })
-      renderSvc(t)
-    })
-    updatePreviewScores(true)
-    HILLS.forEach((h) => {
-      h.owner = null
-      renderHill(h)
-    })
-    totalFlags = 0
-    renderAllScores()
-    refreshRank()
-    const ov = $('winOverlay')
-    if (ov) ov.classList.remove('show')
-    winRenderer.stop()
-    addLog('SYS', 'sys', `<span class="em">REMATCH</span> :: arena reset`)
-  }
   // Coalesce the heavy DOM rebuilds: events just mark dirty (refreshRank), and the rAF loop
   // flushes drawRank/log-scroll at most once per frame instead of rebuilding on every event.
   function refreshRank() {
@@ -1678,15 +1438,13 @@ function runArena(
     if (killed) return
     const dt = Math.min((ts - lastTs) / 1000, 0.05)
     lastTs = ts
-    // draw only when there's something to draw: skip while the slam overlay covers the
-    // board, while the tab is hidden, and while frozen with no active FX (idle freeze).
     const fxActive = shots.length || sparks.length || fxq.length
-    if (!slamCovering && !matchOver) jeop.tick(ts, dt)
+    if (!matchOver) jeop.tick(ts, dt)
     space.parallax(Number(arena.dataset.globeYaw) || 0)
     if (theater.isOn()) syncHud(ts)
     // !matchOver: after endMatch the opaque PODIUM win overlay (z97) covers the whole arena and
     // winRenderer runs its own loop on top — skip the ambient/jeop draw beneath it to save GPU.
-    if (motionEnabled && !slamCovering && !matchOver && !document.hidden && (fxActive || !frozen)) {
+    if (motionEnabled && !matchOver && !document.hidden && (fxActive || !frozen)) {
       drawFX(dt) // advances FX physics + ambient; draws the 2D fallback only while !fxRenderer.ready
       if (fxRenderer.ready) fxRenderer.tick(dt, shots, sparks, fxq) // WebGL render of the same arrays
     }
@@ -2119,6 +1877,7 @@ function runArena(
     if (!vic && f.teamScore != null) pts = Math.max(0, Math.round(f.teamScore) - (atkr.jpScore || 0))
     const isFB = f.type === 'FirstBlood'
     if (isFB) {
+      if (frozen || matchOver) return
       if (!vic) jeop.solveByTitle(atkr.x, atkr.y, f.challengeTitle || '', { name: atkr.name, color: atkr.color })
       if (cinema) {
         resolveFlag(atkr, vic, svc, pts, true)
@@ -2448,17 +2207,18 @@ function runArena(
   // rebuild the whole preview model + arena for the current count knobs
   function rebuildPreview() {
     if (!preview) return
-    cinema = false
     matchOver = false
+    clearMilestone()
     if (frozen) unfreeze()
     const wo: any = $('winOverlay')
     if (wo) wo.classList.remove('show')
-    winRenderer.stop() // symmetric with resetMatch — don't leave confetti drawing to a hidden canvas
+    winRenderer.stop()
     bootDemoModel()
     kothDir.reset()
     liveRoundEndsAt = null
     round = 1
     tickLeft = 30
+    setTickPill()
     gameEndMs = Date.now() + MATCH_SECONDS * 1000
     totalFlags = 0
     buildArena()
@@ -2476,6 +2236,7 @@ function runArena(
   // first-blood cinematic at the start. Use the FB A&D / FB JEO / FB KOTH buttons
   // to showcase first blood on demand.
   function evFlag() {
+    if (!SERVICES.length) return
     const atkr = pick(TEAMS)
     let vic = pick(TEAMS)
     let g = 0
@@ -2556,7 +2317,7 @@ function runArena(
     refreshRank()
   }
   function evPatch() {
-    if (!TEAMS.length) return
+    if (!TEAMS.length || !SERVICES.length) return
     const t = pick(TEAMS)
     const svc = pick(t.svc)
     patchEffect(t, svc ? svc.name : SERVICES[0] || 'service', Math.floor(rng(1, 9)))
@@ -2573,6 +2334,7 @@ function runArena(
     'blockchain-1',
   ]
   function evJeopardy() {
+    if (!cfgJeop) return
     const atkr = pick(TEAMS)
     if (!atkr) return
     // laser the actual constellation star if one is free; else a CORE tracer
@@ -2614,6 +2376,18 @@ function runArena(
       snd.sfxMiss()
     }
   }
+  function updatePreviewControls() {
+    if (!preview) return
+    const locked = frozen || matchOver
+    $('fbAdBtn').disabled = locked || !cfgAd
+    $('fbJeoBtn').disabled = locked || !cfgJeop
+    $('fbKothBtn').disabled = locked || !cfgKoth
+    $('patchBtn').disabled = locked || !cfgAd
+    $('endBtn').disabled = matchOver
+    $('freezeBtn').disabled = matchOver
+    $('freezeBtn').textContent = frozen ? 'Resume standings' : 'Freeze standings'
+  }
+
   async function startPreview() {
     // Preview is a fully simulated battle driven by the TEAMS / A&D / KOTH / JEOP
     // knobs — it does NOT mirror live game data (use the non-preview view for that),
@@ -2627,12 +2401,13 @@ function runArena(
     liveRoundEndsAt = null
     round = 1
     tickLeft = 30
+    setTickPill()
     gameEndMs = Date.now() + MATCH_SECONDS * 1000
     buildArena()
-    const fbb: any = $('fbBtns')
-    if (fbb) fbb.style.display = ''
-    const cfg: any = $('cfgBtns')
-    if (cfg) cfg.style.display = ''
+    $('previewPanel').hidden = false
+    $('resumePreview').hidden = false
+    $('resumePreview').onclick = () => unfreeze()
+    updatePreviewControls()
     refreshRank()
     sizeCanvas()
     addLog('SYS', 'sys', `<span class="em">PREVIEW MODE</span> :: simulated battle — ${TEAMS.length} teams`)
@@ -2672,6 +2447,7 @@ function runArena(
       inp.value = String(v)
       set(v)
       rebuildPreview()
+      updatePreviewControls()
     }
   })
   // Theater mode keeps the inspector reachable as a floating panel over the globe.
@@ -2682,6 +2458,11 @@ function runArena(
     button: $('fsBtn'),
     document,
     onChange: (on) => {
+      const milestone: HTMLElement = $('fbOverlay')
+      const visible = !milestone.hidden
+      const container = on ? theaterStage : root
+      container.append(milestone)
+      if (visible) milestone.showPopover?.()
       sizeCanvas()
       if (on && snd.isEnabled()) snd.startAmbient()
       else snd.stopAmbient()
@@ -2770,21 +2551,21 @@ function runArena(
   const fbAdBtn: any = $('fbAdBtn')
   if (fbAdBtn)
     fbAdBtn.onclick = () => {
-      if (cinema || !TEAMS.length) return
+      if (!preview || frozen || matchOver || !cfgAd || TEAMS.length < 2) return
       const a = pick(TEAMS)
-      let v = pick(TEAMS)
-      let g = 0
-      while (v === a && g++ < 8) v = pick(TEAMS)
+      const v = pick(TEAMS.filter(t => t !== a))
       const svc = pick(v.svc)
       fbAd(a, v, svc && svc.name ? svc.name : 'a challenge', () => resolveFlag(a, v, svc, 0, true))
     }
   const fbJeoBtn: any = $('fbJeoBtn')
   if (fbJeoBtn)
     fbJeoBtn.onclick = () => {
-      if (cinema || !TEAMS.length) return
+      if (!preview || frozen || matchOver || !cfgJeop || !TEAMS.length) return
       const a = pick(TEAMS)
-      const ch = pick(SERVICES.length ? SERVICES : ['web-portal', 'crypto-rng', 'pwn-heap', 'rev-vm'])
-      const pts = Math.floor(rng(60, 99))
+      const hit = jeop.solveRandom(a.x, a.y, { name: a.name, color: a.color })
+      const challenge = hit ?? pick(pick(genJeopCats(cfgJeop)).challenges)
+      const ch = challenge.name
+      const pts = challenge.base
       fbJeopardy(a, ch, () => {
         a.jpScore = (a.jpScore || 0) + pts
         a.jpSolved = (a.jpSolved || 0) + 1
@@ -2801,7 +2582,7 @@ function runArena(
   const fbKothBtn: any = $('fbKothBtn')
   if (fbKothBtn)
     fbKothBtn.onclick = () => {
-      if (cinema || !TEAMS.length) return
+      if (!preview || frozen || matchOver || !HILLS.length || !TEAMS.length) return
       const a = pick(TEAMS)
       const h = HILLS.length ? pick(HILLS) : null
       const pts = Math.floor(rng(30, 60))
@@ -2839,7 +2620,7 @@ function runArena(
   const rematchBtn: any = $('rematchBtn')
   if (rematchBtn)
     rematchBtn.onclick = () => {
-      if (preview) resetMatch()
+      if (preview) rebuildPreview()
     }
 
   const motionBtn: HTMLButtonElement = $('motionBtn')
@@ -2862,7 +2643,6 @@ function runArena(
       ctx.clearRect(0, 0, 1000, 1000)
       ctxbg.clearRect(0, 0, 1000, 1000)
       if (fxRenderer.ready) fxRenderer.tick(0, shots, sparks, fxq)
-      fbRenderer.stop()
       fzRenderer.stop()
       winRenderer.stop()
     }
@@ -2875,6 +2655,18 @@ function runArena(
   motionQuery.addEventListener('change', applyMotion)
   applyMotion()
 
+  const modeLink: HTMLAnchorElement = $('arenaModeLink')
+  modeLink.textContent = preview ? 'Return to live arena' : 'Open preview'
+  function updateModeLink() {
+    const destination = new URL(window.location.href)
+    if (preview) destination.searchParams.delete('preview')
+    else destination.searchParams.set('preview', '1')
+    modeLink.href = destination.href
+  }
+  updateModeLink()
+  window.addEventListener('hashchange', updateModeLink)
+  modeLink.onfocus = updateModeLink
+  modeLink.onclick = updateModeLink
   if (preview) {
     setConnection('Preview', 'preview')
     startPreview()
@@ -2883,6 +2675,7 @@ function runArena(
   /* -------- teardown -------- */
   return () => {
     killed = true
+    window.removeEventListener('hashchange', updateModeLink)
     motionQuery.removeEventListener('change', applyMotion)
     timers.forEach((id) => clearInterval(id))
     timers.forEach((id) => clearTimeout(id))
@@ -2919,7 +2712,7 @@ function runArena(
     jeop.destroy()
     inspector.destroy()
     fxRenderer.destroy()
-    fbRenderer.destroy()
+    $('fbOverlay').hidePopover?.()
     fzRenderer.destroy()
     winRenderer.destroy()
     if (ws) {
