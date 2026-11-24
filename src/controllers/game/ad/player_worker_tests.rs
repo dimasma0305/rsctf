@@ -330,7 +330,7 @@ async fn scenario() {
         let handle = crate::services::worker::parse_worker_handle(&backend).unwrap();
         targets.push((service, handle));
     }
-    let vpn = vpn::PlayerVpn::download(&state, captain, &dir.0).await;
+    let vpn = vpn::PlayerVpn::download(&state, captain).await;
     vpn.check_health(&fixture.pool).await;
     let round = prepare_round(
         &state.db,

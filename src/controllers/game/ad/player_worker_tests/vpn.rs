@@ -4,7 +4,6 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
 
 const PEER: &str = "rscpeer0";
@@ -22,7 +21,7 @@ async fn ip(args: &[&str]) -> Vec<u8> {
 }
 
 impl PlayerVpn {
-    pub(super) async fn download(state: &SharedState, captain: Uuid, dir: &Path) -> Self {
+    pub(super) async fn download(state: &SharedState, captain: Uuid) -> Self {
         let token = state
             .token
             .issue(captain, Role::User, "fixture-one", "kind-test")
@@ -54,41 +53,44 @@ impl PlayerVpn {
                 .replace(field("PrivateKey = "), "[redacted]")
                 .replace(field("PublicKey = "), "[redacted]")
         };
-        private_file(dir, "player.conf", &bytes);
-        let stripped = Command::new("/usr/bin/wg-quick")
-            .arg("strip")
-            .arg(dir.join("player.conf"))
-            .output()
-            .await
-            .unwrap();
-        assert!(
-            stripped.status.success(),
-            "wg-quick strip failed ({}): {}",
-            stripped.status,
-            redact(&stripped.stderr)
-        );
         ip(&["netns", "add", PEER]).await;
         let peer = Self;
         ip(&["link", "add", PEER, "type", "wireguard"]).await;
-        let mut wg = Command::new("/usr/bin/wg")
-            .args(["setconf", PEER, "/dev/stdin"])
-            .stdin(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        wg.stdin
-            .take()
-            .unwrap()
-            .write_all(&stripped.stdout)
-            .await
-            .unwrap();
-        let configured = wg.wait_with_output().await.unwrap();
-        assert!(
-            configured.status.success(),
-            "wg setconf failed ({}): {}",
-            configured.status,
-            redact(&configured.stderr)
-        );
+        // Confined distro tooling reads credentials from its system profile directory.
+        // Keep both the downloaded and native representations in the same mode-0600 file.
+        let config_dir = Path::new("/etc/wireguard");
+        let name = format!("rsc{}.conf", &Uuid::new_v4().simple().to_string()[..10]);
+        let path = config_dir.join(&name);
+        private_file(config_dir, &name, &bytes);
+        let install = async {
+            let stripped = Command::new("/usr/bin/wg-quick")
+                .arg("strip")
+                .arg(&path)
+                .output()
+                .await?;
+            if !stripped.status.success() {
+                return Err(std::io::Error::other(format!(
+                    "wg-quick strip: {}",
+                    redact(&stripped.stderr)
+                )));
+            }
+            std::fs::write(&path, stripped.stdout)?;
+            let configured = Command::new("/usr/bin/wg")
+                .args(["setconf", PEER])
+                .arg(&path)
+                .output()
+                .await?;
+            if !configured.status.success() {
+                return Err(std::io::Error::other(format!(
+                    "wg setconf: {}",
+                    redact(&configured.stderr)
+                )));
+            }
+            Ok(())
+        }
+        .await;
+        std::fs::remove_file(path).unwrap();
+        install.expect("install downloaded player profile");
         ip(&["link", "set", PEER, "netns", PEER]).await;
         ip(&["-n", PEER, "addr", "add", address, "dev", PEER]).await;
         ip(&["-n", PEER, "link", "set", "lo", "up"]).await;
