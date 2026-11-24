@@ -11,7 +11,10 @@ pub(super) const CLEAR_INACTIVE_BACKEND_SQL: &str = r#"UPDATE "AdTeamServices"
 /// Fence a teardown against the singleton owner without releasing its durable
 /// backend identity. Callers that destroy the runtime use this so a backend
 /// failure remains exactly retryable.
-async fn fence_container_capture_stop(state: &SharedState, container_id: &str) -> AppResult<()> {
+pub(crate) async fn fence_container_capture_stop(
+    state: &SharedState,
+    container_id: &str,
+) -> AppResult<()> {
     let identity = capture_identity_state(state.pg(), container_id).await?;
     if !identity.has_identity {
         return Ok(());

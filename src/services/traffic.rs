@@ -790,7 +790,9 @@ fn ones_complement_checksum(bytes: &[u8]) -> u16 {
 mod capture;
 mod inspector;
 
-pub(crate) use capture::{destroy_container_after_capture_fence, purge_expired_captures};
+pub(crate) use capture::{
+    destroy_container_after_capture_fence, fence_container_capture_stop, purge_expired_captures,
+};
 pub use capture::{
     fence_unowned_capture_owner, start_capture_reconciler, start_container_capture,
     stop_container_capture,

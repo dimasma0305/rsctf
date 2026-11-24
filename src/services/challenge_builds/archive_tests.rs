@@ -5,6 +5,8 @@ use std::io::Write;
 use crate::models::internal::configs::RuntimeRole;
 use crate::services::container::ContainerBackendKind;
 
+mod failed_candidate;
+
 #[test]
 fn archive_builds_use_buildkit_dockerfiles() {
     assert_eq!(
@@ -16,11 +18,6 @@ fn archive_builds_use_buildkit_dockerfiles() {
 #[tokio::test]
 #[ignore = "requires a local Docker daemon with BuildKit"]
 async fn buildkit_archive_transport_accepts_copy_chmod() {
-    let docker = Docker::connect_with_local_defaults().expect("local Docker client");
-    let image = format!(
-        "rsctf/diagnostic/buildkit-progress-test-{}:latest",
-        uuid::Uuid::new_v4()
-    );
     let archive = zip_entries(
         &[
             (
@@ -32,6 +29,59 @@ async fn buildkit_archive_transport_accepts_copy_chmod() {
         zip::CompressionMethod::Stored,
     );
 
+    verify_buildkit_archive(archive).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a local Docker daemon with BuildKit"]
+async fn buildkit_accepts_checked_out_patch_revision() {
+    use crate::services::ad::patches::{checkout::Checkout, revisions::SourceTree, PatchManifest};
+    use std::collections::BTreeMap;
+    use std::io::Read;
+
+    let dockerfile = b"FROM scratch\nCOPY --chmod=0555 updated /payload\n";
+    let original = zip_entry("Dockerfile", dockerfile);
+    let candidate = zip_entries(
+        &[("Dockerfile", dockerfile), ("updated", b"recovered source")],
+        zip::CompressionMethod::Deflated,
+    );
+    let tree = SourceTree::prepare(&original, candidate.into(), &[]).unwrap();
+    let mut checkout = Checkout::start(
+        PatchManifest::from_record(&tree.manifest).unwrap(),
+        &tree.oid,
+        &original,
+        &PatchManifest::from_zip(&original).unwrap().tree_id(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let rows = tree
+        .storage_plan(&BTreeMap::new(), usize::MAX)
+        .into_iter()
+        .map(|blob| {
+            (
+                blob.oid.clone(),
+                blob.deflated,
+                blob.raw_size,
+                blob.data.to_vec(),
+            )
+        })
+        .collect();
+    checkout.append_blobs(rows).unwrap();
+    let mut archive = Vec::new();
+    checkout
+        .finish()
+        .unwrap()
+        .read_to_end(&mut archive)
+        .unwrap();
+    verify_buildkit_archive(archive).await;
+}
+
+async fn verify_buildkit_archive(archive: Vec<u8>) {
+    let docker = Docker::connect_with_local_defaults().expect("local Docker client");
+    let image = format!(
+        "rsctf/diagnostic/buildkit-progress-test-{}:latest",
+        uuid::Uuid::new_v4()
+    );
     let outcome = build_from_context(&docker, &image, archive, None).await;
     let cleanup = docker
         .remove_image(
@@ -278,6 +328,113 @@ fn build_archive_accepts_a_small_safe_zip() {
     assert!(tar.len() >= 2 * 512);
     assert!(zip_bytes_to_tar(&archive, Some(".")).is_ok());
     assert!(zip_bytes_to_tar(&archive, Some("../escape")).is_err());
+}
+
+#[test]
+fn repacking_source_does_not_change_the_build_context() {
+    let files = [
+        ("src/app", b"version 1".as_slice()),
+        ("Dockerfile", b"FROM scratch"),
+    ];
+    let first = zip_entries(&files, zip::CompressionMethod::Stored);
+    let second = zip_entries(&[files[1], files[0]], zip::CompressionMethod::Deflated);
+    use crate::services::ad::patches::PatchManifest;
+    assert!(PatchManifest::from_zip(&second)
+        .unwrap()
+        .changes_from(&PatchManifest::from_zip(&first).unwrap())
+        .is_empty());
+    assert_eq!(
+        zip_bytes_to_tar(&first, None).unwrap(),
+        zip_bytes_to_tar(&second, None).unwrap(),
+    );
+}
+
+fn patch_zip(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for &(name, bytes, mode) in entries {
+        writer
+            .start_file(
+                name,
+                zip::write::SimpleFileOptions::default().unix_permissions(mode),
+            )
+            .unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+#[test]
+fn patch_tree_matches_git_sha256_for_nested_sources_and_executable_files() {
+    use crate::services::ad::patches::PatchManifest;
+    let zip = patch_zip(&[
+        ("Dockerfile", b"FROM scratch\n", 0o644),
+        ("app.js", b"flat", 0o644),
+        ("app/run", b"script", 0o755),
+        ("app/src/data", &[255, 0], 0o644),
+    ]);
+    // git init --object-format=sha256; git add .; git write-tree
+    assert_eq!(
+        PatchManifest::from_zip(&zip).unwrap().tree_id(),
+        "2c69ab533fd523a0c51608033d1b32442978ea011d98d3f9862ea890277d4ab9"
+    );
+}
+
+#[test]
+fn patch_preview_reports_source_and_mode_changes_without_returning_file_contents() {
+    use crate::services::ad::patches::{ChangeKind, PatchChange, PatchManifest};
+    let current = patch_zip(&[
+        ("Dockerfile", b"FROM scratch", 0o644),
+        ("run", b"script", 0o644),
+        ("old", b"", 0o644),
+    ]);
+    let candidate = patch_zip(&[
+        ("run", b"script", 0o755),
+        ("new", b"", 0o644),
+        ("Dockerfile", b"FROM scratch\n", 0o644),
+    ]);
+    let changes = PatchManifest::from_zip(&candidate)
+        .unwrap()
+        .changes_from(&PatchManifest::from_zip(&current).unwrap());
+    assert_eq!(
+        changes,
+        vec![
+            PatchChange {
+                path: "Dockerfile".into(),
+                kind: ChangeKind::Modified
+            },
+            PatchChange {
+                path: "new".into(),
+                kind: ChangeKind::Added
+            },
+            PatchChange {
+                path: "old".into(),
+                kind: ChangeKind::Deleted
+            },
+            PatchChange {
+                path: "run".into(),
+                kind: ChangeKind::Modified
+            },
+        ]
+    );
+    assert!(PatchManifest::from_zip(&patch_zip(&[("missing", b"no Dockerfile", 0o644)])).is_err());
+    assert!(PatchManifest::from_zip(&patch_zip(&[
+        ("Dockerfile", b"FROM scratch", 0o644),
+        ("src/.git/config", b"private metadata", 0o644)
+    ]))
+    .is_err());
+}
+
+#[test]
+fn build_archive_rejects_a_file_also_used_as_a_parent_directory() {
+    let archive = zip_entries(
+        &[
+            ("src/app", b"source"),
+            ("src", b"conflict"),
+            ("Dockerfile", b"FROM scratch"),
+        ],
+        zip::CompressionMethod::Stored,
+    );
+    assert!(zip_bytes_to_tar(&archive, None).is_err());
 }
 
 #[test]

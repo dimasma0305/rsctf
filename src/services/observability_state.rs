@@ -6,7 +6,7 @@ use std::{
 };
 use tokio::sync::watch;
 
-pub(super) const JOB_KINDS: [&str; 8] = [
+pub(super) const JOB_KINDS: [&str; 10] = [
     "AdReset",
     "AdReconcile",
     "ChallengeBuild",
@@ -15,14 +15,21 @@ pub(super) const JOB_KINDS: [&str; 8] = [
     "ImagePreflight",
     "VariantGeneration",
     "SecurityDerivation",
+    "AdRollback",
+    "AdActivate",
 ];
-pub(super) static QUEUED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-pub(super) static RUNNING: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-pub(super) static EXPIRED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-pub(super) static OLDEST: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+pub(super) static QUEUED: [AtomicU64; JOB_KINDS.len()] =
+    [const { AtomicU64::new(0) }; JOB_KINDS.len()];
+pub(super) static RUNNING: [AtomicU64; JOB_KINDS.len()] =
+    [const { AtomicU64::new(0) }; JOB_KINDS.len()];
+pub(super) static EXPIRED: [AtomicU64; JOB_KINDS.len()] =
+    [const { AtomicU64::new(0) }; JOB_KINDS.len()];
+pub(super) static OLDEST: [AtomicU64; JOB_KINDS.len()] =
+    [const { AtomicU64::new(0) }; JOB_KINDS.len()];
 /// Process counters, unlike the sampled deployment gauges above. Count committed
 /// expired-lease claims only; ordinary queued claims and failed polls are excluded.
-pub(super) static RECLAIMED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+pub(super) static RECLAIMED: [AtomicU64; JOB_KINDS.len()] =
+    [const { AtomicU64::new(0) }; JOB_KINDS.len()];
 pub(super) fn record_control_job_reclaim(kind: &str) {
     if let Some(index) = JOB_KINDS.iter().position(|known| *known == kind) {
         RECLAIMED[index].fetch_add(1, Relaxed);
@@ -117,6 +124,7 @@ mod tests {
               ('AdReset', 0, clock_timestamp() - interval '120 seconds', NULL),
               ('AdReset', 1, clock_timestamp(), clock_timestamp() - interval '1 second'),
               ('BuildBatch', 1, clock_timestamp(), clock_timestamp() + interval '1 minute'),
+              ('AdRollback', 0, clock_timestamp(), NULL),
               ('arbitrary-secret-label', 0, clock_timestamp(), NULL);
             INSERT INTO "WorkerNodes" VALUES
               ('Active', clock_timestamp() - interval '1 day'),
@@ -129,6 +137,7 @@ mod tests {
         assert_eq!(EXPIRED[0].load(Relaxed), 1);
         assert!(OLDEST[0].load(Relaxed) >= 120);
         assert_eq!(RUNNING[3].load(Relaxed), 1);
+        assert_eq!(QUEUED[8].load(Relaxed), 1);
         assert_eq!(WORKER_CERT_EXPIRED.load(Relaxed), 1);
         assert_eq!(WORKER_CERT_7_DAYS.load(Relaxed), 1);
         assert_eq!(WORKER_CERT_30_DAYS.load(Relaxed), 2);

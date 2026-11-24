@@ -60,6 +60,64 @@ pub const ARCHIVE_FILE_BYTES: usize = 64 * MIB;
 /// 64 MiB uncompressed source budget.
 pub const SOURCE_ARCHIVE_BLOB_BYTES: usize = 72 * MIB;
 
+/// Reserve the compressed input, decoder metadata, and database bind/read buffers.
+/// Enforce the selected limit on the stream even when the length header is false.
+pub(crate) async fn read_patch_zip(
+    request: axum::extract::Request,
+    starter_bytes: usize,
+) -> AppResult<(bytes::Bytes, SemaphorePermit<'static>)> {
+    use axum::body::HttpBody;
+    use axum::http::header;
+    use std::error::Error;
+    if request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|h| h.to_str().ok())
+        != Some("application/zip")
+    {
+        return Err(AppError::bad_request(
+            "Send the ZIP with Content-Type application/zip",
+        ));
+    }
+    let declared = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .map(|h| {
+            h.to_str()
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .ok_or_else(|| AppError::bad_request("Invalid ZIP content length"))
+        })
+        .transpose()?;
+    let bound = declared
+        .or_else(|| request.body().size_hint().upper())
+        .unwrap_or(SOURCE_ARCHIVE_BLOB_BYTES as u64);
+    if bound > SOURCE_ARCHIVE_BLOB_BYTES as u64 || starter_bytes > SOURCE_ARCHIVE_BLOB_BYTES {
+        return Err(AppError::payload_too_large("ZIP exceeds 72 MiB"));
+    }
+    let limit = bound as usize;
+    let permit = reserve_buffered(16 * MIB + 3 * limit.max(starter_bytes))?;
+    let bytes = tokio::time::timeout(
+        REQUEST_BODY_DEADLINE,
+        axum::body::to_bytes(request.into_body(), limit),
+    )
+    .await
+    .map_err(|_| AppError::bad_request("ZIP upload timed out"))?
+    .map_err(|e| {
+        if e.source()
+            .is_some_and(|cause| cause.is::<http_body_util::LengthLimitError>())
+        {
+            AppError::payload_too_large("ZIP exceeds its upload limit")
+        } else {
+            AppError::bad_request("Could not read ZIP")
+        }
+    })?;
+    if declared.is_some_and(|size| size != bytes.len() as u64) {
+        return Err(AppError::bad_request("Incomplete ZIP upload"));
+    }
+    Ok((bytes, permit))
+}
+
 pub const IMAGE_BODY_BYTES: usize = IMAGE_FILE_BYTES + MULTIPART_OVERHEAD_BYTES;
 pub const WRITEUP_BODY_BYTES: usize = WRITEUP_FILE_BYTES + MULTIPART_OVERHEAD_BYTES;
 /// Optional solver uploads are small scripts or notes kept in PostgreSQL.
@@ -92,6 +150,21 @@ const _: () = {
 mod tests {
     use super::*;
     use axum::http::{HeaderMap, HeaderValue};
+
+    #[tokio::test]
+    async fn patch_zip_length_is_enforced_during_transfer() {
+        for (announced, wanted) in [(1, 413), (10, 400)] {
+            let req = axum::extract::Request::builder()
+                .header("content-type", "application/zip")
+                .header("content-length", announced)
+                .body(axum::body::Body::from("bytes"))
+                .unwrap();
+            assert_eq!(
+                read_patch_zip(req, 0).await.unwrap_err().status().as_u16(),
+                wanted
+            );
+        }
+    }
 
     #[test]
     fn every_buffered_route_fits_the_shared_budget() {

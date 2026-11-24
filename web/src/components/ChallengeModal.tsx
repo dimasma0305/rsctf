@@ -1,3 +1,4 @@
+import { AdPatchArchive } from './competition/AdPatchArchive'
 import {
   ActionIcon,
   Alert,
@@ -903,6 +904,9 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       </Stack>
     ) : (
       <Stack gap="xs" className={classes.footer}>
+        {readOnlyArchive && gameId && challenge?.type === ChallengeType.AttackDefense && !!challenge.id && !challenge.adSelfHosted && modalProps.opened && (
+          <AdPatchArchive key={`${gameId}:${challenge.id}`} gameId={gameId} challengeId={challenge.id} />
+        )}
         {(withAttachment || withInstance || withDeadline) && (
           <>
             <Divider mb={attemptsInfo ? '0.2rem' : undefined} />

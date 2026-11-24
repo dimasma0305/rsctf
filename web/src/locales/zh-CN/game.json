@@ -419,9 +419,10 @@
   "notification": {
     "ad": {
       "attack_accepted": "攻击已接受（已记录为 epoch 证据）",
-      "reset_queued": {
-        "title": "重置已排队",
-        "message": "容器将在数秒后重建。"
+      "reset_finished": {
+        "title": "重置完成",
+        "message": "你的服务已重建。",
+        "already_replaced": "另一个操作已替换你的服务。"
       }
     },
     "connected": {

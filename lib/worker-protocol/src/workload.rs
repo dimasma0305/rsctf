@@ -128,6 +128,9 @@ pub struct WorkloadSpec {
     pub primary_endpoint: EndpointRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flag_target: Option<FlagTarget>,
+    /// Application directory retained for the lifetime of this hosted A&D assignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_data_mount: Option<String>,
 }
 
 /// A workload whose structural and game-mode invariants have been checked.
@@ -207,6 +210,8 @@ pub enum WorkloadValidationError {
     InvalidPrimaryEndpoint,
     #[error("flag target does not select an existing service or has an invalid path")]
     InvalidFlagTarget,
+    #[error("team storage requires a Linux A&D workload and an application data directory")]
+    InvalidTeamDataMount,
     #[error("platform is invalid: {0}")]
     InvalidPlatform(String),
     #[error("image identity for service `{service}` is invalid")]
@@ -217,6 +222,13 @@ pub enum WorkloadValidationError {
 
 fn validate_workload(spec: &WorkloadSpec) -> Result<(), WorkloadValidationError> {
     validate_platform(&spec.platform)?;
+    if spec.team_data_mount.as_deref().is_some_and(|path| {
+        spec.game_kind != GameKind::AttackDefense
+            || spec.platform.operating_system != OperatingSystem::Linux
+            || !application_data_path(path)
+    }) {
+        return Err(WorkloadValidationError::InvalidTeamDataMount);
+    }
     if spec.services.is_empty() || spec.services.len() > MAX_SERVICES {
         return Err(WorkloadValidationError::InvalidServiceCount);
     }
@@ -310,6 +322,18 @@ fn validate_workload(spec: &WorkloadSpec) -> Result<(), WorkloadValidationError>
     }
 
     Ok(())
+}
+
+/// Registered application directories for hosted team data, shared by every runtime.
+pub fn application_data_path(path: &str) -> bool {
+    path == "/data"
+        || path.strip_prefix("/var/lib/").is_some_and(|part| {
+            !part.is_empty()
+                && part.len() <= 128
+                && part
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+        })
 }
 
 fn validate_platform(platform: &Platform) -> Result<(), WorkloadValidationError> {
@@ -563,6 +587,7 @@ mod tests {
                 service: "challenge".to_string(),
                 port: "service".to_string(),
             },
+            team_data_mount: None,
             flag_target: Some(FlagTarget {
                 service: "challenge".to_string(),
                 path: "/flag".to_string(),
@@ -720,6 +745,44 @@ mod tests {
             .insert("gameKnd".to_string(), serde_json::json!("jeopardy"));
 
         assert!(serde_json::from_value::<ValidatedWorkloadSpec>(wire).is_err());
+    }
+
+    #[test]
+    fn team_data_mount_is_optional_and_scoped_to_linux_attack_defense() {
+        let base = valid_spec(GameKind::AttackDefense);
+        let legacy = serde_json::to_value(&base).unwrap();
+        assert!(legacy.get("teamDataMount").is_none());
+        let round_trip: ValidatedWorkloadSpec = serde_json::from_value(legacy).unwrap();
+        assert_eq!(round_trip.as_spec(), &base);
+        for path in ["/data", "/var/lib/postgresql", "/var/lib/app_1"] {
+            let mut spec = base.clone();
+            spec.team_data_mount = Some(path.into());
+            assert!(ValidatedWorkloadSpec::try_from(spec).is_ok());
+        }
+        for (kind, os, path) in [
+            (GameKind::Jeopardy, OperatingSystem::Linux, "/data"),
+            (GameKind::KingOfTheHill, OperatingSystem::Linux, "/data"),
+            (GameKind::AttackDefense, OperatingSystem::Windows, "/data"),
+            (GameKind::AttackDefense, OperatingSystem::Linux, "/etc"),
+            (
+                GameKind::AttackDefense,
+                OperatingSystem::Linux,
+                "/var/lib/../etc",
+            ),
+            (
+                GameKind::AttackDefense,
+                OperatingSystem::Linux,
+                "/data:/host",
+            ),
+        ] {
+            let mut spec = valid_spec(kind);
+            spec.platform.operating_system = os;
+            spec.team_data_mount = Some(path.into());
+            assert_eq!(
+                ValidatedWorkloadSpec::try_from(spec).unwrap_err(),
+                WorkloadValidationError::InvalidTeamDataMount
+            );
+        }
     }
 
     #[test]

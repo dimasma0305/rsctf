@@ -351,6 +351,7 @@ mod tests {
             flag: Some("flag{legacy}".to_string()),
             ad_network: None,
             allow_egress: false,
+            team_storage: None,
             control_plane_callback_ports: Vec::new(),
             network_mode: crate::utils::enums::NetworkMode::Isolated,
             operation_id: Some("legacy-operation".to_string()),

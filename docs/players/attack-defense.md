@@ -320,8 +320,13 @@ When SSH is enabled, add or generate the key shown by the toolkit and use the
 exact command displayed by rsctf. The username normally identifies the
 challenge, while your registered key identifies your participation.
 
-Keep a backup and a repeatable patch script outside the running container. A
-reset can discard changes made only inside the instance.
+Keep a backup and a repeatable patch script outside the running container.
+A hosted reset replaces the container's writable layer. On local Docker,
+the replacement keeps the current contents of compatible team data volumes.
+Resetting to the starter restores its program image. It cannot undo a database
+migration or restore older files in those volumes. If your team has a previous
+published image, **Restore previous image** brings that version back with the
+current flag. It shares the reset cooldown.
 
 ### 3.4 Defend without breaking the service
 
@@ -1295,6 +1300,7 @@ relative to the rsctf repository.
 | `GET/POST/DELETE /api/Game/{id}/Ad/Ssh/Key` | Manage the caller's SSH public key when shell access is enabled. |
 | `POST /api/Game/{id}/Ad/Ssh/Key/Generate` | Generate an SSH keypair when organizer policy allows it. |
 | `POST /api/Game/{id}/Ad/Services/{serviceId}/Reset` | Reset an authorized team service. |
+| `POST /api/Game/{id}/Ad/Services/{serviceId}/Rollback` | Restore the previous image recorded for that team service. |
 | `GET /api/Game/{id}/Ad/Services/{serviceId}/Snapshot` | Download an allowed post-game service snapshot. |
 | `GET /api/Game/{id}/Ad/Byoc/Setup/{challengeId}` | Read the caller's BYOC setup material. |
 | `GET /api/Game/{id}/Ad/Byoc/Compose/{challengeId}` | Generate the caller's BYOC Compose configuration. |
@@ -1330,8 +1336,12 @@ cannot establish that the scoring policy measures skill or causes engagement.
 
 ### D.1 Bring Your Own Container (BYOC) challenges
 
-In a BYOC challenge, your team runs the service and relay
-agent on its own machine. Follow the generated configuration from the toolkit.
+In a BYOC challenge, download the setup script from the Toolkit and run the
+command shown next to the download on your team's Docker host. It starts the
+service and its reporting agent. If you choose **Bring your own service**,
+save `compose.yaml` in the challenge folder, put the source you want to track
+in `service-src/`, and run `docker compose up -d` there. Open **Source history**
+on the challenge page to see the first report and subsequent file changes.
 The downloaded setup script contains an image capability and creates
 a Compose file with the relay capability plus a WireGuard private key. Keep the
 script private, run it only on the dedicated BYOC host, and delete the downloaded
@@ -1339,8 +1349,12 @@ copy after setup. The generated directory and credential files are owner-only.
 When the server supplies a reviewed service archive, setup gives Docker load's
 returned content ID a revision-scoped local name and sets `pull_policy: never`.
 The service therefore starts from that downloaded archive without a second
-registry lookup; if the local identity cannot be verified, setup uses the
-digest-pinned placeholder instead.
+registry lookup. On a fresh install, setup can use a digest-pinned placeholder
+when the reviewed image is unavailable. If the organizer withdraws the image
+after your team has patched the service, running setup again keeps your existing
+service and Compose file, even after `docker compose down`. If you edited the
+generated service definition, setup also keeps your changes when the download
+succeeds. Use `docker compose up -d` in that challenge folder to start it again.
 Tagged official server images embed the exact Linux amd64/arm64 relay-agent
 index built in the same release workflow. Direct source and local Docker builds
 have no agent fallback because pairing a new server with an older ACK-less agent

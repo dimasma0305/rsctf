@@ -181,6 +181,7 @@ async fn real_cleanup_preserves_snapshot_and_runtime_across_export_capture_and_d
             flag: None,
             ad_network: None,
             allow_egress: false,
+            team_storage: None,
             control_plane_callback_ports: vec![],
             network_mode: crate::utils::enums::NetworkMode::Isolated,
             operation_id: Some(format!("cleanup-fixture:{}", Uuid::new_v4())),

@@ -4,6 +4,7 @@
   width: 100%;
   margin-top: var(--mantine-spacing-xl);
   border-top: 1px solid var(--app-border);
+  color: var(--app-text-primary);
   background: var(--app-shell-surface);
 }
 

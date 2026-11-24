@@ -105,12 +105,21 @@ test('database/Redis fixtures must be independent disposable loopback services',
 test('coverage keeps the established environment-only exclusions and complete instrumented target selection', () => {
   const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8')
   const job = workflow.split('  coverage:\n')[1].split('\n  byoc-agent:\n')[0]
+  const worker = workflow.split('  worker-plane-linux:\n')[1].split('\n  worker-plane-windows:\n')[0]
+  assert.match(worker, /live_remote_agent_publishes_two_team_round_receipts[\s\S]*rsctf-tests --ignored --exact "\$name" --nocapture/)
+  assert.match(workflow, /sudo unshare --net \.\/ci-artifacts\/rsctf-tests byoc_listener_recovers_after_services_route_appears --ignored/)
   assert.deepEqual(databaseExclusions, [
+    'live_remote_agent_publishes_two_team_round_receipts',
+    'downloaded_byoc_bundle_observes_in_container_patches',
+    'cold_docker_pull_uses_only_the_configured_registry_credential',
     'same_origin_ssh_kernel_regression',
+    'byoc_listener_recovers_after_services_route_appears',
     's3_round_trip',
     'stale_conditional_delete_cannot_destroy_a_real_replacement_runtime',
     'real_docker_large_file_and_fifo_are_bounded_without_exec',
     'services::container::profiles::real_tests::',
+    'services::k8s::team_claim::tests::real_team_storage_survives_recreation',
+    'controllers::game::ad::player_reset_tests::kubernetes::player_kubernetes_patch_activation_and_rollbacks',
     'live_daemon_response_is_streamed_and_decoded',
     'target_fk_deletes_scoped_tokens',
     'ownership_constraints_are_validated_cascades',
@@ -120,6 +129,10 @@ test('coverage keeps the established environment-only exclusions and complete in
     'postgres_coalesces_retries_and_recovers_one_expired_lease',
   ])
   assert.match(workflow, /cargo test --lib --all-features --locked real_docker_profiles -- --ignored/)
+  assert.match(workflow, /test-byoc-source-compose\.py[\s\S]*downloaded_byoc_bundle_observes_in_container_patches -- --ignored/)
+  assert.match(workflow, /export RSCTF_PATCH_PULL_TEST="\$pull_test"[\s\S]*--docker-load[\s\S]*--stage-python/)
+  const registryTest = readFileSync(new URL('../../../scripts/ad-patch-builder/test_stage_registry.py', import.meta.url), 'utf8')
+  assert.match(registryTest, /"cold_docker_pull_uses_only_the_configured_registry_credential",\s*"--ignored"/)
   assert.match(workflow, /run: bash scripts\/test-runtime-profiles\.sh/)
   assert.match(job, /cargo llvm-cov --all-targets --all-features --locked --no-report/)
   assert.match(job, /export CARGO_TARGET_DIR="\$GITHUB_WORKSPACE\/target\/llvm-cov-target"/)

@@ -1,14 +1,14 @@
 //! Validated ZIP-to-tar conversion for Docker build contexts.
 
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 
-const MAX_ENTRIES: usize = 2_048;
-const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_ENTRIES: usize = 2_048;
+pub(crate) const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 // This expansion bound is independent of the repository checkout disk budget. Kernel and
 // VM challenges often split one build input into several individually bounded
 // files, so the expanded context may legitimately exceed the compressed blob
 // cap while every entry remains below MAX_FILE_BYTES.
-const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_COMPRESSION_RATIO: u64 = 200;
 const MAX_PATH_COMPONENTS: usize = 32;
 
@@ -20,6 +20,29 @@ pub(super) fn zip_bytes_to_tar(
     zip_bytes: &[u8],
     context_subdir: Option<&str>,
 ) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    write_build_context(zip_bytes, context_subdir, &mut out)?;
+    Ok(out)
+}
+
+pub(crate) fn write_build_context(
+    zip_bytes: &[u8],
+    context_subdir: Option<&str>,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    visit_build_files(zip_bytes, context_subdir, |name, mode, size, data| {
+        write_tar_entry(out, name, mode, size, data)
+    })?;
+    out.write_all(&[0; 1024]).map_err(|e| e.to_string())
+}
+
+/// Visit regular files in canonical path order. Discard the accumulated result
+/// on error: final validation (including the required Dockerfile) may still fail.
+pub(crate) fn visit_build_files(
+    zip_bytes: &[u8],
+    context_subdir: Option<&str>,
+    mut visit: impl FnMut(&str, u32, u64, &mut dyn Read) -> Result<(), String>,
+) -> Result<(), String> {
     if zip_bytes.len() > super::MAX_BUILD_ARCHIVE_BLOB_BYTES {
         return Err("compressed archive is too large".to_string());
     }
@@ -49,20 +72,26 @@ pub(super) fn zip_bytes_to_tar(
     if archive.len() > MAX_ENTRIES {
         return Err("too many entries".to_string());
     }
+    archive
+        .validate_header_consistency()
+        .map_err(|error| format!("inconsistent ZIP headers: {error}"))?;
 
-    let mut out = Vec::new();
     let mut total = 0u64;
-    let mut source_names = std::collections::BTreeSet::new();
-    let mut output_names = std::collections::BTreeSet::new();
+    let mut directories_by_path = std::collections::BTreeMap::new();
     let mut has_dockerfile = false;
-    for index in 0..archive.len() {
+    // ZIP entry order is exporter metadata. Feed Docker the same bytes for
+    // the same paths, modes and contents, regardless of how a team packed them.
+    let mut order = archive
+        .file_names()
+        .enumerate()
+        .map(|(index, name)| name.map(|name| (name.into_owned(), index)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("invalid ZIP entry name: {error}"))?;
+    order.sort_unstable();
+    for (raw_name, index) in order {
         let mut entry = archive
             .by_index(index)
             .map_err(|error| format!("ZIP read error: {error}"))?;
-        let raw_name = entry
-            .name()
-            .map_err(|error| format!("invalid ZIP entry name: {error}"))?
-            .into_owned();
         if raw_name.contains('\\') {
             return Err("entry path contains a backslash".to_string());
         }
@@ -93,8 +122,20 @@ pub(super) fn zip_bytes_to_tar(
         if raw_name != canonical_name {
             return Err("entry path is not canonical".to_string());
         }
-        if !source_names.insert(source_name) {
+        if directories_by_path
+            .insert(source_name, is_directory)
+            .is_some()
+        {
             return Err("duplicate entry path".to_string());
+        }
+        // A regular file sorts before any of its descendants. Without this
+        // check the context could not represent a single filesystem tree.
+        if raw_name
+            .match_indices('/')
+            .filter(|(end, _)| *end + 1 < raw_name.len())
+            .any(|(end, _)| directories_by_path.get(&raw_name[..end]) == Some(&false))
+        {
+            return Err("archive uses a file as a parent directory".to_string());
         }
         let unix_mode = entry.unix_mode();
         if unix_mode.is_some_and(|mode| mode & 0o170000 == 0o120000) {
@@ -119,44 +160,43 @@ pub(super) fn zip_bytes_to_tar(
             &components[..]
         };
         let name = output_components.join("/");
-        if !output_names.insert(name.clone()) {
-            return Err("duplicate build-context entry path".to_string());
-        }
         has_dockerfile |= name == "Dockerfile";
-        let remaining = MAX_TOTAL_BYTES.saturating_sub(total);
-        let max_read = remaining.min(MAX_FILE_BYTES);
-        let mut data = Vec::new();
-        entry
-            .by_ref()
-            .take(max_read + 1)
-            .read_to_end(&mut data)
-            .map_err(|error| format!("ZIP read error: {error}"))?;
-        if data.len() as u64 > max_read {
+        let size = entry.size();
+        if size > MAX_TOTAL_BYTES - total {
             return Err("archive expands beyond the size limit".to_string());
         }
-        let actual_size = data.len() as u64;
-        if actual_size != entry.size() {
-            return Err("entry size does not match ZIP metadata".to_string());
-        }
-        if actual_size > compressed.saturating_mul(MAX_COMPRESSION_RATIO) {
-            return Err("entry compression ratio is too high".to_string());
-        }
-        total = total.saturating_add(actual_size);
+        total += size;
         let mode = if unix_mode.unwrap_or_default() & 0o111 != 0 {
             0o755
         } else {
             0o644
         };
-        write_tar_entry(&mut out, &name, mode, &data)?;
+        split_ustar_path(&name)?;
+        let mut body = entry.by_ref().take(size);
+        visit(&name, mode, size, &mut body)?;
+        // Read through EOF so size and CRC are verified even for empty members.
+        if body.limit() != 0
+            || entry
+                .read(&mut [0u8; 1])
+                .map_err(|e| format!("ZIP read error: {e}"))?
+                != 0
+        {
+            return Err("entry size does not match ZIP metadata".into());
+        }
     }
     if !has_dockerfile {
         return Err("selected build context is missing Dockerfile".to_string());
     }
-    out.extend_from_slice(&[0u8; 1024]);
-    Ok(out)
+    Ok(())
 }
 
-fn write_tar_entry(out: &mut Vec<u8>, name: &str, mode: u32, data: &[u8]) -> Result<(), String> {
+fn write_tar_entry(
+    out: &mut dyn Write,
+    name: &str,
+    mode: u32,
+    size: u64,
+    data: &mut dyn Read,
+) -> Result<(), String> {
     let mut header = [0u8; 512];
     let put = |header: &mut [u8; 512], offset: usize, value: &str| {
         let bytes = value.as_bytes();
@@ -171,7 +211,7 @@ fn write_tar_entry(out: &mut Vec<u8>, name: &str, mode: u32, data: &[u8]) -> Res
     put(&mut header, 100, &format!("{mode:07o}\0"));
     put(&mut header, 108, "0000000\0");
     put(&mut header, 116, "0000000\0");
-    put(&mut header, 124, &format!("{:011o}\0", data.len()));
+    put(&mut header, 124, &format!("{size:011o}\0"));
     put(&mut header, 136, "00000000000\0");
     header[156] = b'0';
     put(&mut header, 257, "ustar\0");
@@ -180,11 +220,12 @@ fn write_tar_entry(out: &mut Vec<u8>, name: &str, mode: u32, data: &[u8]) -> Res
     let checksum: u32 = header.iter().map(|&byte| byte as u32).sum();
     put(&mut header, 148, &format!("{checksum:06o}\0 "));
 
-    out.extend_from_slice(&header);
-    out.extend_from_slice(data);
-    let remainder = data.len() % 512;
+    out.write_all(&header).map_err(|e| e.to_string())?;
+    std::io::copy(data, out).map_err(|e| format!("cannot copy ZIP entry: {e}"))?;
+    let remainder = size as usize % 512;
     if remainder != 0 {
-        out.extend(std::iter::repeat_n(0u8, 512 - remainder));
+        out.write_all(&[0; 512][..512 - remainder])
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

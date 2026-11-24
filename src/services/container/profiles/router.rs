@@ -17,6 +17,24 @@ pub struct ProfileRouter {
 }
 
 impl ProfileRouter {
+    fn volume_owner<'a>(
+        &'a self,
+        previous: &'a str,
+        profile: Option<&str>,
+    ) -> AppResult<(&'a dyn ContainerManager, &'a str)> {
+        let (owner, raw) = self.route(previous)?;
+        self.selected(profile)?;
+        let selected = match profile {
+            Some(id) => Self::handle(&self.entries[id].0, raw),
+            None => raw.to_owned(),
+        };
+        if selected != previous {
+            return Err(AppError::conflict(
+                "The previous service's data volumes belong to a different runtime profile",
+            ));
+        }
+        Ok((owner, raw))
+    }
     pub fn new(
         default: Arc<dyn ContainerManager>,
         entries: Vec<(RuntimeProfile, Arc<dyn ContainerManager>)>,
@@ -153,7 +171,8 @@ impl ContainerManager for ProfileRouter {
         Ok(self.selected(profile)?.backend_kind())
     }
     fn runtime_backend_kind(&self, id: &str) -> AppResult<ContainerBackendKind> {
-        Ok(self.route(id)?.0.backend_kind())
+        let (owner, raw) = self.route(id)?;
+        owner.runtime_backend_kind(raw)
     }
     fn profile_requires_proxy(&self, profile: Option<&str>) -> AppResult<bool> {
         Ok(self.selected(profile)?.requires_proxy())
@@ -206,6 +225,75 @@ impl ContainerManager for ProfileRouter {
         let mut info = manager.create(spec).await?;
         info.id = Self::handle(profile, &info.id);
         Ok(info)
+    }
+
+    async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
+        let (owner, raw) = self.route(id)?;
+        owner.has_ad_data_volumes(raw).await
+    }
+
+    async fn prepare_team_claim(
+        &self,
+        profile: Option<&str>,
+        storage: &crate::services::container::TeamStorage,
+        mib: i32,
+        port: i32,
+    ) -> AppResult<(String, String)> {
+        self.selected(profile)?
+            .prepare_team_claim(None, storage, mib, port)
+            .await
+    }
+
+    async fn ad_donor_needs_transfer(
+        &self,
+        previous: &str,
+        next: &ContainerSpec,
+    ) -> AppResult<bool> {
+        let (owner, raw) = if next.team_storage.is_some() {
+            self.volume_owner(previous, next.runtime_profile.as_deref())?
+        } else {
+            self.route(previous)?
+        };
+        owner.ad_donor_needs_transfer(raw, next).await
+    }
+
+    async fn repair_ad_volumes(
+        &self,
+        previous: &str,
+        spec: &ContainerSpec,
+        change: crate::services::container::AdVolumeChange,
+    ) -> AppResult<Option<ContainerInfo>> {
+        let (owner, raw) = self.volume_owner(previous, spec.runtime_profile.as_deref())?;
+        let mut local = spec.clone();
+        let profile = local.runtime_profile.take();
+        let Some(mut info) = owner.repair_ad_volumes(raw, &local, change).await? else {
+            return Ok(None);
+        };
+        if let Some(id) = profile {
+            info.id = Self::handle(&self.entries[&id].0, &info.id);
+        }
+        Ok(Some(info))
+    }
+
+    async fn check_ad_patch_image(&self, donor: &str, spec: &ContainerSpec) -> AppResult<()> {
+        let profile = spec.runtime_profile.as_deref();
+        if spec.team_storage.is_some() {
+            let (owner, raw) = self.volume_owner(donor, profile)?;
+            return owner.check_ad_patch_image(raw, spec).await;
+        }
+        // Once the donor has been checked for volumes, stateless Docker
+        // images only need to be validated on the selected destination.
+        let (_, raw) = self.route(donor)?;
+        self.selected(profile)?
+            .check_ad_patch_image(raw, spec)
+            .await
+    }
+
+    async fn check_ad_volume_reset(&self, previous: &str, spec: &ContainerSpec) -> AppResult<()> {
+        let (owner, raw) = self.volume_owner(previous, spec.runtime_profile.as_deref())?;
+        let mut local = spec.clone();
+        local.runtime_profile = None;
+        owner.check_ad_volume_reset(raw, &local).await
     }
 
     async fn create_workload(

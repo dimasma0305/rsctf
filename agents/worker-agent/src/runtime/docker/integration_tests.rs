@@ -1,6 +1,7 @@
 //! Opt-in Docker smoke test. Set 'RSCTF_WORKER_TEST_IMAGE_ID' to a full
 //! 'sha256:...' image ID whose default command listens on TCP port 8080.
 //! The test requires an otherwise-unclaimed disposable Docker daemon.
+//! Set RSCTF_WORKER_TEST_FLAG_UID for a Linux shell fixture running as that UID.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -19,6 +20,8 @@ use uuid::Uuid;
 
 use super::{is_not_found, DockerRuntime, LABEL_MANAGED, LABEL_WORKER};
 use crate::runtime::{RuntimeOptions, WorkerRuntime};
+
+mod team_data;
 
 const DAEMON_OWNER_VOLUME: &str = "rsctf-worker-owner";
 const LABEL_DAEMON_OWNER: &str = "io.rsctf.worker.daemon-owner";
@@ -176,6 +179,34 @@ async fn cleanup_owned_resources(
         Err(error) => errors.push(format!("list owned test networks: {error}")),
     }
 
+    let volume_filters = HashMap::from([(
+        "label".to_owned(),
+        vec![
+            super::team_volume::LABEL_ALLOCATION.to_owned(),
+            format!("{LABEL_WORKER}={worker}"),
+        ],
+    )]);
+    match docker
+        .list_volumes(Some(bollard::volume::ListVolumesOptions {
+            filters: volume_filters,
+        }))
+        .await
+    {
+        Ok(found) => {
+            for volume in found.volumes.unwrap_or_default() {
+                if let Err(e) = docker
+                    .remove_volume(&volume.name, Some(RemoveVolumeOptions { force: false }))
+                    .await
+                {
+                    if !is_not_found(&e) {
+                        errors.push(format!("remove test team volume: {e}"));
+                    }
+                }
+            }
+        }
+        Err(error) => errors.push(format!("list owned test team volumes: {error}")),
+    }
+
     match docker.inspect_volume(DAEMON_OWNER_VOLUME).await {
         Ok(volume)
             if volume.labels.get(LABEL_DAEMON_OWNER).map(String::as_str)
@@ -224,11 +255,18 @@ fn require(condition: bool, message: impl Into<String>) -> TestResult {
 }
 
 async fn exercise_lifecycle(
-    runtime: &DockerRuntime,
+    state_dir: &std::path::Path,
     worker_id: Uuid,
     image_id: String,
     fence: WorkloadFence,
 ) -> TestResult {
+    let options = RuntimeOptions {
+        writable_layer_bytes: 512 * 1024 * 1024,
+        minimum_free_bytes: 1024 * 1024 * 1024,
+        allow_unbounded_storage: true,
+        docker_admission: crate::runtime::DockerAdmissionLimits::default(),
+    };
+    let runtime = DockerRuntime::connect(worker_id, None, state_dir, options).await?;
     runtime.probe().await?;
     let image = ImageIdentity::WorkerLocal {
         worker_id,
@@ -275,12 +313,15 @@ async fn exercise_lifecycle(
             service: "challenge".to_string(),
             port: "service".to_string(),
         },
+        team_data_mount: None,
         flag_target: Some(FlagTarget {
             service: "challenge".to_string(),
             path: "/tmp/flag".to_string(),
         }),
     })?;
     let spec_hash = spec.spec_hash()?;
+    check_interrupted_network_replacement(&runtime, &spec, worker_id).await?;
+    team_data::check(&runtime, &spec, options).await?;
     let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
     loop {
         let status = runtime
@@ -335,19 +376,143 @@ async fn exercise_lifecycle(
         format!("expected one Ready inventory item, got {inventory:?}"),
     )?;
 
+    let flag = WriteFlag {
+        command_id: Uuid::new_v4(),
+        fence,
+        flag_sequence: 2,
+        target: FlagTarget {
+            service: "challenge".to_string(),
+            path: "/tmp/flag".to_string(),
+        },
+        value: "RSCTF{worker_smoke}".to_string(),
+        timeout_ms: 10_000,
+    };
+    runtime.write_flag(flag.clone()).await?;
+    // A later service in a replacement can reference a missing image. The
+    // current listeners and registered delivery target must both survive.
+    let mut replacement = spec.clone().into_inner();
+    replacement.services[1].image = ImageIdentity::WorkerLocal {
+        worker_id,
+        image_id: format!("sha256:{}", "0".repeat(64)),
+    };
+    let replacement = ValidatedWorkloadSpec::try_from(replacement)?;
+    let error = runtime
+        .ensure_workload(EnsureWorkload {
+            command_id: Uuid::new_v4(),
+            fence: WorkloadFence {
+                generation: fence.generation + 1,
+                ..fence
+            },
+            spec_hash: replacement.spec_hash()?,
+            timeout_ms: READY_TIMEOUT.as_millis() as u64,
+            spec: replacement,
+        })
+        .await
+        .unwrap_err();
+    require(
+        error.code == rsctf_worker_protocol::CommandErrorCode::NotFound,
+        "expected missing replacement image",
+    )?;
+    runtime
+        .open_tcp(&TcpProxyRequest {
+            fence,
+            service: "sidecar".to_string(),
+            port: "service".to_string(),
+            replica: None,
+        })
+        .await?;
+    runtime.write_flag(flag.clone()).await?;
+    if let Ok(uid) = std::env::var("RSCTF_WORKER_TEST_FLAG_UID") {
+        use bollard::exec::{CreateExecOptions, StartExecResults};
+        use futures_util::TryStreamExt;
+        let exec = runtime.docker.create_exec(&challenge_replicas[0].1, CreateExecOptions {
+            attach_stdout: Some(true), attach_stderr: Some(true),
+            cmd: Some(vec!["sh", "-ec", r#"test "$(id -u)" = "$1" && test "$(stat -c %a /tmp/flag)" = 600 && test -r /tmp/flag"#, "sh", &uid]),
+            ..Default::default()
+        }).await?;
+        if let StartExecResults::Attached { mut output, .. } =
+            runtime.docker.start_exec(&exec.id, None).await?
+        {
+            while output.try_next().await?.is_some() {}
+        }
+        require(
+            runtime.docker.inspect_exec(&exec.id).await?.exit_code == Some(0),
+            "service user could not read its private flag file",
+        )?;
+    }
+    for (_, id) in &challenge_replicas {
+        require(
+            !runtime
+                .verify_guest_file(id, "/tmp", b"RSCTF{worker_smoke}")
+                .await?,
+            "directory containing the flag was accepted as the flag file",
+        )?;
+    }
+    let first = &challenge_replicas[0].1;
+    let changed = super::make_single_file_archive("flag".into(), b"changed".to_vec()).await?;
+    runtime
+        .docker
+        .upload_to_container(
+            first,
+            Some(bollard::container::UploadToContainerOptions {
+                path: "/tmp",
+                no_overwrite_dir_non_dir: "",
+            }),
+            changed,
+        )
+        .await?;
+    require(
+        !runtime
+            .verify_guest_file(first, "/tmp/flag", flag.value.as_bytes())
+            .await?,
+        "test did not change the first replica",
+    )?;
+    drop(runtime);
+    let runtime = DockerRuntime::connect(worker_id, None, state_dir, options).await?;
+    let stale = runtime
+        .write_flag(WriteFlag {
+            flag_sequence: 1,
+            ..flag.clone()
+        })
+        .await
+        .unwrap_err();
+    require(
+        stale.code == rsctf_worker_protocol::CommandErrorCode::StaleFlagSequence,
+        "a restart accepted the previous round",
+    )?;
+    runtime
+        .ensure_workload(EnsureWorkload {
+            command_id: Uuid::new_v4(),
+            fence,
+            spec_hash: spec_hash.clone(),
+            timeout_ms: READY_TIMEOUT.as_millis() as u64,
+            spec,
+        })
+        .await?;
     runtime
         .write_flag(WriteFlag {
             command_id: Uuid::new_v4(),
-            fence,
-            flag_sequence: 1,
-            target: FlagTarget {
-                service: "challenge".to_string(),
-                path: "/tmp/flag".to_string(),
-            },
-            value: "RSCTF{worker_smoke}".to_string(),
-            timeout_ms: 10_000,
+            ..flag.clone()
         })
         .await?;
+    require(
+        runtime
+            .verify_guest_file(first, "/tmp/flag", flag.value.as_bytes())
+            .await?,
+        "retry did not restore the declared file",
+    )?;
+    runtime
+        .docker
+        .stop_container(
+            first,
+            Some(bollard::container::StopContainerOptions { t: 1 }),
+        )
+        .await?;
+    let partial = runtime.write_flag(flag).await.unwrap_err();
+    require(
+        partial.code == rsctf_worker_protocol::CommandErrorCode::PartialFailure,
+        "retry reported delivery with a missing replica",
+    )?;
 
     let absent = runtime
         .ensure_absent(EnsureAbsent {
@@ -367,6 +532,99 @@ async fn exercise_lifecycle(
     )
 }
 
+async fn check_interrupted_network_replacement(
+    runtime: &DockerRuntime,
+    spec: &ValidatedWorkloadSpec,
+    worker_id: Uuid,
+) -> TestResult {
+    use rsctf_worker_protocol::CommandErrorCode;
+
+    let fence = WorkloadFence {
+        workload_id: Uuid::new_v4(),
+        assignment_id: Uuid::new_v4(),
+        generation: 3,
+    };
+    let hash = spec.spec_hash()?;
+    let network = super::network_name(fence);
+    // Simulate a crash after network creation but before the first container.
+    let original = runtime
+        .docker
+        .create_network(bollard::network::CreateNetworkOptions {
+            name: network.clone(),
+            driver: "bridge".to_owned(),
+            internal: true,
+            labels: super::base_labels(worker_id, fence, &hash),
+            ..Default::default()
+        })
+        .await?
+        .id;
+    let absent = EnsureAbsent {
+        command_id: Uuid::new_v4(),
+        fence,
+        spec_hash: hash.clone(),
+        timeout_ms: 30_000,
+    };
+    let mut stale = absent.clone();
+    stale.fence.generation -= 1;
+    let mut conflict = absent.clone();
+    conflict.spec_hash = "0".repeat(64);
+    let mut collision = absent.clone();
+    collision.fence.workload_id = Uuid::from_u128(fence.workload_id.as_u128() ^ 1);
+    for (command, expected) in [
+        (stale, CommandErrorCode::StaleGeneration),
+        (conflict, CommandErrorCode::SpecConflict),
+        (collision, CommandErrorCode::StaleAssignment),
+    ] {
+        require(
+            runtime
+                .ensure_absent(command)
+                .await
+                .err()
+                .is_some_and(|e| e.code == expected),
+            "late teardown accepted an incompatible orphan network",
+        )?;
+    }
+    let inspect = || {
+        runtime.docker.inspect_network(
+            &network,
+            None::<bollard::network::InspectNetworkOptions<String>>,
+        )
+    };
+    require(
+        inspect().await?.id == original,
+        "rejected teardown changed the orphan network",
+    )?;
+    runtime.tombstones.reject_stale_present(fence).await?;
+    let next = WorkloadFence {
+        generation: fence.generation + 1,
+        ..fence
+    };
+    runtime
+        .ensure_workload(EnsureWorkload {
+            command_id: Uuid::new_v4(),
+            fence: next,
+            spec_hash: hash.clone(),
+            timeout_ms: 30_000,
+            spec: spec.clone(),
+        })
+        .await?;
+    let replacement = inspect().await?;
+    require(
+        replacement.id.is_some() && replacement.id != original,
+        "successor reused the obsolete network",
+    )?;
+    runtime
+        .ensure_absent(EnsureAbsent {
+            fence: next,
+            ..absent
+        })
+        .await?;
+    require(
+        inspect().await.is_err_and(|e| is_not_found(&e)),
+        "accepted teardown left the successor network behind",
+    )
+}
+
 #[tokio::test]
 async fn docker_workload_lifecycle_when_image_is_configured() {
     let Ok(image_id) = std::env::var("RSCTF_WORKER_TEST_IMAGE_ID") else {
@@ -378,24 +636,12 @@ async fn docker_workload_lifecycle_when_image_is_configured() {
         .await
         .unwrap_or_else(|error| panic!("prepare isolated Docker smoke test: {error}"));
     let result = async {
-        let runtime = DockerRuntime::connect(
-            worker_id,
-            None,
-            &state_dir,
-            RuntimeOptions {
-                writable_layer_bytes: 512 * 1024 * 1024,
-                minimum_free_bytes: 1024 * 1024 * 1024,
-                allow_unbounded_storage: true,
-                docker_admission: crate::runtime::DockerAdmissionLimits::default(),
-            },
-        )
-        .await?;
         let fence = WorkloadFence {
             workload_id: Uuid::new_v4(),
             assignment_id: Uuid::new_v4(),
             generation: 1,
         };
-        exercise_lifecycle(&runtime, worker_id, image_id, fence).await
+        exercise_lifecycle(&state_dir, worker_id, image_id, fence).await
     }
     .await;
     let cleanup = scope.cleanup().await;

@@ -35,7 +35,7 @@ const reportPath = path.resolve(process.env.SHUTDOWN_REPORT || 'tests/load/resul
 const observations = []
 const images = new Set()
 const volumes = new Set()
-const operations = new Set()
+const resetOperations = new Set()
 const logs = []
 const gates = new Map()
 let app, failure, ownsDatabase = false, ownsNetwork = false, barrier
@@ -109,7 +109,7 @@ async function stop() {
   await finish()
 }
 async function enqueue(kind, challenge, input, fingerprint = 'a'.repeat(64)) {
-  const job = randomUUID(); operations.add(job)
+  const job = randomUUID()
   await sql(`INSERT INTO "ControlPlaneJobs" (id,kind,scope_key,game_id,challenge_id,operation_id,fingerprint,input)
     VALUES ('${job}',${literal(kind)},'shutdown:${job}',1,${challenge ?? 'NULL'},'${job}',${literal(fingerprint)},${literal(JSON.stringify(input))});
     INSERT INTO "ControlPlaneJobOperations" (operation_id,job_id) VALUES ('${job}','${job}')`)
@@ -156,16 +156,19 @@ async function activeCheckpoint() {
   return await sql(`SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted
     AND classid=193700 AND objid=1 AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`) === '1'
 }
-async function resources(job) {
-  return (await docker(['ps', '-aq', '--filter', `label=rsctf.operation=ad-reset:${job}`])).stdout.trim().split('\n').filter(Boolean)
+async function resources(operation) {
+  return (await docker(['ps', '-aq', '--no-trunc', '--filter', `label=rsctf.operation=${operation}`])).stdout.trim().split('\n').filter(Boolean)
 }
 async function trackVolumes(container) {
   const inspected = JSON.parse((await docker(['inspect', container])).stdout)[0]
+  const names = []
   for (const mount of inspected.Mounts || []) {
     if (mount.Type !== 'volume') continue
     assert.match(mount.Name, /^[a-f0-9]{64}$/, 'fixture must use only Docker-generated anonymous volumes')
     volumes.add(mount.Name)
+    names.push(mount.Name)
   }
+  return names.sort()
 }
 const gateServer = http.createServer((req, res) => {
   const gate = gates.get(req.url)
@@ -270,19 +273,26 @@ try {
     await sql(`UPDATE "GameChallenges" SET container_image='${imageId}',build_image_digest='${imageId}',build_status=1 WHERE id=2`)
     for (const force of [false, true, 'deadline']) {
       const previous = await sql('SELECT COALESCE(container_id,\'\') FROM "AdTeamServices" WHERE id=1')
+      const previousVolumes = previous ? await trackVolumes(previous) : []
       const job = await enqueue('AdReset', 2, { serviceId: 1, participationId: 1, expectedBackendId: previous || null, playerPolicy: false })
+      // A volume successor is unique per donor, including across process death.
+      const operation = previousVolumes.length ? `ad-volume-repair:${previous}` : `ad-reset:${job}`
+      resetOperations.add(operation)
       await lockCheckpoint(job); await start()
       await until(async () => {
         const row = await jobState(job)
         assert.notEqual(row.status, 3, `reset failed before external checkpoint: ${row.error}`)
         return activeCheckpoint()
       }, 'reset created Docker replacement and is checkpointing', 60_000)
-      const created = await resources(job); assert.equal(created.length, 1)
-      await trackVolumes(created[0])
+      assert.equal((await jobState(job)).input.preserveDataVolumes, previousVolumes.length > 0)
+      const created = await resources(operation); assert.equal(created.length, 1)
+      const createdVolumes = await trackVolumes(created[0])
+      if (previousVolumes.length) assert.deepEqual(createdVolumes, previousVolumes, 'reset must transfer the donor volumes')
       await signalWhileActive('AdReset', job, force, unlockCheckpoint, async () => {
-        assert.deepEqual(await resources(job), created, 'recovery must reuse the exact Docker replacement')
+        assert.deepEqual(await resources(operation), created, 'recovery must reuse the exact Docker replacement')
+        assert.deepEqual(await trackVolumes(created[0]), createdVolumes, 'recovery must retain the same team data')
         const backend = await sql('SELECT container_id FROM "AdTeamServices" WHERE id=1')
-        assert.ok(created[0].startsWith(backend) || backend.startsWith(created[0]))
+        assert.equal(backend, created[0])
         assert.equal((await jobState(job)).result.reset, true)
         if (previous) assert.equal((await docker(['ps', '-aq', '--filter', `id=${previous}`])).stdout.trim(), '', 'retired container must be gone')
       })
@@ -302,7 +312,7 @@ finally {
   await unlockCheckpoint().catch(error => { failure ||= error })
   if (app) { app.child.kill('SIGKILL'); await app.exited; logs.push(app.log()); app = null }
   gateServer.closeAllConnections(); await new Promise(resolve => gateServer.close(resolve))
-  for (const job of operations) for (const container of await resources(job).catch(() => [])) {
+  for (const operation of resetOperations) for (const container of await resources(operation).catch(() => [])) {
     await trackVolumes(container).catch(error => { failure ||= error })
     await docker(['rm', '-f', container]).catch(error => { failure ||= error })
   }

@@ -175,6 +175,8 @@ mod checker;
 mod flag_delivery;
 pub(crate) mod koth_api;
 mod koth_auth;
+mod provision_flag;
+pub(crate) use provision_flag::{managed_flag_command, ProvisionFlag};
 pub(crate) mod koth_cycle;
 mod koth_marker;
 mod persistence;
@@ -183,6 +185,7 @@ mod round_completion;
 mod rounds;
 pub mod sandbox;
 mod service_reset;
+pub(crate) mod worker_flag;
 
 pub use checker::*;
 pub use flag_delivery::validate_flag_delivery_configuration;
@@ -205,7 +208,9 @@ pub(crate) use round_completion::{
     lock_owned_round_finish, prepared_round_snapshot, RoundFinishDisposition, RoundFinishLease,
 };
 pub use rounds::*;
-pub(crate) use service_reset::{prepare_service_reset, publish_service_reset};
+pub(crate) use service_reset::{
+    checkpoint_reset_replacement, prepare_service_reset, publish_service_reset, ResetVolumeTransfer,
+};
 
 /// Clear one hill's published holder through the canonical game-control
 /// transaction used by revision effects and checker mutations.

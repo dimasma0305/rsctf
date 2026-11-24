@@ -1,11 +1,69 @@
 use std::collections::BTreeMap;
 
-use k8s_openapi::api::core::v1::{Capabilities, SeccompProfile, SecurityContext, Service};
+use k8s_openapi::api::core::v1::{
+    Capabilities, ContainerPort, SeccompProfile, SecurityContext, Service, ServicePort,
+};
 use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
 use super::orphans::APP_LABEL;
 use crate::services::container::ContainerSpec;
 use crate::utils::codec::random_hex;
+
+pub(super) fn challenge_container_ports(
+    expose_port: i32,
+    private_competitive: bool,
+) -> Vec<ContainerPort> {
+    if private_competitive {
+        return vec![
+            ContainerPort {
+                name: Some("challenge-tcp".to_string()),
+                container_port: expose_port,
+                protocol: Some("TCP".to_string()),
+                ..Default::default()
+            },
+            ContainerPort {
+                name: Some("challenge-udp".to_string()),
+                container_port: expose_port,
+                protocol: Some("UDP".to_string()),
+                ..Default::default()
+            },
+        ];
+    }
+    vec![ContainerPort {
+        container_port: expose_port,
+        ..Default::default()
+    }]
+}
+
+pub(super) fn challenge_service_ports(
+    expose_port: i32,
+    private_competitive: bool,
+) -> Vec<ServicePort> {
+    if private_competitive {
+        return vec![
+            ServicePort {
+                name: Some("challenge-tcp".to_string()),
+                port: expose_port,
+                protocol: Some("TCP".to_string()),
+                target_port: Some(IntOrString::Int(expose_port)),
+                ..Default::default()
+            },
+            ServicePort {
+                name: Some("challenge-udp".to_string()),
+                port: expose_port,
+                protocol: Some("UDP".to_string()),
+                target_port: Some(IntOrString::Int(expose_port)),
+                ..Default::default()
+            },
+        ];
+    }
+    vec![ServicePort {
+        port: expose_port,
+        target_port: Some(IntOrString::Int(expose_port)),
+        ..Default::default()
+    }]
+}
 
 /// Sanitize an image reference into an RFC1123-ish label fragment usable in a
 /// resource name (lowercase alphanumerics + `-`, non-empty). Mirrors RSCTF's
@@ -90,6 +148,8 @@ struct KubernetesLaunchIdentity<'a> {
     network_policy: Option<&'a NetworkPolicySpec>,
     ad_service_cidr: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    team_storage: Option<&'a crate::services::container::TeamStorage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     readiness_probe: Option<k8s_openapi::api::core::v1::Probe>,
 }
 
@@ -109,6 +169,7 @@ pub(super) fn kubernetes_launch_fingerprint(
         security_context,
         network_policy: private_policy.and_then(|policy| policy.spec.as_ref()),
         ad_service_cidr,
+        team_storage: spec.team_storage.as_ref(),
         readiness_probe: super::readiness::probe(spec.expose_port),
     };
     let bytes = serde_json::to_vec(&canonical)

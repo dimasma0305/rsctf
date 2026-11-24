@@ -99,6 +99,46 @@ pub(super) fn observed_state(state: ObservedWorkloadState) -> WorkloadObservedSt
     }
 }
 
+/// A ready worker can still hold a retired, staged, or withdrawn team service.
+/// Recheck the published service identity on each A&D stream admission.
+pub(super) async fn published_team_endpoint(
+    pool: &sqlx::PgPool,
+    fence: rsctf_worker_protocol::WorkloadFence,
+    generation: i64,
+) -> WorkerResult<bool> {
+    use crate::services::worker::WorkerHandle;
+    use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
+    let handle = WorkerHandle {
+        workload_id: fence.workload_id,
+        assignment_id: fence.assignment_id,
+        generation,
+    };
+    sqlx::query_scalar(
+        r#"SELECT EXISTS(SELECT 1 FROM "AdTeamServices" s
+            JOIN "WorkerWorkloads" w ON w.id=$2 AND w.assignment_id=$3 AND w.generation=$4
+                AND w.desired_state='Present' AND w.owner_kind='ad-team-service'
+                AND w.owner_key=concat('ad-service:',s.participation_id,':',s.challenge_id)
+            JOIN "Games" g ON g.id=s.game_id AND NOT g.deletion_pending
+                AND g.start_time_utc <= clock_timestamp() AND g.end_time_utc > clock_timestamp()
+            JOIN "Participations" p ON p.id=s.participation_id AND p.game_id=g.id AND p.status=$5
+            JOIN "Teams" t ON t.id=p.team_id AND NOT t.deletion_pending
+            JOIN "GameChallenges" c ON c.id=s.challenge_id AND c.game_id=g.id AND c.is_enabled
+                AND c.review_status=$6 AND c."Type"=$7 AND NOT c.ad_self_hosted AND NOT c.deletion_pending
+            WHERE s.container_id=$1 AND s.published_image_backend=s.container_id
+                AND s.host<>'' AND s.port BETWEEN 1 AND 65535)"#,
+    )
+    .bind(handle.encode())
+    .bind(handle.workload_id)
+    .bind(handle.assignment_id)
+    .bind(generation)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::AttackDefense as i16)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| WorkerError::Authority(error.to_string()))
+}
+
 pub(super) fn stream_exists(spec: &ValidatedWorkloadSpec, request: &DataStreamRequest) -> bool {
     match request {
         DataStreamRequest::TcpProxy(request) => spec.services.iter().any(|service| {
@@ -108,10 +148,13 @@ pub(super) fn stream_exists(spec: &ValidatedWorkloadSpec, request: &DataStreamRe
                     .is_none_or(|replica| replica < service.replicas)
                 && service.ports.iter().any(|port| port.name == request.port)
         }),
-        DataStreamRequest::InteractiveExec(request) => spec
-            .services
-            .iter()
-            .any(|service| service.name == request.service && request.replica < service.replicas),
+        DataStreamRequest::InteractiveExec(request) => {
+            spec.game_kind == rsctf_worker_protocol::GameKind::AttackDefense
+                && request.replica == 0
+                && spec.services.len() == 1
+                && spec.services[0].replicas == 1
+                && spec.primary_endpoint.service == request.service
+        }
     }
 }
 

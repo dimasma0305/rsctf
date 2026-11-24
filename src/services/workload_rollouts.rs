@@ -400,6 +400,7 @@ mod tests {
                 service: "app".into(),
                 port: "http".into(),
             },
+            team_data_mount: None,
             flag_target: None,
         })
         .unwrap()

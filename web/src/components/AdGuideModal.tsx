@@ -57,6 +57,7 @@ import {
   withPlayerCredentialLock,
 } from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
+import { eventChallengeHash } from '@Utils/ChallengeLinks'
 import { useViewerIdentity } from '@Utils/ViewerIdentity'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api from '@Api'
@@ -65,6 +66,7 @@ import misc from '@Styles/Misc.module.css'
 interface AdToolkitModalProps extends ModalProps {
   gameId: number
   tokenOwner: AdTokenOwner
+  patchChallenges?: { id: number; title: string }[]
 }
 
 /**
@@ -74,7 +76,7 @@ interface AdToolkitModalProps extends ModalProps {
  * from "Player Guide" because half the content is interactive rather than
  * read-only.
  */
-export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...modalProps }) => {
+export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, patchChallenges = [], ...modalProps }) => {
   const { t } = useTranslation()
   const { scope } = useViewerIdentity()
   const activeSshViewerScope = useRef(scope)
@@ -340,6 +342,16 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
             </Text>
 
             <Accordion variant="separated" defaultValue={['token', 'vpn']} radius="md" chevronPosition="left" multiple>
+              {patchChallenges.length > 0 && <Accordion.Item value="patch-service">
+                <Accordion.Control>{t('game.ad.patch.open_service', 'Patch your service')}</Accordion.Control>
+                <Accordion.Panel>
+                  <Stack align="flex-start" gap="xs">
+                    {patchChallenges.map(challenge => <Anchor key={challenge.id}
+                      href={eventChallengeHash(challenge.id, challenge.title, typeof window === 'undefined' ? '' : window.location.hash)}
+                      onClick={modalProps.onClose}>{challenge.title}</Anchor>)}
+                  </Stack>
+                </Accordion.Panel>
+              </Accordion.Item>}
               {/* TOKEN — shared with KotH (see AdToolkitSections) */}
               <AdTokenSection
                 hint={adTokenHint}
@@ -775,7 +787,7 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
                     <List.Item>
                       {t(
                         'game.content.ad.guide.container.patch',
-                        'Patch your service live inside the container — the platform does not redeploy on its own. Your changes live ONLY in the running container; there is no persistent disk.'
+                        'Keep a copy of your SSH patches outside the container. Replacing the container discards edits in its writable layer. On local Docker, compatible team data volumes keep their current contents.'
                       )}
                     </List.Item>
                     <List.Item>
@@ -787,7 +799,7 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
                     <List.Item>
                       {t(
                         'game.content.ad.guide.container.reset',
-                        'Reset rebuilds the box from the original image — it WIPES all your changes (patches included), costs SLA during the rebuild, and has a cooldown. Use it only if your box is wedged or compromised, then re-apply your patches.'
+                        'Open your challenge to reset to its starter image or choose Restore previous image when available. Both actions share a cooldown. The checker can report downtime while your service restarts.'
                       )}
                     </List.Item>
                   </List>

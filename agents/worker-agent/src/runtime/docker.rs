@@ -6,18 +6,15 @@ use async_trait::async_trait;
 use bollard::container::{
     Config, CreateContainerOptions, DownloadFromContainerOptions, ListContainersOptions,
     NetworkingConfig, RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
-    UploadToContainerOptions,
 };
-use bollard::image::CreateImageOptions;
-use bollard::models::{EndpointSettings, HealthConfig};
+use bollard::models::EndpointSettings;
 use bollard::Docker;
 use dashmap::{DashMap, DashSet};
 use futures_util::{StreamExt, TryStreamExt};
 use rsctf_worker_protocol::{
-    CommandErrorCode, EnsureAbsent, EnsureWorkload, ImageIdentity, InventoryItem,
-    ObservedWorkloadState, OperatingSystem, Platform, ResourceUsage, RuntimeDescriptor,
-    RuntimeKind, TcpProxyRequest, WorkerCapabilities, WorkerCapacity, WorkloadFence,
-    WorkloadStatus, WriteFlag,
+    CommandErrorCode, EnsureAbsent, EnsureWorkload, InventoryItem, ObservedWorkloadState,
+    OperatingSystem, Platform, ResourceUsage, RuntimeDescriptor, RuntimeKind, TcpProxyRequest,
+    WorkerCapabilities, WorkerCapacity, WorkloadFence, WorkloadStatus, WriteFlag,
 };
 use tokio::net::TcpStream;
 use uuid::Uuid;
@@ -26,16 +23,23 @@ use super::{RuntimeError, RuntimeOptions, WorkerRuntime};
 
 mod admission;
 mod endpoints;
+mod flag_delivery;
+mod flag_upload;
 mod health;
+mod images;
 mod inventory;
 mod networks;
 mod preflight;
+mod state_file;
 mod support;
+mod team_terminal;
+mod team_volume;
 mod tombstones;
 mod windows_acl;
 use admission::DockerAdmission;
 pub use admission::DockerAdmissionLimits;
 use endpoints::{EndpointCacheKey, EndpointTarget};
+use flag_delivery::FlagDeliveryStore;
 use health::{clamped_health_config, image_health_config};
 pub(super) use preflight::run as preflight;
 use support::*;
@@ -61,6 +65,8 @@ const MAX_CONCURRENT_READINESS_PROBES: usize = 32;
 
 pub struct DockerRuntime {
     docker: Docker,
+    #[cfg(unix)]
+    flag_upload_client: reqwest::Client,
     /// Bounded admission and deadlines for every short-lived daemon call.
     admission: DockerAdmission,
     worker_id: Uuid,
@@ -70,11 +76,13 @@ pub struct DockerRuntime {
     max_network_endpoints: usize,
     docker_root: std::path::PathBuf,
     minimum_free_bytes: u64,
+    state_dir: std::path::PathBuf,
+    allow_unbounded_storage: bool,
     writable_layer_bytes: Option<u64>,
     round_robin: DashMap<EndpointCacheKey, AtomicU64>,
     endpoint_cache: DashMap<EndpointCacheKey, Vec<EndpointTarget>>,
     ready_containers: DashSet<String>,
-    flag_sequences: DashMap<(Uuid, Uuid, u64, String), u64>,
+    flag_delivery: FlagDeliveryStore,
     tombstones: TombstoneStore,
 }
 
@@ -86,6 +94,10 @@ impl DockerRuntime {
         options: RuntimeOptions,
     ) -> Result<Self, RuntimeError> {
         let endpoint = endpoint.unwrap_or("local");
+        #[cfg(unix)]
+        let socket = flag_upload::socket_path(endpoint);
+        #[cfg(unix)]
+        let endpoint = socket.as_str();
         let (docker, endpoint_kind) = connect_docker(endpoint)?;
         let docker = docker
             .negotiate_version()
@@ -134,6 +146,8 @@ impl DockerRuntime {
         };
         let runtime = Self {
             docker,
+            #[cfg(unix)]
+            flag_upload_client: flag_upload::local_client(endpoint)?,
             admission: DockerAdmission::new(options.docker_admission),
             worker_id,
             descriptor,
@@ -142,77 +156,17 @@ impl DockerRuntime {
             max_network_endpoints,
             docker_root,
             minimum_free_bytes: options.minimum_free_bytes,
+            state_dir: state_dir.to_owned(),
+            allow_unbounded_storage: options.allow_unbounded_storage,
             writable_layer_bytes,
             round_robin: DashMap::new(),
             endpoint_cache: DashMap::new(),
             ready_containers: DashSet::new(),
-            flag_sequences: DashMap::new(),
+            flag_delivery: FlagDeliveryStore::new(state_dir),
             tombstones: TombstoneStore::new(state_dir),
         };
         runtime.audit_windows_endpoints().await?;
         Ok(runtime)
-    }
-
-    /// Resolve the runnable image name and the health check it ships, pulling
-    /// a registry digest that is not yet present.
-    async fn ensure_image(
-        &self,
-        image: &ImageIdentity,
-    ) -> Result<(String, Option<HealthConfig>), RuntimeError> {
-        let image_name = match image {
-            ImageIdentity::RegistryDigest { repository, digest } => {
-                format!("{repository}@{digest}")
-            }
-            ImageIdentity::WorkerLocal {
-                worker_id,
-                image_id,
-            } => {
-                if *worker_id != self.worker_id {
-                    return Err(RuntimeError::new(
-                        CommandErrorCode::InvalidSpec,
-                        "worker-local image belongs to a different worker",
-                    ));
-                }
-                image_id.clone()
-            }
-        };
-
-        match self
-            .admission
-            .read("inspect_image", self.docker.inspect_image(&image_name))
-            .await?
-        {
-            Ok(inspected) => return Ok((image_name, image_health_config(&inspected))),
-            Err(error) if is_not_found(&error) => {}
-            Err(error) => return Err(docker_error("inspect image", error)),
-        }
-        if matches!(image, ImageIdentity::WorkerLocal { .. }) {
-            return Err(RuntimeError::new(
-                CommandErrorCode::NotFound,
-                "worker-local image is not present on this Docker daemon",
-            ));
-        }
-
-        let options = CreateImageOptions {
-            from_image: image_name.clone(),
-            ..Default::default()
-        };
-        // Progress frames are drained and discarded so a slow registry cannot
-        // grow memory; the pull deadline drops the stream on expiry.
-        self.admission
-            .pull("create_image", async {
-                let mut progress = self.docker.create_image(Some(options), None, None);
-                while progress.try_next().await?.is_some() {}
-                Ok::<(), bollard::errors::Error>(())
-            })
-            .await?
-            .map_err(|error| docker_error("pull image", error))?;
-        let inspected = self
-            .docker
-            .inspect_image(&image_name)
-            .await
-            .map_err(|error| docker_error("inspect pulled image", error))?;
-        Ok((image_name, image_health_config(&inspected)))
     }
 
     async fn existing_containers(
@@ -295,8 +249,10 @@ impl DockerRuntime {
             service,
             expected_replicas,
             operating_system,
+            team_volume,
         } = plan;
-        let (image, image_health) = self.ensure_image(&service.image).await?;
+        let (image, inspected) = self.ensure_image(&service.image).await?;
+        let image_health = image_health_config(&inspected);
         let name = container_name(fence, &service.name, replica);
         let mut labels = base_labels(self.worker_id, fence, spec_hash);
         labels.insert(LABEL_SERVICE.to_string(), service.name.clone());
@@ -333,7 +289,7 @@ impl DockerRuntime {
             aliases: Some(vec![service.name.clone()]),
             ..Default::default()
         };
-        let host_config = workload_host_config(
+        let mut host_config = workload_host_config(
             operating_system,
             network,
             service.resources.cpu_millis,
@@ -343,6 +299,9 @@ impl DockerRuntime {
                 service.resources.storage_bytes,
             ),
         );
+        if let Some(volume) = team_volume {
+            host_config.mounts = Some(vec![volume.mount()]);
+        }
         let config = Config {
             image: Some(image),
             env: Some(
@@ -381,6 +340,11 @@ impl DockerRuntime {
         if operating_system == OperatingSystem::Windows {
             self.secure_new_windows_container(&created.id, network)
                 .await?;
+        }
+        if let Some(volume) = team_volume {
+            // Docker can auto-create an empty named volume while attaching a
+            // mount. Check the allocation labels again before starting a writer.
+            self.verify_team_volume(volume).await?;
         }
         self.admission
             .lifecycle(
@@ -585,7 +549,9 @@ impl DockerRuntime {
                 Ok(archive)
             })
             .await??;
-        archive_contains_contents(archive, expected.to_vec()).await
+        let os = self.platform().operating_system;
+        let (_, filename) = split_guest_path(path, os)?;
+        archive_matches_file(archive, filename, expected.to_vec(), os).await
     }
 
     async fn current_status(&self, fence: WorkloadFence) -> Result<WorkloadStatus, RuntimeError> {
@@ -615,13 +581,16 @@ impl WorkerRuntime for DockerRuntime {
         WorkerCapabilities {
             ensure_workload: true,
             write_flag: true,
+            verified_flag_delivery: true,
             tcp_proxy: true,
-            interactive_exec: false,
+            interactive_exec: self.platform.operating_system == OperatingSystem::Linux,
             inventory: true,
             local_image_build: false,
             max_data_lanes: 4,
             max_workload_replicas: workload_replica_capacity(self.max_network_endpoints),
             storage_quota_enforced: Some(self.writable_layer_bytes.is_some()),
+            team_data_mount: self.platform.operating_system == OperatingSystem::Linux
+                && self.allow_unbounded_storage,
         }
     }
 
@@ -719,17 +688,17 @@ impl WorkerRuntime for DockerRuntime {
                 "workload spec hash does not match payload",
             ));
         }
-        let replica_count = command
+        let expected_replicas = command
             .spec
             .services
             .iter()
             .map(|service| usize::from(service.replicas))
             .sum::<usize>();
-        if replica_count > self.max_network_endpoints {
+        if expected_replicas > self.max_network_endpoints {
             return Err(RuntimeError::new(
                 CommandErrorCode::InvalidSpec,
                 format!(
-                    "workload has {replica_count} replicas but this Docker address pool supports at most {} containers per isolated network",
+                    "workload has {expected_replicas} replicas but this Docker address pool supports at most {} containers per isolated network",
                     self.max_network_endpoints
                 ),
             ));
@@ -770,29 +739,49 @@ impl WorkerRuntime for DockerRuntime {
             }
         }
 
+        let previous_network = self
+            .assigned_network(command.fence, &command.spec_hash)
+            .await?;
         let replacing_generation = existing.iter().any(|container| {
             label(container.labels.as_ref(), LABEL_GENERATION)
                 .and_then(|value| value.parse::<u64>().ok())
                 != Some(command.fence.generation)
         });
+        let unregistered = command.spec.game_kind == rsctf_worker_protocol::GameKind::AttackDefense
+            && command.spec.team_data_mount.is_none();
+        if replacing_generation && unregistered && team_volume::has_docker_volume(&existing) {
+            return Err(RuntimeError::new(
+                CommandErrorCode::SpecConflict,
+                "cannot replace a team service with an unregistered Docker volume",
+            ));
+        }
+        if replacing_generation || (unregistered && existing.is_empty()) {
+            // Stage every image before changing the serving generation or its
+            // flag receipt. A missing sidecar must leave the whole donor up.
+            self.check_free_space().await?;
+            for service in &command.spec.services {
+                let (_, image) = self.ensure_image(&service.image).await?;
+                if unregistered {
+                    team_volume::check_image_volumes(&image, None)?;
+                }
+            }
+            self.check_free_space().await?;
+        }
+        let team_volume = self
+            .prepare_team_volume(&command, !existing.is_empty())
+            .await?;
+        self.flag_delivery.register(&command).await?;
         if replacing_generation {
             self.remove_containers(&existing).await?;
-            self.remove_assignment_networks(command.fence.assignment_id)
-                .await?;
         }
         let network = self
             .ensure_network(
                 command.fence,
                 &command.spec_hash,
                 command.spec.platform.operating_system,
+                previous_network,
             )
             .await?;
-        let expected_replicas = command
-            .spec
-            .services
-            .iter()
-            .map(|service| usize::from(service.replicas))
-            .sum::<usize>();
         let mut current = self.existing_containers(command.fence.workload_id).await?;
         for service in &command.spec.services {
             let image = image_string(&service.image);
@@ -818,6 +807,7 @@ impl WorkerRuntime for DockerRuntime {
                             service,
                             expected_replicas,
                             operating_system: command.spec.platform.operating_system,
+                            team_volume: team_volume.as_ref(),
                         },
                         replica,
                     )
@@ -878,17 +868,24 @@ impl WorkerRuntime for DockerRuntime {
             }
             matching.push(container);
         }
+        let network = self
+            .assigned_network(command.fence, &command.spec_hash)
+            .await?;
+        let team_volume = self.team_volume_for_removal(&command).await?;
         if record_tombstone {
             self.tombstones
                 .record(command.fence, &command.spec_hash)
                 .await?;
         }
         self.remove_containers(&matching).await?;
-        self.remove_assignment_networks(command.fence.assignment_id)
-            .await?;
+        if let Some((network, _)) = network {
+            self.remove_network(&network).await?;
+        }
         self.invalidate_workload_endpoints(command.fence.workload_id);
-        self.flag_sequences
-            .retain(|(workload_id, _, _, _), _| *workload_id != command.fence.workload_id);
+        self.flag_delivery.forget(command.fence).await?;
+        if let Some(volume) = team_volume {
+            self.remove_team_volume(&volume).await?;
+        }
         Ok(WorkloadStatus {
             fence: command.fence,
             spec_hash: command.spec_hash,
@@ -899,23 +896,10 @@ impl WorkerRuntime for DockerRuntime {
     }
 
     async fn write_flag(&self, command: WriteFlag) -> Result<WorkloadStatus, RuntimeError> {
-        let sequence_key = (
-            command.fence.workload_id,
-            command.fence.assignment_id,
-            command.fence.generation,
-            command.target.path.clone(),
-        );
-        if let Some(current) = self.flag_sequences.get(&sequence_key) {
-            if command.flag_sequence < *current {
-                return Err(RuntimeError::new(
-                    CommandErrorCode::StaleFlagSequence,
-                    "a newer flag sequence is already installed",
-                ));
-            }
-            if command.flag_sequence == *current {
-                return self.current_status(command.fence).await;
-            }
-        }
+        self.tombstones.reject_stale_present(command.fence).await?;
+        let (parent, filename) =
+            split_guest_path(&command.target.path, self.platform().operating_system)?;
+        let replicas = self.flag_delivery.begin(&command).await?;
         let containers = self
             .matching_container_ids(command.fence, &command.target.service)
             .await?;
@@ -925,27 +909,24 @@ impl WorkerRuntime for DockerRuntime {
                 "flag target has no ready replicas",
             ));
         }
-        let (parent, filename) =
-            split_guest_path(&command.target.path, self.platform().operating_system)?;
+        if !containers
+            .iter()
+            .map(|(replica, _)| *replica)
+            .eq(0..replicas)
+        {
+            return Err(RuntimeError::new(
+                CommandErrorCode::PartialFailure,
+                "not all registered flag replicas are ready",
+            ));
+        }
         let expected = command.value.into_bytes();
         let archive = make_single_file_archive(filename, expected.clone()).await?;
         let mut failed = Vec::new();
         for (replica, container_id) in &containers {
             let written = self
-                .admission
-                .lifecycle(
-                    "upload_to_container",
-                    self.docker.upload_to_container(
-                        container_id,
-                        Some(UploadToContainerOptions {
-                            path: parent.clone(),
-                            no_overwrite_dir_non_dir: String::new(),
-                        }),
-                        archive.clone(),
-                    ),
-                )
+                .upload_flag_archive(container_id, &parent, archive.clone())
                 .await
-                .is_ok_and(|uploaded| uploaded.is_ok());
+                .is_ok();
             let verified = if written {
                 self.verify_guest_file(container_id, &command.target.path, &expected)
                     .await
@@ -964,9 +945,14 @@ impl WorkerRuntime for DockerRuntime {
             )
             .with_failed_replicas(failed));
         }
-        self.flag_sequences
-            .insert(sequence_key, command.flag_sequence);
         self.current_status(command.fence).await
+    }
+
+    async fn open_exec(
+        &self,
+        request: &rsctf_worker_protocol::InteractiveExecRequest,
+    ) -> Result<tokio::io::DuplexStream, RuntimeError> {
+        self.team_terminal(request).await
     }
 
     async fn open_tcp(&self, request: &TcpProxyRequest) -> Result<TcpStream, RuntimeError> {

@@ -4,6 +4,12 @@ use rsctf_worker_protocol::{GameKind, ValidatedWorkloadSpec};
 use super::{ContainerInfo, ContainerSpec};
 use crate::utils::error::{AppError, AppResult};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AdVolumeChange {
+    RepairStopped,
+    Reset,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ContainerExecAdmission(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
@@ -26,6 +32,7 @@ pub struct FileChange {
 
 #[derive(Debug, Clone)]
 pub struct ContainerFile {
+    pub executable: bool,
     pub bytes: Vec<u8>,
     pub size: u64,
     pub truncated: bool,
@@ -103,6 +110,20 @@ pub trait ContainerManager: Send + Sync {
         Ok(self.backend_kind())
     }
 
+    /// A profile edit can leave the current team service on its original backend.
+    /// Docker can transfer data from the donor. Kubernetes capability also depends on the team's persisted claim and endpoint.
+    fn supports_ad_patch_activation(&self, profile: Option<&str>, donor: Option<&str>) -> bool {
+        matches!(
+            self.profile_backend_kind(profile),
+            Ok(ContainerBackendKind::Docker)
+        ) && donor.filter(|id| !id.is_empty()).is_some_and(|id| {
+            matches!(
+                self.runtime_backend_kind(id),
+                Ok(ContainerBackendKind::Docker)
+            )
+        })
+    }
+
     fn profile_requires_proxy(&self, profile: Option<&str>) -> AppResult<bool> {
         self.profile_backend_kind(profile)?;
         Ok(self.requires_proxy())
@@ -162,6 +183,53 @@ pub trait ContainerManager: Send + Sync {
 
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo>;
 
+    async fn has_ad_data_volumes(&self, _id: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Resolve or allocate a team's claim before the first workload uses it.
+    async fn prepare_team_claim(
+        &self,
+        _profile: Option<&str>,
+        _storage: &super::TeamStorage,
+        _mib: i32,
+        _port: i32,
+    ) -> AppResult<(String, String)> {
+        Err(AppError::bad_request(
+            "The selected runtime does not support team storage claims",
+        ))
+    }
+
+    /// Prove that the replacement can remount a separately owned claim before retiring its Pod.
+    async fn ad_donor_needs_transfer(&self, id: &str, _next: &ContainerSpec) -> AppResult<bool> {
+        self.has_ad_data_volumes(id).await
+    }
+
+    /// Validate the replacement while the old endpoint can still serve the team.
+    async fn check_ad_patch_image(&self, _donor: &str, _spec: &ContainerSpec) -> AppResult<()> {
+        Err(AppError::conflict(
+            "This runtime cannot verify patch image volumes",
+        ))
+    }
+
+    /// Verify the target and donor before the reset withdraws the live endpoint.
+    async fn check_ad_volume_reset(&self, _id: &str, _spec: &ContainerSpec) -> AppResult<()> {
+        Err(AppError::conflict(
+            "This runtime cannot transfer team data volumes",
+        ))
+    }
+
+    /// Start a replacement while a stopped hosted service still owns its data.
+    /// None leaves ordinary provisioning in charge of stateless workloads.
+    async fn repair_ad_volumes(
+        &self,
+        _previous: &str,
+        _spec: &ContainerSpec,
+        _change: AdVolumeChange,
+    ) -> AppResult<Option<ContainerInfo>> {
+        Ok(None)
+    }
+
     async fn create_workload(
         &self,
         _spec: ValidatedWorkloadSpec,
@@ -207,9 +275,8 @@ pub trait ContainerManager: Send + Sync {
         true
     }
 
-    /// Make an immutable image available ahead of a launch. Backends whose
-    /// runtime pulls during creation (trusted workers, Kubernetes) succeed
-    /// without doing anything; only a local daemon pulls eagerly.
+    /// Prepare an immutable image ahead of a launch. Docker pulls eagerly.
+    /// Kubernetes checks the configured runtime class before scheduling the pull.
     async fn pull_image(&self, _image: &str) -> AppResult<()> {
         Ok(())
     }

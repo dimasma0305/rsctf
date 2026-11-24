@@ -49,6 +49,7 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
 import { IconTabs } from '@Components/IconTabs'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
+import { AdPatchActivitySetting } from '@Components/admin/AdPatchActivitySetting'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { requireApiCollection } from '@Utils/ApiCollection'
 import { downloadBlob } from '@Utils/ApiHelper'
@@ -1170,6 +1171,7 @@ const GameInfoEdit: FC = () => {
           {activeSection === 'ad' && (
             <Stack gap="sm">
               <Title order={2}>{t('admin.content.games.info.section.ad', 'Attack & Defense · King of the Hill')}</Title>
+              {gameSource && <AdPatchActivitySetting key={numId} gameId={numId} disabled={disabled} />}
               <Text size="xs" c="dimmed">
                 {t(
                   'admin.content.games.info.section.ad_hint',

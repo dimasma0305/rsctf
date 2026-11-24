@@ -60,6 +60,13 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.backend_kind()
     }
 
+    fn runtime_backend_kind(&self, id: &str) -> AppResult<ContainerBackendKind> {
+        if Self::is_worker_id(id) {
+            return self.worker.runtime_backend_kind(id);
+        }
+        self.local.runtime_backend_kind(id)
+    }
+
     async fn storage_quota_enforced(&self) -> Option<bool> {
         self.local.storage_quota_enforced().await
     }
@@ -85,6 +92,60 @@ impl ContainerManager for HybridWorkerContainerManager {
             CreateTarget::Local => self.local.create(spec).await,
             CreateTarget::Worker => self.worker.create(spec).await,
         }
+    }
+
+    async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
+        if Self::is_worker_id(id) {
+            return self.worker.has_ad_data_volumes(id).await;
+        }
+        self.local.has_ad_data_volumes(id).await
+    }
+
+    async fn prepare_team_claim(
+        &self,
+        profile: Option<&str>,
+        storage: &crate::services::container::TeamStorage,
+        mib: i32,
+        port: i32,
+    ) -> AppResult<(String, String)> {
+        self.local
+            .prepare_team_claim(profile, storage, mib, port)
+            .await
+    }
+
+    async fn ad_donor_needs_transfer(&self, id: &str, next: &ContainerSpec) -> AppResult<bool> {
+        if Self::is_worker_id(id) {
+            return self.worker.ad_donor_needs_transfer(id, next).await;
+        }
+        self.local.ad_donor_needs_transfer(id, next).await
+    }
+
+    async fn repair_ad_volumes(
+        &self,
+        previous: &str,
+        spec: &ContainerSpec,
+        change: crate::services::container::AdVolumeChange,
+    ) -> AppResult<Option<ContainerInfo>> {
+        if Self::is_worker_id(previous) {
+            return Ok(None);
+        }
+        self.local.repair_ad_volumes(previous, spec, change).await
+    }
+
+    async fn check_ad_patch_image(&self, donor: &str, spec: &ContainerSpec) -> AppResult<()> {
+        if Self::is_worker_id(donor) {
+            return self.worker.check_ad_patch_image(donor, spec).await;
+        }
+        self.local.check_ad_patch_image(donor, spec).await
+    }
+
+    async fn check_ad_volume_reset(&self, id: &str, spec: &ContainerSpec) -> AppResult<()> {
+        if Self::is_worker_id(id) {
+            return Err(AppError::conflict(
+                "The worker cannot transfer local Docker data volumes",
+            ));
+        }
+        self.local.check_ad_volume_reset(id, spec).await
     }
 
     async fn create_workload(
@@ -238,6 +299,7 @@ mod tests {
             flag: None,
             ad_network: None,
             allow_egress: false,
+            team_storage: None,
             control_plane_callback_ports: Vec::new(),
             network_mode: crate::utils::enums::NetworkMode::Open,
             operation_id: None,

@@ -162,7 +162,7 @@ async fn failed_welcome_immediately_closes_the_registered_session() {
         .prepare_control_session(
             &context,
             &test_welcome(context.fence),
-            false,
+            &Default::default(),
             &mut FailingWriter,
             cleanup,
         )
@@ -196,6 +196,7 @@ async fn failed_old_registration_does_not_close_a_newer_replacement() {
         .register_authenticated_control(
             newer.clone(),
             service.config.registry.max_data_lanes_per_worker,
+            false,
         )
         .await
         .unwrap();
@@ -205,7 +206,7 @@ async fn failed_old_registration_does_not_close_a_newer_replacement() {
         .prepare_control_session(
             &old,
             &test_welcome(old.fence),
-            false,
+            &Default::default(),
             &mut tokio::io::sink(),
             cleanup,
         )

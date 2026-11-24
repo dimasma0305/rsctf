@@ -9,6 +9,16 @@ pub(super) fn build_setup_compose(
     ctx: &ByocContext,
     service_image: Option<&str>,
 ) -> String {
+    setup_compose(game_id, challenge_id, ctx, service_image, None)
+}
+
+pub(super) fn setup_compose(
+    game_id: i32,
+    challenge_id: i32,
+    ctx: &ByocContext,
+    service_image: Option<&str>,
+    image_source: Option<&str>,
+) -> String {
     let port = ctx.svc_port;
     let mut lines = vec![
         format!("name: rsctf-byoc-{game_id}-{challenge_id}"),
@@ -35,6 +45,12 @@ pub(super) fn build_setup_compose(
         "      RSCTF_FLAG_FILE: /shared/flag".into(),
         "    volumes:".into(),
         "      - flag:/shared:ro".into(),
+    ]);
+    if let Some(volume) = image_source {
+        // The installer substitutes the reviewed image's validated workdir here.
+        lines.push(format!("      - {volume}:/rsctf-source"));
+    }
+    lines.extend([
         "  # The tunnel agent — public image, token baked in. Don't edit.".into(),
         "  rsctf-agent:".into(),
         format!("    image: {}", compose_scalar(&ctx.agent_image)),
@@ -49,6 +65,7 @@ pub(super) fn build_setup_compose(
         "    pids_limit: 128".into(),
         "    environment:".into(),
         "      RSCTF_BYOC_MODE: agent".into(),
+        "      RSCTF_BYOC_SOURCE_DISCOVERY: auto".into(),
         format!(
             "      RSCTF_BYOC_TUNNEL_URL: {}",
             compose_scalar(&ctx.tunnel_url)
@@ -60,6 +77,19 @@ pub(super) fn build_setup_compose(
         ),
         "    volumes:".into(),
         "      - flag:/shared".into(),
+    ]);
+    if let Some(volume) = image_source {
+        lines.extend([
+            "      - type: volume".into(),
+            format!("        source: {volume}"),
+            "        target: /rsctf-source".into(),
+            "        read_only: true".into(),
+            "        volume: { nocopy: true }".into(),
+        ]);
+    } else {
+        lines.push("      - ./service-src:/rsctf-source:ro".into());
+    }
+    lines.extend([
         "      # Optional BYOC SSH/admin shell (disabled by default): uncommenting".into(),
         "      # the next line grants this agent root-equivalent Docker access on".into(),
         "      # THIS host. Service and flag streams work without the socket.".into(),
@@ -70,6 +100,9 @@ pub(super) fn build_setup_compose(
         "  flag:".into(),
         "".into(),
     ]);
+    if let Some(volume) = image_source {
+        lines.push(format!("  {volume}:"));
+    }
     lines.join("\n")
 }
 
@@ -91,7 +124,7 @@ pub(super) fn build_compose(game_id: i32, challenge_id: i32, ctx: &ByocContext) 
         format!("# only has to listen on port {port} and read its flag from /shared/flag."),
         "services:".into(),
         "  # ───────────────────────────────────────────────────────────────────".into(),
-        "  # >>> REPLACE THIS with your service (build: ./yourdir  OR  image: you/img).".into(),
+        "  # >>> REPLACE THIS with your service (build: ./service-src  OR  image: you/img).".into(),
         "  #     Keep the flag volume; your service must listen on the port below.".into(),
         "  # The default just serves /shared/flag so the connection works on day one.".into(),
         "  service:".into(),
@@ -115,6 +148,7 @@ pub(super) fn build_compose(game_id: i32, challenge_id: i32, ctx: &ByocContext) 
         "    pids_limit: 128".into(),
         "    environment:".into(),
         "      RSCTF_BYOC_MODE: agent".into(),
+        "      RSCTF_BYOC_SOURCE_DISCOVERY: auto".into(),
         format!(
             "      RSCTF_BYOC_TUNNEL_URL: {}",
             compose_scalar(&ctx.tunnel_url)
@@ -123,6 +157,7 @@ pub(super) fn build_compose(game_id: i32, challenge_id: i32, ctx: &ByocContext) 
         "      RSCTF_BYOC_FLAG_FILE: /shared/flag".into(),
         "    volumes:".into(),
         "      - flag:/shared".into(),
+        "      - ./service-src:/rsctf-source:ro".into(),
         "    depends_on:".into(),
         "      - service".into(),
         "".into(),

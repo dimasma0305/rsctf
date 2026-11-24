@@ -103,7 +103,7 @@ fn legacy_identity(meta: &ObjectMeta, name: &str) -> bool {
         && labels.get(APP_LABEL).map(String::as_str) == Some(format!("rsctf-{uid}").as_str())
 }
 
-fn owned_identity(meta: &ObjectMeta, name: &str, scope: &str) -> bool {
+pub(super) fn owned_identity(meta: &ObjectMeta, name: &str, scope: &str) -> bool {
     current_identity(meta, name, scope) || legacy_identity(meta, name)
 }
 

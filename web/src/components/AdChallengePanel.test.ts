@@ -41,6 +41,13 @@ test('A&D presentation states keep managed and BYOC lifecycle guidance distinct'
   assert.equal(adServicePresentationState(undefined, true), 'byoc-absent')
   assert.equal(
     adServicePresentationState(
+      { ...base, selfHosted: true, deliveryState: AdServiceDeliveryState.ByocConnecting, containerIp: '', containerPort: 0 },
+      true
+    ),
+    'byoc-absent'
+  )
+  assert.equal(
+    adServicePresentationState(
       {
         ...base,
         selfHosted: true,
@@ -98,6 +105,7 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
   const permanentError = { response: { status: 403 } }
   const originalState = api.game.gameAdState
   const originalSshKey = api.game.adGameGetSshKey
+  const originalRollback = api.game.gameAdRollbackService
   const gameApi = api.game as typeof api.game & {
     gameAdState: typeof api.game.gameAdState
     adGameGetSshKey: typeof api.game.adGameGetSshKey
@@ -173,10 +181,10 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
     mounted = await mount(false, undefined, true, 13, 50)
     const failedByocText = mounted.container.textContent ?? ''
     assert.match(failedByocText, /access was revoked/i)
-    assert.match(failedByocText, /self-hosted BYOC challenge/i)
+    assert.match(failedByocText, /run sh setup-13-50\.sh/i)
     assert.doesNotMatch(failedByocText, /No service for your team yet|Ensure containers/i)
     assert.ok(mounted.container.querySelector('button'))
-    assert.match(mounted.container.textContent ?? '', /Download setup\.sh/)
+    assert.match(mounted.container.textContent ?? '', /Download setup script/)
     assert.match(mounted.container.textContent ?? '', /Bring your own service/)
 
     await act(async () => mounted.root.unmount())
@@ -207,9 +215,9 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
     // service row before its first agent enrollment.
     mounted = await mount(false, { ...state, services: [] }, true, 13, 50)
     const byocText = mounted.container.textContent ?? ''
-    assert.match(byocText, /self-hosted BYOC challenge/i)
+    assert.match(byocText, /Docker Compose starts the service and reporting agent in the background/i)
     assert.doesNotMatch(byocText, /No service for your team yet|Ensure containers/i)
-    assert.match(mounted.container.textContent ?? '', /Download setup\.sh/)
+    assert.match(byocText, /Download setup script/)
     assert.match(mounted.container.textContent ?? '', /Bring your own service/)
 
     await act(async () => mounted.root.unmount())
@@ -251,6 +259,7 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
       true
     )
     assert.match(mounted.container.textContent ?? '', /BYOC agent is connecting/i)
+    assert.match(mounted.container.textContent ?? '', /You can close the setup terminal/i)
 
     await act(async () => mounted.root.unmount())
     mounted = await mount(
@@ -279,7 +288,29 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
     assert.equal(mounted.container.querySelector('a[href*="/Ad/Byoc/"]'), null)
     assert.match(mounted.container.textContent ?? '', /No service for your team yet/i)
     assert.match(mounted.container.textContent ?? '', /Ensure containers/i)
+    assert.doesNotMatch(mounted.container.textContent ?? '', /Restore previous image/i)
+
+    const withPrevious = { ...state, services: [{ ...state.services[0], previousImageAvailable: true }] }
+    await act(async () => mounted.root.unmount())
+    mounted = await mount(false, withPrevious, true)
+    assert.doesNotMatch(mounted.container.textContent ?? '', /Restore previous image/i)
+    await act(async () => mounted.root.unmount())
+    mounted = await mount(false, withPrevious)
+    const restore = Array.from(mounted.container.querySelectorAll('button')).find(
+      button => button.textContent === 'Restore previous image'
+    )
+    assert.ok(restore)
+    const calls: unknown[][] = []
+    api.game.gameAdRollbackService = (async (...args: Parameters<typeof originalRollback>) => {
+      calls.push(args)
+      return { data: { status: 'Succeeded', result: { reset: true } } }
+    }) as typeof originalRollback
+    await act(async () => { restore.click(); await flush() })
+    assert.equal(calls.length, 1)
+    assert.deepEqual(calls[0].slice(0, 2), [41, 91])
+    assert.match(String(calls[0][2]), /^[0-9a-f-]{36}$/i)
   } finally {
+    api.game.gameAdRollbackService = originalRollback
     await act(async () => mounted.root.unmount())
     gameApi.gameAdState = originalState
     gameApi.adGameGetSshKey = originalSshKey

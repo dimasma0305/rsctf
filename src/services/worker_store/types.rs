@@ -263,6 +263,29 @@ pub struct WorkloadDefinition {
 }
 
 impl WorkloadDefinition {
+    /// The worker cannot add, move, or drop a registered volume during replacement.
+    /// Check the locked definition before the server clears the serving generation.
+    pub(super) fn check_team_storage(&self, current: &Value) -> Result<(), WorkerStoreError> {
+        if current["gameKind"] == "attackDefense"
+            && (self.spec["gameKind"] != current["gameKind"]
+                || self.spec["teamDataMount"] != current["teamDataMount"])
+        {
+            return Err(WorkerStoreError::Conflict(
+                "A team service revision must preserve its game kind and registered data directory"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The placement scan only uses these fields, including on lock retries.
+    pub(super) fn patch_placement_fields(&self) -> Value {
+        serde_json::json!({
+            "gameKind": self.spec.get("gameKind"),
+            "teamDataMount": self.spec.get("teamDataMount"),
+        })
+    }
+
     /// Validate the durable specification and return its derived replica count.
     pub(crate) fn validate(&self) -> Result<i32, WorkerStoreError> {
         if !self.spec.is_object() {
@@ -323,6 +346,21 @@ pub struct UpdateWorkload {
     pub assignment_id: Uuid,
     pub expected_generation: i64,
     pub definition: WorkloadDefinition,
+}
+
+impl UpdateWorkload {
+    pub(super) fn matching_definition_outcome(&self, generation: i64) -> DefinitionUpdateOutcome {
+        // A rollback can make an old image current again. A team patch can
+        // acknowledge only its starting generation or the one it produced.
+        if self.definition.spec["gameKind"] == "attackDefense"
+            && generation != self.expected_generation
+            && self.expected_generation.checked_add(1) != Some(generation)
+        {
+            DefinitionUpdateOutcome::Stale
+        } else {
+            DefinitionUpdateOutcome::AlreadyCurrent { generation }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

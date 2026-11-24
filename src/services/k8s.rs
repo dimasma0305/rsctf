@@ -37,15 +37,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, Pod, PodSpec, ResourceRequirements, Service, ServicePort,
-    ServiceSpec,
+    Container, EnvVar, Pod, PodSpec, ResourceRequirements, Service, ServiceSpec,
 };
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
-use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, PostParams};
-use kube::core::{ApiResource, DynamicObject, ErrorResponse};
+use kube::core::ErrorResponse;
 use kube::{Client, Config};
 
 use crate::services::container::{
@@ -65,12 +63,18 @@ mod readiness;
 #[cfg(test)]
 mod retry_tests;
 #[cfg(test)]
+pub(crate) use retry_tests::mock_storage_manager;
+mod image_stage;
+mod storage;
+mod team_claim;
+mod team_endpoint;
+#[cfg(test)]
 use launch::sanitize_image;
 use launch::{
-    challenge_security_context, fingerprint_policy_labels, kubernetes_launch_fingerprint,
-    service_owner_matches_pod, service_type, stamp_policy_labels, workload_name_and_uid,
+    challenge_container_ports, challenge_security_context, challenge_service_ports,
+    fingerprint_policy_labels, kubernetes_launch_fingerprint, service_owner_matches_pod,
+    service_type, stamp_policy_labels, workload_name_and_uid,
 };
-use metrics::{parse_cpu_cores, parse_memory_bytes};
 use network::{
     ad_network_config, ad_network_policy, isolated_network_policy, isolated_proxy_network_policy,
     network_policy_required, proxy_network_policy, rollback_created_policy, service_ip_is_routed,
@@ -88,55 +92,6 @@ const DEFAULT_NAMESPACE: &str = "rsctf-challenges";
 
 /// Env var overriding the target namespace.
 const NAMESPACE_ENV: &str = "RSCTF_K8S_NAMESPACE";
-
-fn challenge_container_ports(expose_port: i32, private_competitive: bool) -> Vec<ContainerPort> {
-    if private_competitive {
-        return vec![
-            ContainerPort {
-                name: Some("challenge-tcp".to_string()),
-                container_port: expose_port,
-                protocol: Some("TCP".to_string()),
-                ..Default::default()
-            },
-            ContainerPort {
-                name: Some("challenge-udp".to_string()),
-                container_port: expose_port,
-                protocol: Some("UDP".to_string()),
-                ..Default::default()
-            },
-        ];
-    }
-    vec![ContainerPort {
-        container_port: expose_port,
-        ..Default::default()
-    }]
-}
-
-fn challenge_service_ports(expose_port: i32, private_competitive: bool) -> Vec<ServicePort> {
-    if private_competitive {
-        return vec![
-            ServicePort {
-                name: Some("challenge-tcp".to_string()),
-                port: expose_port,
-                protocol: Some("TCP".to_string()),
-                target_port: Some(IntOrString::Int(expose_port)),
-                ..Default::default()
-            },
-            ServicePort {
-                name: Some("challenge-udp".to_string()),
-                port: expose_port,
-                protocol: Some("UDP".to_string()),
-                target_port: Some(IntOrString::Int(expose_port)),
-                ..Default::default()
-            },
-        ];
-    }
-    vec![ServicePort {
-        port: expose_port,
-        target_port: Some(IntOrString::Int(expose_port)),
-        ..Default::default()
-    }]
-}
 
 /// Env var advertising the routable node/host IP for NodePort services
 /// (RSCTF `PublicEntry`). When set, [`ContainerInfo::ip`] is this value.
@@ -211,74 +166,6 @@ impl KubernetesContainerManager {
 
     fn network_policies(&self) -> Api<NetworkPolicy> {
         Api::namespaced(self.client.clone(), &self.namespace)
-    }
-
-    /// Fetch live CPU / memory usage for a pod from the `metrics.k8s.io`
-    /// aggregated API (served by metrics-server), summed across the pod's
-    /// containers.
-    ///
-    /// `PodMetrics` is not a compiled-in `k8s-openapi` type, so it is queried as
-    /// a dynamic resource (`GET
-    /// /apis/metrics.k8s.io/v1beta1/namespaces/{ns}/pods/{name}`) and the
-    /// `containers[].usage.{cpu,memory}` quantities are parsed out of the raw
-    /// JSON. Returns `(memory_bytes, cpu_cores)`; either component is `None` when
-    /// no container reported that metric. The whole call degrades to
-    /// `(None, None)` on any transport / parse error (metrics-server absent,
-    /// RBAC denied, metrics not yet scraped, …) so `query` never fails on it.
-    async fn fetch_pod_metrics(&self, id: &str) -> (Option<u64>, Option<f64>) {
-        // Type-erased handle onto the metrics.k8s.io PodMetrics resource. The
-        // plural is `pods`, giving the standard `.../namespaces/{ns}/pods/{name}`
-        // path that metrics-server serves.
-        let ar = ApiResource {
-            group: "metrics.k8s.io".to_string(),
-            version: "v1beta1".to_string(),
-            api_version: "metrics.k8s.io/v1beta1".to_string(),
-            kind: "PodMetrics".to_string(),
-            plural: "pods".to_string(),
-        };
-        let api: Api<DynamicObject> =
-            Api::namespaced_with(self.client.clone(), &self.namespace, &ar);
-
-        let obj = match api.get(id).await {
-            Ok(obj) => obj,
-            Err(_) => return (None, None),
-        };
-
-        // `DynamicObject::data` holds every top-level field other than
-        // `metadata`; for PodMetrics that includes the `containers` array.
-        let containers = match obj.data.get("containers").and_then(|c| c.as_array()) {
-            Some(c) => c,
-            None => return (None, None),
-        };
-
-        let mut total_mem: u64 = 0;
-        let mut total_cpu: f64 = 0.0;
-        let mut have_mem = false;
-        let mut have_cpu = false;
-        for c in containers {
-            let usage = match c.get("usage") {
-                Some(u) => u,
-                None => continue,
-            };
-            if let Some(bytes) = usage
-                .get("memory")
-                .and_then(|v| v.as_str())
-                .and_then(parse_memory_bytes)
-            {
-                total_mem = total_mem.saturating_add(bytes);
-                have_mem = true;
-            }
-            if let Some(cores) = usage
-                .get("cpu")
-                .and_then(|v| v.as_str())
-                .and_then(parse_cpu_cores)
-            {
-                total_cpu += cores;
-                have_cpu = true;
-            }
-        }
-
-        (have_mem.then_some(total_mem), have_cpu.then_some(total_cpu))
     }
 
     async fn rollback_new_pod(
@@ -365,14 +252,75 @@ impl ContainerManager for KubernetesContainerManager {
         Some(true)
     }
 
-    async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
-        crate::services::container::validate_container_spec(&spec)?;
-        self.validate_runtime_class().await?;
-        if !crate::services::challenge_images::is_repository_digest(&spec.image) {
-            return Err(AppError::bad_request(
-                "Kubernetes challenge images must use a portable repository digest",
+    async fn pull_image(&self, image: &str) -> AppResult<()> {
+        // The kubelet pulls the image on scheduling. Check the destination
+        // now so a missing Kata class is reported before A&D retires its Pod.
+        self.validate_image_target(image).await
+    }
+
+    async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
+        let Some(pod) = self.pods().get_opt(id).await.map_err(|error| {
+            AppError::unavailable(format!("Could not inspect A&D Pod storage: {error}"))
+        })?
+        else {
+            return Ok(false);
+        };
+        if !orphans::owned_identity(&pod.metadata, id, &self.scope) {
+            return Err(AppError::conflict("A&D Pod belongs to a different runtime"));
+        }
+        storage::check_replacement(&pod)?;
+        Ok(false)
+    }
+
+    async fn check_ad_patch_image(&self, donor: &str, spec: &ContainerSpec) -> AppResult<()> {
+        self.stage_team_image(donor, spec).await
+    }
+
+    async fn prepare_team_claim(
+        &self,
+        _profile: Option<&str>,
+        data: &crate::services::container::TeamStorage,
+        mib: i32,
+        port: i32,
+    ) -> AppResult<(String, String)> {
+        let claim = self
+            .team_claim(data, data.claim_uid.is_none().then_some(mib))
+            .await?;
+        let endpoint = self.team_endpoint(data, &claim, Some(port)).await?;
+        Ok((claim.uid, endpoint.uid))
+    }
+
+    async fn ad_donor_needs_transfer(&self, id: &str, next: &ContainerSpec) -> AppResult<bool> {
+        let Some(data) = &next.team_storage else {
+            return self.has_ad_data_volumes(id).await;
+        };
+        let claim = self.team_claim(data, None).await?;
+        let endpoint = self.team_endpoint(data, &claim, None).await?;
+        if !service_ip_is_routed(
+            &endpoint.ip,
+            &ad_network_config(next.allow_egress)?.service_cidr,
+        ) {
+            return Err(AppError::conflict(
+                "The registered team endpoint is outside the routed Service CIDR",
             ));
         }
+        if let Some(pod) = self
+            .pods()
+            .get_opt(id)
+            .await
+            .map_err(|e| AppError::unavailable(format!("Could not inspect A&D Pod: {e}")))?
+        {
+            if !orphans::owned_identity(&pod.metadata, id, &self.scope) {
+                return Err(AppError::conflict("A&D Pod belongs to a different runtime"));
+            }
+            claim.check_replacement(&pod, id)?;
+        }
+        Ok(false)
+    }
+
+    async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
+        crate::services::container::validate_container_spec(&spec)?;
+        self.validate_image_target(&spec.image).await?;
         // Unique, DNS-safe resource name + the app label that ties the Service
         // to this pod (RSCTF uses a per-instance ResourceId label/selector).
         let (default_name, default_uid) =
@@ -393,6 +341,7 @@ impl ContainerManager for KubernetesContainerManager {
             .map(|identity| (identity.name, identity.uid))
             .unwrap_or((default_name, default_uid));
         let ad_internal = spec.ad_network.is_some();
+        let team_service = spec.game_kind == rsctf_worker_protocol::GameKind::AttackDefense;
         let isolated = spec.network_mode == crate::utils::enums::NetworkMode::Isolated;
         let internal_only = ad_internal || spec.proxy_only;
         let ad_config = if ad_internal {
@@ -541,7 +490,7 @@ impl ContainerManager for KubernetesContainerManager {
             ..Default::default()
         };
 
-        let pod = Pod {
+        let mut pod = Pod {
             metadata: ObjectMeta {
                 name: Some(name.clone()),
                 namespace: Some(self.namespace.clone()),
@@ -558,6 +507,24 @@ impl ContainerManager for KubernetesContainerManager {
             status: None,
         };
 
+        let team_claim = match &spec.team_storage {
+            Some(data) => {
+                if !team_service || !ad_internal {
+                    return Err(AppError::bad_request(
+                        "Team storage requires a hosted A&D service",
+                    ));
+                }
+                if data.claim_uid.is_none() || data.endpoint_uid.is_none() {
+                    return Err(AppError::conflict(
+                        "Missing registration for the team storage claim",
+                    ));
+                }
+                let claim = self.team_claim(data, None).await?;
+                claim.mount(&mut pod, data.initialize_round_flag);
+                Some(claim)
+            }
+            None => None,
+        };
         // Install isolation before the selected pod exists, eliminating the
         // startup window in which an attacker-controlled image could reach the
         // cluster or Internet. The unique selector makes a crash-orphaned policy
@@ -619,12 +586,41 @@ impl ContainerManager for KubernetesContainerManager {
                 // would expose that ambiguous Pod, so retain the policy for
                 // adoption or fail-closed orphan reconciliation.
                 if !is_ambiguous_create_error(&e) {
+                    // Admission can reject the request before returning an
+                    // AlreadyExists response for an earlier attempt's Pod.
+                    if team_service {
+                        self.has_ad_data_volumes(&name).await?;
+                    }
                     self.rollback_operation_workload(&name).await;
                 }
                 return Err(AppError::internal(format!("failed to create pod: {e}")));
             }
         };
+        if let Some(claim) = &team_claim {
+            claim.check_replacement(&created_pod, &name)?;
+        }
+        let check_cleanup = || {
+            if let Some(claim) = &team_claim {
+                claim.check_replacement(&created_pod, &name)?;
+            } else if team_service {
+                storage::check_replacement(&created_pod)?;
+            }
+            Ok::<(), AppError>(())
+        };
+        // The launch labels survive an in-place image change. A stale
+        // operation must not publish or remove the team's newer revision.
+        if team_service && !compat::pod_image_matches(&created_pod, &name, &spec.image) {
+            if !adopted {
+                check_cleanup()?;
+                self.rollback_new_pod(&pods, &name, policy_created, false)
+                    .await;
+            }
+            return Err(AppError::conflict(
+                "The A&D Pod image differs from the requested revision",
+            ));
+        }
         let Some(pod_uid) = created_pod.metadata.uid.clone() else {
+            check_cleanup()?;
             self.rollback_new_pod(&pods, &name, policy_created, adopted)
                 .await;
             return Err(AppError::internal(
@@ -636,6 +632,7 @@ impl ContainerManager for KubernetesContainerManager {
             .as_ref()
             .and_then(|status| status.phase.as_deref());
         if phase_liveness(pod_phase) == ContainerLiveness::Stopped {
+            check_cleanup()?;
             if adopted {
                 orphans::rollback_owned(
                     pods.clone(),
@@ -659,6 +656,29 @@ impl ContainerManager for KubernetesContainerManager {
             return Err(AppError::internal(
                 "Kubernetes challenge Pod reached a terminal state before publication",
             ));
+        }
+
+        if let (Some(claim), Some(data), Some(network)) =
+            (&team_claim, &spec.team_storage, &ad_config)
+        {
+            let endpoint = self.team_endpoint(data, claim, None).await?;
+            if !service_ip_is_routed(&endpoint.ip, &network.service_cidr) {
+                return Err(AppError::conflict(
+                    "The registered team endpoint is outside the routed Service CIDR",
+                ));
+            }
+            let status = claim
+                .wait_ready(&pods, &name, &pod_uid, &spec.image)
+                .await?;
+            endpoint
+                .wait_routed(self, &claim.name, &name, &pod_uid, spec.expose_port)
+                .await?;
+            return Ok(ContainerInfo {
+                id: name,
+                ip: endpoint.ip,
+                port: endpoint.port,
+                status: status.into(),
+            });
         }
 
         // Service exposing the challenge port: A&D and PlatformProxy are not
@@ -715,6 +735,7 @@ impl ContainerManager for KubernetesContainerManager {
                             (service, true)
                         }
                         Ok(_) => {
+                            check_cleanup()?;
                             self.rollback_new_pod(&pods, &name, policy_created, adopted)
                                 .await;
                             return Err(AppError::conflict(
@@ -722,6 +743,7 @@ impl ContainerManager for KubernetesContainerManager {
                             ));
                         }
                         Err(error) => {
+                            check_cleanup()?;
                             self.rollback_new_pod(&pods, &name, policy_created, adopted)
                                 .await;
                             return Err(error);
@@ -733,8 +755,10 @@ impl ContainerManager for KubernetesContainerManager {
                     // write. Retain stable-operation resources so the exact
                     // retry can adopt them without changing the Pod owner UID.
                     if spec.operation_id.is_some() && !is_ambiguous_create_error(&e) {
+                        check_cleanup()?;
                         self.rollback_operation_workload(&name).await;
                     } else if spec.operation_id.is_none() {
+                        check_cleanup()?;
                         self.rollback_new_pod(&pods, &name, policy_created, adopted)
                             .await;
                     }
@@ -751,6 +775,7 @@ impl ContainerManager for KubernetesContainerManager {
                 .and_then(|s| s.cluster_ip.clone())
                 .filter(|ip| !ip.is_empty() && ip != "None");
             let Some(cluster_ip) = cluster_ip else {
+                check_cleanup()?;
                 if !service_adopted {
                     let _ = services.delete(&name, &DeleteParams::default()).await;
                 }
@@ -762,6 +787,7 @@ impl ContainerManager for KubernetesContainerManager {
             };
             if let Some(service_cidr) = ad_config.as_ref().map(|config| &config.service_cidr) {
                 if !service_ip_is_routed(&cluster_ip, service_cidr) {
+                    check_cleanup()?;
                     if !service_adopted {
                         let _ = services.delete(&name, &DeleteParams::default()).await;
                     }
@@ -796,11 +822,12 @@ impl ContainerManager for KubernetesContainerManager {
             (node_ip, node_port)
         };
 
+        let status = readiness::status(&created_pod);
         Ok(ContainerInfo {
             id: name,
             ip,
             port,
-            status: readiness::status(&created_pod).to_string(),
+            status: status.to_string(),
         })
     }
 

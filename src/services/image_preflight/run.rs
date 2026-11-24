@@ -445,6 +445,7 @@ mod tests {
             flag: None,
             ad_network: None,
             allow_egress: false,
+            team_storage: None,
             control_plane_callback_ports: Vec::new(),
             network_mode: crate::utils::enums::NetworkMode::Open,
             operation_id: None,

@@ -10,6 +10,51 @@ use tower::service_fn;
 use super::*;
 
 type ResourceStore = Arc<Mutex<HashMap<String, serde_json::Value>>>;
+mod team_storage;
+
+#[tokio::test]
+async fn ad_replacement_checks_actual_pod_storage_before_withdrawing_the_donor() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+    let (manager, resources) = mock_manager(ServiceFailure::None);
+    let created = manager.create(retry_spec(false)).await.unwrap();
+    let id = created.id;
+    let path = format!("/api/v1/namespaces/rsctf-challenges/pods/{id}");
+    assert!(!manager.has_ad_data_volumes(&id).await.unwrap());
+    for (volume, safe) in [
+        (serde_json::json!({"configMap":{"name":"settings"}}), true),
+        (serde_json::json!({"secret":{"secretName":"cert"}}), true),
+        (serde_json::json!({"projected":{"sources":[]}}), true),
+        (serde_json::json!({"downwardAPI":{"items":[]}}), true),
+        (
+            serde_json::json!({"persistentVolumeClaim":{"claimName":"team-a"}}),
+            false,
+        ),
+        (serde_json::json!({"emptyDir":{}}), false),
+        (serde_json::json!({"hostPath":{"path":"/data"}}), false),
+    ] {
+        let mut volume = volume;
+        volume["name"] = serde_json::json!("application");
+        resources.lock().unwrap().get_mut(&path).unwrap()["spec"]["volumes"] =
+            serde_json::json!([volume]);
+        let result = manager.has_ad_data_volumes(&id).await;
+        if safe {
+            assert!(!result.unwrap());
+        } else {
+            assert!(matches!(result, Err(AppError::Conflict(_))));
+        }
+    }
+    let pod = resources.lock().unwrap().get(&path).unwrap().clone();
+    let mut foreign = pod;
+    foreign["spec"]["volumes"] = serde_json::json!([]);
+    foreign["metadata"]["labels"]["rsctf.scope"] = serde_json::json!("other-installation");
+    resources.lock().unwrap().insert(path.clone(), foreign);
+    assert!(matches!(
+        manager.has_ad_data_volumes(&id).await,
+        Err(AppError::Conflict(_))
+    ));
+    assert!(resources.lock().unwrap().remove(&path).is_some());
+    assert!(!manager.has_ad_data_volumes(&id).await.unwrap());
+}
 
 #[tokio::test]
 async fn microvm_launch_pins_runtime_class_and_never_falls_back_on_class_removal() {
@@ -43,6 +88,12 @@ async fn microvm_launch_pins_runtime_class_and_never_falls_back_on_class_removal
     );
     resources.lock().unwrap().remove(class_path);
     let count = resources.lock().unwrap().len();
+    assert!(matches!(
+        manager
+            .profile_pull_image(None, &retry_spec(false).image)
+            .await,
+        Err(AppError::ServiceUnavailable(_))
+    ));
     assert!(manager.create(retry_spec(false)).await.is_err());
     assert_eq!(resources.lock().unwrap().len(), count);
     // Clearing the class cannot adopt a pod created under VM isolation.
@@ -122,6 +173,10 @@ fn api_error(code: StatusCode, reason: &str, message: &str) -> Response<Body> {
         .unwrap()
 }
 
+pub(crate) fn mock_storage_manager() -> KubernetesContainerManager {
+    mock_manager(ServiceFailure::None).0
+}
+
 fn mock_manager(failure: ServiceFailure) -> (KubernetesContainerManager, ResourceStore) {
     let resources = Arc::new(Mutex::new(HashMap::<String, serde_json::Value>::new()));
     let captured_resources = Arc::clone(&resources);
@@ -132,10 +187,26 @@ fn mock_manager(failure: ServiceFailure) -> (KubernetesContainerManager, Resourc
         async move {
             let method = request.method().clone();
             let path = request.uri().path().to_string();
+            let selector = request.uri().query().and_then(|query| {
+                url::form_urlencoded::parse(query.as_bytes())
+                    .find(|(key, _)| key == "labelSelector")
+                    .map(|(_, v)| v.into_owned())
+            });
             let is_list = request.uri().query().is_some();
             let body = request.into_body().collect_bytes().await.unwrap();
 
             if method == Method::GET {
+                if path.ends_with("/endpointslices") {
+                    let list =
+                        team_storage::endpoint_slices(&resources, selector.as_deref().unwrap());
+                    return Ok::<_, std::io::Error>(
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header(CONTENT_TYPE, "application/json")
+                            .body(Body::from(list.to_string().into_bytes()))
+                            .unwrap(),
+                    );
+                }
                 if let Some(value) = resources.lock().unwrap().get(&path).cloned() {
                     return Ok::<_, std::io::Error>(
                         Response::builder()
@@ -156,6 +227,15 @@ fn mock_manager(failure: ServiceFailure) -> (KubernetesContainerManager, Resourc
                                 .is_some_and(|suffix| suffix.starts_with('/'))
                         })
                         .map(|(_, value)| value.clone())
+                        .filter(|item| {
+                            selector.as_deref().is_none_or(|s| {
+                                s.split(',').all(|predicate| {
+                                    predicate.split_once('=').is_some_and(|(key, value)| {
+                                        item["metadata"]["labels"][key].as_str() == Some(value)
+                                    })
+                                })
+                            })
+                        })
                         .collect();
                     let kind = if path.ends_with("/pods") {
                         "PodList"
@@ -227,10 +307,18 @@ fn mock_manager(failure: ServiceFailure) -> (KubernetesContainerManager, Resourc
                     "phase": "Running",
                     "hostIP": "192.0.2.10"
                 });
+                if value["metadata"]["annotations"]["rsctf.io/data-claim-uid"].is_string() {
+                    value["status"]["conditions"] =
+                        serde_json::json!([{"type":"Ready","status":"True"}]);
+                }
             } else if path.ends_with("/services") {
                 value["spec"]["clusterIP"] = serde_json::json!("10.96.12.34");
-                value["spec"]["ports"][0]["nodePort"] = serde_json::json!(30080);
-            } else if !path.ends_with("/networkpolicies") {
+                if value["spec"]["type"] == "NodePort" {
+                    value["spec"]["ports"][0]["nodePort"] = serde_json::json!(30080);
+                }
+            } else if !path.ends_with("/networkpolicies")
+                && !path.ends_with("/persistentvolumeclaims")
+            {
                 panic!("unexpected Kubernetes collection path: {path}");
             }
             resources
@@ -281,6 +369,7 @@ fn retry_spec(proxy_only: bool) -> ContainerSpec {
         flag: Some("flag{stable-retry}".to_string()),
         ad_network: None,
         allow_egress: false,
+        team_storage: None,
         control_plane_callback_ports: Vec::new(),
         network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some("jeopardy-instance:41:team:7".to_string()),
@@ -421,6 +510,7 @@ async fn changed_ad_service_cidr_does_not_adopt_a_kubernetes_crash_orphan() {
 
 #[tokio::test]
 async fn retry_discovers_and_validates_the_previous_kubernetes_workload_name() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let (manager, resources) = mock_manager(ServiceFailure::None);
     let spec = retry_spec(false);
     let first = manager.create(spec.clone()).await.unwrap();
@@ -441,6 +531,7 @@ async fn retry_discovers_and_validates_the_previous_kubernetes_workload_name() {
 
 #[tokio::test]
 async fn lost_service_response_retains_pod_and_rejects_a_stale_owner_uid() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let (manager, resources) = mock_manager(ServiceFailure::AmbiguousOnce);
     let spec = retry_spec(false);
     assert!(matches!(
@@ -477,6 +568,7 @@ async fn lost_service_response_retains_pod_and_rejects_a_stale_owner_uid() {
 
 #[tokio::test]
 async fn authoritative_service_rejection_rolls_back_a_stable_operation() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let (manager, resources) = mock_manager(ServiceFailure::ApiOnce);
     let error = manager.create(retry_spec(false)).await.unwrap_err();
 
@@ -489,6 +581,7 @@ async fn authoritative_service_rejection_rolls_back_a_stable_operation() {
 
 #[tokio::test]
 async fn terminal_adopted_pod_is_removed_before_the_operation_key_rotates() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
     let (manager, resources) = mock_manager(ServiceFailure::None);
     let spec = retry_spec(false);
     let created = manager.create(spec.clone()).await.unwrap();
@@ -504,6 +597,97 @@ async fn terminal_adopted_pod_is_removed_before_the_operation_key_rotates() {
         resources.lock().unwrap().is_empty(),
         "a terminal adopted Pod must not leave its Service or operation resources behind"
     );
+}
+
+#[tokio::test]
+async fn ad_retry_verifies_the_named_containers_current_image_before_adoption() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+    let _environment = RestoreEnv::set(&[
+        ("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12"),
+        ("RSCTF_K8S_AD_INGRESS_CIDRS", "192.0.2.0/24"),
+    ]);
+    let mut spec = retry_spec(false);
+    spec.game_kind = rsctf_worker_protocol::GameKind::AttackDefense;
+    spec.ad_network = Some("rsctf-ad".into());
+    let (manager, resources) = mock_manager(ServiceFailure::None);
+    let id = manager.create(spec.clone()).await.unwrap().id;
+    let path = format!("/api/v1/namespaces/rsctf-challenges/pods/{id}");
+    let digest = spec.image.split_once('@').unwrap().1;
+    {
+        let mut store = resources.lock().unwrap();
+        let pod = store.get_mut(&path).unwrap();
+        pod["spec"]["volumes"] = serde_json::json!([{
+            "name":"data","persistentVolumeClaim":{"claimName":"team-records"}
+        }]);
+        let containers = pod["spec"]["containers"].as_array_mut().unwrap();
+        containers[0]["image"] = serde_json::json!(format!("mirror.example/service@{digest}"));
+        containers.insert(0, serde_json::json!({"name":"sidecar","image":spec.image}));
+    }
+    assert_eq!(manager.create(spec.clone()).await.unwrap().id, id);
+    for image in [
+        format!("registry.example/service@sha256:{}", "c".repeat(64)),
+        "service:latest".into(),
+    ] {
+        resources.lock().unwrap().get_mut(&path).unwrap()["spec"]["containers"][1]["image"] =
+            serde_json::json!(image);
+        let before = resources.lock().unwrap().clone();
+        assert!(matches!(
+            manager.create(spec.clone()).await,
+            Err(AppError::Conflict(_))
+        ));
+        assert_eq!(*resources.lock().unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn ad_retry_retains_team_storage_on_terminal_pod_or_service_rejection() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+    let _environment = RestoreEnv::set(&[
+        ("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12"),
+        ("RSCTF_K8S_AD_INGRESS_CIDRS", "192.0.2.0/24"),
+    ]);
+    let mut spec = retry_spec(false);
+    spec.game_kind = rsctf_worker_protocol::GameKind::AttackDefense;
+    spec.ad_network = Some("rsctf-ad".into());
+    let (manager, resources) = mock_manager(ServiceFailure::None);
+    let id = manager.create(spec.clone()).await.unwrap().id;
+    let path = format!("/api/v1/namespaces/rsctf-challenges/pods/{id}");
+    {
+        let mut store = resources.lock().unwrap();
+        let pod = store.get_mut(&path).unwrap();
+        pod["spec"]["volumes"] = serde_json::json!([{
+            "name": "application", "persistentVolumeClaim": {"claimName": "team-records"}
+        }]);
+        pod["status"]["phase"] = serde_json::json!("Failed");
+    }
+    let snapshot = resources.lock().unwrap().clone();
+    let error = manager.create(spec.clone()).await.unwrap_err();
+    assert!(matches!(error, AppError::Conflict(reason) if reason.contains("team-records")));
+    assert_eq!(*resources.lock().unwrap(), snapshot);
+
+    // The Pod survived an interrupted creation, but the Service did not.
+    // A quota rejection on retry must preserve the Pod and its isolation.
+    let (rejected, resources) = mock_manager(ServiceFailure::ApiOnce);
+    let mut running = snapshot;
+    running
+        .remove(&format!(
+            "/api/v1/namespaces/rsctf-challenges/services/{id}"
+        ))
+        .unwrap();
+    running.get_mut(&path).unwrap()["status"]["phase"] = serde_json::json!("Running");
+    *resources.lock().unwrap() = running.clone();
+    let error = rejected.create(spec.clone()).await.unwrap_err();
+    assert!(matches!(error, AppError::Conflict(reason) if reason.contains("team-records")));
+    assert_eq!(*resources.lock().unwrap(), running);
+
+    let (stateless, resources) = mock_manager(ServiceFailure::ApiOnce);
+    running.get_mut(&path).unwrap()["spec"]["volumes"] = serde_json::json!([]);
+    *resources.lock().unwrap() = running;
+    assert!(matches!(
+        stateless.create(spec).await,
+        Err(AppError::Internal(_))
+    ));
+    assert!(resources.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -524,6 +708,10 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
     let manager = KubernetesContainerManager::connect()
         .await
         .expect("connect to the disposable Kubernetes cluster");
+    let storage = manager.has_ad_data_volumes("team-storage-donor").await;
+    assert!(
+        matches!(storage, Err(AppError::Conflict(ref message)) if message.contains("cannot transfer"))
+    );
     let spec = ContainerSpec {
         runtime_profile: None,
         game_kind: rsctf_worker_protocol::GameKind::AttackDefense,
@@ -538,6 +726,7 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         flag: None,
         ad_network: Some("rsctf-ad".to_string()),
         allow_egress: false,
+        team_storage: None,
         control_plane_callback_ports: Vec::new(),
         network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some(OPERATION.to_string()),
@@ -581,6 +770,7 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         .await
         .expect("adopt the previous release's workload name");
     assert_eq!(adopted.id, legacy_name);
+    assert!(!manager.has_ad_data_volumes(&adopted.id).await.unwrap());
     let mut changed = spec.clone();
     changed.image = format!("registry.example/changed@sha256:{}", "b".repeat(64));
     assert!(matches!(
@@ -594,6 +784,9 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
 
     let mut cidr_bound = spec.clone();
     cidr_bound.operation_id = Some("rsctf-live-service-cidr".to_string());
+    cidr_bound.image =
+        "curlimages/curl@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6"
+            .into();
     let current = manager
         .create(cidr_bound.clone())
         .await
@@ -604,14 +797,74 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         Err(AppError::Conflict(_))
     ));
     std::env::set_var("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12");
-    // Pod status is owned by kubelet; a test-side status patch can be reverted
-    // immediately and cannot deterministically represent a terminal workload.
-    // The mock regression above covers terminal adoption. Keep this live test
-    // focused on API-server adoption, configuration fencing, and exact cleanup.
+    // Patch only the Pod image, as an in-place rollout does. The UID, labels
+    // and Service still belong to the original operation.
+    let pod_before = manager.pods().get(&current.id).await.unwrap();
+    let service_before = manager.services().get(&current.id).await.unwrap();
+    let patch = kube::api::Patch::Strategic(serde_json::json!({"spec":{"containers":[{
+        "name": current.id, "image": IMAGE
+    }]}}));
+    manager
+        .pods()
+        .patch(&current.id, &kube::api::PatchParams::default(), &patch)
+        .await
+        .unwrap();
+    assert!(matches!(
+        manager.create(cidr_bound.clone()).await,
+        Err(AppError::Conflict(reason)) if reason.contains("requested revision")
+    ));
+    let after = manager.pods().get(&current.id).await.unwrap();
+    assert_eq!(after.metadata.uid, pod_before.metadata.uid);
+    assert!(compat::pod_image_matches(&after, &current.id, IMAGE));
+    let service_after = manager.services().get(&current.id).await.unwrap();
+    assert_eq!(service_after.metadata.uid, service_before.metadata.uid);
+    assert_eq!(
+        service_after.spec.unwrap().cluster_ip,
+        service_before.spec.unwrap().cluster_ip
+    );
+    let labels = after.metadata.labels.unwrap();
     manager
         .destroy(&current.id)
         .await
         .expect("clean up the Service-CIDR retry fixture");
+    // Model a persisted, admission-mutated Pod left from an interrupted
+    // launch. Let the actual kubelet run the command to completion.
+    let completed: Pod = serde_json::from_value(serde_json::json!({
+        "metadata": {"name": current.id, "labels": labels},
+        "spec": {
+            "restartPolicy": "Never", "automountServiceAccountToken": false,
+            "volumes": [{"name":"data","persistentVolumeClaim":{"claimName":"team-data","readOnly":true}}],
+            "containers": [{
+                "name":current.id, "image":cidr_bound.image, "securityContext":challenge_security_context(),
+                "command":["sh","-ec","test -s /data/installation"],
+                "volumeMounts":[{"name":"data","mountPath":"/data","readOnly":true}]
+            }]
+        }
+    })).unwrap();
+    let completed = manager
+        .pods()
+        .create(&PostParams::default(), &completed)
+        .await
+        .unwrap();
+    let expected_uid = completed.metadata.uid.unwrap();
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let pod = manager.pods().get(&current.id).await.unwrap();
+            match pod.status.and_then(|s| s.phase).as_deref() {
+                Some("Succeeded") => break,
+                Some("Failed") => panic!("fixture could not read the team data"),
+                _ => tokio::time::sleep(Duration::from_millis(500)).await,
+            }
+        }
+    })
+    .await
+    .expect("kubelet did not finish the storage fixture");
+    let error = manager.create(cidr_bound).await.unwrap_err();
+    assert!(matches!(error, AppError::Conflict(reason) if reason.contains("team-data")));
+    assert_eq!(
+        manager.pods().get(&current.id).await.unwrap().metadata.uid,
+        Some(expected_uid)
+    );
 
     let quota_namespace = std::env::var("RSCTF_K8S_REJECTION_NAMESPACE")
         .expect("rejection namespace configured by the live script");

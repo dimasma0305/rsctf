@@ -627,6 +627,18 @@ export const ADMIN_OPERATIONS = Object.freeze([
     },
   ),
   operation(
+    "ad_admin_byoc_source_get",
+    "GET",
+    "/api/ad/admin/{game_id}/Services/{service_id}/ByocSource",
+    { source: "ad", responseKind: "object", params: { game_id: "adGameId", service_id: "serviceId" } },
+  ),
+  operation(
+    "ad_admin_ssh_source_get",
+    "GET",
+    "/api/ad/admin/{game_id}/Services/{service_id}/SshSource",
+    { source: "ad", responseKind: "object", params: { game_id: "adGameId", service_id: "hostedServiceId" } },
+  ),
+  operation(
     "ad_admin_service_register",
     "POST",
     "/api/ad/admin/{game_id}/Services",

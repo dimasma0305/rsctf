@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::net::UdpSocket;
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock};
 
 use axum::extract::ws::{Message, WebSocket};
 use bytes::Bytes;
@@ -38,6 +38,7 @@ mod endpoint;
 mod flag;
 mod framing;
 mod lifecycle;
+pub(crate) mod source;
 mod team;
 mod token;
 use authorization::live_tunnel_authorized;
@@ -543,49 +544,45 @@ async fn wait_for_endpoint_shutdown(endpoints: &[Arc<RelayEndpoint>]) {
     }
 }
 
-/// rsctf's own IPv4 on the A&D services network (the address the checker reaches
-/// a BYOC listener at). Discovered once via a connected UDP socket toward the
-/// subnet and cached — it doesn't change for the process lifetime.
-fn services_ip() -> Result<String, String> {
-    static CACHE: OnceLock<Result<String, String>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let cidr = crate::services::ad_vpn::services_cidr();
-            let network: Ipv4Net = cidr
-                .parse()
-                .map_err(|error| format!("invalid A&D service CIDR {cidr}: {error}"))?;
-            let probe = std::net::Ipv4Addr::from(
-                u32::from(network.network())
-                    .checked_add(1)
-                    .ok_or_else(|| format!("A&D service CIDR {network} has no probe address"))?,
-            );
-            if !network.contains(&probe) {
-                return Err(format!("A&D service CIDR {network} has no probe address"));
-            }
-            let socket = UdpSocket::bind("0.0.0.0:0")
-                .map_err(|error| format!("bind service route probe: {error}"))?;
-            socket
-                .connect((probe, 9))
-                .map_err(|error| format!("resolve service route for {network}: {error}"))?;
-            let local = socket
-                .local_addr()
-                .map_err(|error| format!("read service route source: {error}"))?;
-            let std::net::IpAddr::V4(local) = local.ip() else {
-                return Err("A&D service route selected a non-IPv4 source".to_string());
-            };
-            if !network.contains(&local) {
-                return Err(format!(
-                    "A&D service route selected {local}, outside configured {network}"
-                ));
-            }
-            Ok(local.to_string())
-        })
-        .clone()
+/// Probe the A&D services interface on each agent connection. A team may start
+/// its agent before the bridge is ready. Connecting this UDP socket only asks
+/// the kernel to select a source address and sends no packets.
+pub(crate) fn services_ip() -> Result<String, String> {
+    let cidr = crate::services::ad_vpn::services_cidr();
+    let network: Ipv4Net = cidr
+        .parse()
+        .map_err(|error| format!("invalid A&D service CIDR {cidr}: {error}"))?;
+    let probe = std::net::Ipv4Addr::from(
+        u32::from(network.network())
+            .checked_add(1)
+            .ok_or_else(|| format!("A&D service CIDR {network} has no probe address"))?,
+    );
+    if !network.contains(&probe) {
+        return Err(format!("A&D service CIDR {network} has no probe address"));
+    }
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .map_err(|error| format!("bind service route probe: {error}"))?;
+    socket
+        .connect((probe, 9))
+        .map_err(|error| format!("resolve service route for {network}: {error}"))?;
+    let local = socket
+        .local_addr()
+        .map_err(|error| format!("read service route source: {error}"))?;
+    let std::net::IpAddr::V4(local) = local.ip() else {
+        return Err("A&D service route selected a non-IPv4 source".to_string());
+    };
+    if !network.contains(&local) {
+        return Err(format!(
+            "A&D service route selected {local}, outside configured {network}"
+        ));
+    }
+    Ok(local.to_string())
 }
 
 /// Accept an agent WebSocket, run the yamux client over it, and attach it to the
 /// team's stable process-local relay endpoint. Ordinary reconnects swap only
 /// the yamux session; revocation or an idle-grace expiry releases the listener.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve_agent(
     st: SharedState,
     game_id: i32,
@@ -593,6 +590,7 @@ pub(crate) async fn serve_agent(
     cid: i32,
     token: String,
     authorization_generation: AuthorizationGeneration,
+    source_reports: bool,
     ws: WebSocket,
 ) {
     // The WireGuard interface, firewall, and relay registry are protected by
@@ -727,7 +725,19 @@ pub(crate) async fn serve_agent(
 
     // Drive the yamux connection until it closes, a newer agent supersedes us,
     // or its live participation/game/challenge authorization expires.
+    let observation = source::Session {
+        st: &st,
+        game: game_id,
+        participation: pid,
+        challenge: cid,
+        token: &token,
+        generation: authorization_generation,
+        endpoint: &endpoint,
+        handle: &handle,
+        supported: source_reports,
+    };
     let authorization_expired = tokio::select! {
+        _ = observation.observe() => false,
         _ = drive(conn, open_rx, active) => false,
         _ = shutdown.notified() => {
             tracing::info!(pid, cid, "byoc: agent superseded by a newer session");

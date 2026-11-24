@@ -1,4 +1,58 @@
 {
+  "ad": {
+    "patch": {
+      "archive": "Deployed patches",
+      "archive_help": "Changes from the starter for files selected by the organizer.",
+      "archive_revision": "{{team}} · Revision {{revision}}",
+      "archive_modified": "Modified",
+      "archive_deleted": "Deleted",
+      "archive_first": "First page",
+      "archive_next": "Next page",
+      "archive_retry": "Reload patch archive",
+      "archive_marked": "File status shared after close when patch activity is enabled",
+      "archive_notice": "For deployed ZIPs, teams in your division can see changes to files selected by the organizer after the event and practice close. The starter can also mark files for sharing changed line ranges. File contents stay private.",
+      "archive_ranges": "Changed lines",
+      "archive_insert": "Added in revision · {{lines}}",
+      "archive_delete": "Removed from starter · {{lines}}",
+      "archive_replace": "Starter {{before}} → revision {{after}}",
+      "archive_ranges_marked": "Changed line ranges shared after close",
+      "ssh_recover": "Download starter with SSH edits (revision {{number}})",
+      "ssh_retained": "Included in team recovery ZIPs",
+      "activity": "Patch activity across teams",
+      "activity_help": "Successful ZIP deployments appear after one additional round finishes.",
+      "activity_round": "Round {{round}} · {{deployments}} deployed",
+      "activity_retry": "Reload patch activity",
+      "activity_refresh": "Refresh activity",
+      "activity_empty": "No rounds are available yet.",
+      "build_revision": "Build revision {{number}}",
+      "activate": "Deploy revision {{number}}",
+      "active": "Your service is running this image.",
+      "reload_build": "Reload build status",
+      "queued": "Build queued",
+      "building": "Building in an isolated VM…",
+      "ready": "Candidate ready. Your service is still running its current version.",
+      "staged": "Image verified in the registry. Your service is still running its current version.",
+      "failed": "Build failed. Your service keeps running.",
+      "replaced": "Another revision is the current candidate.",
+      "waiting_worker": "Waiting for the challenge builder to reconnect.",
+      "open_service": "Patch your service",
+      "label": "Preview a patch ZIP",
+      "compare_with": "Compare with",
+      "latest_team_source": "Latest team revision",
+      "compare_ssh": "Compare ZIP with last SSH report",
+      "ssh_result": "SSH report {{number}} ({{time}}). Registered files compared: {{files}}. Differences in this ZIP: {{changes}}.",
+      "ssh_unavailable": "No readable SSH report with registered files is available for this service.",
+      "original": "Starter ZIP",
+      "compared_revision": "Compared with revision {{number}}.",
+      "compared_starter": "Compared with the starter ZIP.",
+      "no_changes": "No files changed.",
+      "count": "Files changed: {{count}}",
+      "compare": "Compare files",
+      "download": "Download starter ZIP",
+      "clear": "Clear selected patch ZIP",
+      "size": "Choose a ZIP of 72 MiB or smaller."
+    }
+  },
   "timeline": {
     "empty_title": "No score history yet",
     "empty_description": "Score history will appear here when it is available. Current standings are listed below."
@@ -63,6 +117,7 @@
     "export_scoreboard": "Export scoreboard",
     "ad": {
       "reset": "Reset",
+      "rollback_previous": "Restore previous image",
       "submit": "Submit attack",
       "snapshot": "Snapshot",
       "download_snapshot": "Download .tar.gz",
@@ -312,9 +367,9 @@
           "ip": "The challenge modal shows your container IP:port — that's where checks run and where attackers point their exploits.",
           "flag_file": "The live flag is rewritten every round at the path in the RSCTF_FLAG_FILE environment variable. Read it fresh from $RSCTF_FLAG_FILE on every request (don't cache it).",
           "flag_env": "Never hard-code a platform-specific path. A creation-time RSCTF_FLAG compatibility value may exist, but it becomes stale after rotation — always read $RSCTF_FLAG_FILE.",
-          "patch": "Patch your service live inside the container — the platform does not redeploy on its own. Your changes live ONLY in the running container; there is no persistent disk.",
+          "patch": "Keep a copy of your SSH patches outside the container. Replacing the container discards edits in its writable layer. On local Docker, compatible team data volumes keep their current contents.",
           "supervisor": "Your service runs under a supervisor (PID 1). If the service process crashes — or you restart it — it comes back automatically and your patches stay. Restarting the service is safe; but don't kill PID 1 (the supervisor): that drops the box back to the base image.",
-          "reset": "Reset rebuilds the box from the original image — it WIPES all your changes (patches included), costs SLA during the rebuild, and has a cooldown. Use it only if your box is wedged or compromised, then re-apply your patches."
+          "reset": "Open your challenge to reset to its starter image or choose Restore previous image when available. Both actions share a cooldown. The checker can report downtime while your service restarts."
         },
         "do_dont": {
           "title": "Do / Don't",
@@ -517,9 +572,11 @@
   "notification": {
     "ad": {
       "attack_accepted": "Attack accepted (epoch evidence recorded)",
-      "reset_queued": {
-        "title": "Reset queued",
-        "message": "Container will rebuild in seconds."
+      "rollback_finished": "Rollback finished",
+      "reset_finished": {
+        "title": "Reset finished",
+        "message": "Your service has been rebuilt.",
+        "already_replaced": "Another operation already replaced your service."
       }
     },
     "connected": {

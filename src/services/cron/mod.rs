@@ -41,6 +41,8 @@ mod delivery_health;
 mod image_cleanup;
 mod maintenance;
 mod round_finish;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use round_finish::publish_round_flags;
 mod scheduler;
 
 /// Cache key for cross-replica maintenance ownership.
@@ -71,17 +73,16 @@ pub(super) const ADVANCE_BUDGET_SECS: u64 = 240;
 
 /// Which games one round-scheduler replica is eligible to drive.
 ///
-/// BYOC tunnels and their yamux control streams are process-local to the active
-/// network owner. A standalone engine replica must therefore leave any game
-/// containing a self-hosted A&D service to that network owner. A combined
+/// BYOC tunnels and trusted worker control streams live on the active network
+/// owner. It drives games that need either connection for flag delivery. A combined
 /// `all`/`control` process uses [`All`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoundSchedulerScope {
     /// Combined single-process/control deployment: drive every engine game.
     All,
-    /// Horizontally-scaled engine worker: drive games with managed services only.
+    /// Horizontally scaled engine worker for games using local container backends.
     ManagedOnly,
-    /// Active network owner: drive only games that contain a BYOC service.
+    /// Active network owner for games with BYOC or remote A&D services.
     NetworkBoundOnly,
 }
 

@@ -109,7 +109,44 @@ impl WorkerService {
     }
 
     pub async fn send(&self, worker_id: Uuid, message: ControlMessage) -> WorkerResult<Uuid> {
+        if let ControlMessage::WriteFlag(command) = message {
+            let session = self
+                .registry
+                .session_context(worker_id)
+                .await
+                .ok_or(WorkerError::Offline)?;
+            return self
+                .write_flag_confirmed(worker_id, &session.fence, command)
+                .await;
+        }
         self.registry.send(worker_id, message).await
+    }
+
+    pub(crate) async fn write_flag_confirmed(
+        &self,
+        worker_id: Uuid,
+        fence: &rsctf_worker_protocol::SessionFence,
+        command: rsctf_worker_protocol::WriteFlag,
+    ) -> WorkerResult<Uuid> {
+        let context = self
+            .registry
+            .session_context(worker_id)
+            .await
+            .ok_or(WorkerError::Offline)?;
+        if context.fence != *fence {
+            return Err(WorkerError::StaleSession);
+        }
+        let peer = AuthenticatedPeer {
+            worker_id,
+            fingerprint_sha256: context.certificate_fingerprint_sha256,
+        };
+        self.authority.validate_peer(&peer).await?;
+        let confirmed = self
+            .registry
+            .write_flag_confirmed(worker_id, fence, command)
+            .await?;
+        self.authority.validate_peer(&peer).await?;
+        Ok(confirmed)
     }
 
     pub async fn open_data_stream(
@@ -320,13 +357,7 @@ impl WorkerService {
             },
         };
         let (registration, cleanup) = self
-            .prepare_control_session(
-                &context,
-                &welcome,
-                hello.capabilities.inventory,
-                &mut tls,
-                cleanup,
-            )
+            .prepare_control_session(&context, &welcome, &hello.capabilities, &mut tls, cleanup)
             .await?;
         drop((handshake_permit, peer_permit));
         self.run_control(tls, registration, hello.capabilities.inventory, cleanup)
@@ -337,7 +368,7 @@ impl WorkerService {
         &self,
         context: &SessionContext,
         welcome: &ServerWelcome,
-        inventory_enabled: bool,
+        capabilities: &rsctf_worker_protocol::WorkerCapabilities,
         writer: &mut W,
         cleanup: SessionCleanup,
     ) -> WorkerResult<(SessionRegistration, SessionCleanup)>
@@ -350,6 +381,7 @@ impl WorkerService {
                 .register_authenticated_control(
                     context.clone(),
                     usize::from(welcome.limits.max_data_lanes),
+                    capabilities.write_flag && capabilities.verified_flag_delivery,
                 )
                 .await?;
             tokio::time::timeout(
@@ -358,7 +390,7 @@ impl WorkerService {
             )
             .await
             .map_err(|_| WorkerError::Protocol("control welcome timed out"))??;
-            if inventory_enabled {
+            if capabilities.inventory {
                 self.registry
                     .request_inventory(
                         context.worker_id,
@@ -443,7 +475,14 @@ impl WorkerService {
                                 .handle_inventory_snapshot(&reader_context, snapshot_id, items)
                                 .await?;
                             for command in cleanup {
-                                match registry.send(reader_context.worker_id, command).await {
+                                match registry
+                                    .send_to_session(
+                                        reader_context.worker_id,
+                                        &reader_context.fence,
+                                        command,
+                                    )
+                                    .await
+                                {
                                     Ok(_) => {}
                                     Err(WorkerError::Busy) => {
                                         tracing::warn!(

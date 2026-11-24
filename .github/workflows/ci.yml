@@ -92,6 +92,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
+      patchregistry:
+        image: registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - "127.0.0.1::5000"
       postgres:
         image: postgres:18-alpine
         env:
@@ -137,8 +141,37 @@ jobs:
       - name: Build application binaries
         run: cargo build --all-features --locked
 
+      - name: Build a verified defensive patch context
+        run: python3 scripts/test-ad-patch-context.py ./target/debug/rsctf
+
+      - name: Test offline defensive patch VM
+        run: |
+          python3 scripts/ad-patch-builder/test_result.py
+          sudo apt-get install --yes --no-install-recommends qemu-system-x86 seabios python3-venv skopeo docker-registry apache2-utils
+          docker buildx build --platform linux/amd64 --output "type=local,dest=$RUNNER_TEMP/patch-guest" scripts/ad-patch-builder
+          python3 -m venv "$RUNNER_TEMP/patch-worker"
+          "$RUNNER_TEMP/patch-worker/bin/pip" install -r scripts/ad-patch-builder/requirements.txt
+          pull_test="$(cargo test --all-features --locked --lib --no-run --message-format=json |
+            jq -ers '[.[] | select(.reason=="compiler-artifact" and .target.name=="rsctf" and .profile.test and .executable!=null) | .executable] | unique | select(length==1) | first')"
+          export RSCTF_PATCH_PULL_TEST="$pull_test"
+          python3 scripts/test-ad-patch-context.py ./target/debug/rsctf --guest "$RUNNER_TEMP/patch-guest" --docker-load \
+            --registry-port "${{ job.services.patchregistry.ports['5000'] }}" --stage-python "$RUNNER_TEMP/patch-worker/bin/python"
+          "$RUNNER_TEMP/patch-worker/bin/python" scripts/ad-patch-builder/test_export.py
+          RSCTF_PATCH_VM_GUEST="$RUNNER_TEMP/patch-guest" \
+            RSCTF_PATCH_WORKER_PYTHON="$RUNNER_TEMP/patch-worker/bin/python" \
+            RSCTF_PATCH_TEST_BINARY="$PWD/target/debug/rsctf" \
+            cargo test --all-features --locked --lib player_download_preview_and_revocation_during_upload -- --ignored --nocapture
+
       - name: Build test targets
         run: cargo build --all-targets --all-features --locked
+
+      - name: Test source history in the downloaded BYOC bundle
+        run: |
+          cargo build --locked --manifest-path agents/byoc-agent/Cargo.toml --target-dir target
+          python3 scripts/test-byoc-source-compose.py --agent target/debug/rsctf-byoc-agent \
+            --agent-base ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 \
+            -- \
+            cargo test --locked --all-features --lib downloaded_byoc_bundle_observes_in_container_patches -- --ignored --nocapture
 
       - name: Test Docker idempotent retry lifecycle
         run: |
@@ -247,6 +280,7 @@ jobs:
     env:
       RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test
       RSCTF_TEST_REDIS_URL: redis://127.0.0.1:6379
+      RSCTF_PATCH_TEST_REDIS_IMAGE: redis:8-alpine
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -288,7 +322,10 @@ jobs:
           sudo apt-get update && sudo apt-get install --yes --no-install-recommends python3-venv
           docker build --tag rsctf-coverage-smoke:ci \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
-          printf 'RSCTF_REAL_DOCKER_RETRY_IMAGE=%s\n' "$(docker image inspect rsctf-coverage-smoke:ci --format '{{.Id}}')" >> "$GITHUB_ENV"
+          image_id="$(docker image inspect rsctf-coverage-smoke:ci --format '{{.Id}}')"
+          docker build --build-arg SMOKE_IMAGE=rsctf-coverage-smoke:ci --tag rsctf-ad-state-smoke:ci - < tests/fixtures/ad-smoke.Dockerfile
+          ad_image_id="$(docker image inspect rsctf-ad-state-smoke:ci --format '{{.Id}}')"
+          printf 'RSCTF_REAL_DOCKER_RETRY_IMAGE=%s\nRSCTF_TEST_CONTAINER_IMAGE=%s\n' "$image_id" "$ad_image_id" >> "$GITHUB_ENV"
           printf 'RSCTF_DOCKER_PROXY_BIND=%s\n' "$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')" >> "$GITHUB_ENV"
           printf 'RSCTF_DOCKER_SCOPE=ci-architecture-coverage\n' >> "$GITHUB_ENV"
 
@@ -380,10 +417,25 @@ jobs:
 
   worker-plane-linux:
     name: Worker plane (Linux)
-    needs: plan
+    needs: [plan, rust]
     if: needs.plan.outputs.worker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      patchregistry:
+        image: registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - "127.0.0.1::5000"
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: rsctf_test
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rsctf_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -399,7 +451,7 @@ jobs:
           targets: x86_64-unknown-linux-musl
 
       - name: Install musl linker
-        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools libpcap-dev
 
       - name: Restore worker build cache
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
@@ -436,12 +488,69 @@ jobs:
       - name: Test Docker worker lifecycle
         shell: bash
         run: |
-          docker build --tag rsctf-worker-smoke:ci \
+          docker build --tag rsctf-worker-smoke:base \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
-          image_id="$(docker image inspect rsctf-worker-smoke:ci --format '{{.Id}}')"
-          RSCTF_WORKER_TEST_IMAGE_ID="$image_id" \
+          fixture=agents/worker-agent/tests/fixtures/team-data.Dockerfile
+          for revision in starter patch second; do
+            docker build --tag "rsctf-worker-smoke:$revision" --label "io.rsctf.test.revision=$revision" - < "$fixture"
+          done
+          image_id="$(docker image inspect rsctf-worker-smoke:starter --format '{{.Id}}')"
+          patch_id="$(docker image inspect rsctf-worker-smoke:patch --format '{{.Id}}')"
+          second_id="$(docker image inspect rsctf-worker-smoke:second --format '{{.Id}}')"
+          printf '%s\n' 'FROM rsctf-worker-smoke:starter' 'VOLUME ["/data"]' |
+            docker build --tag rsctf-worker-smoke:anonymous -
+          anonymous_id="$(docker image inspect rsctf-worker-smoke:anonymous --format '{{.Id}}')"
+          test "$patch_id" != "$image_id"
+          test "$second_id" != "$patch_id"
+          RSCTF_WORKER_TEST_IMAGE_ID="$image_id" RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$patch_id" \
+            RSCTF_WORKER_TEST_ANONYMOUS_VOLUME_IMAGE_ID="$anonymous_id" \
+            RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$second_id" RSCTF_WORKER_TEST_FLAG_UID=65534 \
             cargo test --manifest-path agents/worker-agent/Cargo.toml --locked \
             docker_workload_lifecycle_when_image_is_configured -- --nocapture
+
+      - name: Download server tests built from the same commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-server-${{ github.sha }}
+          path: ci-artifacts
+
+      - name: Score two teams and exercise both worker rollback targets
+        env:
+          PATCH_REGISTRY: 127.0.0.1:${{ job.services.patchregistry.ports[5000] }}
+          RSCTF_AD_VPN_SERVICES_CIDR: 10.214.103.0/24
+          RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test
+        run: |
+          test "$(cat ci-artifacts/source-sha)" = "$GITHUB_SHA"
+          chmod 0755 ci-artifacts/rsctf-tests
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ipset wireguard-tools
+          sudo ip link add rsctf-ci-svc type dummy
+          trap 'sudo ip netns del rscpeer0 2>/dev/null || true; sudo ip link del rscpeer0 2>/dev/null || true; sudo ip link del wg0 2>/dev/null || true; sudo ip link del rsctf-ci-svc' EXIT
+          sudo ip addr add 10.214.103.253/24 dev rsctf-ci-svc
+          sudo ip link set rsctf-ci-svc up
+          export RSCTF_TEST_LIVE_AD_WORKER_BIN="$PWD/agents/worker-agent/target/x86_64-unknown-linux-musl/release/rsctf-worker-agent"
+          export RSCTF_WORKER_TEST_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:starter --format '{{.Id}}')"
+          export RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:patch --format '{{.Id}}')"
+          export RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$(docker image inspect rsctf-worker-smoke:second --format '{{.Id}}')"
+          repo="$PATCH_REGISTRY/test-worker/service-900041"
+          docker build --tag "$repo:reviewed" tests/fixtures/worker-patch
+          candidate_config="$(docker image inspect "$repo:reviewed" --format '{{.Id}}')"
+          docker push "$repo:reviewed"
+          digest="$(curl -fsSI -H 'Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json' \
+            "http://$PATCH_REGISTRY/v2/test-worker/service-900041/manifests/reviewed" | awk 'tolower($1)=="docker-content-digest:" {gsub(/\r/,"",$2);print $2}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          export RSCTF_WORKER_TEST_CANDIDATE="$repo@$digest"
+          name=controllers::game::ad::player_reset_tests::worker::live_remote_agent_publishes_two_team_round_receipts
+          ./ci-artifacts/rsctf-tests --ignored --exact "$name" --list | grep -Fx "$name: test"
+          sudo env RSCTF_AD_VPN_ENABLED=true RSCTF_AD_VPN_SERVICES_CIDR="$RSCTF_AD_VPN_SERVICES_CIDR" \
+            RSCTF_AD_VPN_CLIENT_CIDR=10.213.103.0/24 RSCTF_EVENT_VPN_HUB_ADDRESS=10.213.103.1 \
+            RSCTF_AD_VPN_SERVER_ENDPOINT=127.0.0.1:51822 RSCTF_AD_VPN_LISTEN_PORT=51822 \
+            RSCTF_EVENT_VPN_CREDENTIAL_KEY="$(openssl rand -hex 32)" \
+            RSCTF_TEST_DATABASE_URL="$RSCTF_TEST_DATABASE_URL" RSCTF_TEST_LIVE_AD_WORKER_BIN="$RSCTF_TEST_LIVE_AD_WORKER_BIN" \
+            RSCTF_WORKER_TEST_IMAGE_ID="$RSCTF_WORKER_TEST_IMAGE_ID" RSCTF_WORKER_TEST_PATCH_IMAGE_ID="$RSCTF_WORKER_TEST_PATCH_IMAGE_ID" \
+            RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID="$RSCTF_WORKER_TEST_SECOND_PATCH_IMAGE_ID" RSCTF_WORKER_TEST_CANDIDATE_CONFIG="$candidate_config" \
+            RSCTF_WORKER_TEST_CANDIDATE="$RSCTF_WORKER_TEST_CANDIDATE" \
+            ./ci-artifacts/rsctf-tests --ignored --exact "$name" --nocapture
 
   worker-plane-windows:
     name: Worker compatibility (Windows)
@@ -849,8 +958,9 @@ jobs:
           cargo audit --file agents/byoc-agent/Cargo.lock
           cargo audit --file agents/worker-agent/Cargo.lock
           cargo audit --file lib/worker-protocol/Cargo.lock
-          cargo audit --file tests/load/retention-audit/Cargo.lock
-          cargo audit --file tests/load/storage-audit/Cargo.lock
+          for lockfile in tests/load/*-audit/Cargo.lock; do
+            cargo audit --file "$lockfile"
+          done
 
   load-harness-contracts:
     name: Load harness contracts
@@ -1021,6 +1131,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
+      patchregistry:
+        image: registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - "127.0.0.1::5000"
       postgres:
         image: postgres:18-alpine
         env:
@@ -1073,16 +1187,22 @@ jobs:
             ./ci-artifacts/checker-sandbox-tests --test-threads=1 --nocapture
 
       - name: Verify private VPN SSH routing and peer fences
-        run: sudo ./ci-artifacts/rsctf-tests same_origin_ssh_kernel_regression --ignored --test-threads=1 --nocapture
+        run: |
+          sudo ./ci-artifacts/rsctf-tests same_origin_ssh_kernel_regression --ignored --test-threads=1 --nocapture
+          sudo unshare --net ./ci-artifacts/rsctf-tests byoc_listener_recovers_after_services_route_appears --ignored --test-threads=1 --nocapture
 
       - name: Recover imports, checker publication and Docker snapshots
+        env:
+          RSCTF_TEST_PATCH_REGISTRY: 127.0.0.1:${{ job.services.patchregistry.ports['5000'] }}
         run: |
           docker build --tag rsctf-architecture-smoke:ci \
             examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
           export RSCTF_REAL_DOCKER_RETRY_IMAGE="$(docker image inspect rsctf-architecture-smoke:ci --format '{{.Id}}')"
-          export RSCTF_TEST_CONTAINER_IMAGE="$RSCTF_REAL_DOCKER_RETRY_IMAGE"
+          docker build --build-arg SMOKE_IMAGE=rsctf-architecture-smoke:ci --tag rsctf-ad-state-smoke:ci - < tests/fixtures/ad-smoke.Dockerfile
+          export RSCTF_TEST_CONTAINER_IMAGE="$(docker image inspect rsctf-ad-state-smoke:ci --format '{{.Id}}')"
           export RSCTF_DOCKER_PROXY_BIND="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
           export RSCTF_DOCKER_SCOPE=ci-architecture
+          export RSCTF_PATCH_TEST_REDIS_IMAGE=redis:8-alpine
           filters=(
             registered_import_roles_recover_committed_side_effects_and_replay_http_receipts
             repository_update_preserves_challenge_solves_and_refreshes_content
@@ -1094,6 +1214,27 @@ jobs:
             readiness_rechecks_ownership_and_shutdown_after_waiting_for_dependencies
             docker_bootstrap_reuses_pending_code_and_stops_after_registration
             simple_challenge_create_is_atomic_authorized_and_retryable
+            starter_http_scope_replay_and_concurrent_registration
+            finalized_rounds_release_only_opted_in_challenge_counts
+            player_download_preview_and_revocation_during_upload
+            hosted_and_byoc_source_history_is_team_private
+            buildkit_accepts_checked_out_patch_revision
+            buildkit_failed_patch_candidate_preserves_active_image_and_service
+            pressure_cleanup_retains_pinned_revisions_and_reclaims_only_abandoned_outputs
+            byoc_source_history_coalesces_samples_and_bounds_private_retention
+            resetting_a_hosted_service_checkpoints_the_exact_retirement_atomically
+            orphan_sweep_respects_reclaimable_ad_reset_receipts
+            missing_reset_image_preserves_live_endpoint_and_scoring
+            player_reset_restores_the_registered_starter_after_an_organizer_rebuild
+            query_preserves_fresh_tail_and_filters_services
+            native_round_publication_records_each_managed_service_acknowledgement
+            registered_edits_keep_separate_private_histories_in_docker
+            hosted_team_ssh_disconnect_records_only_its_registered_source
+            provisioning_cannot_publish_after_the_round_changes
+            reconcile_preserves_uncertain_backends_and_reclaimed_reset
+            docker_repair_preserves_each_teams_anonymous_data_volume
+            stopped_service_can_transfer_its_slot_on_a_full_host
+            image_history_tracks_distinct_publications_and_protects_only_retained_images
             stale_conditional_delete_cannot_destroy_a_real_replacement_runtime
             newly_issued_sessions_work_immediately_after_a_cached_credential_rotation
             exact_replay_and_stale_phase_recovery_are_durable

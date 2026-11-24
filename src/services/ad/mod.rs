@@ -11,12 +11,17 @@ pub(crate) mod koth_reporter;
 pub(crate) mod koth_scoring;
 pub(crate) mod late_roster;
 pub(crate) mod maintenance;
+pub mod patches;
 pub(crate) mod provision;
 pub(crate) mod provision_recovery;
 pub(crate) mod reset;
+#[cfg(test)]
+pub(crate) mod reset_fixture;
 pub(crate) mod roster;
 pub mod scoring;
 pub(crate) mod service_lifecycle;
 pub(crate) mod snapshots;
 pub mod ssh;
+#[cfg(test)]
+mod volume_repair_tests;
 pub mod vpn;

@@ -129,16 +129,70 @@ impl CapacityGatedDockerManager {
     }
 
     pub fn with_capacity(
-        inner: DockerContainerManager,
+        mut inner: DockerContainerManager,
         pool: sqlx::PgPool,
         capacity: LocalCapacity,
     ) -> Self {
+        inner.pull_settings = Some(pool.clone());
         Self {
             inner,
             pool,
             host_key: docker_installation_scope(),
             capacity,
             last_reconcile: Mutex::new(None),
+        }
+    }
+
+    async fn create_reserved(
+        &self,
+        spec: ContainerSpec,
+        donor: Option<&str>,
+    ) -> AppResult<ContainerInfo> {
+        let request = Reservation::for_spec(&spec)?;
+        match donor {
+            Some(id) => {
+                store::reserve_replacing(
+                    &self.pool,
+                    &self.host_key,
+                    &self.capacity,
+                    &request,
+                    Some(id),
+                )
+                .await?
+            }
+            None => store::reserve(&self.pool, &self.host_key, &self.capacity, &request).await?,
+        }
+        match self.inner.create_with_donor(spec, donor).await {
+            Ok(info) => {
+                if let Err(error) =
+                    store::attach(&self.pool, &self.host_key, &request.key, &info.id).await
+                {
+                    // The inventory reconciliation re-attaches by operation
+                    // label; an unlabeled launch ages out after its grace.
+                    tracing::warn!(
+                        reservation = %request.key,
+                        backend_id = %info.id,
+                        %error,
+                        "failed to attach local container reservation"
+                    );
+                }
+                Ok(info)
+            }
+            // The repaired workload may already exist after a lost response.
+            // The deterministic operation and inventory reconcile its slot.
+            Err(error) if donor.is_some() => Err(error),
+            Err(error) => {
+                if let Err(release_error) =
+                    store::release_key(&self.pool, &self.host_key, &request.key).await
+                {
+                    tracing::warn!(
+                        reservation = %request.key,
+                        error = %release_error,
+                        "failed to release local container reservation after launch failure"
+                    );
+                }
+                Err(error)
+            }
         }
     }
 
@@ -186,6 +240,10 @@ impl ContainerManager for CapacityGatedDockerManager {
         self.inner.image_exists(image).await
     }
 
+    async fn pull_image(&self, image: &str) -> AppResult<()> {
+        self.inner.pull_image(image).await
+    }
+
     /// Lists the labeled inventory and, at a bounded rate, reconciles
     /// reservations against it. The orphan sweep is the only production
     /// caller, so this is the single inventory scan after a crash.
@@ -231,37 +289,51 @@ impl ContainerManager for CapacityGatedDockerManager {
     }
 
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
-        let request = Reservation::for_spec(&spec)?;
-        store::reserve(&self.pool, &self.host_key, &self.capacity, &request).await?;
-        match self.inner.create(spec).await {
-            Ok(info) => {
-                if let Err(error) =
-                    store::attach(&self.pool, &self.host_key, &request.key, &info.id).await
-                {
-                    // The inventory reconciliation re-attaches by operation
-                    // label; an unlabeled launch ages out after its grace.
-                    tracing::warn!(
-                        reservation = %request.key,
-                        backend_id = %info.id,
-                        %error,
-                        "failed to attach local container reservation"
-                    );
-                }
-                Ok(info)
-            }
-            Err(error) => {
-                if let Err(release_error) =
-                    store::release_key(&self.pool, &self.host_key, &request.key).await
-                {
-                    tracing::warn!(
-                        reservation = %request.key,
-                        error = %release_error,
-                        "failed to release local container reservation after launch failure"
-                    );
-                }
-                Err(error)
-            }
-        }
+        self.create_reserved(spec, None).await
+    }
+
+    async fn has_ad_data_volumes(&self, id: &str) -> AppResult<bool> {
+        self.inner.has_ad_data_volumes(id).await
+    }
+
+    async fn prepare_team_claim(
+        &self,
+        profile: Option<&str>,
+        storage: &crate::services::container::TeamStorage,
+        mib: i32,
+        port: i32,
+    ) -> AppResult<(String, String)> {
+        self.inner
+            .prepare_team_claim(profile, storage, mib, port)
+            .await
+    }
+
+    async fn ad_donor_needs_transfer(&self, id: &str, next: &ContainerSpec) -> AppResult<bool> {
+        self.inner.ad_donor_needs_transfer(id, next).await
+    }
+
+    async fn repair_ad_volumes(
+        &self,
+        previous: &str,
+        spec: &ContainerSpec,
+        change: super::AdVolumeChange,
+    ) -> AppResult<Option<ContainerInfo>> {
+        let Some((id, repair)) = self
+            .inner
+            .prepare_volume_launch(previous, spec, change)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.create_reserved(repair, Some(&id)).await.map(Some)
+    }
+
+    async fn check_ad_patch_image(&self, donor: &str, spec: &ContainerSpec) -> AppResult<()> {
+        self.inner.check_ad_patch_image(donor, spec).await
+    }
+
+    async fn check_ad_volume_reset(&self, id: &str, spec: &ContainerSpec) -> AppResult<()> {
+        self.inner.check_ad_volume_reset(id, spec).await
     }
 
     async fn destroy(&self, id: &str) -> AppResult<()> {

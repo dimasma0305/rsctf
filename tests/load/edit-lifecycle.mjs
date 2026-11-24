@@ -36,6 +36,7 @@ import {
   assertSemanticGameClone,
   assertSemanticGameImport,
   challengeArchive,
+  hostedPatchStarter,
   discoverManagedKothHill,
   mutateContainerFilesystem,
   ownedBuildImageRefs,
@@ -287,6 +288,7 @@ async function call(
   const requestHeaders = { ...headers };
   let requestBody;
   if (form) requestBody = multipartBody(form);
+  else if (Buffer.isBuffer(body)) requestBody = body;
   else if (body !== undefined) {
     requestHeaders["content-type"] = "application/json";
     requestBody = JSON.stringify(body);
@@ -1049,6 +1051,20 @@ async function prepareAdFixture() {
   identities.managerGameIds.add(context.adGameId);
   A.seedCohort(context.adGameId, 3);
 
+  const policy = await call("edit_patch_activity_get", { jwt: identities.managerJwt });
+  requireCondition(
+    policy.model.editable && policy.model.enabled === false && policy.model.revision === 0,
+    "new A&D fixture should have private, editable patch activity",
+  );
+  const updatedPolicy = await call("edit_patch_activity_set", {
+    jwt: identities.managerJwt,
+    body: { enabled: true, expectedRevision: policy.model.revision },
+  });
+  requireCondition(
+    updatedPolicy.model.enabled === true && updatedPolicy.model.revision === 1,
+    "organizer could not enable delayed patch activity",
+  );
+
   const paused = await call("edit_ad_scoring_pause", {
     jwt: identities.managerJwt,
   });
@@ -1083,6 +1099,16 @@ async function prepareAdFixture() {
     category: "Pwn",
     type: "AttackDefense",
   });
+  const starter = hostedPatchStarter();
+  const saved = await call("edit_patch_starter_put", {
+    jwt: identities.managerJwt, headers: { "content-type": "application/zip" }, body: starter,
+  });
+  const stored = await call("edit_patch_starter_get", { jwt: identities.managerJwt });
+  requireCondition(
+    /^[0-9a-f]{64}$/.test(saved.model.treeId) && saved.model.treeId === stored.model.treeId &&
+    stored.model.archiveBytes === starter.length,
+    "hosted A&D starter did not retain the submitted ZIP",
+  );
   const checker = A.prepareExactChecker(
     context.adGameId,
     context.adChallengeId,

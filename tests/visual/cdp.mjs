@@ -171,7 +171,9 @@ export async function launchBrowser() {
 
   try {
     const activePortFile = join(profile, 'DevToolsActivePort')
-    const deadline = Date.now() + 20_000
+    // On cold CI runners Chromium can spend most of 20s initializing its
+    // profile before creating the debugging socket. Exit still fails immediately.
+    const deadline = Date.now() + 60_000
     while (!existsSync(activePortFile) && Date.now() < deadline) {
       if (childExited()) break
       await sleep(100)

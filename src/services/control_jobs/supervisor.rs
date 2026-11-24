@@ -19,7 +19,12 @@ impl Lane {
 
     pub(super) const fn kinds(self) -> &'static [ControlJobKind] {
         match self {
-            Self::Gameplay => &[ControlJobKind::AdReset, ControlJobKind::AdReconcile],
+            Self::Gameplay => &[
+                ControlJobKind::AdReset,
+                ControlJobKind::AdRollback,
+                ControlJobKind::AdActivate,
+                ControlJobKind::AdReconcile,
+            ],
             Self::Build => &[
                 ControlJobKind::ChallengeBuild,
                 ControlJobKind::BuildBatch,
@@ -36,7 +41,10 @@ impl Lane {
 
     pub(super) const fn for_kind(kind: ControlJobKind) -> Self {
         match kind {
-            ControlJobKind::AdReset | ControlJobKind::AdReconcile => Self::Gameplay,
+            ControlJobKind::AdReset
+            | ControlJobKind::AdRollback
+            | ControlJobKind::AdActivate
+            | ControlJobKind::AdReconcile => Self::Gameplay,
             ControlJobKind::ChallengeBuild
             | ControlJobKind::BuildBatch
             | ControlJobKind::WorkloadRollout

@@ -1,5 +1,6 @@
 use super::*;
 use ipnet::IpNet;
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
 fn reporter_selector() -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -379,6 +380,7 @@ async fn emit_managed_koth_callback_policy_for_live_test() {
                 flag: Some("flag{live-policy-fixture}".to_string()),
                 ad_network: Some("rsctf-ad".to_string()),
                 allow_egress: false,
+                team_storage: None,
                 control_plane_callback_ports: vec![8080],
                 network_mode: crate::utils::enums::NetworkMode::Open,
                 operation_id: Some(operation_id),
@@ -461,6 +463,7 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
         flag: Some("flag{test}".to_string()),
         ad_network: Some("rsctf-ad".to_string()),
         allow_egress: false,
+        team_storage: None,
         control_plane_callback_ports: vec![8080],
         network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some(operation_id.to_string()),

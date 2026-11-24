@@ -521,7 +521,10 @@ mod tests {
         let options = PgConnectOptions::from_str(&database_url)
             .unwrap()
             .options([("search_path", schema.as_str())]);
+        // Delivery uses try_acquire. Keep spare connections for successful
+        // publications while another transaction holds the feed cursor fence.
         let pool = PgPoolOptions::new()
+            .min_connections(6)
             .max_connections(6)
             .connect_with(options)
             .await
@@ -844,9 +847,9 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(pending_cursor, None);
-        assert!(publish_committed_on(&pool, &bus, &[second_id])
+        publish_committed_on(&pool, &bus, &[second_id])
             .await
-            .is_ok());
+            .unwrap();
         assert!(
             tokio::time::timeout(Duration::from_millis(30), received.recv())
                 .await

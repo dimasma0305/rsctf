@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use rsctf_worker_protocol::{ControlMessage, WorkloadFence};
+use tokio::sync::watch;
 use uuid::Uuid;
 
 #[derive(Default)]
@@ -15,8 +16,14 @@ pub(super) struct InFlightCommand {
     pub(super) command_id: Uuid,
     pub(super) message_id: Uuid,
     pub(super) fence: WorkloadFence,
-    pub(super) spec_hash: String,
+    pub(super) completion: Completion,
     pub(super) deadline: Instant,
+}
+
+#[derive(Clone)]
+pub(super) enum Completion {
+    Lifecycle { spec_hash: String },
+    FlagReadback(watch::Sender<bool>),
 }
 
 pub(super) fn lifecycle_command(
@@ -43,7 +50,7 @@ pub(super) fn lifecycle_command(
         command_id,
         message_id,
         fence,
-        spec_hash,
+        completion: Completion::Lifecycle { spec_hash },
         deadline: Instant::now() + operation_timeout + Duration::from_secs(10),
     })
 }

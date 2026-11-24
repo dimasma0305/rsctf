@@ -217,6 +217,7 @@ pub async fn create_test_container(
                         .network_mode
                         .unwrap_or(crate::utils::enums::NetworkMode::Open)
                         == crate::utils::enums::NetworkMode::Open,
+                    team_storage: None,
                     control_plane_callback_ports: Vec::new(),
                     network_mode: challenge
                         .network_mode

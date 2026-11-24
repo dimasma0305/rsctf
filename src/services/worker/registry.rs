@@ -19,6 +19,7 @@ use super::data::{DataLane, WorkerDataStream};
 use super::{WorkerError, WorkerResult};
 
 mod commands;
+mod flag_delivery;
 mod inventory;
 mod session;
 
@@ -28,9 +29,11 @@ pub use session::{RegistryConfig, SessionContext};
 #[cfg(test)]
 mod lane_tests;
 
-use commands::{lifecycle_command, prune_expired_commands, remove_tracked_command};
 #[cfg(test)]
-use commands::{CommandTracker, InFlightCommand};
+use commands::CommandTracker;
+use commands::{
+    lifecycle_command, prune_expired_commands, remove_tracked_command, Completion, InFlightCommand,
+};
 
 /// Bounded, process-local index of live worker sessions.
 ///
@@ -93,6 +96,7 @@ impl WorkerRegistry {
                 fence,
             },
             self.config.max_data_lanes_per_worker,
+            false,
         )
         .await
     }
@@ -101,6 +105,7 @@ impl WorkerRegistry {
         &self,
         context: SessionContext,
         max_data_lanes: usize,
+        verified_flag_delivery: bool,
     ) -> WorkerResult<SessionRegistration> {
         if max_data_lanes > self.config.max_data_lanes_per_worker {
             return Err(WorkerError::Protocol(
@@ -113,6 +118,7 @@ impl WorkerRegistry {
         let entry = Arc::new(SessionEntry::new(
             context.clone(),
             max_data_lanes,
+            verified_flag_delivery,
             control_tx,
             shutdown_tx,
         ));
@@ -146,6 +152,19 @@ impl WorkerRegistry {
     }
 
     pub async fn send(&self, worker_id: Uuid, body: ControlMessage) -> WorkerResult<Uuid> {
+        let context = self
+            .session_context(worker_id)
+            .await
+            .ok_or(WorkerError::Offline)?;
+        self.send_to_session(worker_id, &context.fence, body).await
+    }
+
+    pub(crate) async fn send_to_session(
+        &self,
+        worker_id: Uuid,
+        fence: &SessionFence,
+        body: ControlMessage,
+    ) -> WorkerResult<Uuid> {
         if !matches!(
             &body,
             ControlMessage::InventoryRequest(_)
@@ -157,30 +176,38 @@ impl WorkerRegistry {
                 "server attempted to send a worker-only control message",
             ));
         }
-        let session = self
-            .sessions
-            .read()
-            .await
-            .get(&worker_id)
-            .cloned()
-            .ok_or(WorkerError::Offline)?;
-        if !session.lease_is_current(self.config.heartbeat_lease) {
-            return Err(WorkerError::Offline);
+        if let ControlMessage::WriteFlag(command) = body {
+            return self.write_flag_confirmed(worker_id, fence, command).await;
         }
+        let session = self.current(worker_id, fence).await?;
         let message_id = Uuid::new_v4();
         let tracked = lifecycle_command(&body, message_id);
+        self.enqueue(&session, message_id, body, tracked).await?;
+        Ok(message_id)
+    }
+
+    async fn enqueue(
+        &self,
+        session: &SessionEntry,
+        message_id: Uuid,
+        body: ControlMessage,
+        tracked: Option<InFlightCommand>,
+    ) -> WorkerResult<()> {
+        let mut tracker = session.commands.lock().await;
+        if !session.lease_is_current(self.config.heartbeat_lease) || *session.shutdown.borrow() {
+            return Err(WorkerError::Offline);
+        }
         if let Some(command) = &tracked {
-            let mut tracker = session.commands.lock().await;
-            prune_expired_commands(&mut tracker, Instant::now());
-            if let Some(existing_id) = tracker.by_workload.get(&command.fence.workload_id).copied()
+            let now = Instant::now();
+            if matches!(command.completion, Completion::FlagReadback(_)) && command.deadline <= now
             {
-                if tracker.by_id.contains_key(&existing_id) {
-                    return Err(WorkerError::Busy);
-                }
-                tracker.by_id.remove(&existing_id);
-                tracker.by_workload.remove(&command.fence.workload_id);
+                return Err(WorkerError::FlagUnconfirmed);
             }
-            if tracker.by_id.len() >= self.config.max_in_flight_commands_per_worker {
+            prune_expired_commands(&mut tracker, now);
+            if tracker.by_workload.contains_key(&command.fence.workload_id)
+                || tracker.by_id.contains_key(&command.command_id)
+                || tracker.by_id.len() >= self.config.max_in_flight_commands_per_worker
+            {
                 return Err(WorkerError::Busy);
             }
             tracker
@@ -197,7 +224,6 @@ impl WorkerRegistry {
         };
         if let Err(error) = session.control.try_send(envelope) {
             if let Some(command) = tracked {
-                let mut tracker = session.commands.lock().await;
                 remove_tracked_command(&mut tracker, &command);
             }
             return Err(match error {
@@ -205,7 +231,7 @@ impl WorkerRegistry {
                 mpsc::error::TrySendError::Closed(_) => WorkerError::Offline,
             });
         }
-        Ok(message_id)
+        Ok(())
     }
 
     /// Deliver a renewal only to the session that requested it. A reconnect
@@ -264,6 +290,17 @@ impl WorkerRegistry {
         if remove {
             remove_tracked_command(&mut tracker, &command);
         }
+        let spec_hash = match command.completion {
+            Completion::Lifecycle { spec_hash } => spec_hash,
+            Completion::FlagReadback(receipt) => {
+                if remove {
+                    let confirmed = matches!(&envelope.body, ControlMessage::CommandResult(result)
+                        if result.success && result.error.is_none() && Instant::now() < command.deadline);
+                    let _ = receipt.send(confirmed);
+                }
+                return Ok(None);
+            }
+        };
         let Some(error) = failure else {
             return Ok(None);
         };
@@ -273,7 +310,7 @@ impl WorkerRegistry {
             .unwrap_or("worker command failed");
         Ok(Some(WorkloadStatus {
             fence: command.fence,
-            spec_hash: command.spec_hash,
+            spec_hash,
             state: ObservedWorkloadState::Failed,
             replicas: Vec::new(),
             detail: Some(detail.chars().take(4_096).collect()),
@@ -291,7 +328,8 @@ impl WorkerRegistry {
             return Ok(());
         };
         let matching = tracker.by_id.get(&command_id).is_some_and(|command| {
-            command.fence == status.fence && command.spec_hash == status.spec_hash
+            command.fence == status.fence
+                && matches!(&command.completion, Completion::Lifecycle { spec_hash } if spec_hash == &status.spec_hash)
         });
         if matching {
             if let Some(command) = tracker.by_id.get(&command_id).cloned() {
@@ -915,7 +953,9 @@ mod tests {
                 assignment_id: Uuid::new_v4(),
                 generation: 1,
             },
-            spec_hash: "b".repeat(64),
+            completion: Completion::Lifecycle {
+                spec_hash: "b".repeat(64),
+            },
             deadline: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
         };
         let mut tracker = CommandTracker::default();

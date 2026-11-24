@@ -37,21 +37,20 @@ or OpenRC when available; it also supports immediate startup through compatible
 SysV `service` and runit managers. It waits up to 30 seconds for `docker info`
 to succeed before downloading or enrolling the worker.
 
-A Jeopardy worker workload can contain multiple services. Multiple replicas are
-allowed only for explicitly stateless Jeopardy services. The protocol already
-constrains any future Attack/Defense or King-of-the-Hill integration to exactly
-one service and one replica, and it does not version or otherwise change their
-scoring. The current server adapter supports Jeopardy workloads only; see the
-limitations below.
+A Jeopardy workload can contain multiple services. Explicitly stateless Jeopardy
+services can have multiple replicas. Hosted Attack/Defense (A&D) runs one
+service and one replica per team on a trusted Linux worker. Players reach their
+service through the event VPN and use the Toolkit to patch it. See the
+[worker requirements](#current-limitations) before selecting a worker.
 
-An all-in-one server can nevertheless run a deliberate hybrid: keep
-`RSCTF_CONTAINER_BACKEND=worker` for Jeopardy and set
-`RSCTF_WORKER_LOCAL_BACKEND=docker` or `kubernetes` for the existing local
-A&D/KotH data plane. `none` is the default and mounts no local runtime. This
-does not send A&D/KotH to agents; it only selects where those existing local
-containers run. Split worker roles must remain pure remote for now because
-web-facing lifecycle requests are not yet delegated to the singleton local
-runtime owner.
+For an all-in-one installation, `RSCTF_CONTAINER_BACKEND=worker` with
+`RSCTF_WORKER_LOCAL_BACKEND=docker` or `kubernetes` keeps a local runtime for
+A&D and KoTH. In a Docker hybrid, the organizer can place an individual hosted
+A&D challenge on a worker by selecting its worker-scoped starter image. The
+default `RSCTF_WORKER_LOCAL_BACKEND=none` selects pure remote mode. Helm
+requires an all-in-one hybrid for its VPN configuration. Split worker roles
+require pure remote operation. The Linux worker integration test exercises
+private player routing with a single network owner.
 
 Remote workloads always use RSCTF's authenticated proxy. Worker addresses and
 Docker host ports are never returned to players. A repository digest is
@@ -898,6 +897,20 @@ stateful service, such as the Redis service in the example above, can still be
 saved for new launches but must be drained and recreated deliberately; RSCTF
 will not silently discard its local state during scale-up or scale-down.
 
+The worker registers the flag path and replica count when it reconciles a
+workload. For file deliveries it saves the latest sequence and a digest in its
+state directory. After a restart it can retry that sequence and verify the file
+on every replica. An existing workload first reconciled by an older agent needs
+one reconciliation on the upgraded agent before its first file delivery.
+On Linux the delivered file has mode `0600`. Set the image's Dockerfile
+`USER` to the account that reads it. Docker assigns the file to that user.
+
+For a confirmed file delivery, the server requires the connected agent to
+advertise `verifiedFlagDelivery`. It waits for the final result for that request
+on the same session. An accepted command can still fail if a replica disappears
+or the file cannot be read back. A timeout or reconnect leaves delivery
+unconfirmed.
+
 Whenever RSCTF supplies a runtime flag, `flagTarget.service` is mandatory and
 must select exactly one service. V1 injects the value as `RSCTF_FLAG` only into
 that service. `flagTarget.path` is validated and reserved for future competitive
@@ -937,14 +950,15 @@ sessions and delayed commands cannot publish a route or delete a replacement.
 - Windows workers are AMD64-only and require native Windows-container mode,
   `windowsfilter`, Hyper-V isolation, and HCN v2 endpoint ACL support. The
   runtime fails closed when it cannot apply and read back its deny-egress ACL.
-- The existing one-container compatibility path launches Jeopardy workloads.
-  Remote-worker A&D/KotH networking is not enabled; configure
-  `workerBackend.localBackend`/`RSCTF_WORKER_LOCAL_BACKEND` as Docker or
-  Kubernetes on an all-in-one server to keep those modes local. Split hybrid
-  mode is rejected until lifecycle requests can be delegated safely. With
-  `none`, A&D/KotH containers are unavailable. The shared protocol already
-  rejects replicas or multiple services for those game modes, so this does not
-  alter constant scoring.
+- Hosted A&D supports one service and one replica on a trusted Linux worker.
+  Enable the A&D VPN on its network owner and give that owner a usable address
+  in the services subnet. Keep challenge egress and host packet capture off.
+  In hybrid mode, select the worker using the organizer's
+  `worker://<worker-id>/sha256:<image-id>` starter and the default runtime
+  profile. A player can then use the Toolkit's SSH key or activate a staged
+  ZIP revision. Both rollback choices keep the same assignment and registered
+  data directory. The worker must be able to pull the staged image by digest.
+  KoTH continues to use the local backend in all-in-one hybrid deployments.
 - Registry authentication and image builds are not implemented in the agent.
   Use a registry it can pull without credentials or preload an immutable image
   and use a worker-local reference. Server-side archive builds remain usable
@@ -957,9 +971,12 @@ sessions and delayed commands cannot publish a route or delete a replacement.
   result so the next inventory pass probes it again. This is bounded TCP
   reachability for startup and recovery, not continuous or configurable
   application-level health monitoring.
-- Interactive container exec is not implemented. Certificate renewal is
-  negotiated automatically by updated agents and servers as described above;
-  key replacement still uses deliberate enrollment.
+- The A&D bastion opens an interactive shell on the team's published Linux
+  assignment using the container image's configured user. Updated agents
+  advertise this as `interactiveExec`. Use ZIP revisions for a recorded source
+  diff on remote workers. The hosted SSH file observer runs on local backends.
+  Updated agents renew certificates automatically. Key replacement uses
+  deliberate enrollment.
 - Every workload receives a dedicated Docker network. Linux marks it
   `internal`; Windows combines a private NAT network with a verified HCN
   deny-egress ACL and a resolver without external DNS forwarding. The agent

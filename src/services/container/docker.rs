@@ -1,3 +1,5 @@
+mod ad_volumes;
+mod launch;
 use bollard::container::{
     DownloadFromContainerOptions, RemoveContainerOptions, StartContainerOptions, StatsOptions,
 };
@@ -90,6 +92,12 @@ pub(super) fn parse_file_archive(archive: &[u8], limit: usize) -> AppResult<Cont
             return Err(AppError::bad_request("Only regular files can be previewed"));
         }
         let size = entry.size();
+        let executable = entry
+            .header()
+            .mode()
+            .map_err(|_| AppError::bad_request("Invalid container file mode"))?
+            & 0o111
+            != 0;
         let take = u64::try_from(limit).unwrap_or(u64::MAX).min(size);
         let mut bytes = Vec::with_capacity(usize::try_from(take).unwrap_or(limit));
         entry.take(take).read_to_end(&mut bytes).map_err(|error| {
@@ -101,6 +109,7 @@ pub(super) fn parse_file_archive(archive: &[u8], limit: usize) -> AppResult<Cont
             ));
         }
         return Ok(ContainerFile {
+            executable,
             truncated: size > bytes.len() as u64,
             size,
             bytes,
@@ -126,6 +135,26 @@ impl DockerContainerManager {
             .inspect_scoped_container(docker, id)
             .await?
             .ok_or_else(|| AppError::not_found(format!("container not found: {id}")))?;
+        // The archive API can expose the underlying directory of a tmpfs
+        // mount, even while a running process sees a completely different file.
+        let requested = std::path::Path::new(path);
+        let tmpfs = info
+            .host_config
+            .as_ref()
+            .and_then(|config| config.tmpfs.as_ref());
+        if tmpfs.is_some_and(|mounts| mounts.keys().any(|mount| requested.starts_with(mount)))
+            || info.mounts.iter().flatten().any(|mount| {
+                mount.typ == Some(bollard::models::MountPointTypeEnum::TMPFS)
+                    && mount
+                        .destination
+                        .as_deref()
+                        .is_some_and(|mount| requested.starts_with(mount))
+            })
+        {
+            return Err(AppError::bad_request(
+                "Docker cannot inspect live files on a tmpfs mount",
+            ));
+        }
         let canonical_id = info
             .id
             .as_deref()
@@ -269,7 +298,11 @@ pub(super) fn clamped_image_health_config(image: &ImageInspect) -> Option<Health
 /// absent; a daemon-local image id cannot be pulled and must already exist.
 /// Both the inspect and the pull go through Docker admission so a preflight
 /// cannot starve live provisioning of daemon slots.
-pub(super) async fn pull_immutable_image(docker: &Docker, image: &str) -> AppResult<()> {
+pub(super) async fn pull_immutable_image(
+    manager: &DockerContainerManager,
+    image: &str,
+) -> AppResult<()> {
+    let docker = manager.client()?;
     if docker_admission()
         .read("inspect_image", docker.inspect_image(image))
         .await?
@@ -282,23 +315,7 @@ pub(super) async fn pull_immutable_image(docker: &Docker, image: &str) -> AppRes
             "The daemon-local image id is absent from this container host; rebuild the challenge.",
         ));
     }
-    let options = bollard::image::CreateImageOptions {
-        from_image: image.to_string(),
-        ..Default::default()
-    };
-    let last_error = docker_admission()
-        .pull("create_image", async {
-            let mut pull = docker.create_image(Some(options), None, None);
-            let mut last_error = None;
-            while let Some(item) = pull.next().await {
-                if let Err(error) = item {
-                    last_error = Some(error.to_string());
-                    break;
-                }
-            }
-            last_error
-        })
-        .await?;
+    let last_error = manager.pull_repository_digest(image).await?;
     docker_admission()
         .read("inspect_image", docker.inspect_image(image))
         .await?
@@ -916,79 +933,4 @@ mod exec_admission_tests {
 }
 
 #[cfg(test)]
-mod file_archive_tests {
-    use super::super::ContainerManager;
-    use super::*;
-
-    fn archive_header(entry_type: tar::EntryType, size: u64) -> Vec<u8> {
-        let mut header = tar::Header::new_gnu();
-        header.set_path("preview").unwrap();
-        header.set_mode(0o600);
-        header.set_entry_type(entry_type);
-        header.set_size(size);
-        header.set_cksum();
-        header.as_bytes().to_vec()
-    }
-
-    #[test]
-    fn large_regular_file_returns_only_a_truthful_bounded_preview() {
-        let limit = 16 * 1024;
-        let declared = 1024 * 1024 * 1024u64;
-        let mut archive = archive_header(tar::EntryType::Regular, declared);
-        archive.extend(std::iter::repeat_n(b'x', limit));
-
-        let file = parse_file_archive(&archive, limit).unwrap();
-        assert_eq!(file.size, declared);
-        assert_eq!(file.bytes.len(), limit);
-        assert!(file.truncated);
-    }
-
-    #[test]
-    fn fifo_and_device_like_entries_are_never_opened_as_files() {
-        for entry_type in [
-            tar::EntryType::Fifo,
-            tar::EntryType::Block,
-            tar::EntryType::Char,
-        ] {
-            let archive = archive_header(entry_type, 0);
-            assert!(matches!(
-                parse_file_archive(&archive, 1024),
-                Err(AppError::BadRequest(_))
-            ));
-        }
-    }
-
-    #[test]
-    fn docker_archive_collection_stops_at_the_memory_cap() {
-        let mut output = vec![1; 8];
-        assert!(append_file_archive_chunk(&mut output, &[2; 8], 12).unwrap());
-        assert_eq!(output.len(), 12);
-        assert_eq!(&output[8..], &[2; 4]);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a disposable scoped Docker container in RSCTF_TEST_FORENSICS_CONTAINER_ID"]
-    async fn real_docker_large_file_and_fifo_are_bounded_without_exec() {
-        let id = std::env::var("RSCTF_TEST_FORENSICS_CONTAINER_ID")
-            .expect("RSCTF_TEST_FORENSICS_CONTAINER_ID is required");
-        let manager = DockerContainerManager::connect().unwrap();
-        let large = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            manager.read_file(&id, "/tmp/large", 240 * 1024),
-        )
-        .await
-        .expect("large-file archive read timed out")
-        .unwrap();
-        assert_eq!(large.bytes.len(), 240 * 1024);
-        assert!(large.size >= 1024 * 1024);
-        assert!(large.truncated);
-
-        let fifo = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            manager.read_file(&id, "/tmp/blocked", 240 * 1024),
-        )
-        .await
-        .expect("FIFO archive metadata read timed out");
-        assert!(matches!(fifo, Err(AppError::BadRequest(_))));
-    }
-}
+mod file_archive_tests;

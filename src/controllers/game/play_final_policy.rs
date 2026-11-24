@@ -379,6 +379,18 @@ async fn lock_play_scope_on(
     })
 }
 
+/// Reuse the game's division and challenge policy for per-team service operations.
+pub(in crate::controllers::game) async fn lock_visible_challenge_on(
+    connection: &mut sqlx::PgConnection,
+    game: i32,
+    team: i32,
+    participation: i32,
+    challenge: i32,
+) -> AppResult<()> {
+    lock_play_scope_on(connection, game, team, participation, &[challenge]).await?;
+    Ok(())
+}
+
 #[derive(sqlx::FromRow)]
 struct ChallengePayloadRow {
     title: String,

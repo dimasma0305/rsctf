@@ -1,6 +1,7 @@
 .panel {
   min-width: 0;
   border-radius: var(--mantine-radius-lg);
+  color: var(--app-text-primary);
   background: color-mix(in srgb, var(--app-raised-surface) 94%, transparent);
 }
 
@@ -10,6 +11,11 @@
 
 .summaryCard {
   min-width: 0;
+}
+
+.summaryCard,
+.message {
+  color: var(--app-text-primary);
   background: color-mix(in srgb, var(--app-shell-surface) 86%, transparent);
 }
 
@@ -55,10 +61,6 @@
   max-height: 24rem;
   overflow-y: auto;
   padding-right: 0.25rem;
-}
-
-.message {
-  background: color-mix(in srgb, var(--app-shell-surface) 86%, transparent);
 }
 
 .messageText,

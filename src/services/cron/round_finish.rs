@@ -1,5 +1,6 @@
 use crate::app_state::SharedState;
 use crate::models::data::game;
+use crate::services::ad_engine::managed_flag_command;
 use crate::utils::error::AppResult;
 use futures::StreamExt;
 
@@ -15,11 +16,31 @@ enum DeliveryAttempt {
     PlatformFailure,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct DeliveryAttemptSummary {
     delivered: bool,
     participant_attempts: usize,
     saw_platform_failure: bool,
+    saw_admitted_timeout: bool,
+}
+
+impl DeliveryAttemptSummary {
+    fn failure_reason(self, managed: bool) -> &'static str {
+        if self.participant_attempts == 0 {
+            return if self.saw_platform_failure {
+                MANAGED_BACKEND_FAILURE_REASON
+            } else {
+                crate::services::ad_engine::PUBLICATION_DEADLINE_REASON
+            };
+        }
+        if self.saw_admitted_timeout {
+            "a round flag delivery attempt timed out waiting for acknowledgement"
+        } else if managed {
+            "managed container rejected the round flag"
+        } else {
+            "BYOC tunnel did not acknowledge the round flag"
+        }
+    }
 }
 
 #[derive(Default)]
@@ -105,8 +126,7 @@ where
     Fut: std::future::Future<Output = DeliveryAttempt>,
 {
     let mut started_attempts = 0;
-    let mut participant_attempts = 0;
-    let mut saw_platform_failure = false;
+    let mut summary = DeliveryAttemptSummary::default();
     while started_attempts < policy.attempts() {
         let Some(latest_start) = deadline.checked_sub(policy.attempt_timeout()) else {
             break;
@@ -130,17 +150,17 @@ where
         drop(permit);
         match attempt {
             Ok(DeliveryAttempt::Delivered) => {
-                participant_attempts += 1;
-                return DeliveryAttemptSummary {
-                    delivered: true,
-                    participant_attempts,
-                    saw_platform_failure,
-                };
+                summary.participant_attempts += 1;
+                summary.delivered = true;
+                return summary;
             }
-            Ok(DeliveryAttempt::ParticipantFailure) => participant_attempts += 1,
-            Ok(DeliveryAttempt::PlatformFailure) => saw_platform_failure = true,
-            Err(_) if admission.is_admitted() => participant_attempts += 1,
-            Err(_) => saw_platform_failure = true,
+            Ok(DeliveryAttempt::ParticipantFailure) => summary.participant_attempts += 1,
+            Ok(DeliveryAttempt::PlatformFailure) => summary.saw_platform_failure = true,
+            Err(_) if admission.is_admitted() => {
+                summary.participant_attempts += 1;
+                summary.saw_admitted_timeout = true;
+            }
+            Err(_) => summary.saw_platform_failure = true,
         }
         if started_attempts == policy.attempts() {
             break;
@@ -153,11 +173,7 @@ where
         }
         tokio::time::sleep(backoff).await;
     }
-    DeliveryAttemptSummary {
-        delivered: false,
-        participant_attempts,
-        saw_platform_failure,
-    }
+    summary
 }
 
 async fn deliver_external_flag(
@@ -244,18 +260,6 @@ async fn deliver_managed_flag(
     .await
 }
 
-fn managed_flag_command(flag: &str) -> Vec<String> {
-    // The flag is passed as argv[1], never interpolated into the shell
-    // program. Existing containers without RSCTF_FLAG_FILE use /flag.
-    vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        "umask 022 && printf '%s\\n' \"$1\" > \"${RSCTF_FLAG_FILE:-/flag}\" && cat \"${RSCTF_FLAG_FILE:-/flag}\"".to_string(),
-        "rsctf-flag".to_string(),
-        flag.to_string(),
-    ]
-}
-
 async fn deliver_round_flag(
     state: &SharedState,
     round_id: i32,
@@ -277,8 +281,22 @@ async fn deliver_round_flag(
     if let Some(outcome) = invalid_stored_flag_outcome(&planted, kind, container_id) {
         return outcome;
     }
-    let attempted = match (planted.managed, container_id) {
-        (true, Some(container_id)) => {
+    let worker_handle = container_id.and_then(crate::services::worker::parse_worker_handle);
+    let attempted = match (planted.managed, container_id, worker_handle) {
+        (true, _, Some(handle)) => {
+            run_delivery_attempts(policy, deadline, &concurrency, |_| {
+                worker_delivery::attempt(
+                    state,
+                    round_id,
+                    &planted,
+                    handle,
+                    policy.attempt_timeout(),
+                    &attempted_services,
+                )
+            })
+            .await
+        }
+        (true, Some(container_id), None) => {
             deliver_managed_flag(
                 state,
                 &planted,
@@ -290,7 +308,7 @@ async fn deliver_round_flag(
             )
             .await
         }
-        (true, None) => {
+        (true, None, None) => {
             return crate::services::ad_engine::FlagDeliveryOutcome::failed(
                 planted.team_service_id,
                 kind,
@@ -299,7 +317,7 @@ async fn deliver_round_flag(
                 "managed service has no active container identity",
             );
         }
-        (false, _) => {
+        (false, _, _) => {
             deliver_external_flag(
                 state,
                 round_id,
@@ -325,15 +343,7 @@ async fn deliver_round_flag(
             kind,
             planted.managed.then(|| container_id.unwrap().to_string()),
             attempted.participant_attempts,
-            if attempted.participant_attempts == 0 && attempted.saw_platform_failure {
-                MANAGED_BACKEND_FAILURE_REASON
-            } else if attempted.participant_attempts == 0 {
-                crate::services::ad_engine::PUBLICATION_DEADLINE_REASON
-            } else if planted.managed {
-                "managed container rejected the round flag"
-            } else {
-                "BYOC tunnel did not acknowledge the round flag"
-            },
+            attempted.failure_reason(planted.managed),
         )
     }
 }
@@ -495,7 +505,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn publish_round_flags(
+pub(crate) async fn publish_round_flags(
     state: &SharedState,
     game_id: i32,
     round_id: i32,
@@ -986,5 +996,5 @@ pub(super) async fn finish_prepared_round(
 }
 
 #[cfg(test)]
-#[path = "round_finish/tests.rs"]
 mod tests;
+mod worker_delivery;

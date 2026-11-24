@@ -720,15 +720,15 @@ function sampleResponse(operation) {
   return { status, body: sampleBody(operation.responseKind, status), headers };
 }
 
-test("catalog covers all 90 HTTP operations and keeps SignalR as separate surfaces", () => {
-  assert.equal(ADMIN_OPERATIONS.length, 90);
-  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 90);
+test("catalog covers all 92 HTTP operations and keeps SignalR as separate surfaces", () => {
+  assert.equal(ADMIN_OPERATIONS.length, 92);
+  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 92);
   assert.deepEqual(
     ADMIN_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 40, PUT: 9, POST: 29, DELETE: 12 },
+    { GET: 42, PUT: 9, POST: 29, DELETE: 12 },
   );
   const enroll = ADMIN_OPERATIONS.find(({ id }) => id === "worker_enroll");
   assert.deepEqual(
@@ -797,7 +797,7 @@ test("fixed-rate admin load uses one bounded instance batch and never a per-row 
 test("authorization classes keep Admin, manager, and enrollment-token surfaces explicit", () => {
   assert.equal(
     ADMIN_OPERATIONS.filter(({ auth }) => auth === "admin").length,
-    88,
+    90,
   );
   assert.deepEqual(
     ADMIN_OPERATIONS.filter(({ auth }) => auth !== "admin").map(
@@ -1029,11 +1029,11 @@ test("read-origin matrix covers every live read on every eligible replica exactl
 test("repository router source and lifecycle catalog have exact bidirectional coverage", () => {
   const sources = repositoryRouterSources();
   assert.deepEqual(assertRouterCoverage(sources), {
-    operations: 90,
+    operations: 92,
     signalR: 2,
   });
   const parsed = parseAdminRouterOperations(sources);
-  assert.equal(parsed.operations.length, 90);
+  assert.equal(parsed.operations.length, 92);
   assert.equal(parsed.signalR.length, 2);
 });
 
@@ -1078,8 +1078,8 @@ test("router parser ignores route-like text in Rust comments and strings", () =>
 
 test("coverage accounting rejects omissions, duplicates, and unknown operations", () => {
   assert.deepEqual(assertCompleteCoverage(ADMIN_OPERATION_IDS), {
-    covered: 90,
-    required: 90,
+    covered: 92,
+    required: 92,
     missing: [],
     extra: [],
   });
@@ -1104,8 +1104,8 @@ test("coverage accounting rejects omissions, duplicates, and unknown operations"
   assert.deepEqual(
     assertCompleteCoverage(allSurfaces, { includeSignalR: true }),
     {
-      covered: 92,
-      required: 92,
+      covered: 94,
+      required: 94,
       missing: [],
       extra: [],
     },

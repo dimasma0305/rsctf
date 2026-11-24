@@ -502,13 +502,11 @@ fn proxy_policies_are_append_only_bounded_buckets() {
 /// Two `DistributedLimiter` instances = two replicas sharing one Redis. Proves
 /// the whole point of the distributed limiter: N nodes enforce ONE combined
 /// quota, not N independent ones (two in-process stores would each admit `limit`,
-/// i.e. `2 × limit` total — the per-replica bug this fixes). Runs only when
-/// `RSCTF_TEST_REDIS_URL` points at a reachable Redis; otherwise it's a no-op.
+/// i.e. `2 × limit` total — the per-replica bug this fixes).
 #[tokio::test]
+#[ignore = "requires RSCTF_TEST_REDIS_URL and a live disposable Redis"]
 async fn distributed_limiter_shares_one_counter_across_replicas() {
-    let Ok(url) = std::env::var("RSCTF_TEST_REDIS_URL") else {
-        return;
-    };
+    let url = std::env::var("RSCTF_TEST_REDIS_URL").expect("disposable Redis required");
     // The opt-in live test keeps Redis's short defaults so a stalled test
     // server fails promptly; production construction uses the shared helper.
     let connect = || async {
@@ -559,10 +557,9 @@ async fn distributed_limiter_shares_one_counter_across_replicas() {
 }
 
 #[tokio::test]
+#[ignore = "requires RSCTF_TEST_REDIS_URL and a live disposable Redis"]
 async fn distributed_proxy_traffic_charge_is_atomic_across_every_dimension() {
-    let Ok(url) = std::env::var("RSCTF_TEST_REDIS_URL") else {
-        return;
-    };
+    let url = std::env::var("RSCTF_TEST_REDIS_URL").expect("disposable Redis required");
     let mut admin = redis::Client::open(url.as_str())
         .unwrap()
         .get_connection_manager()
@@ -642,10 +639,9 @@ async fn distributed_proxy_traffic_charge_is_atomic_across_every_dimension() {
 /// pair of Redis checks: Global always increments first, an identity denial
 /// leaves the backstop unchanged, and a backstop denial retains both hits.
 #[tokio::test]
+#[ignore = "requires RSCTF_TEST_REDIS_URL and a live disposable Redis"]
 async fn distributed_authenticated_check_preserves_order_and_counters() {
-    let Ok(url) = std::env::var("RSCTF_TEST_REDIS_URL") else {
-        return;
-    };
+    let url = std::env::var("RSCTF_TEST_REDIS_URL").expect("disposable Redis required");
     // The opt-in live test keeps Redis's short defaults so a stalled test
     // server fails promptly; production construction uses the shared helper.
     let connect = || async {
@@ -753,10 +749,9 @@ async fn distributed_authenticated_check_preserves_order_and_counters() {
 }
 
 #[tokio::test]
+#[ignore = "requires RSCTF_TEST_REDIS_URL and a live disposable Redis"]
 async fn distributed_weighted_charge_sets_expiry_on_first_increment() {
-    let Ok(url) = std::env::var("RSCTF_TEST_REDIS_URL") else {
-        return;
-    };
+    let url = std::env::var("RSCTF_TEST_REDIS_URL").expect("disposable Redis required");
     let mut admin = redis::Client::open(url.as_str())
         .unwrap()
         .get_connection_manager()

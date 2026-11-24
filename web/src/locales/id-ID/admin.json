@@ -1,4 +1,11 @@
 {
+  "ad": {
+    "patch_activity": {
+      "label": "Bagikan aktivitas patch",
+      "help": "Atur sebelum acara. Jumlah deployment muncul setelah satu ronde berikutnya selesai. Setelah acara dan mode latihan ditutup, tim sedivisi dapat melihat perubahan pada file starter yang dipilih, termasuk rentang baris jika diaktifkan untuk file tersebut.",
+      "retry": "Muat ulang pengaturan aktivitas patch"
+    }
+  },
   "runtime_profile": {
     "pending": "Pembaruan runtime terhenti dan perlu dilanjutkan. Pulihkan perubahan yang sama, lalu pilih Simpan dan ganti instance untuk mencoba kembali. Tantangan tetap nonaktif sampai pemulihan selesai.",
     "label": "Profil runtime",

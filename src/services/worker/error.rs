@@ -15,6 +15,8 @@ pub enum WorkerError {
     RegistryFull,
     #[error("worker is offline")]
     Offline,
+    #[error("worker did not confirm flag readback")]
+    FlagUnconfirmed,
     #[error("worker session is stale")]
     StaleSession,
     #[error("worker data lanes are busy")]

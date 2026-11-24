@@ -13,8 +13,10 @@ and `installation` in Prometheus service discovery. Scraping a load balancer hid
 individual replicas and makes process counters appear to reset between requests.
 
 The existing `/api/admin/realtime/metrics` JSON contract is preserved. Both
-representations use the same fixed-cardinality atomics. Exposition has fewer than
-200 series and includes no user IDs, flags, paths, credentials, or cache keys.
+representations use the same fixed-cardinality atomics. Each replica exports
+201 series, including five per control-job kind. This count stays fixed as the
+number of teams, services, and patch revisions grows.
+The exporter omits user IDs, flags, paths, credentials, and cache keys.
 The exporter does not query PostgreSQL or allocate a second metrics registry.
 
 - Cache L1/L2 hits and misses are cumulative counters; use `rate()` when combining

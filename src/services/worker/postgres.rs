@@ -14,7 +14,7 @@ use super::{
 };
 use crate::services::worker_store::{
     PlatformOs, ResourceReservation, SessionFence as StoreSessionFence, StatusUpdateOutcome,
-    WorkerInventory, WorkerStore, WorkerStoreError, WorkloadObservedState,
+    WorkerInventory, WorkerStore, WorkerStoreError, WorkloadDesiredState, WorkloadObservedState,
     WorkloadStatus as StoreWorkloadStatus,
 };
 
@@ -23,6 +23,18 @@ mod validation;
 
 use heartbeat::HeartbeatWrites;
 use validation::*;
+
+impl TryFrom<StoreSessionFence> for SessionFence {
+    type Error = WorkerError;
+
+    fn try_from(stored: StoreSessionFence) -> WorkerResult<Self> {
+        Ok(Self {
+            session_id: stored.session_id,
+            session_epoch: u64::try_from(stored.session_epoch)
+                .map_err(|_| WorkerError::Authority("negative worker session epoch".into()))?,
+        })
+    }
+}
 
 /// PostgreSQL-backed identity, session and workload authority for the live
 /// worker transport. The transport owns sockets; this type owns every durable
@@ -235,11 +247,7 @@ impl WorkerAuthority for PostgresWorkerAuthority {
             .await
             .map_err(store_error)?
             .ok_or(WorkerError::Authentication)?;
-        let fence = SessionFence {
-            session_id: session.fence.session_id,
-            session_epoch: u64::try_from(session.fence.session_epoch)
-                .map_err(|_| WorkerError::Authority("negative worker session epoch".into()))?,
-        };
+        let fence = session.fence.try_into()?;
         self.heartbeat_writes.opened(peer.worker_id, fence);
         Ok(fence)
     }
@@ -420,6 +428,15 @@ impl WorkerAuthority for PostgresWorkerAuthority {
                     && workload.definition.spec_hash_sha256 == spec_hash
             });
             if !exact {
+                // A revision transition reuses the assignment and its volume.
+                // The reconciler owns its replacement or final deletion. An
+                // inventory snapshot can race either command in both directions.
+                if current.is_some_and(|workload| {
+                    workload.owner_kind == "ad-team-service"
+                        && workload.assignment_id == item.fence.assignment_id
+                }) {
+                    continue;
+                }
                 tracing::warn!(worker_id = %session.worker_id, workload_id = %item.fence.workload_id, "worker reported an unassigned or stale workload");
                 cleanup.push(ControlMessage::EnsureAbsent(EnsureAbsent {
                     command_id: Uuid::new_v4(),
@@ -461,17 +478,24 @@ impl WorkerAuthority for PostgresWorkerAuthority {
             assigned.remove(&workload_id);
         }
 
-        // A completed inventory is an authoritative full snapshot, not just a
-        // list of things the worker happened to find. Mark each remaining
-        // assignment absent; the reconciler recreates desired-Present rows.
         for workload in assigned.into_values() {
+            // Container inventory cannot attest that a team volume was deleted.
+            // Keep deletion pending for the current EnsureAbsent acknowledgement.
+            let state = if workload.owner_kind == "ad-team-service" {
+                if workload.desired_state == WorkloadDesiredState::Absent {
+                    continue;
+                }
+                WorkloadObservedState::Unknown
+            } else {
+                WorkloadObservedState::Absent
+            };
             statuses.push(StoreWorkloadStatus {
                 session: store_session,
                 workload_id: workload.id,
                 assignment_id: workload.assignment_id,
                 generation: workload.generation,
                 spec_hash_sha256: workload.definition.spec_hash_sha256,
-                state: WorkloadObservedState::Absent,
+                state,
                 message: Some(format!("missing from inventory snapshot {snapshot_id}")),
             });
         }
@@ -485,8 +509,12 @@ impl WorkerAuthority for PostgresWorkerAuthority {
                 .map_err(store_error)?
                 .len();
         }
-        if applied != statuses.len() {
+        // A session can lose its lease and see no assignments while reading
+        // inventory. Verify its authority before dispatching orphan cleanup.
+        if applied != statuses.len() || !cleanup.is_empty() {
             self.session_is_current(session).await?;
+        }
+        if applied != statuses.len() {
             tracing::debug!(
                 worker_id = %session.worker_id,
                 expected = statuses.len(),
@@ -506,11 +534,10 @@ impl WorkerAuthority for PostgresWorkerAuthority {
         let generation = i64::try_from(fence.generation).map_err(|_| WorkerError::Authorization)?;
         let session_epoch =
             i64::try_from(session.fence.session_epoch).map_err(|_| WorkerError::StaleSession)?;
-        // One indexed query revalidates the live session, route publication,
-        // assignment and generation together. This is the user-facing stream
-        // open path, so do not repeat separate node/workload/ready round trips.
-        let spec = sqlx::query_scalar::<_, serde_json::Value>(
-            r#"SELECT workload.spec
+        // Check the live session, assignment and generation in one lookup.
+        // A&D also binds stream admission to the team's currently published service.
+        let (spec, owner_kind) = sqlx::query_as::<_, (serde_json::Value, String)>(concat!(
+            r#"SELECT workload.spec, workload.owner_kind
                  FROM "WorkerWorkloads" workload
                  JOIN "WorkerNodes" node ON node.id = workload.worker_id
                 WHERE workload.id = $1
@@ -519,9 +546,14 @@ impl WorkerAuthority for PostgresWorkerAuthority {
                   AND workload.generation = $4
                   AND workload.desired_state = 'Present'
                   AND workload.observed_state = 'Ready'
+                  AND "#,
+            include_str!("../worker_store/workloads/ad_session_capabilities.sql"),
+            r#"
                   AND workload.observed_session_epoch = node.session_epoch
                   AND node.session_id = $5
                   AND node.session_epoch = $6
+                  AND (NOT $7 OR (workload.owner_kind='ad-team-service'
+                      AND node.capabilities @> '{"interactiveExec":true}'::jsonb))
                   AND node.lease_expires_at > clock_timestamp()
                   AND node.certificate_expires_at > clock_timestamp()
                   AND node.administrative_state <> 'Disabled'
@@ -546,14 +578,15 @@ impl WorkerAuthority for PostgresWorkerAuthority {
                            AND (node.capabilities ->> 'maxWorkloadReplicas')::NUMERIC
                                BETWEEN workload.required_replicas AND 512
                       ELSE FALSE
-                  END"#,
-        )
+                  END"#
+        ))
         .bind(fence.workload_id)
         .bind(session.worker_id)
         .bind(fence.assignment_id)
         .bind(generation)
         .bind(session.fence.session_id)
         .bind(session_epoch)
+        .bind(matches!(request, DataStreamRequest::InteractiveExec(_)))
         .fetch_optional(self.store.pool())
         .await
         .map_err(|error| WorkerError::Authority(error.to_string()))?
@@ -562,6 +595,13 @@ impl WorkerAuthority for PostgresWorkerAuthority {
             WorkerError::Authority(format!("invalid stored workload spec: {error}"))
         })?;
         if !stream_exists(&spec, request) {
+            return Err(WorkerError::Authorization);
+        }
+        let team_workload = spec.game_kind == rsctf_worker_protocol::GameKind::AttackDefense;
+        if team_workload != (owner_kind == "ad-team-service") {
+            return Err(WorkerError::Authorization);
+        }
+        if team_workload && !published_team_endpoint(self.store.pool(), fence, generation).await? {
             return Err(WorkerError::Authorization);
         }
         Ok(())

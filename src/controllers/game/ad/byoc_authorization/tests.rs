@@ -63,9 +63,13 @@ async fn test_pool() -> (sqlx::PgPool, sqlx::PgPool, String) {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(r#"INSERT INTO "Teams" VALUES (7, $1, 'team-secret', FALSE)"#)
+    // Roster advisory locks are database-wide, even across isolated test schemas.
+    let team_id = sqlx::query_scalar::<_, i32>(
+        r#"INSERT INTO "Teams" VALUES (current_schema()::regnamespace::oid::int, $1, 'team-secret', FALSE)
+           RETURNING id"#,
+    )
         .bind(captain)
-        .execute(&pool)
+        .fetch_one(&pool)
         .await
         .unwrap();
     let start = Utc::now() - Duration::hours(1);
@@ -76,7 +80,8 @@ async fn test_pool() -> (sqlx::PgPool, sqlx::PgPool, String) {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(r#"INSERT INTO "Participations" VALUES (11, 3, 7, 1)"#)
+    sqlx::query(r#"INSERT INTO "Participations" VALUES (11, 3, $1, 1)"#)
+        .bind(team_id)
         .execute(&pool)
         .await
         .unwrap();
@@ -122,11 +127,20 @@ async fn roster_revocation_waits_until_capability_fence_releases() {
     let mut revocation = tokio::spawn({
         let pool = pool.clone();
         async move {
-            let mut roster =
-                crate::utils::single_flight::PgAdvisoryLock::acquire(&pool, "team-roster:7")
-                    .await
-                    .unwrap();
-            sqlx::query(r#"UPDATE "Teams" SET invite_token = 'rotated' WHERE id = 7"#)
+            let team_id = sqlx::query_scalar::<_, i32>(
+                r#"SELECT team_id FROM "Participations" WHERE id = 11"#,
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let mut roster = crate::utils::single_flight::PgAdvisoryLock::acquire(
+                &pool,
+                &format!("team-roster:{team_id}"),
+            )
+            .await
+            .unwrap();
+            sqlx::query(r#"UPDATE "Teams" SET invite_token = 'rotated' WHERE id = $1"#)
+                .bind(team_id)
                 .execute(&mut **roster.transaction_mut())
                 .await
                 .unwrap();

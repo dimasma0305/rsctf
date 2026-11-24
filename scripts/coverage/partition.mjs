@@ -29,11 +29,17 @@ function verifyResults(text, expected) {
 // Exactly the current coverage job's environment-only exclusions, not a new
 // classification of which database or authorization regressions are important.
 export const databaseExclusions = Object.freeze([
+  'live_remote_agent_publishes_two_team_round_receipts', // Linux worker CI runs this against a dedicated Docker daemon and matching agent.
+  'downloaded_byoc_bundle_observes_in_container_patches', // Runs with Docker Compose and the matching agent in Rust CI.
+  'cold_docker_pull_uses_only_the_configured_registry_credential', // Runs against the authenticated TLS registry in Rust CI.
   'same_origin_ssh_kernel_regression', // Privileged network namespace gate runs in runtime CI.
+  'byoc_listener_recovers_after_services_route_appears', // Requires a fresh network namespace.
   's3_round_trip',
   'stale_conditional_delete_cannot_destroy_a_real_replacement_runtime',
   'real_docker_large_file_and_fifo_are_bounded_without_exec',
   'services::container::profiles::real_tests::', // Docker/Kata lifecycle gates run in normal CI.
+  'services::k8s::team_claim::tests::real_team_storage_survives_recreation', // The Kind job provisions the CSI driver.
+  'controllers::game::ad::player_reset_tests::kubernetes::player_kubernetes_patch_activation_and_rollbacks', // Kind with CSI, a registry, and PostgreSQL.
   'live_daemon_response_is_streamed_and_decoded',
   'target_fk_deletes_scoped_tokens',
   'ownership_constraints_are_validated_cascades',

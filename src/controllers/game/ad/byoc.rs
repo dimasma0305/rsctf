@@ -43,6 +43,36 @@ use super::*;
 mod agent_image;
 mod compose;
 mod setup_script;
+pub(super) async fn byoc_source_history(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((game, challenge)): Path<(i32, i32)>,
+    axum::extract::Query(page): axum::extract::Query<crate::services::byoc_tunnel::source::Page>,
+) -> AppResult<Response> {
+    let part = resolve_participation(&st, &user, game).await?;
+    let mut roster = crate::services::live_roster::try_acquire_participation_fence(
+        st.pg(),
+        user.id,
+        &user.security_stamp,
+        game,
+        part.team_id,
+        part.id,
+        true,
+    )
+    .await?
+    .ok_or(AppError::Forbidden)?;
+    let db = &mut **roster.transaction_mut();
+    super::super::play::lock_visible_challenge_on(db, game, part.team_id, part.id, challenge)
+        .await?;
+    let service=sqlx::query_scalar::<_,Option<i32>>(r#"SELECT s.id FROM "Games" g JOIN "GameChallenges" c ON c.game_id=g.id AND c.id=$3
+        LEFT JOIN "AdTeamServices" s ON s.game_id=g.id AND s.challenge_id=c.id AND s.participation_id=$2
+        WHERE g.id=$1 AND c.ad_self_hosted AND c."Type"=$4 AND g.start_time_utc<=clock_timestamp() AND clock_timestamp()<g.end_time_utc"#)
+        .bind(game).bind(part.id).bind(challenge).bind(ChallengeType::AttackDefense as i16).fetch_optional(&mut *db).await
+        .map_err(|e|AppError::internal(e.to_string()))?.ok_or_else(||AppError::not_found("Active self-hosted challenge not found"))?;
+    let response = crate::services::byoc_tunnel::source::history(db, service, page).await?;
+    roster.release().await?;
+    Ok(response)
+}
 use agent_image::{default_byoc_agent_image, immutable_agent_image};
 use compose::{build_compose, build_setup_compose};
 use setup_script::build_setup_script;
@@ -452,7 +482,7 @@ async fn resolve_byoc(
         "{ws_scheme}://{public_authority}/api/stateful/Game/{game_id}/Ad/Byoc/Agent/{}/{challenge_id}/{agent_token}",
         part.id
     );
-    let image_url = format!(
+    let mut image_url = format!(
         "{http_scheme}://{public_authority}/api/stateful/Game/{game_id}/Ad/Byoc/Image/{}/{challenge_id}/{image_token}",
         part.id
     );
@@ -479,6 +509,9 @@ async fn resolve_byoc(
 
     let wg_config = super::vpn::render_wg_config_for_game(st, game_id, &user.name, part.id).await?;
     let container_image = grant.setup_runtime_image(st)?;
+    if let Some(image) = &container_image {
+        image_url.push_str(&format!("?revision={}", export_revision(image)));
+    }
     roster_access.release().await?;
 
     Ok(ByocContext {
@@ -578,7 +611,7 @@ pub async fn byoc_setup(
     let public_origin = canonical_public_origin(st.config.public_url.as_deref(), &headers)?;
     let ctx = resolve_byoc(&st, &user, id, challenge_id, &public_origin).await?;
     let script = build_setup_script(id, challenge_id, &ctx);
-    let fname = format!("setup-{}.sh", slugify(&ctx.title, challenge_id));
+    let fname = format!("setup-{id}-{challenge_id}.sh");
     Ok(text_attachment("application/x-sh", &fname, script))
 }
 
@@ -593,8 +626,7 @@ pub async fn byoc_compose(
     let public_origin = canonical_public_origin(st.config.public_url.as_deref(), &headers)?;
     let ctx = resolve_byoc(&st, &user, id, challenge_id, &public_origin).await?;
     let compose = build_compose(id, challenge_id, &ctx);
-    let fname = format!("docker-compose-{}.yml", slugify(&ctx.title, challenge_id));
-    Ok(text_attachment("application/yaml", &fname, compose))
+    Ok(text_attachment("application/yaml", "compose.yaml", compose))
 }
 
 /// `GET /api/Game/{id}/Ad/Byoc/Agent/{participationId}/{challengeId}/{token}` —
@@ -696,6 +728,9 @@ pub async fn byoc_agent(
         }
     };
     let authorization_generation = st.byoc.authorization_generation(pid, cid).await;
+    let source_reports = headers
+        .get("x-rsctf-byoc-source")
+        .is_some_and(|v| v == "v1");
     ws.max_frame_size(1024 * 1024)
         .max_message_size(1024 * 1024)
         .on_upgrade(move |socket| async move {
@@ -716,6 +751,7 @@ pub async fn byoc_agent(
                 cid,
                 token,
                 authorization_generation,
+                source_reports,
                 socket,
             )
             .await;
@@ -731,6 +767,23 @@ fn byoc_agent_protocol_offered(headers: &HeaderMap) -> bool {
         .any(|protocol| protocol.trim() == crate::services::byoc_tunnel::AGENT_PROTOCOL)
 }
 
+fn export_revision(image: &str) -> String {
+    hex::encode(Sha256::digest(image.as_bytes()))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImageExportQuery {
+    revision: Option<String>,
+}
+
+impl ImageExportQuery {
+    fn accepts(&self, image: &str) -> bool {
+        self.revision
+            .as_ref()
+            .is_none_or(|revision| *revision == export_revision(image))
+    }
+}
+
 /// `GET /api/Game/{id}/Ad/Byoc/Image/{participationId}/{challengeId}/{token}` —
 /// streams the challenge's built SERVICE image as a `docker save` tarball, which
 /// `setup.sh` pipes into `docker load` so the team runs the REAL vulnerable
@@ -739,6 +792,7 @@ fn byoc_agent_protocol_offered(headers: &HeaderMap) -> bool {
 pub async fn byoc_image(
     State(st): State<SharedState>,
     Path((id, pid, cid, token)): Path<(i32, i32, i32, String)>,
+    axum::extract::Query(query): axum::extract::Query<ImageExportQuery>,
 ) -> Response {
     if !st.config.runtime_role.capabilities().network {
         return (
@@ -781,6 +835,16 @@ pub async fn byoc_image(
             .into_response();
     };
     let title = authorization.grant().title.clone();
+    // The capability and current image are checked under the same roster fence.
+    // Old bundles have no revision parameter and keep their original behavior.
+    if !query.accepts(&image) {
+        let _ = authorization.release().await;
+        return (
+            StatusCode::CONFLICT,
+            "service image changed; download a fresh BYOC setup script\n",
+        )
+            .into_response();
+    }
     let Ok(docker) = bollard::Docker::connect_with_local_defaults() else {
         drop(export_permit);
         let _ = authorization.release().await;

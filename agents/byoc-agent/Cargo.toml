@@ -2,7 +2,7 @@
 
 [package]
 name = "rsctf-byoc-agent"
-version = "0.1.176"
+version = "0.1.177"
 edition = "2021"
 license = "MIT"
 description = "RSCTF Attack & Defense bring-your-own-container tunnel agent"
@@ -12,6 +12,11 @@ name = "rsctf-byoc-agent"
 path = "src/main.rs"
 
 [dependencies]
+hex = "0.4"
+ring = "0.17"
+rustix = { version = "1", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 bollard = "0.17"
 futures = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

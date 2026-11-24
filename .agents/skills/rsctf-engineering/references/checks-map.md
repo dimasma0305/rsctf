@@ -32,6 +32,20 @@ in the release gate. CI coverage discovers and runs this ignored database test.
 
 ## Discover the smallest meaningful check
 
+The [BYOC Compose regression](../../../../scripts/test-byoc-source-compose.py)
+installs the generated bundle with the example repository's self-hosted service
+and the current agent. The [live tunnel test](../../../../src/controllers/game/ad/byoc_live_source_tests.rs)
+waits for the baseline and an in-container edit to appear in the owning
+service's PostgreSQL-backed history. It checks the other team's history too.
+The Compose harness verifies the read-only agent mount and discovery from a
+standalone Compose download. After recreating the example container, it checks
+that the patch is still present and the HTTP health endpoint answers.
+
+The [patch VM test](../../../../scripts/test-ad-patch-context.py) compares the
+guest's archive, OCI manifest, and Docker config digests to the exported bytes.
+CI runs the fixture using its Docker image ID and reads the same manifest
+back by digest from a disposable loopback registry.
+
 Same-origin SSH address selection is tested in
 [endpoint.rs](../../../../src/services/ad/ssh/endpoint.rs). The ignored
 `same_origin_ssh_kernel_regression` runs the production INPUT rules through
@@ -40,6 +54,10 @@ old-rule timeout, configured-port reachability, and unknown/quarantined/revoked
 peer rejection. Run the library test as root with Linux NET_ADMIN/SYS_ADMIN,
 Python, iproute2, iptables and ipset; CI's runtime job runs it explicitly.
 It models decrypted traffic with a veth interface, not real WireGuard handshakes.
+
+The runtime job also runs [the BYOC listener regression](../../../../src/services/byoc_tunnel/endpoint.rs)
+in a fresh Linux network namespace. The first connection has no service route.
+After the interface gains its address, the same process binds a reachable private listener.
 
 Local Docker admission defaults and optional caps are covered by
 [capacity tests](../../../../src/services/container/capacity/tests.rs): run
@@ -74,6 +92,10 @@ The focused Rust regression for a partially completed drain is in
 [startup_tests.rs](../../../../src/startup_tests.rs):
 `scripts/bounded-cargo.sh test --bin rsctf drain_deadline_joins_completed_tasks_once_and_cancels_remaining_work`.
 
+The [player reset regression](../../../../src/controllers/game/ad/player_reset_tests.rs)
+uses the authenticated HTTP route, PostgreSQL and Docker to check the original
+starter image after an organizer rebuild, team ownership, and current-round flag delivery.
+
 For backup consistency, use the
 [disposable restore drill](../../../../tests/load/restore-drill.mjs) and its
 [fixture](../../../../tests/load/restore-drill/seed.sql). The load README documents
@@ -95,7 +117,7 @@ under a fresh prefix; multi-host and object-version-history recovery remain sepa
 | Route/clickable discovery and coverage gaps | [Playwright config](../../../../web/playwright.config.mjs), [interaction scan](../../../../web/e2e/interaction-map.spec.mjs), [source map](../../../../tests/visual/interaction-source-map.mjs) | `scripts/bounded-frontend.sh test:interactions`; required desktop/320px CI jobs, accessible names, hidden/disabled/custom controls, open-popup inventories, source owners, explicit unverified states, HTML report and traces |
 | Scoreboard/pages/freeze | [src/controllers/game/scoreboard_page_tests.rs](../../../../src/controllers/game/scoreboard_page_tests.rs), wire/visibility tests; [tests/visual/scoreboard-page.mjs](../../../../tests/visual/scoreboard-page.mjs) | [tests/load/scoreboard-page.mjs](../../../../tests/load/scoreboard-page.mjs), canonical/full/page integrity |
 | Repository YAML score curves | [score_curve_regression.rs](../../../../src/services/git_sync/tests/score_curve_regression.rs), [push-back round trips](../../../../src/services/git_sync/push_back.rs); filter `score_curve` | Real PostgreSQL `repository_update_preserves_challenge_solves_and_refreshes_content -- --ignored`: creation, omission, explicit reset, grading lock and queued Git push-back |
-| A&D/KotH correctness | Tests under controllers/services `ad/`, `koth/`; [tools/ad-scoring-sim/README.md](../../../../tools/ad-scoring-sim/README.md) | [tests/load/managed-koth.md](../../../../tests/load/managed-koth.md), [tests/load/arena-read.mjs](../../../../tests/load/arena-read.mjs), real runtime lifecycle |
+| A&D/KotH correctness | Tests under controllers/services `ad/`, `koth/`; [tools/ad-scoring-sim/README.md](../../../../tools/ad-scoring-sim/README.md) | [Native Docker flag publication and replay](../../../../src/services/cron/round_finish/tests/docker_publication.rs), [tests/load/managed-koth.md](../../../../tests/load/managed-koth.md), [tests/load/arena-read.mjs](../../../../tests/load/arena-read.mjs), real runtime lifecycle |
 | Live-only globe land and actionable notices | [ArenaCountries.test.ts](../../../../web/src/utils/ArenaCountries.test.ts), [ArenaGlobeDom.test.ts](../../../../web/src/utils/ArenaGlobeDom.test.ts), [CompetitionStatus.test.ts](../../../../web/src/components/competition/CompetitionStatus.test.ts) | [attack-arena.mjs](../../../../tests/visual/attack-arena.mjs), [event-navigation.mjs](../../../../tests/visual/event-navigation.mjs): desktop/320px land, keyboard disclosures, next action, and removal of duplicate team-menu feed |
 | Docker retry/first start | [src/services/container/real_docker_tests.rs](../../../../src/services/container/real_docker_tests.rs), [src/services/image_preflight/](../../../../src/services/image_preflight/) | Same-run Docker retry/adoption and repaired-image CI regressions |
 | Runtime profile switching and MicroVM isolation | [router/registration tests](../../../../src/services/container/profiles/tests.rs), [editor/recovery PostgreSQL tests](../../../../src/controllers/edit/challenges/runtime_profile_tests.rs), [YAML sync regressions](../../../../src/services/git_sync/tests/runtime_profile_regression.rs), [real lifecycle/capacity tests](../../../../src/services/container/profiles/real_tests.rs), [Kata wire tests](../../../../src/services/k8s/retry_tests.rs) | [test-runtime-profiles.sh](../../../../scripts/test-runtime-profiles.sh) requires real KVM/Kata and verifies all six directions; [runtime-profiles.mjs](../../../../tests/visual/runtime-profiles.mjs) checks editor confirmation and live badge geometry in both themes down to 320px |

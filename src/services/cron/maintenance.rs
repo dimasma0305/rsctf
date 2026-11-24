@@ -176,7 +176,7 @@ impl KnownContainerIds {
 }
 
 async fn load_known_container_ids(
-    state: &SharedState,
+    pool: &sqlx::PgPool,
     candidates: &[String],
 ) -> AppResult<KnownContainerIds> {
     let docker_prefixes = candidates
@@ -184,6 +184,8 @@ async fn load_known_container_ids(
         .filter(|id| docker_id_shape(id))
         .map(|id| id[..12].to_ascii_lowercase())
         .collect::<Vec<_>>();
+    // An older reset worker can leave its replacement in the job receipt
+    // alone. Its lease can expire while the job is still eligible for recovery.
     let (containers, services, targets, cycles, player_operations, exercise_operations) =
         tokio::try_join!(
             sqlx::query_scalar::<_, String>(
@@ -193,15 +195,19 @@ async fn load_known_container_ids(
             )
             .bind(candidates)
             .bind(&docker_prefixes)
-            .fetch_all(state.pg()),
+            .fetch_all(pool),
             sqlx::query_scalar::<_, String>(
                 r#"SELECT container_id FROM "AdTeamServices"
                 WHERE container_id = ANY($1)
-                   OR LOWER(LEFT(container_id, 12)) = ANY($2)"#,
+                   OR LOWER(LEFT(container_id, 12)) = ANY($2)
+                UNION ALL
+                SELECT input->>'replacementBackendId' FROM "ControlPlaneJobs"
+                 WHERE kind IN ('AdReset','AdRollback','AdActivate') AND status IN (0, 1)
+                   AND input->>'replacementBackendId' = ANY($1)"#,
             )
             .bind(candidates)
             .bind(&docker_prefixes)
-            .fetch_all(state.pg()),
+            .fetch_all(pool),
             sqlx::query_scalar::<_, String>(
                 r#"SELECT container_id FROM "KothTargets"
                 WHERE container_id = ANY($1)
@@ -209,7 +215,7 @@ async fn load_known_container_ids(
             )
             .bind(candidates)
             .bind(&docker_prefixes)
-            .fetch_all(state.pg()),
+            .fetch_all(pool),
             sqlx::query_scalar::<_, String>(
                 r#"SELECT DISTINCT runtime_id
                  FROM "KothCrownCycles" cycle
@@ -222,7 +228,7 @@ async fn load_known_container_ids(
             )
             .bind(candidates)
             .bind(&docker_prefixes)
-            .fetch_all(state.pg()),
+            .fetch_all(pool),
             sqlx::query_scalar::<_, String>(
                 r#"SELECT backend_id FROM "PlayerContainerOperations"
                 WHERE backend_id IS NOT NULL AND state = 'Running'
@@ -232,7 +238,7 @@ async fn load_known_container_ids(
             )
             .bind(candidates)
             .bind(&docker_prefixes)
-            .fetch_all(state.pg()),
+            .fetch_all(pool),
             sqlx::query_scalar::<_, String>(
                 r#"SELECT backend_id FROM "ExerciseContainerOperations"
                 WHERE backend_id IS NOT NULL AND state = 'Running'
@@ -242,7 +248,7 @@ async fn load_known_container_ids(
             )
             .bind(candidates)
             .bind(&docker_prefixes)
-            .fetch_all(state.pg()),
+            .fetch_all(pool),
         )
         .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
     let mut known = KnownContainerIds::default();
@@ -259,7 +265,7 @@ async fn load_known_container_ids(
     Ok(known)
 }
 
-async fn runtime_has_durable_owner(state: &SharedState, id: &str) -> AppResult<bool> {
+async fn runtime_has_durable_owner(pool: &sqlx::PgPool, id: &str) -> AppResult<bool> {
     let prefix = docker_id_shape(id).then(|| id[..12].to_ascii_lowercase());
     sqlx::query_scalar(
         r#"SELECT EXISTS(
@@ -268,6 +274,10 @@ async fn runtime_has_durable_owner(state: &SharedState, id: &str) -> AppResult<b
                UNION ALL
                SELECT 1 FROM "AdTeamServices" WHERE container_id = $1
                   OR ($2::text IS NOT NULL AND LOWER(LEFT(container_id, 12)) = $2)
+               UNION ALL
+               SELECT 1 FROM "ControlPlaneJobs"
+                WHERE kind IN ('AdReset','AdRollback','AdActivate') AND status IN (0, 1)
+                  AND input->>'replacementBackendId' = $1
                UNION ALL
                SELECT 1 FROM "KothTargets" WHERE container_id = $1
                   OR ($2::text IS NOT NULL AND LOWER(LEFT(container_id, 12)) = $2)
@@ -295,7 +305,7 @@ async fn runtime_has_durable_owner(state: &SharedState, id: &str) -> AppResult<b
     )
     .bind(id)
     .bind(prefix)
-    .fetch_one(state.pg())
+    .fetch_one(pool)
     .await
     .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))
 }
@@ -323,7 +333,7 @@ pub(super) async fn sweep_orphan_containers(state: &SharedState) -> AppResult<u6
     if managed.is_empty() {
         return Ok(0);
     }
-    let known = load_known_container_ids(state, &managed).await?;
+    let known = load_known_container_ids(state.pg(), &managed).await?;
     let now = std::time::Instant::now();
     let mut ready = Vec::new();
     {
@@ -361,7 +371,7 @@ pub(super) async fn sweep_orphan_containers(state: &SharedState) -> AppResult<u6
         if started.elapsed() >= MAINTENANCE_PASS_BUDGET {
             break;
         }
-        if runtime_has_durable_owner(state, &id).await? {
+        if runtime_has_durable_owner(state.pg(), &id).await? {
             ORPHAN_FIRST_SEEN
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -410,6 +420,50 @@ fn docker_id_shape(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{container_id_is_known, rotating_batch};
+
+    #[tokio::test]
+    #[ignore = "requires disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn orphan_sweep_respects_reclaimable_ad_reset_receipts() {
+        let fixture = crate::services::ad::scoring::test_fixture::ad_scoring_fixture().await;
+        let pool = &fixture.pool;
+        let id = uuid::Uuid::new_v4();
+        let candidate = format!("rsctf-profile:fixture:{id}:pending");
+        let other = format!("{candidate}-other");
+        let candidates = vec![candidate.clone(), other.clone()];
+        // Releases that checkpointed the job first may leave no service
+        // pointer after a crash. An expired lease is still reclaimable.
+        sqlx::query(r#"INSERT INTO "ControlPlaneJobs"
+            (id,kind,scope_key,game_id,operation_id,fingerprint,status,lease_token,lease_expires_at_utc,input)
+            VALUES ($1,'AdReset','ad-service:900041',900001,$1,'fixture',1,$1,now()-interval '1 hour',$2)"#)
+            .bind(id).bind(serde_json::json!({"replacementBackendId":candidate}))
+            .execute(pool).await.unwrap();
+        for active in [true, false] {
+            let known = super::load_known_container_ids(pool, &candidates)
+                .await
+                .unwrap();
+            for (backend, owned) in [(&candidate, active), (&other, false)] {
+                assert_eq!(known.contains(backend), owned);
+                assert_eq!(
+                    super::runtime_has_durable_owner(pool, backend)
+                        .await
+                        .unwrap(),
+                    owned
+                );
+            }
+            if active {
+                assert!(crate::services::control_jobs::complete(
+                    pool,
+                    id,
+                    id,
+                    1,
+                    serde_json::json!({})
+                )
+                .await
+                .unwrap());
+            }
+        }
+        fixture.cleanup().await;
+    }
 
     #[test]
     fn orphan_identity_matching_accepts_full_and_daemon_short_ids_only() {

@@ -144,6 +144,16 @@ function staticManifest(name, flag) {
   ].join('\n');
 }
 
+export function hostedPatchStarter() {
+  const root = mkdtempSync(join(tmpdir(), 'rsctf-edit-starter-'));
+  try {
+    writeFileSync(join(root, 'Dockerfile'), 'FROM scratch\n');
+    return execFileSync('zip', ['-q', '-', 'Dockerfile'], { cwd: root });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 /** Build a small challenge-repository ZIP. Returns bytes and always removes its temp tree. */
 export function challengeArchive(entries) {
   const root = mkdtempSync(join(tmpdir(), 'rsctf-edit-archive-'));

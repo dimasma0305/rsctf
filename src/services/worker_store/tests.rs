@@ -37,6 +37,7 @@ fn workload_spec(replicas: u16) -> serde_json::Value {
             service: "challenge".to_owned(),
             port: "service".to_owned(),
         },
+        team_data_mount: None,
         flag_target: None,
     };
     serde_json::to_value(ValidatedWorkloadSpec::try_from(spec).unwrap()).unwrap()

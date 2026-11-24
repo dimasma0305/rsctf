@@ -59,6 +59,8 @@ import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { AccessibleModal } from '@Components/AccessibleModal'
+import { ByocSourceHistory } from '@Components/competition/ByocSourceHistory'
+import { useUser } from '@Hooks/useUser'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { CompetitionMaintenancePanel } from '@Components/admin/CompetitionMaintenancePanel'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
@@ -84,6 +86,7 @@ import {
 } from '@Hooks/useGame'
 import { useUrlTab } from '@Hooks/useUrlTab'
 import api, {
+  Role,
   AdCheckStatus,
   AdFileBlob,
   AdFileViewModel,
@@ -939,6 +942,7 @@ const HealthChip: FC<{ icon: string; color: string; count: number; label: string
 )
 
 const AdOps: FC = () => {
+  const { user } = useUser()
   const { id } = useParams()
   const numId = parseInt(id ?? '-1', 10)
   const { data: maintenance } = useCompetitionMaintenance(numId)
@@ -1846,7 +1850,7 @@ const AdOps: FC = () => {
                                   <Tooltip
                                     label={t(
                                       'admin.tooltip.ad_ops.self_hosted',
-                                      'Self-hosted / Bring Your Own Container (BYOC): the team runs the service on their own machine. There is no RSCTF-hosted container to shell into, snapshot, or read files from — only the SLA status is meaningful.'
+                                      'The team runs this service and controls its deployments.'
                                     )}
                                   >
                                     <Badge size="xs" color="grape" variant="light" style={{ width: 'fit-content' }}>
@@ -1854,6 +1858,7 @@ const AdOps: FC = () => {
                                     </Badge>
                                   </Tooltip>
                                 )}
+                                {user?.role === Role.Admin && <ByocSourceHistory hostedSsh={!cell.selfHosted} gameId={numId} serviceId={cell.adTeamServiceId} />}
                                 {cell.containerIp && (
                                   <CopyButton value={`${cell.containerIp}:${cell.containerPort ?? ''}`}>
                                     {({ copied, copy }) => (

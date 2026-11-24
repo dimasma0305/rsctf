@@ -34,11 +34,58 @@ struct ResetJobInput {
     #[serde(default)]
     retired_backend_id: Option<String>,
     #[serde(default)]
+    prepared_image_ref: Option<String>,
+    #[serde(default)]
     replacement_backend_id: Option<String>,
+    #[serde(default)]
+    preserve_data_volumes: bool,
+    previous_image_ref: Option<String>,
+    candidate_image_ref: Option<String>,
+    candidate_revision: Option<i32>,
+    candidate_attempt: Option<uuid::Uuid>,
+    candidate_runtime_profile: Option<String>,
 }
 
 fn backend_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
     actual.filter(|value| !value.is_empty()) == expected.filter(|value| !value.is_empty())
+}
+
+impl ResetJobInput {
+    fn can_resume(&self, host: &str, port: i32, backend_id: Option<&str>) -> bool {
+        if !self.reset_prepared && self.replacement_backend_id.is_none() {
+            return backend_matches(backend_id, self.expected_backend_id.as_deref());
+        }
+        // Teardown clears the old identity before the replacement is retained.
+        // A checkpoint can span both states, but never a newly published endpoint.
+        let expected = self
+            .replacement_backend_id
+            .as_deref()
+            .or(self.retired_backend_id.as_deref());
+        host.is_empty()
+            && port == 0
+            && (backend_matches(backend_id, None) || backend_matches(backend_id, expected))
+    }
+}
+
+/// Called under the service publication lock. A reset can have committed its
+/// blank endpoint and lost its process before the replacement is published.
+/// Its durable checkpoint still owns recovery when its worker lease expires.
+pub(super) async fn owns_unpublished_service(
+    pool: &sqlx::PgPool,
+    service: &ad_team_service::Model,
+) -> AppResult<bool> {
+    sqlx::query_scalar(
+        r#"SELECT EXISTS (SELECT 1 FROM "ControlPlaneJobs"
+            WHERE kind IN ('AdReset','AdRollback','AdActivate') AND scope_key=$1 AND status IN (0,1)
+              AND game_id=$2 AND challenge_id=$3 AND input @> $4)"#,
+    )
+    .bind(format!("ad-service:{}", service.id))
+    .bind(service.game_id)
+    .bind(service.challenge_id)
+    .bind(json!({"serviceId":service.id,"participationId":service.participation_id,"resetPrepared":true}))
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
 }
 
 pub async fn execute_job(
@@ -48,6 +95,26 @@ pub async fn execute_job(
     let job = &claimed.model;
     let input: ResetJobInput = serde_json::from_value(claimed.input.clone())
         .map_err(|error| AppError::internal(format!("invalid reset job input: {error}")))?;
+    let rollback = job.kind == "AdRollback";
+    let activation = job.kind == "AdActivate";
+    if activation
+        && (!input.player_policy
+            || input.candidate_revision.is_none()
+            || input.candidate_attempt.is_none()
+            || !input
+                .candidate_image_ref
+                .as_deref()
+                .is_some_and(crate::services::challenge_images::is_repository_digest))
+    {
+        return Err(AppError::conflict(
+            "The activation has no verified player build",
+        ));
+    }
+    if rollback && (!input.player_policy || input.previous_image_ref.is_none()) {
+        return Err(AppError::conflict(
+            "The rollback has no player image receipt",
+        ));
+    }
     let initial = ad_team_service::Entity::find_by_id(input.service_id)
         .one(&st.db)
         .await?
@@ -55,33 +122,18 @@ pub async fn execute_job(
             service.game_id == job.game_id && service.participation_id == input.participation_id
         })
         .ok_or_else(|| AppError::not_found("Service not found"))?;
-    let replacement_checkpointed = input.replacement_backend_id.is_some();
-    let replacement_published = input
-        .replacement_backend_id
-        .as_deref()
-        .is_some_and(|replacement| initial.container_id.as_deref() == Some(replacement));
-    let recovering_preparation = input.reset_prepared && input.replacement_backend_id.is_none();
-    if replacement_published && !initial.host.trim().is_empty() && initial.port > 0 {
-        return Ok(json!({ "reset": true, "alreadyReplaced": true }));
-    }
-    if !replacement_checkpointed
-        && !recovering_preparation
-        && !backend_matches(
-            initial.container_id.as_deref(),
-            input.expected_backend_id.as_deref(),
-        )
-    {
-        return Ok(json!({ "reset": false, "alreadyReplaced": true }));
-    }
-
-    let lock_key = format!(
-        "ad-service:{}:{}",
-        initial.participation_id, initial.challenge_id
+    let lock_key = crate::services::ad::service_lifecycle::service_lock_key(
+        initial.participation_id,
+        initial.challenge_id,
     );
     let _local = crate::utils::single_flight::coalesce(&lock_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &lock_key)
-            .await?;
+    let distributed = crate::services::ad::service_lifecycle::acquire_publication_lock(
+        st.pg(),
+        job.game_id,
+        initial.participation_id,
+        initial.challenge_id,
+    )
+    .await?;
 
     let service = ad_team_service::Entity::find_by_id(input.service_id)
         .one(&st.db)
@@ -91,21 +143,17 @@ pub async fn execute_job(
         })
         .ok_or_else(|| AppError::not_found("Service not found"))?;
     let replacement_checkpointed = input.replacement_backend_id.is_some();
-    let replacement_published = input
+    let published = input
         .replacement_backend_id
         .as_deref()
-        .is_some_and(|replacement| service.container_id.as_deref() == Some(replacement));
+        .filter(|&replacement| {
+            service.container_id.as_deref() == Some(replacement)
+                && !service.host.trim().is_empty()
+                && service.port > 0
+        });
     let recovering_preparation = input.reset_prepared && input.replacement_backend_id.is_none();
-    if replacement_published && !service.host.trim().is_empty() && service.port > 0 {
-        distributed.release().await?;
-        return Ok(json!({ "reset": true, "alreadyReplaced": true }));
-    }
-    if !replacement_checkpointed
-        && !recovering_preparation
-        && !backend_matches(
-            service.container_id.as_deref(),
-            input.expected_backend_id.as_deref(),
-        )
+    if published.is_none()
+        && !input.can_resume(&service.host, service.port, service.container_id.as_deref())
     {
         distributed.release().await?;
         return Ok(json!({ "reset": false, "alreadyReplaced": true }));
@@ -131,6 +179,20 @@ pub async fn execute_job(
             "Self-hosted services cannot be reset from the platform",
         ));
     }
+    if activation
+        && (input.candidate_runtime_profile != challenge.runtime_profile
+            || !crate::services::container::TeamStorage::supports_patch_activation(
+                st,
+                service.id,
+                challenge.runtime_profile.as_deref(),
+                input.expected_backend_id.as_deref(),
+            )
+            .await?)
+    {
+        return Err(AppError::conflict(
+            "This runtime cannot transfer a hosted service to a patch image",
+        ));
+    }
     if input.player_policy && !challenge.ad_allow_self_reset {
         return Err(AppError::bad_request(
             "Self-reset is not allowed for this service",
@@ -144,6 +206,13 @@ pub async fn execute_job(
         return Err(AppError::bad_request(
             "Service reset is only available while the game is running",
         ));
+    }
+    if let Some(backend_id) = published {
+        // The database publication can survive a process exit before the
+        // capture owner or the VPN has acknowledged the new endpoint.
+        distributed.release().await?;
+        finish_publication(st, backend_id, challenge.enable_traffic_capture).await?;
+        return Ok(json!({ "reset": true, "alreadyReplaced": true }));
     }
     if input.player_policy && !replacement_checkpointed && !recovering_preparation {
         let cooldown = game
@@ -161,68 +230,175 @@ pub async fn execute_job(
         }
     }
 
-    let image = crate::services::challenge_images::runtime_image(st, &challenge)?;
-    let (prepared_round_id, current_flag) = if replacement_checkpointed || recovering_preparation {
-        let flag = match input.prepared_round_id {
-            Some(round_id) => sqlx::query_scalar::<_, String>(
-                r#"SELECT flag FROM "AdFlags"
-                    WHERE round_id = $1 AND team_service_id = $2"#,
-            )
-            .bind(round_id)
-            .bind(service.id)
-            .fetch_optional(st.pg())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?,
-            None => None,
-        };
-        if recovering_preparation {
-            crate::services::ad_vpn::deactivate_team_service(&st.db, service.id).await?;
-            if let Some(retired_backend_id) = input
-                .retired_backend_id
-                .as_deref()
-                .filter(|retired| service.container_id.as_deref() == Some(*retired))
-            {
-                crate::services::traffic::destroy_container_after_capture_fence(
-                    st,
-                    retired_backend_id,
-                )
-                .await?;
-            }
+    let resuming = replacement_checkpointed || recovering_preparation;
+    if (rollback || activation) && resuming {
+        // Recovery may be claimed after a division lost challenge access.
+        let eligible = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(SELECT 1 FROM "AdPatchBuildEligibleServices" WHERE service_id=$1)"#,
+        )
+        .bind(service.id)
+        .fetch_one(st.pg())
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+        if !eligible {
+            return Err(AppError::Forbidden);
         }
-        (input.prepared_round_id, flag)
+    }
+    // A fresh player reset restores the organizer's original starter when
+    // one was recorded. Admin restarts keep their existing rebuild behavior.
+    // On recovery, the job's own preparation receipt takes precedence.
+    let pinned = if resuming {
+        if rollback && input.prepared_image_ref != input.previous_image_ref {
+            return Err(AppError::conflict("The prepared rollback image changed"));
+        }
+        if activation && input.prepared_image_ref != input.candidate_image_ref {
+            return Err(AppError::conflict("The prepared patch image changed"));
+        }
+        input.prepared_image_ref
+    } else if activation {
+        input.candidate_image_ref
+    } else if rollback {
+        input.previous_image_ref
+    } else if input.player_policy {
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT runtime_image_ref FROM "AdPatchStarters"
+                WHERE challenge_id=$1 AND runtime_image_ref IS NOT NULL"#,
+        )
+        .bind(challenge.id)
+        .fetch_optional(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+    } else {
+        None
+    };
+    let image = crate::services::challenge_images::runtime_image_with_pin(
+        st,
+        &challenge,
+        pinned.as_deref(),
+    )?;
+    let retained_backend = input
+        .retired_backend_id
+        .as_deref()
+        .filter(|retired| service.container_id.as_deref() == Some(*retired));
+    let mut spec = ContainerSpec::ad_service(
+        image.clone(),
+        ContainerResourceLimits {
+            memory_limit: challenge.memory_limit.unwrap_or(256),
+            cpu_count: challenge.cpu_count.unwrap_or(1),
+            storage_limit: storage_limit_or_default(challenge.storage_limit),
+        },
+        challenge.expose_port.unwrap_or(80),
+        part.team_id,
+        challenge.ad_allow_egress,
+        String::new(),
+    );
+    spec.runtime_profile = challenge.runtime_profile.clone();
+    spec.operation_id = Some(format!("ad-reset:{}", job.operation_id));
+    let worker_donor = input
+        .expected_backend_id
+        .as_deref()
+        .map(crate::services::worker::WorkerHandle::from_backend_id)
+        .transpose()?
+        .flatten();
+    if worker_donor.is_none() {
+        crate::services::container::TeamStorage::configure(
+            st,
+            &mut spec,
+            job.game_id,
+            part.id,
+            challenge.id,
+        )
+        .await?;
+    }
+    // Live challenge settings and deployment limits can change between launches.
+    // Check the replacement while the team's existing endpoint still serves.
+    crate::services::container::validate_container_spec(&spec)?;
+    // A durable preparation records which image to use. A reclaimed job may
+    // run after that image disappeared, while the retired container still
+    // holds the team's files. Stage the image again before removing it.
+    if worker_donor.is_none()
+        && (!resuming || (recovering_preparation && retained_backend.is_some()))
+    {
+        st.containers
+            .profile_pull_image(challenge.runtime_profile.as_deref(), &image)
+            .await?;
+    }
+    let source = if resuming {
+        retained_backend
+    } else {
+        service.container_id.as_deref()
+    };
+    let mut preserve_volumes = input.preserve_data_volumes;
+    if !replacement_checkpointed {
+        if let Some(id) = source {
+            if worker_donor.is_some() {
+                // The worker keeps the same workload and data even for a
+                // service without a separate mount. Leave its donor attached.
+                preserve_volumes = true;
+            } else if st.containers.ad_donor_needs_transfer(id, &spec).await? || preserve_volumes {
+                preserve_volumes = true;
+                st.containers.check_ad_volume_reset(id, &spec).await?;
+            } else if spec.team_storage.is_some() || (activation && !resuming) {
+                // Repeat the pull check if a prepared job still has a donor.
+                // A crash after deletion can leave just its durable backend ID.
+                match st.containers.check_ad_patch_image(id, &spec).await {
+                    Err(AppError::NotFound(_)) if resuming && spec.team_storage.is_some() => {}
+                    result => result?,
+                }
+            }
+        } else if preserve_volumes {
+            return Err(AppError::conflict(
+                "The reset could not locate the team's data volume donor",
+            ));
+        }
+    }
+    let prepared = if resuming {
+        None
     } else {
         let reason = if input.player_policy {
             "service reset before checker completion"
         } else {
             "administrator restart before checker completion"
         };
-        let replacement = crate::services::ad_engine::prepare_service_reset(
-            &st.db,
-            job.game_id,
-            service.id,
-            reason,
+        Some(
+            crate::services::ad_engine::prepare_service_reset(
+                &st.db,
+                job.game_id,
+                service.id,
+                input.expected_backend_id.as_deref(),
+                job.id,
+                claimed.lease_token,
+                &image,
+                preserve_volumes,
+                reason,
+            )
+            .await?,
         )
-        .await?;
-        crate::services::control_jobs::checkpoint_input(
-            st.pg(),
-            job.id,
-            claimed.lease_token,
-            json!({
-                "resetPrepared": true,
-                "preparedRoundId": replacement.prepared_round_id,
-                "retiredBackendId": replacement.retired_container_id.clone(),
-            }),
-        )
-        .await?;
-        crate::services::ad_vpn::deactivate_team_service(&st.db, service.id).await?;
-        if let Some(container_id) = &replacement.retired_container_id {
-            crate::services::traffic::destroy_container_after_capture_fence(st, container_id)
-                .await?;
-        }
-        (replacement.prepared_round_id, replacement.current_flag)
     };
+    if !replacement_checkpointed {
+        crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    }
+    let prepared_round_id = prepared
+        .as_ref()
+        .map_or(input.prepared_round_id, |p| p.prepared_round_id);
+    let provision_flag = crate::services::ad_engine::ProvisionFlag::read(
+        st.pg(),
+        job.game_id,
+        part.id,
+        challenge.id,
+    )
+    .await?;
+    let current_flag = provision_flag.reset_flag(prepared_round_id)?;
+    if prepared
+        .as_ref()
+        .is_some_and(|p| p.current_flag.as_deref() != current_flag)
+    {
+        return Err(AppError::conflict(
+            "The A&D flag changed after reset preparation",
+        ));
+    }
     let flag = match current_flag {
-        Some(flag) => crate::utils::flag_generator::validate_stored_ad_flag(flag)?,
+        Some(flag) => flag.to_owned(),
         None => {
             let salt = crate::utils::flag_generator::team_hash_salt(&game.private_key);
             let team_hash =
@@ -233,92 +409,187 @@ pub async fn execute_job(
             )?
         }
     };
-    let mut spec = ContainerSpec::ad_service(
-        image,
-        ContainerResourceLimits {
-            memory_limit: challenge.memory_limit.unwrap_or(256),
-            cpu_count: challenge.cpu_count.unwrap_or(1),
-            storage_limit: storage_limit_or_default(challenge.storage_limit),
-        },
-        challenge.expose_port.unwrap_or(80),
-        part.team_id,
-        challenge.ad_allow_egress,
-        flag,
-    );
-    spec.runtime_profile = challenge.runtime_profile.clone();
-    spec.operation_id = Some(format!("ad-reset:{}", job.operation_id));
-    let info = st.containers.create(spec).await?;
+    let retired = match &prepared {
+        Some(p) => p.retired_container_id.as_deref(),
+        None if recovering_preparation => retained_backend,
+        None => None,
+    };
+    spec.set_ad_launch_flag(flag.clone(), prepared_round_id.is_some());
+    let volume_donor = retired.filter(|_| preserve_volumes);
+    let (info, retained_backend) = if let Some(id) = volume_donor {
+        crate::services::traffic::fence_container_capture_stop(st, id).await?;
+        let candidate = if let Some(handle) = worker_donor {
+            crate::services::worker::WorkerContainerManager::new(st.worker_store.clone())
+                .revise_team_service(
+                    handle,
+                    part.id,
+                    challenge.id,
+                    &image,
+                    &job.operation_id.to_string(),
+                )
+                .await?
+        } else {
+            st.containers
+                .repair_ad_volumes(id, &spec, crate::services::container::AdVolumeChange::Reset)
+                .await?
+                .ok_or_else(|| {
+                    AppError::conflict("The team's data volume disappeared during reset")
+                })?
+        };
+        if candidate.status != "running"
+            || candidate.ip.trim().is_empty()
+            || !(1..=65535).contains(&candidate.port)
+        {
+            super::service_lifecycle::destroy_team_backend(
+                st,
+                part.id,
+                challenge.id,
+                &candidate.id,
+            )
+            .await?;
+            return Err(AppError::unavailable(
+                "The replacement service has no running endpoint",
+            ));
+        }
+        (candidate, Some(id))
+    } else {
+        let retained_backend = if let Some(id) = retired {
+            super::service_lifecycle::destroy_team_backend_after_capture(
+                st,
+                part.id,
+                challenge.id,
+                id,
+            )
+            .await?;
+            // Successful teardown clears the service's inactive database pointer.
+            None
+        } else {
+            service.container_id.as_deref()
+        };
+        (st.containers.create(spec).await?, retained_backend)
+    };
     let backend_id = info.id.clone();
-    crate::services::control_jobs::checkpoint_input(
-        st.pg(),
-        job.id,
-        claimed.lease_token,
-        json!({ "replacementBackendId": backend_id.clone() }),
-    )
-    .await?;
-    let retained = crate::services::ad::service_lifecycle::retain_created_backend_identity(
-        st.pg(),
-        job.game_id,
-        service.participation_id,
-        service.challenge_id,
-        &backend_id,
-    )
-    .await;
-    if let Err(error) = retained {
-        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
-            tracing::error!(%backend_id, %destroy_error, "failed to destroy unretained reset replacement");
+    if let Err(error) = provision_flag
+        .initialize(st, part.id, challenge.id, &backend_id, retained_backend)
+        .await
+    {
+        // The candidate has never been published. A volume donor still holds
+        // the team's current files and must survive a failed acknowledgement.
+        if worker_donor.is_none() {
+            super::service_lifecycle::destroy_team_backend(st, part.id, challenge.id, &backend_id)
+                .await?;
         }
         return Err(error);
     }
-    if !retained.expect("retention error returned above") {
-        st.containers.destroy(&backend_id).await?;
-        return Err(AppError::conflict(
-            "Service ownership disappeared while the replacement was launching",
-        ));
+    if volume_donor.is_none() {
+        crate::services::ad_engine::checkpoint_reset_replacement(
+            st.pg(),
+            job.game_id,
+            service.id,
+            job.id,
+            claimed.lease_token,
+            input.replacement_backend_id.as_deref(),
+            &backend_id,
+        )
+        .await?;
     }
-    let published = crate::services::ad_engine::publish_service_reset(
-        &st.db,
-        job.game_id,
-        service.id,
-        &info.ip,
-        info.port,
-        &backend_id,
-        prepared_round_id,
-        true,
-    )
-    .await;
-    match published {
-        Ok(true) => {}
-        Ok(false) => {
-            crate::services::ad::service_lifecycle::rollback_created_backend(
-                st,
-                service.participation_id,
-                service.challenge_id,
-                &backend_id,
+    let publish = || {
+        crate::services::ad_engine::publish_service_reset(
+            &st.db,
+            job.game_id,
+            service.id,
+            &info.ip,
+            info.port,
+            &backend_id,
+            prepared_round_id,
+            true,
+            // A worker from before image checkpointing may already have launched
+            // its replacement against a different organizer build.
+            (!resuming || pinned.is_some()).then_some(image.as_str()),
+            rollback || activation,
+            challenge.runtime_profile.as_deref(),
+            volume_donor.map(|donor| crate::services::ad_engine::ResetVolumeTransfer {
+                donor,
+                job: job.id,
+                lease: claimed.lease_token,
+            }),
+            if activation {
+                input.candidate_revision
+            } else {
+                None
+            },
+        )
+    };
+    let published = match publish().await {
+        Ok(published) => published,
+        Err(error) => {
+            // A dropped commit response can leave a live endpoint. The service
+            // lock still fences competing publishers while we check and retry.
+            tracing::warn!(service_id = service.id, %error, "confirming reset publication");
+            let committed: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS(SELECT 1 FROM "AdTeamServices"
+                    WHERE id=$1 AND game_id=$2 AND container_id=$3 AND host=$4 AND port=$5
+                      AND NULLIF(BTRIM(host), '') IS NOT NULL AND port BETWEEN 1 AND 65535)"#,
             )
-            .await?;
+            .bind(service.id)
+            .bind(job.game_id)
+            .bind(&backend_id)
+            .bind(&info.ip)
+            .bind(info.port)
+            .fetch_one(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            committed || publish().await?
+        }
+    };
+    if !published {
+        if volume_donor.is_some() {
+            if worker_donor.is_none() {
+                super::service_lifecycle::destroy_team_backend(
+                    st,
+                    part.id,
+                    challenge.id,
+                    &backend_id,
+                )
+                .await?;
+            }
             return Err(AppError::conflict(
-                "Service eligibility changed while the replacement was launching",
+                "The service changed before its volume transfer could be published",
             ));
         }
-        Err(error) => {
-            crate::services::ad::service_lifecycle::rollback_created_backend(
-                st,
-                service.participation_id,
-                service.challenge_id,
-                &backend_id,
-            )
-            .await?;
-            return Err(error);
+        crate::services::ad::service_lifecycle::rollback_created_backend(
+            st,
+            service.participation_id,
+            service.challenge_id,
+            &backend_id,
+        )
+        .await?;
+        return Err(AppError::conflict(
+            "Service eligibility changed while the replacement was launching",
+        ));
+    }
+    if let Some(id) = volume_donor.filter(|_| worker_donor.is_none()) {
+        if let Err(error) =
+            super::service_lifecycle::destroy_team_backend(st, part.id, challenge.id, id).await
+        {
+            tracing::warn!(backend_id=id,%error,"published reset; stopped donor awaits cleanup");
         }
     }
     distributed.release().await?;
-    if challenge.enable_traffic_capture {
-        crate::services::traffic::start_container_capture(st, &backend_id).await?;
-    }
-    crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
+    finish_publication(st, &backend_id, challenge.enable_traffic_capture).await?;
     Ok(json!({ "reset": true, "alreadyReplaced": false }))
 }
+
+async fn finish_publication(st: &SharedState, backend_id: &str, capture: bool) -> AppResult<()> {
+    if capture {
+        crate::services::traffic::start_container_capture(st, backend_id).await?;
+    }
+    crate::services::ad_vpn::reconcile_for_deployment(&st.db).await
+}
+
+#[cfg(test)]
+#[path = "reset_runtime_tests.rs"]
+mod runtime_tests;
 
 #[cfg(test)]
 mod tests {
@@ -346,5 +617,18 @@ mod tests {
         assert!(input.reset_prepared);
         assert_eq!(input.prepared_round_id, None);
         assert_eq!(input.retired_backend_id.as_deref(), Some("old"));
+        assert!(input.can_resume("", 0, Some("old")));
+        assert!(input.can_resume("", 0, None));
+        assert!(!input.can_resume("replacement", 8080, Some("other")));
+        assert!(!input.can_resume("", 0, Some("other")));
+        assert!(!input.can_resume("byoc", 8080, None));
+        let launched = ResetJobInput {
+            replacement_backend_id: Some("new".into()),
+            ..input
+        };
+        assert!(launched.can_resume("", 0, Some("new")));
+        assert!(launched.can_resume("", 0, None));
+        assert!(!launched.can_resume("", 0, Some("old")));
+        assert!(!launched.can_resume("other", 8080, Some("other")));
     }
 }

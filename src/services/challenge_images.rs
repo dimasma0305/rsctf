@@ -191,6 +191,27 @@ pub(crate) fn runtime_image(
     st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> AppResult<String> {
+    runtime_image_with_pin(st, challenge, None)
+}
+
+/// A registered starter or prepared operation supplies its original immutable
+/// reference. Validate it against the current profile even after a rebuild.
+pub(crate) fn runtime_image_with_pin(
+    st: &SharedState,
+    challenge: &game_challenge::Model,
+    pinned_image: Option<&str>,
+) -> AppResult<String> {
+    if remote_team_challenge(st, challenge) {
+        return match pinned_image {
+            Some(image) => validate_runtime_reference(
+                image,
+                ContainerBackendKind::Worker,
+                st.config.runtime_role,
+                false,
+            ),
+            None => runtime_worker_image(st, challenge),
+        };
+    }
     if challenge.runtime_profile.is_some() {
         crate::services::container::profiles::policy::validate_selection(
             st,
@@ -201,12 +222,36 @@ pub(crate) fn runtime_image(
             challenge.enable_traffic_capture,
         )?;
     }
+    if let Some(image) = pinned_image {
+        return validate_runtime_reference(
+            image,
+            st.containers
+                .profile_backend_kind(challenge.runtime_profile.as_deref())?,
+            st.config.runtime_role,
+            shared_docker_daemon_acknowledged(),
+        );
+    }
     runtime_image_for_profile_fields(
         st,
         challenge.runtime_profile.as_deref(),
         challenge.build_status as i16,
         challenge.build_image_digest.as_deref(),
     )
+}
+
+/// On a hybrid installation an organizer can select a trusted worker by
+/// using its scoped starter image. Portable patches stay on that assignment.
+pub(crate) fn remote_team_challenge(st: &SharedState, challenge: &game_challenge::Model) -> bool {
+    challenge.challenge_type == crate::utils::enums::ChallengeType::AttackDefense
+        && !challenge.ad_self_hosted
+        && challenge.runtime_profile.is_none()
+        && st.containers.supports_worker_workloads()
+        && (st.containers.backend_kind() == ContainerBackendKind::Worker
+            || challenge
+                .container_image
+                .as_deref()
+                .and_then(worker_local_image)
+                .is_some())
 }
 
 /// Resolve a legacy single-container image that will be scheduled on the

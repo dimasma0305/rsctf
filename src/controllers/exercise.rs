@@ -572,6 +572,7 @@ async fn perform_create_container(
             flag: Some(flag.clone()),
             ad_network: None,
             allow_egress: true,
+            team_storage: None,
             control_plane_callback_ports: Vec::new(),
             network_mode: crate::utils::enums::NetworkMode::Open,
             operation_id: Some(format!("exercise-container:{}", operation.operation_id)),
