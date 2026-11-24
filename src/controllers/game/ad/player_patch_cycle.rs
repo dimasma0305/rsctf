@@ -91,6 +91,7 @@ pub(crate) async fn exercise(
     captain: Uuid,
     images: [&str; 3],
     config: &str,
+    pending_round: Option<i32>,
     verify: impl AsyncFn(&str, &str),
 ) -> String {
     let [starter, previous, candidate] = images;
@@ -148,13 +149,22 @@ pub(crate) async fn exercise(
         .status(),
         StatusCode::NOT_FOUND
     );
+    // The worker scenario opens a fresh round. A player restart settles the
+    // owning service's pending check once. All adjudicated rows stay immutable.
+    let pending_id: Option<i32> = match pending_round {
+        Some(round) => Some(sqlx::query_scalar(r#"SELECT id FROM "AdCheckResults" WHERE team_service_id=900041 AND round_id=$1 AND sla_credit IS NULL"#)
+            .bind(round).fetch_one(pool).await.unwrap()),
+        None => None,
+    };
+    let mut settled_check = None;
     let evidence = || {
         sqlx::query_scalar::<_, Value>(
             r#"SELECT jsonb_build_array(
-        (SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM "AdCheckResults" c),
+        (SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM "AdCheckResults" c WHERE c.id IS DISTINCT FROM $1::integer),
         (SELECT jsonb_agg(to_jsonb(f) ORDER BY f.id) FROM "AdFlags" f),
         (SELECT to_jsonb(s) FROM "AdTeamServices" s WHERE id=900042))"#,
         )
+        .bind(pending_id)
         .fetch_one(pool)
     };
     let before = evidence().await.unwrap();
@@ -227,7 +237,27 @@ pub(crate) async fn exercise(
         assert_eq!(image, expected);
         assert_ne!(id, serving);
         verify(&id, label).await;
-        assert_eq!(evidence().await.unwrap(), before);
+        assert!(
+            evidence().await.unwrap() == before,
+            "existing scores, flags or the other team's service changed"
+        );
+        if let Some(id) = pending_id {
+            let row: Value =
+                sqlx::query_scalar(r#"SELECT to_jsonb(c) FROM "AdCheckResults" c WHERE id=$1"#)
+                    .bind(id)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                row["status"],
+                crate::utils::enums::AdCheckStatus::Offline as i16
+            );
+            assert_eq!(row["flag_verified"], false);
+            assert_eq!(row["sla_credit"].as_f64(), Some(0.0));
+            assert_eq!(row["message"], "service reset before checker completion");
+            assert!(row["checked_at"].is_string());
+            assert_eq!(settled_check.get_or_insert_with(|| row.clone()), &row);
+        }
         serving = id;
     }
     shutdown.send_replace(true);

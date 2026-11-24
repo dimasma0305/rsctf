@@ -4,6 +4,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
 
 const PEER: &str = "rscpeer0";
@@ -48,8 +49,13 @@ impl PlayerVpn {
         };
         let address = field("Address = ");
         let routes = field("AllowedIPs = ");
+        let redact = |stderr: &[u8]| {
+            String::from_utf8_lossy(stderr)
+                .replace(field("PrivateKey = "), "[redacted]")
+                .replace(field("PublicKey = "), "[redacted]")
+        };
         private_file(dir, "player.conf", &bytes);
-        let stripped = Command::new("wg-quick")
+        let stripped = Command::new("/usr/bin/wg-quick")
             .arg("strip")
             .arg(dir.join("player.conf"))
             .output()
@@ -57,24 +63,32 @@ impl PlayerVpn {
             .unwrap();
         assert!(
             stripped.status.success(),
-            "wg-quick could not read the player profile"
+            "wg-quick strip failed ({}): {}",
+            stripped.status,
+            redact(&stripped.stderr)
         );
-        private_file(dir, "tunnel.conf", &stripped.stdout);
         ip(&["netns", "add", PEER]).await;
         let peer = Self;
         ip(&["link", "add", PEER, "type", "wireguard"]).await;
-        let configured = Command::new("wg")
-            .args(["setconf", PEER])
-            .arg(dir.join("tunnel.conf"))
-            .output()
+        let mut wg = Command::new("/usr/bin/wg")
+            .args(["setconf", PEER, "/dev/stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        wg.stdin
+            .take()
+            .unwrap()
+            .write_all(&stripped.stdout)
             .await
             .unwrap();
-        if !configured.status.success() {
-            let message = String::from_utf8_lossy(&configured.stderr)
-                .replace(field("PrivateKey = "), "[redacted]")
-                .replace(field("PublicKey = "), "[redacted]");
-            panic!("wg setconf failed ({}): {message}", configured.status);
-        }
+        let configured = wg.wait_with_output().await.unwrap();
+        assert!(
+            configured.status.success(),
+            "wg setconf failed ({}): {}",
+            configured.status,
+            redact(&configured.stderr)
+        );
         ip(&["link", "set", PEER, "netns", PEER]).await;
         ip(&["-n", PEER, "addr", "add", address, "dev", PEER]).await;
         ip(&["-n", PEER, "link", "set", "lo", "up"]).await;

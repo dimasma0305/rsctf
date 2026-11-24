@@ -431,6 +431,7 @@ async fn scenario() {
         captain,
         [&starter, &previous, &candidate],
         &config,
+        Some(round.id),
         async |id, label| {
             let handle = crate::services::worker::parse_worker_handle(id).unwrap();
             assert_eq!(handle.assignment_id, before_toolkit.assignment_id);

@@ -88,6 +88,7 @@ async fn player_kubernetes_patch_activation_and_rollbacks() {
         captain,
         [&starter, &previous, &candidate],
         &config,
+        None,
         async |id, label| {
             let files = state
                 .containers
