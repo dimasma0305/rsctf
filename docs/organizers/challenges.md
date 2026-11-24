@@ -15,12 +15,21 @@ Choose the simplest challenge type that delivers the intended experience. Every 
 
 ## Compare two A&D source ZIPs
 
-In the hosted A&D challenge editor, choose **Starter ZIP for team patches**,
+In the admin challenge list, choose **Team patching** on an A&D challenge.
+The editor shows where teams host the service and how they can patch it.
+For a service hosted by RSCTF, choose **Starter ZIP for team patches**,
 select the source archive intended for teams, and click **Save starter ZIP**.
 Put the Dockerfile at the root. The editor displays the saved Git tree ID.
 You can replace the starter before the game begins. RSCTF keeps one ZIP per
 challenge in PostgreSQL, up to 72 MiB, shared across all teams. Saving a starter
 prepares the original source for comparison and leaves running services in place.
+
+![Hosted A&D challenge editor with the starter ZIP picker beside the SSH settings](/screenshots/admin-team-patching-hosted.png)
+
+BYOC teams patch on their own host. Their editor explains where patches are
+applied and whether Toolkit SSH requires additional setup.
+
+![BYOC challenge editor showing team-hosted patching and SSH access](/screenshots/admin-team-patching-byoc.png)
 
 To register files that teams edit over SSH, include `.rsctf-ssh.json` at the
 root of the organizer's starter ZIP before kickoff. List each source file

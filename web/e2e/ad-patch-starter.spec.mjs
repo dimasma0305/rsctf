@@ -329,7 +329,17 @@ test('organizer registers a starter and sees the original after the event starts
   byoc = true
   await page.reload()
   await expect(page.getByText('Self-hosted / Bring Your Own Container (BYOC)', { exact: true })).toBeVisible()
+  const patching = page.getByRole('region', { name: 'Team patching' })
+  await expect(patching.getByRole('heading', { name: 'ZIP patches' })).toBeVisible()
+  await expect(patching.getByText('Teams patch on their own host.', { exact: false })).toBeVisible()
+  await expect(patching.getByRole('heading', { name: 'SSH access' })).toBeVisible()
   await expect(panel).toHaveCount(0)
+  const hosting = patching.getByRole('switch', { name: /Self-hosted/ })
+  await hosting.focus()
+  await page.keyboard.press('Space')
+  await expect(patching.getByRole('status')).toHaveText('Save the hosting change to upload a starter ZIP.')
+  await expect(panel).toHaveCount(0)
+  expect(writes).toHaveLength(2)
   expect(errors).toEqual([])
 })
 

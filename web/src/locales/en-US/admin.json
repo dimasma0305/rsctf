@@ -1,5 +1,17 @@
 {
   "ad": {
+    "team_patching": {
+      "choose_zip": "Choose a ZIP file…",
+      "title": "Team patching",
+      "hosted": "RSCTF-hosted",
+      "koth": "Teams compete on one shared hill. For per-team SSH and ZIP patches, create a hosted Attack & Defense challenge.",
+      "zip": "ZIP patches",
+      "ssh": "SSH access",
+      "byoc_zip": "Teams patch on their own host. Starter ZIP uploads are available for RSCTF-hosted A&D challenges.",
+      "save_hosting": "Save the hosting change to upload a starter ZIP.",
+      "byoc_ssh": "Teams manage shell access on their host. Toolkit SSH requires the optional BYOC shell.",
+      "hosted_ssh": "Players register their SSH key in the A&D Toolkit to edit their team’s running service."
+    },
     "patch_activity": {
       "label": "Share patch activity",
       "help": "Choose before the event. Deployment counts appear after one additional round finishes. After the event and practice close, teams in the same division can see changes to selected starter files, including line ranges when enabled for a file.",

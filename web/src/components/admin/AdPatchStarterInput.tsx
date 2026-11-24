@@ -1,4 +1,6 @@
 import { Button, FileInput, Group, Stack, Text } from '@mantine/core'
+import { mdiUploadOutline } from '@mdi/js'
+import { Icon } from '@mdi/react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
@@ -66,6 +68,8 @@ export function AdPatchStarterInput({ gameId, challengeId, started, disabled }: 
     <Stack gap="xs" data-ad-patch-starter>
       <FileInput
         label={t('admin.ad.patch_starter.label', 'Starter ZIP for team patches')}
+        placeholder={t('admin.ad.team_patching.choose_zip', 'Choose a ZIP file…')}
+        leftSection={<Icon path={mdiUploadOutline} size={0.8} aria-hidden="true" />}
         description={t('admin.ad.patch_starter.help', 'Choose the source teams may see, with a Dockerfile at the root.')}
         accept=".zip,application/zip"
         clearable

@@ -44,7 +44,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { HintList } from '@Components/HintList'
 import { InstanceEntry } from '@Components/InstanceEntry'
 import { ChallengePreviewModal } from '@Components/admin/ChallengePreviewModal'
-import { AdPatchStarterInput } from '@Components/admin/AdPatchStarterInput'
+import { AdminTeamPatching } from '@Components/admin/AdminTeamPatching'
 import { CompetitionMaintenancePanel } from '@Components/admin/CompetitionMaintenancePanel'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { RuntimeProfileSelect } from '@Components/admin/RuntimeProfileSelect'
@@ -804,6 +804,11 @@ const GameChallengeEdit: FC = () => {
             </Button>
           )}
           {isAdEngine && (
+            <Button component="a" href="#team-patching" variant="light" size="xs">
+              {t('admin.ad.team_patching.title', 'Team patching')}
+            </Button>
+          )}
+          {isAdEngine && (
             <Button component="a" href="#challenge-checker" variant="light" size="xs">
               {t('admin.challenge_editor.checker', 'Checker & access')}
             </Button>
@@ -821,6 +826,16 @@ const GameChallengeEdit: FC = () => {
         </Text>
         {isAdEngine && (game?.adScoringStartRound != null || game?.kothScoringStartRound != null) && (
           <CompetitionMaintenancePanel key={numId} gameId={numId} unsavedChanges={dirty} />
+        )}
+        {isAdEngine && challenge && (
+          <AdminTeamPatching
+            gameId={numId} challengeId={numCId} isKoth={isKoth}
+            savedByoc={!!challenge.adSelfHosted} byoc={!!challengeInfo.adSelfHosted}
+            requiresFlag={!!challengeInfo.adSshRequiresFlag} started={eventSecurityFrozen}
+            settingsDisabled={disabled || operationalLocked} uploadDisabled={disabled || dirty}
+            onByocChange={(adSelfHosted) => setChallengeInfo({ ...challengeInfo, adSelfHosted })}
+            onFlagChange={(adSshRequiresFlag) => setChallengeInfo({ ...challengeInfo, adSshRequiresFlag })}
+          />
         )}
         <Title order={3} id="challenge-details" tabIndex={-1} style={{ scrollMarginTop: '6rem' }}>
           {t('admin.challenge_editor.details', 'Details')}
@@ -1624,51 +1639,6 @@ const GameChallengeEdit: FC = () => {
                         )
                       )}
                       onChange={(e) => setChallengeInfo({ ...challengeInfo, adAllowSelfReset: e.target.checked })}
-                    />
-                  </Grid.Col>
-                )}
-                {/* Offense-gates-defense: only let a team SSH into its box once it has
-                  captured a flag for this challenge. Per-team container only → hide for KotH. */}
-                {!isKoth && (
-                  <Grid.Col span={{ base: 12, sm: 6 }} display="flex" className={misc.alignCenter}>
-                    <Switch
-                      disabled={disabled || operationalLocked}
-                      checked={challengeInfo.adSshRequiresFlag ?? false}
-                      label={SwitchLabel(
-                        t('admin.content.games.challenges.ad.ssh_requires_flag.label', 'SSH requires a captured flag'),
-                        t(
-                          'admin.content.games.challenges.ad.ssh_requires_flag.description',
-                          'Teams can only SSH into their service container after submitting at least one accepted captured flag for this challenge.'
-                        )
-                      )}
-                      onChange={(e) => setChallengeInfo({ ...challengeInfo, adSshRequiresFlag: e.target.checked })}
-                    />
-                  </Grid.Col>
-                )}
-                {challenge?.type === ChallengeType.AttackDefense && !challenge.adSelfHosted && !challengeInfo.adSelfHosted && !isKoth && (
-                  <Grid.Col span={12}>
-                    <AdPatchStarterInput key={`${numId}:${numCId}`} gameId={numId} challengeId={numCId} started={eventSecurityFrozen} disabled={disabled || dirty} />
-                  </Grid.Col>
-                )}
-                {/* Bring-your-own-container: the team runs the service on their own
-                  machine and connects it to the game via an RSCTF relay. Per-team
-                  service model → hide for KotH (single shared hill). */}
-                {!isKoth && (
-                  <Grid.Col span={{ base: 12, sm: 6 }} display="flex" className={misc.alignCenter}>
-                    <Switch
-                      disabled={disabled || operationalLocked}
-                      checked={challengeInfo.adSelfHosted ?? false}
-                      label={SwitchLabel(
-                        t(
-                          'admin.content.games.challenges.ad.self_hosted.label',
-                          'Self-hosted / Bring Your Own Container (BYOC)'
-                        ),
-                        t(
-                          'admin.content.games.challenges.ad.self_hosted.description',
-                          'Teams run the service container on their own machine and connect it to the game network through an RSCTF relay, instead of RSCTF hosting it. The checker, attack proxy, and flag rotation still apply.'
-                        )
-                      )}
-                      onChange={(e) => setChallengeInfo({ ...challengeInfo, adSelfHosted: e.target.checked })}
                     />
                   </Grid.Col>
                 )}
