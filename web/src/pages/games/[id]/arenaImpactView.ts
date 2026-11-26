@@ -3,7 +3,7 @@ import { createImpactPlanet, plus, times } from './arenaImpactPhysics'
 import { createImpactSurface } from './arenaImpactSurface'
 
 // Clip the original map to the surviving terrain and composite the exposed ground and ejecta above it.
-export function createImpactView(root: ShadowRoot) {
+export function createImpactView(root: ShadowRoot, motion: () => boolean) {
   const planet = createImpactPlanet()
   const shell = root.getElementById('arenaSurface')!
   let terrain: ReturnType<typeof createImpactSurface> | undefined
@@ -20,6 +20,7 @@ export function createImpactView(root: ShadowRoot) {
   const screen = (u: number) => 500 + R * u
   function clear() {
     planet.reset()
+    terrain?.clear()
     shell.classList.remove('excavated')
     delete shell.dataset.impacts
     for (const c of [ground, space])
@@ -37,7 +38,9 @@ export function createImpactView(root: ShadowRoot) {
     const px = Math.max(320, Math.min(1050, Math.round(size)))
     const cameraMoved = yaw !== lastYaw || pitch !== lastPitch || px !== lastSize
     const now = performance.now()
-    const update = (cameraMoved || planet.revision !== lastRevision) && (lastRevision < 0 || now - lastGround >= 32)
+    const update =
+      (cameraMoved || planet.revision !== lastRevision || terrain?.lost()) &&
+      (lastRevision < 0 || now - lastGround >= 32)
     if (!update && !dynamic) return
     if (!update && now - lastAir < 16) return
     lastAir = now
@@ -60,7 +63,7 @@ export function createImpactView(root: ShadowRoot) {
       shell.classList.add('excavated')
       shell.dataset.impacts = String(planet.hits)
       terrain ??= createImpactSurface(planet, ground, shell)
-      terrain.render(view, Math.min(650, px))
+      terrain.render(view, Math.min(650, px), !motion(), cameraMoved)
     }
     space.clearRect(0, 0, 1000, 1000)
     const visiblePoint = (p: GlobePoint) => terrain?.visible(p) ?? p.z >= 0
@@ -145,5 +148,5 @@ export function createImpactView(root: ShadowRoot) {
       space.restore()
     }
   }
-  return { planet, draw, clear }
+  return { planet, draw, clear, destroy: () => terrain?.destroy() }
 }

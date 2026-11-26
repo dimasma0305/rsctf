@@ -329,6 +329,16 @@ try {
   await burst('Normal')
   await waitFor(`${q('#arenaSurface')}.dataset.impacts === '256'`)
   assert.match(await evaluate(`${q('#arenaSurface')}.style.clipPath`), /^polygon/)
+  const gpuLayer = q('canvas.planet-impact:not([id])')
+  const lost = await evaluate(`(() => {
+    const extension = ${gpuLayer}?.getContext('webgl')?.getExtension('WEBGL_lose_context')
+    if (extension) extension.loseContext()
+    return Boolean(extension)
+  })()`)
+  if (lost) {
+    await waitFor(`!${gpuLayer} && ${q('#impactBed')}.width >= 320`)
+    assert.equal(await evaluate(`${q('#arenaSurface')}.dataset.impacts`), '256', 'context loss retains all impacts')
+  }
   data.ad.isFrozenView = true
   await navigate()
   await waitFor(`${q('#fzOverlay')}.classList.contains('show')`)

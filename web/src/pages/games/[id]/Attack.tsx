@@ -111,6 +111,7 @@ const ARENA_BODY = `
           <svg id="svg" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
           <canvas id="fx" width="870" height="870" aria-hidden="true"></canvas>
           <div id="globePins"></div>
+          <span id="limbGlow" aria-hidden="true"></span>
         </div>
         <div class="globe-navigation" role="group" aria-label="Globe controls">
           <div class="globe-directions" role="group" aria-label="Rotate view">
@@ -417,12 +418,16 @@ function runArena(
   const schemeObserver = new MutationObserver(() => space.paint(isDarkScheme()))
   schemeObserver.observe(root.host, { attributes: true, attributeFilter: ['data-arena-scheme'] })
   // Team-colored glow on the globe's limb for an accepted capture or solve.
+  const limbGlow: HTMLElement = $('limbGlow')
+  let limbAnimation: Animation | undefined
   function pulseLimb(color: string) {
     if (!motionEnabled) return
-    arena.style.setProperty('--pulse-color', color)
-    arena.classList.remove('pulse')
-    void arena.offsetWidth
-    arena.classList.add('pulse')
+    limbGlow.style.color = color
+    limbAnimation?.cancel()
+    limbAnimation = limbGlow.animate(
+      [{ opacity: 0.9, transform: 'scale(1)' }, { opacity: 0, transform: 'scale(1.08)' }],
+      { duration: 900, easing: 'ease-out' }
+    )
   }
   // Pixi v8 WebGL FX renderer (its own overlay canvas); the 2D #fx is the fallback
   // used until fxRenderer.ready, or if WebGL init fails. See fxRenderer.ts.
@@ -455,6 +460,7 @@ function runArena(
   }
   const logEl: any = $('log')
   const tickerEl: HTMLElement | null = $('theaterTicker')
+  let tickerAnimation: Animation | undefined
   const rankEl: any = $('ranklist')
 
   function buildArena() {
@@ -1039,9 +1045,13 @@ function runArena(
       const message = document.createElement('span')
       message.innerHTML = html
       tickerEl.textContent = `${clk()} · ${tag} · ${message.textContent}`
-      tickerEl.classList.remove('flash')
-      void tickerEl.offsetWidth
-      tickerEl.classList.add('flash')
+      if (motionEnabled && tickerEl.closest('.midrow.theater')) {
+        tickerAnimation?.cancel()
+        tickerAnimation = tickerEl.animate(
+          [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }],
+          { duration: 500, easing: 'ease-out' }
+        )
+      }
     }
     logDirty = true // scroll-to-bottom batched in the loop (avoids a forced reflow per event)
   }
@@ -2662,6 +2672,8 @@ function runArena(
     motionBtn.disabled = motionQuery.matches
     motionBtn.title = motionQuery.matches ? 'Your reduced-motion preference is active' : 'Toggle animated effects'
     if (!motionEnabled) {
+      limbAnimation?.cancel()
+      tickerAnimation?.cancel()
       shots.forEach((shot) => {
         shot.t = 1
       })

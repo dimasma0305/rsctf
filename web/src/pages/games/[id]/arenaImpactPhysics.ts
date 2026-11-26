@@ -74,6 +74,7 @@ export function createImpactPlanet() {
     shockEnergy = 0,
     substep = 0,
     remainder = 0,
+    shapeRevision = 0,
     revision = 0
   function surface(n: V) {
     const { row, col, u, v } = grid(n)
@@ -109,6 +110,7 @@ export function createImpactPlanet() {
       if (remaining < 1e-12) break
     }
     mass += amount
+    shapeRevision++
     revision++
   }
   function launch(p: Ejecta) {
@@ -198,6 +200,7 @@ export function createImpactPlanet() {
       heat[i] = Math.min(1.35, heat[i] + (0.48 + 0.16 * Math.log(count)) * shape)
     }
     mass -= removed
+    shapeRevision++
     thermal = Math.max(thermal, 1.6)
     revision++
     if (removed <= 1e-10) return
@@ -289,6 +292,7 @@ export function createImpactPlanet() {
     heat.fill(0)
     active.length = waves.length = 0
     mass = 1
+    shapeRevision++
     escaped = hits = thermal = remainder = shockEnergy = substep = 0
     revision++
   }
@@ -314,6 +318,9 @@ export function createImpactPlanet() {
     },
     get revision() {
       return revision
+    },
+    get shapeRevision() {
+      return shapeRevision
     },
   }
 }

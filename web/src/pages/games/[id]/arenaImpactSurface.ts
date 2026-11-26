@@ -1,4 +1,5 @@
 import { GLOBE_RADIUS as R, type GlobePoint } from './arenaGlobeModel'
+import { createImpactGpu } from './arenaImpactGpu'
 import type { createImpactPlanet } from './arenaImpactPhysics'
 
 type Planet = ReturnType<typeof createImpactPlanet>
@@ -39,6 +40,12 @@ function materials() {
 export function createImpactSurface(planet: Planet, ctx: CanvasRenderingContext2D, shell: HTMLElement) {
   const { tile, palette } = materials(),
     n = planet.directions.length
+  let gpu = createImpactGpu(ctx.canvas, planet.directions, planet.faces, tile, palette)
+  // Only curved-limb clipping and particle occlusion need CPU depth on the
+  // accelerated path. A small depth buffer avoids a synchronous GPU readback.
+  let softwareSize = 384
+  let lastAdjustment = 0
+  let lastShapeRevision = -1
   const x = new Float32Array(n),
     y = x.slice(),
     z = x.slice(),
@@ -51,16 +58,35 @@ export function createImpactSurface(planet: Planet, ctx: CanvasRenderingContext2
   const v = planet.directions.map((p) => (Math.asin(p.y) / Math.PI + 0.5) * tileSize * 3)
   let size = 0,
     depth = new Float32Array(0),
-    frame: ImageData
-  function render(view: (p: GlobePoint) => GlobePoint, requested: number) {
-    if (size !== requested) {
-      size = requested
-      ctx.canvas.width = ctx.canvas.height = size
-      frame = ctx.createImageData(size, size)
+    frame: ImageData | undefined
+  function render(view: (p: GlobePoint) => GlobePoint, requested: number, staticFrame: boolean, cameraMoved: boolean) {
+    if (gpu?.lost()) {
+      gpu.release()
+      gpu = undefined
+    }
+    if (gpu && !cameraMoved && lastShapeRevision === planet.shapeRevision) {
+      // Cooling changes material attributes only. Retain the projected mesh,
+      // normals, limb and particle depth until an impact, landing or camera move.
+      for (let i = 0; i < n; i++) {
+        gpu.vertices[i * 6 + 4] = planet.heat[i]
+        gpu.vertices[i * 6 + 5] = bound(Math.abs(planet.radius[i] - 1) * 22 + planet.heat[i] * 0.18)
+      }
+      gpu.render(requested)
+      return
+    }
+    lastShapeRevision = planet.shapeRevision
+    const start = performance.now()
+    const target = gpu ? 160 : Math.min(requested, staticFrame ? 650 : softwareSize)
+    if (size !== target) {
+      size = target
       depth = new Float32Array(size * size)
+      if (!gpu) {
+        ctx.canvas.width = ctx.canvas.height = size
+        frame = ctx.createImageData(size, size)
+      }
     }
     depth.fill(-4)
-    frame.data.fill(0)
+    frame?.data.fill(0)
     normalX.fill(0)
     normalY.fill(0)
     normalZ.fill(0)
@@ -92,6 +118,16 @@ export function createImpactSurface(planet: Planet, ctx: CanvasRenderingContext2
     for (let i = 0; i < n; i++) {
       const len = Math.hypot(normalX[i], normalY[i], normalZ[i]) || 1
       lighting[i] = bound((-0.48 * normalX[i] - 0.51 * normalY[i] + 0.71 * normalZ[i]) / len)
+      if (gpu) {
+        const out = i * 6
+        const data = gpu.vertices
+        data[out] = x[i]
+        data[out + 1] = y[i]
+        data[out + 2] = z[i]
+        data[out + 3] = lighting[i]
+        data[out + 4] = planet.heat[i]
+        data[out + 5] = opacity[i]
+      }
       x[i] = size * 0.5 + S * x[i]
       y[i] = size * 0.5 + S * y[i]
     }
@@ -121,6 +157,7 @@ export function createImpactSurface(planet: Planet, ctx: CanvasRenderingContext2
             alt = wa * z[a] + wb * z[b] + wc * z[c]
           if (alt <= depth[id]) continue
           depth[id] = alt
+          if (!frame) continue
           if (!changed) {
             frame.data[id * 4 + 3] = 0
             continue
@@ -138,7 +175,16 @@ export function createImpactSurface(planet: Planet, ctx: CanvasRenderingContext2
         }
       }
     }
-    ctx.putImageData(frame, 0, 0)
+    if (gpu) gpu.render(requested)
+    else if (frame) {
+      ctx.putImageData(frame, 0, 0)
+      if (!staticFrame && start - lastAdjustment >= 1000) {
+        const ms = performance.now() - start
+        if (ms > 7) softwareSize = Math.max(256, softwareSize - 64)
+        else if (ms < 3 && requested >= softwareSize) softwareSize = Math.min(650, softwareSize + 64)
+        lastAdjustment = start
+      }
+    }
     // Clip the original illustration to the actual visible limb. Using the
     // depth buffer here avoids cutting tile-shaped holes through the artwork.
     const outline = []
@@ -158,6 +204,9 @@ export function createImpactSurface(planet: Planet, ctx: CanvasRenderingContext2
   }
   return {
     render,
+    lost: () => gpu?.lost() ?? false,
+    clear: () => gpu?.clear(),
+    destroy: () => gpu?.release(),
     visible(p: GlobePoint) {
       const px = Math.floor(size * (0.5 + (p.x * R) / 1000)),
         py = Math.floor(size * (0.5 + (p.y * R) / 1000))

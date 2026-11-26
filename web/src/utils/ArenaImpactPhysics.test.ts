@@ -16,7 +16,13 @@ test('one impact excavates the target, heats it, and splits ejecta across the es
   const energy = p.active.map((b) => dot(b.v, b.v) / 2 - (0.38 * p.mass) / Math.hypot(b.p.x, b.p.y, b.p.z))
   assert.ok(Math.min(...energy) < 0 && Math.max(...energy) > 0)
   const excavatedMass = p.mass
+  const excavatedShape = p.shapeRevision
+  const hotFrame = p.revision
+  p.advance(1 / 90, true)
+  assert.ok(p.revision > hotFrame)
+  assert.equal(p.shapeRevision, excavatedShape, 'cooling alone keeps the projected mesh reusable')
   for (let i = 0; i < 1200; i++) p.advance(1 / 60, true)
+  assert.ok(p.shapeRevision > excavatedShape, 'landing debris invalidates cached geometry')
   assert.ok(p.mass > excavatedMass, 'bound ejecta return mass to the ground')
   assert.ok(p.escaped > 0, 'unbound ejecta clear the scene')
   assert.ok(Math.max(...p.heat) < 0.04)
