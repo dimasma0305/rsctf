@@ -81,6 +81,8 @@ During and after the event:
 
 In the game's **Live arena**, select **Open preview**. Choose **First blood** under Attack & Defense or Jeopardy, or **First crown** under King of the Hill. The preview uses simulated teams and scores. You can replay each alert immediately.
 
+For the globe itself, select a team and choose **Simulate impact**. Repeated hits heat and excavate the same location. Follow the glowing debris as it arcs back, gathers into clumps, or escapes. Rebuilding the preview resets the planet.
+
 ![Arena preview controls for the three event types](/screenshots/arena-alert-preview.png)
 
 Open **Simulation settings** to change the team or challenge counts. Use **Freeze standings** and **Resume preview** to rehearse a freeze, or **End preview match** to see the podium. Select **Return to live arena** when you finish.

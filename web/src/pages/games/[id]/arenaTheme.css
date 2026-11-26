@@ -1492,7 +1492,18 @@ a:hover {
   white-space: nowrap;
   border: 0;
 }
-:host([data-motion='off']) canvas:not(#globeSurface):not(#worldScenery) {
+#arenaSurface,
+.planet-impact {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.arena:has(.excavated)::before {
+  box-shadow: none;
+}
+:host([data-motion='off']) canvas:not(#globeSurface):not(#worldScenery):not(.planet-impact) {
   visibility: hidden !important;
 }
 :host([data-motion='off']) *,

@@ -29,6 +29,7 @@ export const previewPanel = `
       ${alertButton('fbKothBtn', 'koth')}
     </div>
     <div class="preview-match" role="group" aria-label="Match events">
+      <button type="button" class="btn" id="impactBtn">Simulate impact</button>
       <button type="button" class="btn" id="patchBtn">Service patch</button>
       <button type="button" class="btn" id="freezeBtn" aria-pressed="false">Freeze standings</button>
       <button type="button" class="btn" id="endBtn">End preview match</button>

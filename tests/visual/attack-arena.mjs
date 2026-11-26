@@ -319,6 +319,16 @@ try {
   data.koth.hills = []; data.koth.teams = []
   await navigate()
   assert.equal(await evaluate(`${root}.querySelectorAll('.country').length`),1,'A&D-only board supplies its own land without a general catalog')
+  const burst = type => evaluate(`(() => {
+    const socket = arenaSockets.find(s => s.readyState === 1)
+    for (let i = 0; i < 256; i++) socket.frame({kind:'attack',type:${JSON.stringify(type)},teamName:${JSON.stringify(data.names[0])},victimTeamName:${JSON.stringify(data.names[1])},challengeTitle:'Relay'})
+  })()`)
+  await burst('Unaccepted')
+  await evaluate('new Promise(resolve => setTimeout(resolve, 500))')
+  assert.equal(await evaluate(`${q('#arenaSurface')}.hasAttribute('data-impacts')`), false)
+  await burst('Normal')
+  await waitFor(`${q('#arenaSurface')}.dataset.impacts === '256'`)
+  assert.match(await evaluate(`${q('#arenaSurface')}.style.clipPath`), /^polygon/)
   data.ad.isFrozenView = true
   await navigate()
   await waitFor(`${q('#fzOverlay')}.classList.contains('show')`)
@@ -343,6 +353,8 @@ try {
   assert.equal(await evaluate('location.hash'), '#arena=teams')
   assert.equal(await evaluate('arenaSockets.length'), 0)
   await inspect('preview-controls-mobile')
+  await evaluate(`${q('#impactBtn')}.click()`)
+  await waitFor(`Number(${q('#arenaSurface')}.dataset.impacts) > 0`)
   for (const [button, title, result] of [
     ['fbAdBtn', 'First blood', /captured a flag from/],
     ['fbJeoBtn', 'First blood', /solved the challenge first/],
@@ -380,7 +392,7 @@ try {
   await cdp.send('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]})
   await waitFor(`getComputedStyle(${ray}).animationName === 'none'`)
   await evaluate(`${q('.preview-setup summary')}.click(); const services = ${q('#cfgAd')}; services.value = '0'; services.dispatchEvent(new Event('change'))`)
-  assert.equal(await evaluate(`${q('#fbAdBtn')}.disabled && ${q('#patchBtn')}.disabled && !${q('#fbKothBtn')}.disabled`), true)
+  assert.equal(await evaluate(`${q('#impactBtn')}.disabled && ${q('#fbAdBtn')}.disabled && ${q('#patchBtn')}.disabled && !${q('#fbKothBtn')}.disabled`), true)
   await evaluate(`${q('#freezeBtn')}.click()`)
   await waitFor(`${q('#fzOverlay')}.classList.contains('show')`)
   await inspect('preview-frozen')

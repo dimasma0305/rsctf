@@ -6,6 +6,7 @@ import { countryColor, countryStatus, isJeopardyCountry, type ArenaCategory, typ
 import { buildArenaGeography, type ContinentGeometry, type CountryGeometry } from './arenaGeography'
 import { faceLocation, projectGlobe, sphereLocation, type GlobePoint } from './arenaGlobeModel'
 import { projectSurface } from './arenaProjection'
+import { createImpactView } from './arenaImpactView'
 import { createArenaSettlements } from './arenaSettlements'
 
 interface Team {
@@ -63,6 +64,8 @@ export function createArenaGlobe(deps: GlobeDeps) {
   const stage = get('arena')
   const canvas = get<HTMLCanvasElement>('globeSurface')
   const paintOcean = createArenaOcean(canvas)
+  const impacts = createImpactView(root)
+  const contacts = new Map<string, { at: GlobePoint; source: GlobePoint; count: number; due: number }>()
   const paintSettlements = createArenaSettlements(get<HTMLCanvasElement>('worldScenery'))
   const surface = root.getElementById('territories') as unknown as SVGSVGElement
   const routes = root.getElementById('conquestRoutes') as unknown as SVGSVGElement
@@ -271,6 +274,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
       root.host.getAttribute('data-arena-scheme') === 'dark',
       stageWidth * Math.max(1.25, window.devicePixelRatio || 1)
     )
+    impacts.draw(yaw, pitch, canvas.width, false)
     for (const continent of continents) {
       const projected = projectSurface(continent.coast, yaw, pitch)
       continent.shelf.setAttribute('d', projected.edge)
@@ -610,6 +614,23 @@ export function createArenaGlobe(deps: GlobeDeps) {
   resize.observe(stage)
   return {
     setData,
+    impactTeam(attacker: string, victim: string) {
+      if (deps.frozen() || victim === attacker) return
+      const pending = contacts.get(victim)
+      if (pending) {
+        pending.count++
+        return
+      }
+      const teams = deps.teams()
+      const from = teams.findIndex(t => t.id === attacker)
+      const to = teams.findIndex(t => t.id === victim)
+      if (from < 0 || to < 0) return
+      contacts.set(victim, { at: teamLocation(to), source: teamLocation(from), count: 1, due: performance.now() + 300 })
+    },
+    clearImpacts() {
+      contacts.clear()
+      impacts.clear()
+    },
     hasData: () => territories.length > 0,
     layout() {
       dirty = true
@@ -621,10 +642,24 @@ export function createArenaGlobe(deps: GlobeDeps) {
       dirty = true
       paint()
     },
-    tick(_ts: number, dt: number) {
+    tick(ts: number, dt: number) {
       if (document.hidden || destroyed) return
+      let moving = false
+      if (deps.frozen()) contacts.clear()
+      else {
+        let remaining = 4
+        for (const [id, contact] of contacts) {
+          if (contact.due > ts) break
+          impacts.planet.impact(contact.at, contact.source, contact.count, deps.motion())
+          contacts.delete(id)
+          remaining--
+          if (remaining === 0) break
+        }
+        moving = impacts.planet.advance(dt, deps.motion())
+      }
       if (camera.step(dt, auto && deps.motion() && !deps.frozen() && !drag)) dirty = true
-      paint()
+      if (dirty) paint()
+      else impacts.draw(camera.current.yaw, camera.current.pitch, canvas.width, moving)
     },
     focusTeam(id: string | null) {
       teamId = id

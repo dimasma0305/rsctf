@@ -99,9 +99,13 @@ const ARENA_BODY = `
         </div>
         <p class="theater-ticker" id="theaterTicker" aria-hidden="true"></p>
         <div class="arena" id="arena" tabindex="0" role="group" aria-label="3D conquest globe" aria-describedby="globeHelp">
-          <canvas id="globeSurface" aria-hidden="true"></canvas>
-          <svg id="territories" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
-          <canvas id="worldScenery" class="settlements" aria-hidden="true"></canvas>
+          <div id="arenaSurface">
+            <canvas id="globeSurface" aria-hidden="true"></canvas>
+            <svg id="territories" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
+            <canvas id="worldScenery" class="settlements" aria-hidden="true"></canvas>
+          </div>
+          <canvas id="impactBed" class="planet-impact" aria-hidden="true"></canvas>
+          <canvas id="impactDebris" class="planet-impact" aria-hidden="true"></canvas>
           <svg id="conquestRoutes" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
           <canvas id="fxbg" width="870" height="870" aria-hidden="true"></canvas>
           <svg id="svg" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
@@ -1886,6 +1890,9 @@ function runArena(
     // event is still shown without inventing a point value.
     if (!vic && f.teamScore != null) pts = Math.max(0, Math.round(f.teamScore) - (atkr.jpScore || 0))
     const isFB = f.type === 'FirstBlood'
+    if (vic && !frozen && !matchOver && ['Normal', 'FirstBlood', 'SecondBlood', 'ThirdBlood'].includes(f.type)) {
+      jeop.impactTeam(atkr.id, vic.id)
+    }
     if (isFB) {
       if (frozen || matchOver) return
       if (!vic) jeop.solveByTitle(atkr.x, atkr.y, f.challengeTitle || '', { name: atkr.name, color: atkr.color })
@@ -2217,6 +2224,7 @@ function runArena(
   // rebuild the whole preview model + arena for the current count knobs
   function rebuildPreview() {
     if (!preview) return
+    jeop.clearImpacts()
     matchOver = false
     clearMilestone()
     if (frozen) unfreeze()
@@ -2245,13 +2253,14 @@ function runArena(
   // Preview flags are always normal hits — the demo no longer auto-plays a
   // first-blood cinematic at the start. Use the FB A&D / FB JEO / FB KOTH buttons
   // to showcase first blood on demand.
-  function evFlag() {
+  function evFlag(target?: (typeof TEAMS)[number]) {
     if (!SERVICES.length) return
-    const atkr = pick(TEAMS)
-    let vic = pick(TEAMS)
+    const atkr = pick(target ? TEAMS.filter(t => t !== target) : TEAMS)
+    let vic = target || pick(TEAMS)
     let g = 0
     while (vic === atkr && g++ < 10) vic = pick(TEAMS)
     if (vic === atkr) return
+    if (!frozen && !matchOver) jeop.impactTeam(atkr.id, vic.id)
     const svc = pick(vic.svc.filter((s: any) => s.status !== 'down')) || pick(vic.svc)
     fireShot(atkr, vic, atkr.color)
     ownedTimeout(
@@ -2390,6 +2399,7 @@ function runArena(
     if (!preview) return
     const locked = frozen || matchOver
     $('fbAdBtn').disabled = locked || !cfgAd
+    $('impactBtn').disabled = locked || !cfgAd
     $('fbJeoBtn').disabled = locked || !cfgJeop
     $('fbKothBtn').disabled = locked || !cfgKoth
     $('patchBtn').disabled = locked || !cfgAd
@@ -2557,6 +2567,12 @@ function runArena(
       }
     }
 
+  $('impactBtn').onclick = () => {
+    if (!preview || frozen || matchOver || cinema || !cfgAd || TEAMS.length < 2) return
+    const target = TEAMS.find(t => t.id === selectedTeamId) || TEAMS.find(t => t.globeVisible) || TEAMS[0]
+    jeop.focusTeam(target.id)
+    evFlag(target)
+  }
   // Preview-only: manually trigger each first-blood variant.
   const fbAdBtn: any = $('fbAdBtn')
   if (fbAdBtn)
@@ -2565,7 +2581,10 @@ function runArena(
       const a = pick(TEAMS)
       const v = pick(TEAMS.filter(t => t !== a))
       const svc = pick(v.svc)
-      fbAd(a, v, svc && svc.name ? svc.name : 'a challenge', () => resolveFlag(a, v, svc, 0, true))
+      fbAd(a, v, svc && svc.name ? svc.name : 'a challenge', () => {
+        if (!frozen && !matchOver) jeop.impactTeam(a.id, v.id)
+        resolveFlag(a, v, svc, 0, true)
+      })
     }
   const fbJeoBtn: any = $('fbJeoBtn')
   if (fbJeoBtn)

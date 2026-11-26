@@ -19,6 +19,12 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
     <button data-territory-filter="all"></button><button data-territory-filter="solved"></button><button data-territory-filter="open"></button>
     ${['rotateBtn', 'globeLeft', 'globeRight', 'globeUp', 'globeDown', 'globeReset'].map((id) => `<button id="${id}"></button>`).join('')}<button id="mapLabelsBtn" aria-pressed="true"></button>`
   const canvas = root.getElementById('globeSurface') as HTMLCanvasElement
+  for (const id of ['impactBed','impactDebris','arenaSurface']) {
+    const layer=document.createElement(id==='arenaSurface'?'div':'canvas')
+    layer.id=id
+    if(layer instanceof window.HTMLCanvasElement) layer.getContext=(()=>null) as typeof canvas.getContext
+    root.append(layer)
+  }
   canvas.getContext = (() => null) as typeof canvas.getContext
   ;(root.getElementById('worldScenery') as HTMLCanvasElement).getContext = (() => null) as typeof canvas.getContext
   const teams = [{ id: 'p1', name: '<img src=x onerror=alert(1)>', color: '#123456', x: 0, y: 0 }]
