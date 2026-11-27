@@ -1,48 +1,50 @@
-use std::io::{Cursor, Write};
-use std::path::Path;
+use std::io::{Cursor, Read};
 
 use super::super::{import_manifest, import_repository_snapshot_manifest, ImportPolicy};
-use crate::app_state::SharedState;
+use super::repository_fixture::{repository_fixture, RepositoryFixture};
 
-fn zip_with_dockerfile(dockerfile: &[u8]) -> Vec<u8> {
-    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    zip.start_file("Dockerfile", zip::write::SimpleFileOptions::default())
-        .unwrap();
-    zip.write_all(dockerfile).unwrap();
-    zip.finish().unwrap().into_inner()
-}
-
-pub(super) async fn assert_repository_starter_sync(
-    state: &SharedState,
-    game_id: i32,
-    binding_id: i32,
-    neighbor: &Path,
-) {
-    let package = neighbor.parent().unwrap().join("starter");
-    tokio::fs::create_dir_all(&package).await.unwrap();
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn repository_registers_starter_from_src_and_pins_initial_image() {
+    let RepositoryFixture {
+        test_db,
+        state,
+        root,
+        binding,
+        game,
+        ..
+    } = repository_fixture().await;
+    let package = root
+        .join("repos")
+        .join(binding.id.to_string())
+        .join("event/starter");
+    let src = package.join("src");
+    tokio::fs::create_dir_all(&src).await.unwrap();
     let manifest = package.join("challenge.yaml");
-    let archive = package.join("starter.zip");
-    let source = format!("binding/{binding_id}/event/starter/challenge.yaml");
+    let source = format!("binding/{}/event/starter/challenge.yaml", binding.id);
     tokio::fs::write(
         &manifest,
-        "name: Hosted starter fixture\ntype: AttackDefense\ncontainer:\n  containerImage: ghcr.io/example/starter:1\n  exposePort: 8080\nad:\n  starterZip: starter.zip\n",
+        "name: Hosted starter fixture\ntype: AttackDefense\ncontainer:\n  exposePort: 8080\nad:\n  starterZip: src\n",
     )
     .await
     .unwrap();
-    let initial = zip_with_dockerfile(b"FROM scratch\n");
-    tokio::fs::write(&archive, &initial).await.unwrap();
+    tokio::fs::write(src.join("Dockerfile"), b"FROM scratch\n")
+        .await
+        .unwrap();
+    let banner = src.join("banner.txt");
+    tokio::fs::write(&banner, b"original").await.unwrap();
     let import = || {
         import_repository_snapshot_manifest(
-            state,
-            game_id,
+            &state,
+            game.id,
             &manifest,
             ImportPolicy::Trusted,
-            binding_id,
+            binding.id,
             &source,
         )
     };
     assert!(
-        import_manifest(state, game_id, &manifest, ImportPolicy::Trusted)
+        import_manifest(&state, game.id, &manifest, ImportPolicy::Trusted)
             .await
             .is_err()
     );
@@ -55,10 +57,17 @@ pub(super) async fn assert_repository_starter_sync(
         .bind(first.challenge_id)
         .fetch_one(state.pg())
     };
-    assert_eq!(read_starter().await.unwrap(), (initial.clone(), None, true));
-
-    let other = zip_with_dockerfile(b"FROM scratch\n# A different source tree\n");
-    tokio::fs::write(&archive, other).await.unwrap();
+    let (initial, image, awaiting) = read_starter().await.unwrap();
+    assert!(image.is_none() && awaiting);
+    let mut zip = zip::ZipArchive::new(Cursor::new(&initial)).unwrap();
+    let mut contents = Vec::new();
+    zip.by_name("banner.txt")
+        .unwrap()
+        .read_to_end(&mut contents)
+        .unwrap();
+    assert_eq!(contents, b"original");
+    assert!(zip.by_name("Dockerfile").is_ok());
+    tokio::fs::write(&banner, b"new").await.unwrap();
     assert_eq!(import().await.unwrap().challenge_id, first.challenge_id);
     assert_eq!(read_starter().await.unwrap().0, initial);
     sqlx::query(r#"UPDATE "GameChallenges" SET build_status=$2,build_image_digest=$3 WHERE id=$1"#)
@@ -70,4 +79,7 @@ pub(super) async fn assert_repository_starter_sync(
         .unwrap();
     let (_, image, awaiting) = read_starter().await.unwrap();
     assert!(image.is_some() && !awaiting);
+    drop(state);
+    test_db.close().await;
+    tokio::fs::remove_dir_all(root).await.unwrap();
 }

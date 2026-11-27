@@ -1206,6 +1206,7 @@ jobs:
           filters=(
             registered_import_roles_recover_committed_side_effects_and_replay_http_receipts
             repository_update_preserves_challenge_solves_and_refreshes_content
+            repository_registers_starter_from_src_and_pins_initial_image
             real_cleanup_preserves_snapshot_and_runtime_across_export_capture_and_destroy_failures
             real_redis_l1_fill_shares_payload_and_preserves_authoritative_operations
             real_redis_interruption_bounds_staleness_and_fails_closed_for_credentials_and_fences
