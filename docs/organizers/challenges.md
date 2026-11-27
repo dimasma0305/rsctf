@@ -24,6 +24,31 @@ You can replace the starter before the game begins. RSCTF keeps one ZIP per
 challenge in PostgreSQL, up to 72 MiB, shared across all teams. Saving a starter
 prepares the original source for comparison and leaves running services in place.
 
+For a trusted Repository Binding, you can generate the starter from the service
+build context in the challenge manifest:
+
+```yaml
+type: AttackDefense
+ad:
+  selfHosted: false
+  starterZip: src
+```
+
+RSCTF archives the committed `src/` tree, with `src/Dockerfile` at the ZIP root.
+Teams can download the archived files, so keep organizer-only material outside
+`src/`. The source must fit in 64 MiB before compression. To supply a reviewed
+archive explicitly, set `starterZip: starter.zip` and commit the ZIP beside
+`challenge.yaml`; put its `Dockerfile` at the archive root.
+
+Before kickoff, the first import that finds no registered starter registers it
+and uses the existing image-pinning path. The normal binding build still builds
+or pulls the original service image. If you pull a reviewed image, use the
+same source and base image when preparing the starter.
+
+Use **Team patching** to replace a registered starter before kickoff. Removing or
+changing `ad.starterZip` in Git leaves current team source and its original image
+reference intact.
+
 ![Hosted A&D challenge editor with the starter ZIP picker beside the SSH settings](/screenshots/admin-team-patching-hosted.png)
 
 BYOC teams patch on their own host. Their editor explains where patches are

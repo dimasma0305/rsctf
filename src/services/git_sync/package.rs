@@ -97,6 +97,13 @@ pub(super) fn slugify(name: &str) -> String {
 /// Package every regular file under `dir` into a bounded ZIP with paths relative
 /// to `dir`. Symlinks are skipped so a repository cannot archive host files.
 pub(super) async fn zip_context_dir(dir: &Path) -> AppResult<Vec<u8>> {
+    zip_context_dir_bounded(dir, MAX_REPO_TOTAL_BYTES).await
+}
+
+pub(super) async fn zip_context_dir_bounded(
+    dir: &Path,
+    max_total_bytes: u64,
+) -> AppResult<Vec<u8>> {
     let mut files: Vec<ContextFile> = Vec::new();
     let mut total_bytes = 0u64;
     let mut stack = vec![(dir.to_path_buf(), 0usize)];
@@ -135,7 +142,7 @@ pub(super) async fn zip_context_dir(dir: &Path) -> AppResult<Vec<u8>> {
             })?;
             let declared = metadata.len();
             if declared > MAX_REPO_FILE_BYTES
-                || total_bytes.saturating_add(declared) > MAX_REPO_TOTAL_BYTES
+                || total_bytes.saturating_add(declared) > max_total_bytes
             {
                 return Err(AppError::bad_request(
                     "build context exceeds the size limit",
@@ -150,8 +157,7 @@ pub(super) async fn zip_context_dir(dir: &Path) -> AppResult<Vec<u8>> {
                 AppError::internal(format!("git_sync: read {}: {error}", path.display()))
             })?;
             let actual = data.len() as u64;
-            if actual > MAX_REPO_FILE_BYTES
-                || total_bytes.saturating_add(actual) > MAX_REPO_TOTAL_BYTES
+            if actual > MAX_REPO_FILE_BYTES || total_bytes.saturating_add(actual) > max_total_bytes
             {
                 return Err(AppError::bad_request(
                     "build context exceeds the size limit",
@@ -170,7 +176,9 @@ pub(super) async fn zip_context_dir(dir: &Path) -> AppResult<Vec<u8>> {
     }
 
     files.sort_by(|left, right| left.0.cmp(&right.0));
-    encode_context_files(files)
+    tokio::task::spawn_blocking(move || encode_context_files(files))
+        .await
+        .map_err(|error| AppError::internal(format!("git_sync: encode context task: {error}")))?
 }
 
 fn encode_context_files(files: Vec<ContextFile>) -> AppResult<Vec<u8>> {

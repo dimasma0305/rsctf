@@ -52,6 +52,24 @@ impl ImportMutationFence {
             .await
             .map_err(|error| AppError::internal(error.to_string()))
     }
+
+    pub(super) async fn seed_patch_starter(
+        &mut self,
+        challenge: &game_challenge::Model,
+        starter: Option<super::patch_starter::PreparedStarter>,
+    ) -> AppResult<()> {
+        if let Some(starter) = starter {
+            crate::services::ad::patches::starter::seed_from_repository(
+                self.game.transaction_mut(),
+                challenge.game_id,
+                challenge.id,
+                &starter.archive,
+                &starter.registration,
+            )
+            .await?;
+        }
+        Ok(())
+    }
 }
 
 async fn challenge_revision(

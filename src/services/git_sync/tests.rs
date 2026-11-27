@@ -3,10 +3,12 @@ use super::*;
 #[cfg(target_os = "linux")]
 mod checker_publication;
 mod repository_concurrency;
+mod repository_fixture;
 mod repository_identity_plan;
 mod repository_regression;
 mod runtime_profile_regression;
 mod score_curve_regression;
+mod starter_zip_regression;
 mod variant_generator_regression;
 
 #[test]

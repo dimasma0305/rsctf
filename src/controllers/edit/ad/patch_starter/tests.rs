@@ -1,4 +1,5 @@
 use super::*;
+use crate::services::ad::patches::PatchManifest;
 use axum::{
     body::{to_bytes, Body},
     http::{header, Request as HttpRequest, StatusCode},
