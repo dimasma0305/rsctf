@@ -936,7 +936,7 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
 
-      - name: Reject vulnerable optional SQL drivers in the compiled graph
+      - name: Reject vulnerable optional dependencies and features
         shell: bash
         run: |
           set -euo pipefail
@@ -948,13 +948,19 @@ jobs:
             exit 1
           fi
           echo "rsa and libsqlite3-sys are lockfile-only through disabled sqlx-mysql/sqlx-sqlite features."
+          kube_features="$(cargo tree --all-features --target all --locked --edges features --invert kube-client)"
+          if grep -Fq 'kube-client feature "openssl-tls"' <<<"$kube_features"; then
+            echo "::error::kube-client openssl-tls is reachable (RUSTSEC-2026-0600)."
+            exit 1
+          fi
+          echo "kube-client openssl-tls is disabled on all supported targets."
 
       - name: Audit Rust workspace lockfiles
-        # These entries are retained only in Cargo.lock through disabled SQLx
-        # drivers. The all-feature/all-target graph check above fails if either
-        # becomes compiled. No exception applies to any other workspace lockfile.
+        # The all-feature/all-target checks above reject the disabled SQLx
+        # drivers and kube-client's OpenSSL TLS path. The scope of the latter
+        # advisory is openssl-tls; the rustls TLS backend is unaffected.
         run: |
-          cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0459
+          cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0459 --ignore RUSTSEC-2026-0600
           cargo audit --file agents/byoc-agent/Cargo.lock
           cargo audit --file agents/worker-agent/Cargo.lock
           cargo audit --file lib/worker-protocol/Cargo.lock
