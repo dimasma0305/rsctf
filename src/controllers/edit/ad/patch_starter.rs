@@ -4,7 +4,7 @@ use super::{
 };
 use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::services::ad::patches::ssh_sources::SshSource;
-use crate::services::ad::patches::{PatchManifest, Starter};
+use crate::services::ad::patches::{starter::Registration, Starter};
 use crate::utils::upload::{read_patch_zip, SOURCE_ARCHIVE_BLOB_BYTES};
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::HeaderMap;
@@ -27,47 +27,6 @@ pub(crate) struct RegisteredStarter {
     ssh_sources: Vec<SshSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data_mount: Option<String>,
-}
-
-struct Registration {
-    tree_id: String,
-    ssh_sources: Vec<SshSource>,
-    data_mount: Option<String>,
-}
-
-impl Registration {
-    fn from_zip(archive: &[u8]) -> Result<Self, String> {
-        let manifest = PatchManifest::from_zip(archive)?;
-        Ok(Self {
-            tree_id: manifest.tree_id(),
-            ssh_sources: manifest.ssh_sources(archive)?,
-            data_mount: Self::data_mount(archive)?,
-        })
-    }
-
-    fn data_mount(archive: &[u8]) -> Result<Option<String>, String> {
-        use std::io::{Cursor, Read};
-        let mut zip = zip::ZipArchive::new(Cursor::new(archive)).map_err(|e| e.to_string())?;
-        let file = match zip.by_name(".rsctf-data-dir") {
-            Ok(file) => file,
-            Err(zip::result::ZipError::FileNotFound) => return Ok(None),
-            Err(error) => return Err(error.to_string()),
-        };
-        let mut text = String::new();
-        file.take(257)
-            .read_to_string(&mut text)
-            .map_err(|_| "Invalid .rsctf-data-dir")?;
-        let path = text
-            .strip_suffix("\r\n")
-            .or_else(|| text.strip_suffix('\n'))
-            .unwrap_or(&text);
-        if !crate::services::container::application_data_path(path) {
-            return Err(
-                ".rsctf-data-dir must contain /data or one directory under /var/lib".into(),
-            );
-        }
-        Ok(Some(path.to_owned()))
-    }
 }
 
 pub(crate) fn router() -> Router<SharedState> {

@@ -129,6 +129,8 @@ struct AdOut {
     ssh_requires_flag: Option<bool>,
     #[serde(rename = "selfHosted", skip_serializing_if = "Option::is_none")]
     self_hosted: Option<bool>,
+    #[serde(rename = "starterZip", skip_serializing_if = "Option::is_none")]
+    starter_zip: Option<String>,
 }
 
 /// Minimal durable challenge snapshot needed to regenerate repository YAML.
@@ -228,13 +230,13 @@ impl From<&game_challenge::Model> for ChallengePushSnapshot {
 /// The importer's `Author: **X**\n\n` content prefix is reversed back into a
 /// dedicated `author:` field.
 pub fn serialize_challenge(ch: &game_challenge::Model, flag_texts: &[String]) -> AppResult<String> {
-    serialize_challenge_inner(&ChallengePushSnapshot::from(ch), flag_texts, None)
+    serialize_challenge_inner(&ChallengePushSnapshot::from(ch), flag_texts, None, None)
 }
 
 /// Regenerate a manifest while retaining supported fields that are owned only
 /// by repository source. The existing manifest is parsed before any overwrite;
 /// malformed yaml therefore fails closed instead of silently dropping its
-/// attachment `provide:` path.
+/// attachment `provide:` or `ad.starterZip` path.
 pub(crate) fn serialize_challenge_snapshot_preserving_source(
     ch: &ChallengePushSnapshot,
     flag_texts: &[String],
@@ -245,13 +247,19 @@ pub(crate) fn serialize_challenge_snapshot_preserving_source(
             "push-back: current challenge manifest is invalid: {error}"
         ))
     })?;
-    serialize_challenge_inner(ch, flag_texts, source.provide)
+    serialize_challenge_inner(
+        ch,
+        flag_texts,
+        source.provide,
+        source.ad.and_then(|ad| ad.starter_zip),
+    )
 }
 
 fn serialize_challenge_inner(
     ch: &ChallengePushSnapshot,
     flag_texts: &[String],
     provide: Option<String>,
+    starter_zip: Option<String>,
 ) -> AppResult<String> {
     let (description, author) = strip_author_prefix(&ch.content);
     let hints = ch
@@ -336,6 +344,13 @@ fn serialize_challenge_inner(
             allow_self_reset: (!ch.ad_allow_self_reset).then_some(false),
             ssh_requires_flag: ch.ad_ssh_requires_flag.then_some(true),
             self_hosted: ch.ad_self_hosted.then_some(true),
+            starter_zip: if ch.challenge_type == crate::utils::enums::ChallengeType::AttackDefense
+                && !ch.ad_self_hosted
+            {
+                starter_zip
+            } else {
+                None
+            },
         };
         // Skip the block entirely when nothing differs from the defaults.
         if ad.checker_image.is_some()
@@ -343,6 +358,7 @@ fn serialize_challenge_inner(
             || ad.allow_self_reset.is_some()
             || ad.ssh_requires_flag.is_some()
             || ad.self_hosted.is_some()
+            || ad.starter_zip.is_some()
         {
             out.ad = Some(ad);
         }
@@ -633,6 +649,30 @@ mod tests {
             Some(true),
             "allowEgress=true must survive a push and subsequent parse"
         );
+    }
+
+    #[test]
+    fn source_round_trip_preserves_starter_zip_for_hosted_ad_only() {
+        let mut challenge = challenge(ChallengeType::AttackDefense);
+        let source = "name: original\nad:\n  starterZip: starter.zip\n";
+        let yaml = serialize_challenge_snapshot_preserving_source(
+            &ChallengePushSnapshot::from(&challenge),
+            &[],
+            source,
+        )
+        .unwrap();
+        assert_eq!(
+            parse(&yaml).ad.unwrap().starter_zip.as_deref(),
+            Some("starter.zip")
+        );
+        challenge.ad_self_hosted = true;
+        let yaml = serialize_challenge_snapshot_preserving_source(
+            &ChallengePushSnapshot::from(&challenge),
+            &[],
+            source,
+        )
+        .unwrap();
+        assert!(parse(&yaml).ad.unwrap().starter_zip.is_none());
     }
 
     #[test]

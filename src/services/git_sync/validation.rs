@@ -609,6 +609,15 @@ async fn validate_challenge(
     validate_attachment(root, manifest, model, challenge_type, report).await;
     validate_container(root, manifest, model, challenge_type, report).await;
     validate_ad_checker(root, manifest, model, challenge_type, report).await;
+    if let Err(error) = super::patch_starter::prepare(
+        model.ad.as_ref(),
+        challenge_type,
+        manifest.parent().unwrap_or(root),
+    )
+    .await
+    {
+        report.error(root, manifest, error.to_string());
+    }
     validate_provenance(root, manifest, model, challenge_type, report);
     name.map(str::to_string)
 }

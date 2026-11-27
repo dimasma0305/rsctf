@@ -112,6 +112,7 @@ fn disable_blood_bonus_or_default(value: Option<bool>) -> bool {
 }
 use generator::{ensure_source_archive_refresh_allowed, resolve_generator_import_intent};
 mod manifest;
+mod patch_starter;
 pub use manifest::{
     parse_event_manifest, AdSection, ChallengeYaml, ContainerSection, GzEventAd, GzEventModel,
 };
@@ -260,6 +261,14 @@ pub(super) async fn import_manifest_inner(
     // The package directory owns conventional `src/`, `checker/`, and
     // `generator/` build contexts as well as the player attachment.
     let package_dir = manifest.parent().unwrap_or_else(|| Path::new("."));
+    if model.ad.as_ref().is_some_and(|ad| ad.starter_zip.is_some())
+        && (source_yaml_path_override.is_none() || policy.is_pending())
+    {
+        return Err(AppError::bad_request(
+            "ad.starterZip requires a trusted Repository Binding",
+        ));
+    }
+    let starter = patch_starter::prepare(model.ad.as_ref(), challenge_type, package_dir).await?;
     let current_variant_mode = existing
         .as_ref()
         .map_or(ChallengeVariantMode::Disabled, |challenge| {
@@ -947,6 +956,7 @@ pub(super) async fn import_manifest_inner(
                 (false, failure.post_commit, true)
             }
         };
+    let starter_publication = mutation_fence.seed_patch_starter(&challenge, starter).await;
     let fence_release = mutation_fence.release().await;
     if let Some(guard) = checker_artifact_guard.take() {
         if let Err(error) = guard.release().await {
@@ -959,6 +969,7 @@ pub(super) async fn import_manifest_inner(
         discard_attachment(st, &attachment_intent).await;
     }
     fence_release?;
+    starter_publication?;
 
     Ok(ManifestImportResult {
         challenge_id: challenge.id,

@@ -11,6 +11,7 @@ pub(crate) mod restore;
 pub(crate) mod revisions;
 pub(crate) mod ssh_observer;
 pub(crate) mod ssh_sources;
+pub(crate) mod starter;
 
 /// Used by the trusted queue consumer. A lost or superseded claim cannot read the source.
 pub async fn claimed_source(

@@ -157,6 +157,8 @@ pub struct AdSection {
     pub ssh_requires_flag: Option<bool>,
     #[serde(rename = "selfHosted")]
     pub self_hosted: Option<bool>,
+    #[serde(rename = "starterZip")]
+    pub starter_zip: Option<String>,
 }
 
 fn runtime_profile_value<'de, D: serde::Deserializer<'de>>(

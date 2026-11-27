@@ -7,6 +7,7 @@ mod repository_identity_plan;
 mod repository_regression;
 mod runtime_profile_regression;
 mod score_curve_regression;
+mod starter_zip_regression;
 mod variant_generator_regression;
 
 #[test]

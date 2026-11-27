@@ -123,6 +123,13 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .expect("initial import");
     assert!(first.created);
     let challenge_id = first.challenge_id;
+    super::starter_zip_regression::assert_repository_starter_sync(
+        &state,
+        game.id,
+        binding.id,
+        &challenge_dir,
+    )
+    .await;
     super::score_curve_regression::assert_score_curve_sync(&state, game.id, &challenge_dir).await;
     super::runtime_profile_regression::assert_runtime_profile_sync(&state, game.id, &challenge_dir)
         .await;
