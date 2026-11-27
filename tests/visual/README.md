@@ -272,6 +272,12 @@ above remains necessary against the same candidate.
 
 ### Public conquest arena
 
+Measure impact rendering on a local production build with
+`node tests/visual/arena-impact-performance.mjs web/build` from the repository root.
+The benchmark delivers 100 public capture events at 80 ms intervals in an eight-team
+arena and reports frame intervals, FPS and the active renderer. Append `--software`
+to exercise the Canvas fallback. Use the same Chromium, host and viewport for each comparison.
+
 `attack-arena.mjs` verifies `/games/901/attack` using read-only invented public
 snapshots and a local WebSocket fixture. Run it from the repository root:
 

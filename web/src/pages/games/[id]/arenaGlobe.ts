@@ -64,7 +64,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
   const stage = get('arena')
   const canvas = get<HTMLCanvasElement>('globeSurface')
   const paintOcean = createArenaOcean(canvas)
-  const impacts = createImpactView(root)
+  const impacts = createImpactView(root, deps.motion)
   const contacts = new Map<string, { at: GlobePoint; source: GlobePoint; count: number; due: number }>()
   const paintSettlements = createArenaSettlements(get<HTMLCanvasElement>('worldScenery'))
   const surface = root.getElementById('territories') as unknown as SVGSVGElement
@@ -685,6 +685,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
     },
     destroy() {
       destroyed = true
+      impacts.destroy()
       camera.stop()
       drag = null
       events.abort()
