@@ -936,7 +936,7 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
 
-      - name: Reject vulnerable optional dependencies and features
+      - name: Reject vulnerable optional SQL drivers in the compiled graph
         shell: bash
         run: |
           set -euo pipefail
@@ -948,6 +948,11 @@ jobs:
             exit 1
           fi
           echo "rsa and libsqlite3-sys are lockfile-only through disabled sqlx-mysql/sqlx-sqlite features."
+
+      - name: Reject kube-client OpenSSL TLS in the compiled graph
+        shell: bash
+        run: |
+          set -euo pipefail
           kube_features="$(cargo tree --all-features --target all --locked --edges features --invert kube-client)"
           if grep -Fq 'kube-client feature "openssl-tls"' <<<"$kube_features"; then
             echo "::error::kube-client openssl-tls is reachable (RUSTSEC-2026-0600)."
